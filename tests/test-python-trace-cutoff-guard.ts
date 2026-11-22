@@ -699,3 +699,129 @@ for (const [runnerName, runner] of Object.entries(RUNNERS)) {
     assertGuardStopKept(outcome, ['line-limit']);
   });
 }
+
+// The execution scope's restore() is the safety net that puts builtins and
+// modules back after a case. Releasing the guards' PEP 669 tool must not
+// depend on names the learner's code can rebind, must never skip the rest of
+// the restore, and must release only what the case acquired.
+let guardSourcePromise: Promise<string> | undefined;
+function executionGuardSource(): Promise<string> {
+  guardSourcePromise ??= readFile(join(process.cwd(), 'workers/python/python-runtime.js'), 'utf8').then((source) => {
+    const self: Record<string, any> = {};
+    vm.runInContext(
+      source.replace(
+        'globalScope.__TRACECODE_PYODIDE_RUNTIME__ = {',
+        'globalScope.__TRACECODE_PYODIDE_RUNTIME__ = { createIsolatedPythonExecutionGuard,'
+      ),
+      vm.createContext({ console, self, globalThis: {} }),
+      { filename: 'python-runtime.js' }
+    );
+    let captured = '';
+    try {
+      self.__TRACECODE_PYODIDE_RUNTIME__.createIsolatedPythonExecutionGuard({
+        runPython: (code: string) => {
+          captured = code;
+          throw new Error('captured');
+        },
+      });
+    } catch {
+      // The source is all this test needs.
+    }
+    assert.ok(captured.includes('class __TracecodeExecutionGuard'), 'captured the execution guard source');
+    return captured.trimEnd().replace(/\n__tracecode_execution_guard$/, '');
+  });
+  return guardSourcePromise;
+}
+
+async function runScopeCase(runner: Runner, caseBody: string): Promise<Record<string, unknown>> {
+  const reply = await runner(`${await executionGuardSource()}
+import builtins as _test_builtins
+import json as _test_json
+import sys as _test_sys
+_test_saved = dict(_test_builtins.__dict__)
+_test_monitoring = getattr(_test_sys, 'monitoring', None)
+_test_report = {}
+try:
+    __tracecode_execution_guard.begin()
+${caseBody.split('\n').map((line) => `    ${line}`).join('\n')}
+    try:
+        __tracecode_execution_guard.restore()
+        _test_report['restoreError'] = None
+    except BaseException as _test_error:
+        _test_report['restoreError'] = type(_test_error).__name__ + ': ' + str(_test_error)
+finally:
+    _test_report['rangeRestored'] = _test_builtins.__dict__.get('range') is _test_saved['range']
+    _test_report['exceptionRestored'] = _test_builtins.__dict__.get('Exception') is _test_saved['Exception']
+    _test_builtins.__dict__.update(_test_saved)
+    _test_report['tools'] = {
+        str(_test_id): _test_monitoring.get_tool(_test_id) for _test_id in (0, 1, 2, 3, 4, 5)
+    } if _test_monitoring is not None else {}
+    for _test_id in (0, 1, 2, 3, 4, 5):
+        if _test_monitoring is not None and _test_monitoring.get_tool(_test_id) is not None:
+            _test_monitoring.free_tool_id(_test_id)
+__tracecode_test_reply = _test_json.dumps(_test_report)
+__tracecode_test_reply
+`);
+  return JSON.parse(reply);
+}
+
+for (const [runnerName, runner] of Object.entries(RUNNERS)) {
+  test(`${runnerName}: restore() releases the guards' tool and restores builtins after the case rebound them`, async () => {
+    const report = await runScopeCase(runner, [
+      "_test_sys.monitoring.use_tool_id(4, 'tracecode')",
+      '_test_builtins.range = 5',
+      '_test_builtins.Exception = 5',
+    ].join('\n'));
+    assert.equal(report.restoreError, null, `restore() must not fail: ${report.restoreError}`);
+    assert.equal(report.rangeRestored, true);
+    assert.equal(report.exceptionRestored, true);
+    assert.equal((report.tools as Record<string, unknown>)['4'], null, 'the tool the case acquired is released');
+  });
+
+  test(`${runnerName}: restore() leaves a monitoring tool it did not acquire, whatever its name`, async () => {
+    const report = await runScopeCase(runner, '');
+    assert.equal(report.restoreError, null);
+    const held = await runner(`${await executionGuardSource()}
+import json as _test_json
+import sys as _test_sys
+_test_sys.monitoring.use_tool_id(2, 'tracecode')
+try:
+    __tracecode_execution_guard.begin()
+    __tracecode_execution_guard.restore()
+    _test_held = _test_sys.monitoring.get_tool(2)
+finally:
+    if _test_sys.monitoring.get_tool(2) is not None:
+        _test_sys.monitoring.free_tool_id(2)
+_test_json.dumps(_test_held)
+`);
+    assert.equal(JSON.parse(held), 'tracecode', 'an independently owned tool named tracecode is kept');
+  });
+}
+
+// The guards' own code must not depend on builtins the learner's code can
+// rebind while it runs.
+const REBINDS_BUILTINS = `def solve(n):
+    import builtins
+    builtins.ValueError = None
+    caught = 0
+    while True:
+        try:
+            k = 0
+            while k >= 0:
+                k = (k + 1) % 10
+        except:
+            caught += 1
+`;
+
+// Host python3 only: each run is a fresh process, while the Pyodide runner
+// shares one interpreter that rebound builtins would leave broken.
+test('python3, sys.settrace: the guard still stops a runaway that rebound ValueError', async () => {
+  const outcome = await run(runPython3, REBINDS_BUILTINS, {
+    wallClockMs: 15_000,
+    ...APP_BUDGETS,
+    // Tool id 4 is held, so the sticky stop's claim walks the other ids.
+    prelude: "import sys as _test_sys\n_test_sys.monitoring.use_tool_id(4, 'learner')",
+    epilogue: "_test_sys.monitoring.free_tool_id(4)",
+  });
+  assertGuardStopKept(outcome, ['line-limit']);
+});

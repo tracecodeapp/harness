@@ -389,7 +389,17 @@ class __TracecodeExecutionGuard:
         self._sys = sys_module
         self._gettrace = sys_module.gettrace
         self._settrace = sys_module.settrace
-        self._monitoring = getattr(sys_module, 'monitoring', None)
+        # Bound now, while trusted: restore() runs after the learner's code,
+        # which may have rebound builtins (range, Exception, ...) and
+        # sys.monitoring's functions.
+        monitoring = getattr(sys_module, 'monitoring', None)
+        self._monitoring_get_tool = getattr(monitoring, 'get_tool', None)
+        self._monitoring_set_events = getattr(monitoring, 'set_events', None)
+        self._monitoring_free_tool_id = getattr(monitoring, 'free_tool_id', None)
+        self._monitoring_tool_ids = (0, 1, 2, 3, 4, 5)
+        self._monitoring_tools_snapshot = None
+        self._trusted_exception = Exception
+        self._trusted_runtime_error = RuntimeError
         self._getrecursionlimit = sys_module.getrecursionlimit
         self._setrecursionlimit = sys_module.setrecursionlimit
         self._getcwd = os_module.getcwd
@@ -1006,9 +1016,35 @@ class __TracecodeExecutionGuard:
         self._module_mutable_snapshots = []
 
         self._trace_snapshot = self._gettrace()
+        self._monitoring_tools_snapshot = self._held_monitoring_tools()
         self._recursion_limit_snapshot = self._getrecursionlimit()
         self._cwd_snapshot = self._getcwd()
         self._random_state_snapshot = self._random_getstate()
+
+    def _held_monitoring_tools(self):
+        held = []
+        get_tool = self._monitoring_get_tool
+        if get_tool is not None:
+            for tool_id in self._monitoring_tool_ids:
+                try:
+                    if get_tool(tool_id) is not None:
+                        held.append(tool_id)
+                except self._trusted_exception:
+                    pass
+        return tuple(held)
+
+    def _release_case_monitoring_tools(self, held_before):
+        # Every PEP 669 tool the case acquired (a guard's sticky stop, or one
+        # the learner's code took) and nothing else: a tool that was held
+        # when the case began belongs to someone else, whatever its name.
+        get_tool = self._monitoring_get_tool
+        if get_tool is None:
+            return
+        for tool_id in self._monitoring_tool_ids:
+            if tool_id in held_before or get_tool(tool_id) is None:
+                continue
+            self._monitoring_set_events(tool_id, 0)
+            self._monitoring_free_tool_id(tool_id)
 
     def begin_algorithm(self):
         self._begin_common()
@@ -1059,6 +1095,7 @@ class __TracecodeExecutionGuard:
         module_dict_snapshots = self._module_dict_snapshots
         module_mutable_snapshots = self._module_mutable_snapshots
         trace_snapshot = self._trace_snapshot
+        monitoring_tools_snapshot = self._monitoring_tools_snapshot
         recursion_limit_snapshot = self._recursion_limit_snapshot
         cwd_snapshot = self._cwd_snapshot
         random_state_snapshot = self._random_state_snapshot
@@ -1070,33 +1107,25 @@ class __TracecodeExecutionGuard:
         self._module_dict_snapshots = None
         self._module_mutable_snapshots = None
         self._trace_snapshot = None
+        self._monitoring_tools_snapshot = None
         self._recursion_limit_snapshot = None
         self._cwd_snapshot = None
         self._random_state_snapshot = None
         self._algorithm_environ_snapshot = None
         self._algorithm_path_snapshot = None
         self._algorithm_importer_cache_snapshot = None
+        # Until builtins are restored below, no builtin name is looked up:
+        # the learner's code may have rebound any of them.
+        trusted_exception = self._trusted_exception
         if builtins_snapshot is None or modules_snapshot is None:
-            raise RuntimeError('TraceCode Python execution scope was not active')
+            raise self._trusted_runtime_error('TraceCode Python execution scope was not active')
         self._settrace(None)
-        # The tracer's PEP 669 tool (named 'tracecode'; id 4 unless the
-        # learner's code held it) must never outlive its case: a guard's
-        # sticky stop left armed would raise in the next case's learner code.
-        monitoring = self._monitoring
-        if monitoring is not None:
-            for tool_id in range(6):
-                try:
-                    if monitoring.get_tool(tool_id) == 'tracecode':
-                        monitoring.set_events(tool_id, 0)
-                        monitoring.free_tool_id(tool_id)
-                except Exception:
-                    pass
         for module, namespace_snapshot in module_dict_snapshots or ():
             try:
                 namespace = module.__dict__
                 namespace.clear()
                 namespace.update(namespace_snapshot)
-            except Exception:
+            except trusted_exception:
                 pass
         for value, value_kind, value_snapshot in module_mutable_snapshots or ():
             try:
@@ -1110,7 +1139,7 @@ class __TracecodeExecutionGuard:
                     value.update(value_snapshot)
                 elif value_kind == 'bytearray':
                     value[:] = value_snapshot
-            except Exception:
+            except trusted_exception:
                 pass
         self._builtins_dict.clear()
         self._builtins_dict.update(builtins_snapshot)
@@ -1125,6 +1154,12 @@ class __TracecodeExecutionGuard:
             self._sys.path_importer_cache.clear()
             self._sys.path_importer_cache.update(algorithm_importer_cache_snapshot)
         restore_errors = []
+        try:
+            # The guards' PEP 669 tool must never outlive its case: a sticky
+            # stop left armed would raise in the next case's learner code.
+            self._release_case_monitoring_tools(monitoring_tools_snapshot or ())
+        except Exception as error:
+            restore_errors.append(('monitoring tools', error))
         try:
             self._setrecursionlimit(recursion_limit_snapshot)
         except Exception as error:
@@ -1797,6 +1832,9 @@ class _TracecodeAlgorithmLimit(BaseException):
 # stop again on every later learner line, so a caught stop cannot keep the
 # program running unguarded. Costs nothing until a guard trips.
 _tracecode_batch_monitoring = getattr(_tracecode_batch_sys, 'monitoring', None)
+# Bound before any learner code runs (it may rebind builtins).
+_tracecode_batch_value_error = ValueError
+_tracecode_batch_exception = Exception
 _tracecode_case_tripped = None
 _tracecode_case_sticky_armed = False
 _tracecode_case_sticky_tool = 4
@@ -1818,7 +1856,7 @@ def _tracecode_case_trip(reason):
             for _tracecode_tool in (4, 3, 5, 2, 1, 0):
                 try:
                     _tracecode_batch_monitoring.use_tool_id(_tracecode_tool, 'tracecode')
-                except ValueError:
+                except _tracecode_batch_value_error:
                     continue
                 _tracecode_case_sticky_tool = _tracecode_tool
                 _tracecode_case_sticky_armed = True
@@ -1831,7 +1869,7 @@ def _tracecode_case_trip(reason):
                     _tracecode_tool, _tracecode_batch_monitoring.events.LINE
                 )
                 break
-        except Exception:
+        except _tracecode_batch_exception:
             pass
     raise _TracecodeAlgorithmLimit(_tracecode_case_tripped)
 
@@ -1842,7 +1880,7 @@ def _tracecode_case_disarm():
         try:
             _tracecode_batch_monitoring.set_events(_tracecode_case_sticky_tool, 0)
             _tracecode_batch_monitoring.free_tool_id(_tracecode_case_sticky_tool)
-        except Exception:
+        except _tracecode_batch_exception:
             pass
 
 def _tracecode_execute_serialize_checkpoint():
@@ -2905,6 +2943,11 @@ from time import perf_counter as _tracecode_perf_counter
 # settrace path remains as the fallback for interpreters without monitoring.
 _TC_MONITORING = getattr(sys, 'monitoring', None)
 _TC_MONITORING_TOOL = 4
+# Bound before the learner's code runs: the guards' own code must not depend
+# on builtins it can rebind (import builtins; builtins.ValueError = ...).
+_tracecode_trusted_value_error = ValueError
+_tracecode_trusted_exception = Exception
+_tracecode_trusted_int = int
 _TC_MONITORING_ACTIVE = False
 _TC_MONITORING_ERROR = None if _TC_MONITORING is not None else 'sys.monitoring unavailable'
 _TC_MONITORING_WAS_ARMED = False
@@ -2973,7 +3016,7 @@ def _tracecode_stop_tracing():
         try:
             _TC_MONITORING.set_events(_TC_MONITORING_TOOL, 0)
             _TC_MONITORING.free_tool_id(_TC_MONITORING_TOOL)
-        except Exception:
+        except _tracecode_trusted_exception:
             pass
 _console_output = []
 _original_print = _builtins.print
@@ -3037,7 +3080,8 @@ _internal_locals = {
     '_tracecode_guard_trip', '_tracecode_arm_sticky_stop', '_tc_sticky_on_line', '_trace_limit_reason', '_TRACE_BUDGET_REASONS',
     '_tracecode_recording_stopped_clock', '_tracecode_learner_line', '_degraded_next_check',
     '_degraded_check_every', '_degraded_last_check_at', '_TRACECODE_NON_LEARNER_FILENAME_PREFIXES',
-    '_DEGRADED_LINES_PER_SECOND_LEFT', '_tracecode_start_grace',
+    '_DEGRADED_LINES_PER_SECOND_LEFT', '_tracecode_start_grace', '_tracecode_trusted_value_error',
+    '_tracecode_trusted_exception', '_tracecode_trusted_int',
     '_TRACECODE_HARNESS_FILENAME',
     '_MAX_SERIALIZE_DEPTH', '_MAX_SERIALIZED_ITEMS', '_MAX_OBJECT_FIELDS', '_MAX_SERIALIZED_STRING_CHARS', '_serialize_string', '_trace_failed', '_execution_aborted', '_inplace',
     '_custom_print', '_tracer', '_serialize', '_serialize_output', '_tracecode_ref_id', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input',
@@ -3182,7 +3226,7 @@ def _tracecode_arm_sticky_stop():
             for _tc_tool in (4, 3, 5, 2, 1, 0):
                 try:
                     _TC_MONITORING.use_tool_id(_tc_tool, 'tracecode')
-                except ValueError:
+                except _tracecode_trusted_value_error:
                     continue
                 _TC_MONITORING_TOOL = _tc_tool
                 _TC_MONITORING_ACTIVE = True
@@ -3192,7 +3236,7 @@ def _tracecode_arm_sticky_stop():
         _events = _TC_MONITORING.events
         _TC_MONITORING.register_callback(_TC_MONITORING_TOOL, _events.LINE, _tc_sticky_on_line)
         _TC_MONITORING.set_events(_TC_MONITORING_TOOL, _events.LINE)
-    except Exception:
+    except _tracecode_trusted_exception:
         pass
 
 # The trace budget that stopped recording, kept when a guard later stops the
@@ -6413,12 +6457,12 @@ def _tracecode_recording_stopped_guard(frame):
         # Shrink at once when lines are slow; grow at most 2x per sample, since
         # one short interval (a cheap line just before a costly one) says
         # little about the next.
-        _every = int(_degraded_check_every * 0.02 / _elapsed) if _elapsed > 0.0 else 256
+        _every = _tracecode_trusted_int(_degraded_check_every * 0.02 / _elapsed) if _elapsed > 0.0 else 256
         if _every > 2 * _degraded_check_every:
             _every = 2 * _degraded_check_every
         _time_bound = _case_deadline if _case_deadline > 0.0 else _hard_line_deadline
         if _time_bound > 0.0:
-            _left_cap = int((_time_bound - _now) * _DEGRADED_LINES_PER_SECOND_LEFT)
+            _left_cap = _tracecode_trusted_int((_time_bound - _now) * _DEGRADED_LINES_PER_SECOND_LEFT)
             if _every > _left_cap:
                 _every = _left_cap
         _degraded_check_every = 1 if _every < 1 else (256 if _every > 256 else _every)
@@ -7859,6 +7903,9 @@ except Exception:
     _interview_tracemalloc = None
 
 _interview_monitoring = getattr(sys, 'monitoring', None)
+# Bound before the learner's code runs (it may rebind builtins).
+_interview_trusted_value_error = ValueError
+_interview_trusted_exception = Exception
 _interview_sticky_armed = False
 _interview_sticky_tool = 4
 
@@ -7897,7 +7944,7 @@ def _interview_trip(reason):
             for _interview_tool in (4, 3, 5, 2, 1, 0):
                 try:
                     _interview_monitoring.use_tool_id(_interview_tool, 'tracecode')
-                except ValueError:
+                except _interview_trusted_value_error:
                     continue
                 _interview_sticky_tool = _interview_tool
                 _interview_sticky_armed = True
@@ -7906,7 +7953,7 @@ def _interview_trip(reason):
                 )
                 _interview_monitoring.set_events(_interview_tool, _interview_monitoring.events.LINE)
                 break
-        except Exception:
+        except _interview_trusted_exception:
             pass
     raise _InterviewGuardTriggered('INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason)
 
@@ -8001,7 +8048,7 @@ def _interview_guard_stop():
         try:
             _interview_monitoring.set_events(_interview_sticky_tool, 0)
             _interview_monitoring.free_tool_id(_interview_sticky_tool)
-        except Exception:
+        except _interview_trusted_exception:
             pass
     _interview_case_deadline = None
     if _interview_tracemalloc is not None and _interview_tracemalloc_started:
