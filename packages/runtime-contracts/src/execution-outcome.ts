@@ -43,14 +43,36 @@ export class RuntimeProviderError extends Error {
    * unknown classification); otherwise the provider itself failed.
    */
   readonly reason: 'runtime-failure' | 'protocol';
+  /**
+   * `trace-unavailable`: the runtime could not trace this program without
+   * changing what it computes (a construct its tracer refuses, or a traced
+   * build that failed to compile while the untraced build compiles). The
+   * program itself is fine and runs untraced. Judge reports it with the
+   * `trace-unavailable` diagnostic code.
+   */
+  readonly code?: typeof TRACE_UNAVAILABLE_CODE;
 
   constructor(
     message: string,
-    options?: { readonly cause?: unknown; readonly reason?: 'runtime-failure' | 'protocol' }
+    options?: {
+      readonly cause?: unknown;
+      readonly reason?: 'runtime-failure' | 'protocol';
+      readonly code?: typeof TRACE_UNAVAILABLE_CODE;
+    }
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.reason = options?.reason ?? 'runtime-failure';
+    if (options?.code !== undefined) this.code = options.code;
   }
+}
+
+/** Diagnostic code (and RuntimeProviderError code) of a program the runtime could not trace. */
+export const TRACE_UNAVAILABLE_CODE = 'trace-unavailable' as const;
+
+/** Whether an error says the runtime could not trace the program (it runs untraced). */
+export function isTraceUnavailableError(error: unknown): boolean {
+  return error instanceof Error &&
+    (error as { readonly code?: unknown }).code === TRACE_UNAVAILABLE_CODE;
 }
 
 export function isRuntimeProviderError(error: unknown): error is RuntimeProviderError {
