@@ -1540,6 +1540,7 @@ function buildDynamicInputHelperMethods() {
   private static java.util.IdentityHashMap<Object, Boolean> preparedSelfReferenced = new java.util.IdentityHashMap<>();
   private static java.util.IdentityHashMap<Object, Boolean> preparedHoldsReference = new java.util.IdentityHashMap<>();
   private static java.util.IdentityHashMap<Object, Boolean> preparedRawResolved = new java.util.IdentityHashMap<>();
+  private static java.util.IdentityHashMap<Object, Boolean> preparedUnderConstruction = new java.util.IdentityHashMap<>();
 
   private static void beginPreparedInputCase() {
     preparedNodesById = new java.util.HashMap<>();
@@ -1547,6 +1548,7 @@ function buildDynamicInputHelperMethods() {
     preparedSelfReferenced = new java.util.IdentityHashMap<>();
     preparedHoldsReference = new java.util.IdentityHashMap<>();
     preparedRawResolved = new java.util.IdentityHashMap<>();
+    preparedUnderConstruction = new java.util.IdentityHashMap<>();
   }
 
   private static Object parsePreparedJsonInput(String source) {
@@ -1815,6 +1817,15 @@ function buildDynamicInputHelperMethods() {
             "Prepared input reference " + reference + " does not name an earlier node in this case"
         );
       }
+      if (
+          !targetType.isInstance(node) &&
+          node instanceof java.util.Map<?, ?> &&
+          preparedRawResolved.containsKey(node)
+      ) {
+        // An Object-typed input took this node as its raw JSON object; build
+        // it as the requested type now, which also registers it.
+        return materializePreparedJsonObject((java.util.Map<?, ?>) node, targetType);
+      }
       if (!targetType.isInstance(node)) {
         throw new IllegalArgumentException(
             "Prepared input reference " + reference + " is not a " + targetType.getName()
@@ -1826,6 +1837,21 @@ function buildDynamicInputHelperMethods() {
     // same JSON node; build it once so each subtree is not built again.
     Object built = preparedNodesBySource.get(fields);
     if (built != null && targetType.isInstance(built)) return built;
+    if (preparedUnderConstruction.containsKey(fields)) {
+      throw new IllegalStateException("Prepared input contains itself without a reference: " + targetType.getName());
+    }
+    preparedUnderConstruction.put(fields, Boolean.TRUE);
+    try {
+      return materializeUnbuiltPreparedJsonObject(fields, targetType);
+    } finally {
+      preparedUnderConstruction.remove(fields);
+    }
+  }
+
+  private static Object materializeUnbuiltPreparedJsonObject(
+      java.util.Map<?, ?> fields,
+      Class<?> targetType
+  ) {
     if (preparedSelfReferenced.containsKey(fields)) {
       // Something inside this node points back to it, so it has to exist
       // before the links that lead there are built.
@@ -1879,7 +1905,7 @@ function buildDynamicInputHelperMethods() {
     for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
       if (String.valueOf(entry.getKey()).startsWith("__")) continue;
       values.add(entry.getValue());
-      leadsBack.add(preparedHoldsReference.containsKey(entry.getValue()));
+      leadsBack.add(preparedHoldsReference.containsKey(entry.getValue()) && preparedFieldLeadsBack(entry.getValue()));
     }
     java.lang.reflect.Constructor<?>[] constructors = targetType.getDeclaredConstructors();
     for (java.lang.reflect.Constructor<?> constructor : constructors) {
@@ -1955,6 +1981,38 @@ function buildDynamicInputHelperMethods() {
       }
     }
     throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
+  }
+
+  /**
+   * Whether building this field value now would need a node that does not
+   * exist yet: the node being built (or another one under construction), or
+   * a reference to an id neither built already nor defined inside the value.
+   */
+  private static boolean preparedFieldLeadsBack(Object value) {
+    java.util.HashSet<String> defined = new java.util.HashSet<>();
+    java.util.ArrayList<String> references = new java.util.ArrayList<>();
+    java.util.ArrayDeque<Object> pending = new java.util.ArrayDeque<>();
+    java.util.IdentityHashMap<Object, Boolean> seen = new java.util.IdentityHashMap<>();
+    if (value != null) pending.add(value);
+    while (!pending.isEmpty()) {
+      Object current = pending.pop();
+      if (seen.put(current, Boolean.TRUE) != null) continue;
+      if (preparedUnderConstruction.containsKey(current)) return true;
+      if (current instanceof java.util.Map<?, ?>) {
+        java.util.Map<?, ?> map = (java.util.Map<?, ?>) current;
+        Object target = map.get("__ref__");
+        if (target instanceof String) references.add((String) target);
+        Object id = map.get("__id__");
+        if (id instanceof String) defined.add((String) id);
+        for (Object child : map.values()) if (child != null) pending.add(child);
+      } else if (current instanceof java.util.List<?>) {
+        for (Object child : (java.util.List<?>) current) if (child != null) pending.add(child);
+      }
+    }
+    for (String reference : references) {
+      if (!defined.contains(reference) && !preparedNodesById.containsKey(reference)) return true;
+    }
+    return false;
   }
 
   private static java.lang.reflect.Constructor<?>[] declaredByArity(java.lang.reflect.Constructor<?>[] constructors) {
