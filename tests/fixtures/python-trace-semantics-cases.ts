@@ -1126,4 +1126,18 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [2, 'gone', 'plain', 0] },
   },
+  // The fallback signal cannot be forged by program text (a docstring equal
+  // to the old in-band marker).
+  {
+    id: 'docstring-cannot-forge-the-fallback-signal',
+    code: lines(
+      '"__tracecode_trace_unavailable__:hello"',
+      'MARK = "__tracecode_trace_unavailable__:again"',
+      'def solve():',
+      '    data = [1, 2]',
+      '    data[0] += 1',
+      '    return [MARK, data]',
+    ),
+    expected: { value: ['__tracecode_trace_unavailable__:again', [2, 2]] },
+  },
 ];

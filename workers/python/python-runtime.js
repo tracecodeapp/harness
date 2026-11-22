@@ -6663,14 +6663,16 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
 # A program the rewriter cannot instrument runs untraced: its traced Run
 # returns the untraced outcome with an empty trace and a trace-unavailable
-# notice. The marker is an extra, unused module constant, so it survives the
-# marshalled prepared-code artifact and changes nothing the program does.
-_TRACECODE_TRACE_UNAVAILABLE_MARKER = '__tracecode_trace_unavailable__:'
+# notice. The signal travels out of band, in the module code object's
+# co_qualname: learner source cannot set it (unlike any constant, which a
+# docstring or literal could forge), marshal keeps it (the prepared-code
+# artifact), and tracebacks and frames' co_name do not show it.
+_TRACECODE_TRACE_UNAVAILABLE_QUALNAME = '<module>\\x00tracecode-trace-unavailable\\x00'
 
 def _tracecode_trace_unavailable_message(code):
-    for constant in getattr(code, 'co_consts', ()):
-        if type(constant) is _builtins.str and constant.startswith(_TRACECODE_TRACE_UNAVAILABLE_MARKER):
-            return constant[len(_TRACECODE_TRACE_UNAVAILABLE_MARKER):]
+    qualname = getattr(code, 'co_qualname', None)
+    if type(qualname) is _builtins.str and qualname.startswith(_TRACECODE_TRACE_UNAVAILABLE_QUALNAME):
+        return qualname[len(_TRACECODE_TRACE_UNAVAILABLE_QUALNAME):]
     return None
 
 class _TracecodeInstrumentationRefused(Exception):
@@ -6717,10 +6719,10 @@ def __tracecode_compile_user_code(source, on_demand=False):
             if isinstance(error, _TracecodeInstrumentationRefused)
             else type(error).__name__ + ' while instrumenting it'
         )
-        return raw_code.replace(co_consts=raw_code.co_consts + (
-            _TRACECODE_TRACE_UNAVAILABLE_MARKER
+        return raw_code.replace(co_qualname=(
+            _TRACECODE_TRACE_UNAVAILABLE_QUALNAME
             + 'Tracing is unavailable for this program, so it ran without a trace ('
-            + reason + ').',
+            + reason + ').'
         ))
 
 def __tracecode_compile_instrumented_user_code(source, raw_tree, on_demand):
