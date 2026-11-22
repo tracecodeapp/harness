@@ -3,14 +3,27 @@
 // control body the tracing rewriter has to normalize (see
 // tests/test-cpp-rewriter-control-bodies.ts). Programs the tracer cannot
 // instrument without changing them are refused as the provider's failure.
-import { createAlgorithmJudgeBundle, createBrowserJudgeHost } from '../../src/judge';
+import {
+  createAlgorithmJudgeBundle,
+  createBrowserJudgeHost,
+  judgeCompileExecutionOutcome,
+} from '../../src/judge';
 
 const PRELUDE = [
+  '#include <algorithm>',
+  '#include <array>',
+  '#include <set>',
   '#include <string>',
   '#include <vector>',
   'using namespace std;',
   '#define BUMP(x) ((x) += 1)',
   '#define SWAP_DO(x, y) do { int tmp = (x); (x) = (y); (y) = tmp; } while (0)',
+  '#define LOG_IF(c) if (c) k += 1000',
+  '#define ll long long',
+  '#define all(x) (x).begin(), (x).end()',
+  '#define F first',
+  '#define REP(i, n) for (int i = 0; i < (n); i++)',
+  'struct QQ { int val; string name; vector<int> adj; set<int> seen; };',
 ];
 
 export interface ParityForm {
@@ -65,6 +78,8 @@ export interface ParityCase {
   readonly status: string;
   readonly value?: unknown;
   readonly failure?: unknown;
+  /** The case's first error diagnostic code. */
+  readonly code?: string;
   /** Source lines with trace events, for traced cases. */
   readonly tracedLines?: readonly number[];
 }
@@ -73,6 +88,10 @@ export interface ParityRun {
   readonly status?: string;
   readonly cases: readonly ParityCase[];
   readonly compileFailure?: unknown;
+  /** The failed compile's first error diagnostic code. */
+  readonly compileCode?: string;
+  /** What judgeCompileExecutionOutcome returns, or the error it throws. */
+  readonly compileOutcome?: { readonly kind?: string; readonly diagnosticStage?: string; readonly threw?: string; readonly code?: string; readonly reason?: string };
   readonly error?: string;
   readonly errorName?: string;
 }
@@ -108,12 +127,26 @@ function tracedLines(trace: any): number[] | undefined {
   return [...lines].sort((left, right) => left - right);
 }
 
-function observe(evaluation: any): ParityRun {
+const errorCode = (diagnostics: any): string | undefined =>
+  (Array.isArray(diagnostics) ? diagnostics : []).find((diagnostic: any) => diagnostic?.severity === 'error')?.code;
+
+function compileOutcome(compile: any, trace: boolean): ParityRun['compileOutcome'] {
+  try {
+    const outcome: any = judgeCompileExecutionOutcome(compile, { language: 'cpp', trace } as never);
+    return { kind: outcome.kind, diagnosticStage: outcome.diagnosticStage };
+  } catch (error: any) {
+    return { threw: error?.name, code: error?.code, reason: error?.reason };
+  }
+}
+
+function observe(evaluation: any, trace: boolean): ParityRun {
   if (evaluation?.status === 'compile-failed') {
     return {
       status: evaluation.status,
       cases: [],
       compileFailure: JSON.parse(JSON.stringify(evaluation.compile?.failure ?? evaluation.compile ?? null)),
+      compileCode: errorCode(evaluation.compile?.diagnostics),
+      compileOutcome: compileOutcome(evaluation.compile, trace),
     };
   }
   return {
@@ -123,6 +156,7 @@ function observe(evaluation: any): ParityRun {
       status: testCase.status,
       value: testCase.value,
       ...(testCase.failure ? { failure: JSON.parse(JSON.stringify(testCase.failure)) } : {}),
+      ...(errorCode(testCase.diagnostics) ? { code: errorCode(testCase.diagnostics) } : {}),
       ...(testCase.trace ? { tracedLines: tracedLines(testCase.trace) } : {}),
     })),
   };
@@ -147,7 +181,7 @@ export async function runParity(options: {
       let untraced: ParityRun;
       try {
         const receipt = await host.evaluateAlgorithm({ bundle: await bundleFor(program, false) } as never);
-        untraced = observe(receipt.evaluation);
+        untraced = observe(receipt.evaluation, false);
       } catch (error) {
         untraced = thrown(error);
       }
@@ -158,7 +192,7 @@ export async function runParity(options: {
           interactive: true,
           tracing: { caseIds: [...program.tracedCaseIds] },
         });
-        traced = observe(executed.evaluation);
+        traced = observe(executed.evaluation, true);
         if (executed.executionId) await host.disposeExecution(executed.executionId);
       } catch (error) {
         traced = thrown(error);

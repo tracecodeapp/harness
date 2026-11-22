@@ -139,6 +139,96 @@ const COMPILE_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   { name: '__LINE__', body: ['    k = __LINE__ % 1000;', '    if (a < t) k += __LINE__ % 100; else k -= __LINE__ % 10;'].join('\n') },
+  // Round 3: indexed writes and calls that compile only on the element itself.
+  {
+    name: 'int fields of an element written through the index',
+    body: ['    vector<QQ> qs(3);', '    int i = 2;', '    qs[i].val = 5;', '    ++qs[i].val;', '    qs[i].val += a;', '    k = qs[i].val;'].join('\n'),
+  },
+  {
+    name: 'a reference to an element',
+    body: ['    vector<QQ> qs(3);', '    int i = 1;', '    QQ& qr = qs[i];', '    qr.val = 3 + b;', '    k = qs[1].val;'].join('\n'),
+  },
+  {
+    name: 'elements passed to lambdas taking non-const references',
+    body: [
+      '    array<int, 3> ar{};',
+      '    vector<vector<int>> g(3, vector<int>(2, 1));',
+      '    auto inc = [](int& x) { x += 4; };',
+      '    auto bump = [](vector<int>& row) { row[0] += 2; };',
+      '    inc(ar[1]);',
+      '    bump(g[2]);',
+      '    k = ar[1] * 10 + g[2][0];',
+    ].join('\n'),
+  },
+  {
+    name: 'iterators of elements',
+    body: [
+      '    vector<string> names(3, "abc");',
+      '    vector<set<int>> sets(3);',
+      '    int i = 1;',
+      '    reverse(names[i].begin(), names[i].end());',
+      '    sets[i].insert(a + 5);',
+      '    if (sets[i].find(a + 5) != sets[i].end()) k += 1;',
+      '    s = names[i];',
+    ].join('\n'),
+  },
+  // Round 3, E and common macros: traced, not refused.
+  { name: 'an if-macro used standalone in a braced block', body: ['    {', '      LOG_IF(b > t);', '    }'].join('\n') },
+  {
+    name: 'common competitive-programming macros (ll, all, F, REP)',
+    body: [
+      '    vector<ll> v{3, 1, 2};',
+      '    if (a < t) sort(all(v));',
+      '    pair<int, int> p{a, b};',
+      '    if (p.F > 0) k += p.F;',
+      '    REP(i, 3) k += (int)v[i] * (i + 1);',
+      '    REP(i, 2) {',
+      '      k += i;',
+      '    }',
+    ].join('\n'),
+  },
+];
+
+// Round 3, B: computed differently by origin/main's traced build (a learner
+// expression evaluated twice, or a write that landed on a copy).
+const COPY_FORMS: ParityForm[] = [
+  { name: 'std::array fill evaluates its argument once', body: ['    array<int, 3> ar{};', '    int i = 1;', '    ar.fill(i++);', '    k = ar[0] * 10 + i;'].join('\n') },
+  { name: 'a field read with a side-effecting index', body: ['    vector<QQ> qs(3);', '    int i = 0;', '    k = qs[i++].val;', '    k += 10 * i;'].join('\n') },
+  {
+    name: 'a field read with a call as index',
+    body: ['    vector<QQ> qs(3);', '    int calls = 0;', '    auto pick = [&]() { return calls++ % 3; };', '    k = qs[pick()].val;', '    k += 100 * calls;'].join('\n'),
+  },
+  {
+    name: 'mutating container elements through an index',
+    body: [
+      '    vector<string> names(3, "n");',
+      '    vector<set<int>> sets(3);',
+      '    int i = 1;',
+      "    names[i].push_back('a');",
+      '    sets[i].insert(4);',
+      '    sets[i].insert(9);',
+      '    sets[i].erase(4);',
+      "    names[i].back() = 'q';",
+      "    for (char& c : names[0]) c = 'z';",
+      '    k = (int)names[i].size() * 100 + (int)sets[i].size() * 10 + (sets[i].count(9) ? 1 : 0);',
+      '    s = names[i] + names[0];',
+    ].join('\n'),
+  },
+  {
+    name: 'struct members of an element',
+    body: [
+      '    vector<QQ> qs(3);',
+      '    int i = 2;',
+      '    qs[i].name = "xy";',
+      '    qs[i].name += "z";',
+      '    qs[i].adj.push_back(4);',
+      '    qs[i].adj.push_back(6);',
+      '    qs[i].adj[0] = 7;',
+      '    qs[i].seen.insert(3);',
+      '    k = (int)qs[i].name.size() * 100 + qs[i].adj[0] * 10 + (int)qs[i].seen.size();',
+      '    s = qs[i].name;',
+    ].join('\n'),
+  },
 ];
 
 const SILENT_FORMS: ParityForm[] = [
@@ -206,7 +296,31 @@ const REFUSED_PROGRAMS: Array<[string, string, string]> = [
   ['function-name', '', '    s = __func__;'],
   ['braceless-switch', '', ['    switch (t)', '      case 1: k = 7;'].join('\n')],
   ['macros-hiding-braces', '#define BEGIN {\n#define END }', '    if (a < t) BEGIN k = 1; END'],
-  ['undelimited-control-statement', '#define REP(i, n) for (int i = 0; i < (n); i++)', '    if (a < t) REP(i, 2) if (i) k += i;'],
+  ['undelimited-control-statement', '#define REP2(i, n) for (int i = 0; i < (n); i++)', '    if (a < t) REP2(i, 2) if (i) k += i;'],
+  // Round 3, A: the traced build does not compile (instrumentation defects
+  // the compile safety net catches), while the program does.
+  ['traced-build-compile-error-decltype-condition', '', '    if (decltype(k) n = k + 1) k += n;'],
+  [
+    'traced-build-compile-error-while-declaration',
+    '',
+    [
+      '    struct Node { int val; Node* next; };',
+      '    Node n2{2, nullptr};',
+      '    Node n1{1, &n2};',
+      '    Node* head = &n1;',
+      '    while (Node* p = head) { k += p->val; head = p->next; }',
+    ].join('\n'),
+  ],
+  // Round 3, C, D, E.
+  ['two-do-while-zero-macro', '#define TWO do { ++k; } while (0); do { ++k; } while (0)', '    if (a < t) TWO;'],
+  ['redefined-macro', '#define STEP(x) x; x\n#define USE_STEP(x) STEP(x)\n#undef STEP\n#define STEP(x) ((x) += 1)', '    if (a < t) STEP(k);'],
+  ['continued-directive-comment', '#define X1 1 // note \\\n#define Y1 2', '    k = X1;'],
+  ['multiline-function-macro', '#define ADD2(p, q) \\\n  ((p) + (q))', '    k = ADD2(a, b);'],
+  ['hidden-line-directive', '', ['#/**/line 700', '    k = __LINE__;'].join('\n')],
+  ['function-name-in-macro', '#define FN __func__', '    s = FN;'],
+  ['if-macro-braceless-body', '', '    if (a < t) LOG_IF(b > t);'],
+  ['if-macro-followed-by-else', '', '    LOG_IF(b > t); else k -= 1;'],
+  ['else-macro', '#define OTHERWISE else', '    if (a < t) k = 1; OTHERWISE k = 2;'],
 ];
 
 function refusedProgram(prelude: string, body: string): string {
@@ -237,6 +351,7 @@ function formsParityProgram(id: string, forms: readonly ParityForm[]): ParityPro
 const PROGRAMS: ParityProgram[] = [
   formsParityProgram('compile-forms', COMPILE_FORMS),
   formsParityProgram('silent-forms', SILENT_FORMS),
+  formsParityProgram('copy-forms', COPY_FORMS),
   {
     id: 'repro',
     code: REPRO,
@@ -329,7 +444,13 @@ function lineOf(source: string, needle: string): number {
 }
 
 function formName(programId: string, caseId: string): string {
-  const forms = programId === 'compile-forms' ? COMPILE_FORMS : programId === 'silent-forms' ? SILENT_FORMS : null;
+  const forms = programId === 'compile-forms'
+    ? COMPILE_FORMS
+    : programId === 'silent-forms'
+    ? SILENT_FORMS
+    : programId === 'copy-forms'
+    ? COPY_FORMS
+    : null;
   const match = /^form-(\d+)-input-(\d+)$/.exec(caseId);
   if (!forms || !match) return caseId;
   const input = PARITY_INPUTS[Number(match[2]) - 1];
@@ -430,7 +551,19 @@ async function main(): Promise<void> {
           sample.untraced.cases.every((testCase) => testCase.status === 'completed');
         if (!untracedOk) problems.push(`untraced evaluation: ${describeRun(sample.untraced)}`);
         const traced = sample.traced;
-        const refusalText = /C\+\+ tracing cannot instrument this program without changing its behavior/;
+        const refusalText = /C\+\+ tracing cannot instrument this program/;
+        // The machine-readable marker at every layer the app reads: the
+        // diagnostic code, the provider failure, and the error the outcome
+        // converter throws.
+        const marked = traced.compileCode === 'trace-unavailable' &&
+          (traced.compileFailure as { origin?: string; reason?: string } | undefined)?.origin === 'provider' &&
+          (traced.compileFailure as { reason?: string } | undefined)?.reason === 'runtime-failure' &&
+          traced.compileOutcome?.threw === 'RuntimeProviderError' &&
+          traced.compileOutcome?.code === 'trace-unavailable';
+        if (!marked) problems.push(`refusal is not marked trace-unavailable: ${JSON.stringify({ code: traced.compileCode, failure: traced.compileFailure, outcome: traced.compileOutcome }).slice(0, 400)}`);
+        if (program.id.startsWith('refused-traced-build-compile-error') && !/traced build did not compile/.test(JSON.stringify(traced.compileFailure))) {
+          problems.push('the compile safety net did not say the traced build failed to compile');
+        }
         const reported = traced.error ??
           JSON.stringify(traced.compileFailure ?? traced.cases.map((testCase) => testCase.failure ?? testCase.status));
         if (!refusalText.test(reported)) problems.push(`traced Run was not refused: ${describeRun(traced)} ${reported.slice(0, 400)}`);
@@ -447,6 +580,9 @@ async function main(): Promise<void> {
         if (untraced?.origin !== 'program') problems.push(`untraced evaluation: ${describeRun(sample.untraced)}`);
         if (traced?.origin !== 'program' || traced?.stage !== untraced?.stage || traced?.line !== untraced?.line) {
           problems.push(`traced Run: ${describeRun(sample.traced)}`);
+        }
+        if (sample.traced.compileCode !== 'compile' || sample.traced.compileOutcome?.diagnosticStage !== 'compile') {
+          problems.push(`traced Run is not the learner's compile failure: ${JSON.stringify({ code: sample.traced.compileCode, outcome: sample.traced.compileOutcome })}`);
         }
         console.log(`${problems.length ? 'FAIL' : 'ok  '} ${program.id}: traced ${describeRun(sample.traced).slice(0, 200)}`);
         failures.push(...problems.map((problem) => `${program.id}: ${problem}`));

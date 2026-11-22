@@ -662,6 +662,54 @@ const REFUSED: Array<{ name: string; prelude: string; body: string }> = [
     prelude: '#define REP(i, n) for (int i = 0; i < (n); i++)',
     body: '    if (a < t) REP(i, 2) if (i) k += i;',
   },
+  // Round 3, C: macro classification by tokens, every definition counts.
+  {
+    name: 'two do-while(0) statements in one macro as a braceless body',
+    prelude: '#define TWO do { ++k; } while (0); do { ++k; } while (0)',
+    body: '    if (a < t) TWO;',
+  },
+  {
+    name: 'a macro whose earlier definition is multi-statement (redefined after #undef)',
+    prelude: '#define STEP(x) x; x\n#define USE_STEP(x) STEP(x)\n#undef STEP\n#define STEP(x) ((x) += 1)',
+    body: '    if (a < t) STEP(k);',
+  },
+  // Round 3, D: directives.
+  {
+    name: 'a directive continued through its line comment',
+    prelude: '#define X1 1 // note \\\n#define Y1 2',
+    body: '    k = X1;',
+  },
+  {
+    name: 'a multi-line function-like macro',
+    prelude: '#define ADD2(p, q) \\\n  ((p) + (q))',
+    body: '    k = ADD2(a, b);',
+  },
+  {
+    name: 'a #line directive hidden by a comment',
+    prelude: '',
+    body: ['#/**/line 700', '    k = __LINE__;'].join('\n'),
+  },
+  {
+    name: '__func__ inside a macro body',
+    prelude: '#define FN __func__',
+    body: '    s = FN;',
+  },
+  // Round 3, E: an if-macro where it can capture a statement or an else.
+  {
+    name: 'an if-macro as a braceless body',
+    prelude: '#define LOG_IF(c) if (c) k += 1000',
+    body: '    if (a < t) LOG_IF(b > t);',
+  },
+  {
+    name: 'an if-macro followed by else',
+    prelude: '#define LOG_IF(c) if (c) k += 1000',
+    body: '    LOG_IF(b > t); else k -= 1;',
+  },
+  {
+    name: 'a macro that expands to else',
+    prelude: '#define OTHERWISE else',
+    body: '    if (a < t) k = 1; OTHERWISE k = 2;',
+  },
 ];
 
 const ACCEPTED_MACROS: Array<{ name: string; prelude: string; body: string; keeps: string; anywhere?: boolean }> = [
@@ -696,6 +744,28 @@ const ACCEPTED_MACROS: Array<{ name: string; prelude: string; body: string; keep
     body: '    k = __LINE__;',
     keeps: 'k = __LINE__;',
   },
+  // Round 3, E and common macros: no blanket refusal.
+  {
+    name: 'an if-macro used standalone in a braced block',
+    prelude: '#define LOG_IF(c) if (c) k += 1000',
+    body: ['    {', '      LOG_IF(b > t);', '    }'].join('\n'),
+    keeps: 'LOG_IF(b > t);',
+  },
+  {
+    name: 'common competitive-programming macros (ll, all, F, REP)',
+    prelude: '#define ll long long\n#define all(x) (x).begin(), (x).end()\n#define F first\n#define REP(i, n) for (int i = 0; i < (n); i++)',
+    body: [
+      '    vector<ll> v{3, 1, 2};',
+      '    if (a < t) sort(all(v));',
+      '    pair<int, int> p{a, b};',
+      '    if (p.F > 0) k += p.F;',
+      '    REP(i, 3) k += (int)v[i];',
+      '    REP(i, 2) {',
+      '      k += i;',
+      '    }',
+    ].join('\n'),
+    keeps: 'REP(i, 2) {',
+  },
 ];
 
 const results: Array<{ name: string; failures: string[] }> = [];
@@ -710,6 +780,7 @@ for (const refused of REFUSED) {
     const message = error instanceof Error ? error.message : String(error);
     if (name !== 'CppTraceUnsupportedError') failures.push(`threw ${name}: ${message}`);
     else if (!/without changing its behavior \(line \d+:/.test(message)) failures.push(`message: ${message}`);
+    else if ((error as { code?: unknown }).code !== 'trace-unavailable') failures.push('refusal has no trace-unavailable code');
   }
   results.push({ name: `refused: ${refused.name}`, failures });
 }
@@ -797,6 +868,105 @@ for (const accepted of ACCEPTED_MACROS) {
     failures.push(`the untraced driver was refused too: ${String(error)}`);
   }
   results.push({ name: 'refusal propagates out of the traced driver builders only', failures });
+}
+
+// Round 3, B: instrumentation evaluates each learner expression once, and a
+// copy-returning read helper (trace_index_read, trace_index_field_read) never
+// stands where the learner's expression is written through (a method call,
+// an assignment, ++/--, a subscript, a reference binding, a range-for).
+{
+  const CONST_METHODS = new Set(['size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with', 'capacity']);
+  const writesThroughReadHelper = (output: string): string[] => {
+    const problems: string[] = [];
+    for (const helper of output.matchAll(/tracecode::trace_index(?:_field)?_read\(/g)) {
+      let depth = 0;
+      let cursor = helper.index! + helper[0].length - 1;
+      for (; cursor < output.length; cursor += 1) {
+        if (output[cursor] === '(') depth += 1;
+        else if (output[cursor] === ')' && --depth === 0) break;
+      }
+      const call = output.slice(helper.index!, cursor + 1);
+      const after = output.slice(cursor + 1).trimStart();
+      const before = output.slice(0, helper.index!).trimEnd();
+      const method = /^\.\s*([A-Za-z_]\w*)\s*\(/.exec(after);
+      if (
+        (method && !CONST_METHODS.has(method[1])) ||
+        /^(?:[+\-*/%&|^]?=(?!=)|<<=|>>=|\+\+|--|\[|->|\.\s*[A-Za-z_]\w*\s*(?:[+\-*/%&|^]?=(?!=)|\.|\[|\+\+|--))/.test(after) ||
+        /(?:\+\+|--|&\s*[A-Za-z_]\w*\s*=|:)$/.test(before)
+      ) {
+        problems.push(`${call.slice(0, 90)} ${after.slice(0, 30)}`);
+      }
+    }
+    return problems;
+  };
+  const prelude = '#include <array>\n#include <set>\n#include <vector>\nstruct QQ { int val; string name; vector<int> adj; set<int> seen; };\nint tick();';
+  const cases: Array<{ name: string; body: string; once?: string; absent?: string; present?: string }> = [
+    { name: 'std::array fill with a side-effecting argument', body: '    array<int, 3> ar{};\n    ar.fill(k++);', once: 'k++' },
+    { name: 'indexed field read with a side-effecting index', body: '    vector<QQ> qs(3);\n    int i = 0;\n    k = qs[i++].val;', once: 'i++' },
+    { name: 'indexed field update with a call as index', body: '    vector<QQ> qs(3);\n    qs[tick()].val += 1;', once: 'tick()' },
+    { name: 'push_back on a vector<string> element', body: "    vector<string> names(3);\n    int i = 0;\n    names[i].push_back('a');" },
+    { name: 'insert into a vector<set<int>> element', body: '    vector<set<int>> sets(3);\n    int i = 0;\n    sets[i].insert(4);' },
+    { name: 'erase from a vector<set<int>> element', body: '    vector<set<int>> sets(3);\n    int i = 0;\n    sets[i].erase(4);' },
+    { name: 'push_back on a struct field of an element', body: '    vector<QQ> qs(3);\n    int i = 0;\n    qs[i].adj.push_back(5);' },
+    { name: 'assign a string field of an element', body: '    vector<QQ> qs(3);\n    int i = 0;\n    qs[i].name = "x";' },
+    { name: 'assign an int field of an element', body: '    vector<QQ> qs(3);\n    int i = 0;\n    qs[i].val = 5;' },
+    { name: 'subscript-assign a vector field of an element', body: '    vector<QQ> qs(3);\n    int i = 0;\n    qs[i].adj[0] = 7;' },
+    { name: 'prefix increment of an element field', body: '    vector<QQ> qs(3);\n    int i = 0;\n    ++qs[i].val;' },
+    { name: 'iterators of an element (reverse)', body: '    vector<string> names(3);\n    int i = 0;\n    reverse(names[i].begin(), names[i].end());' },
+    { name: 'find compared with end on an element', body: '    vector<set<int>> sets(3);\n    int i = 0;\n    if (sets[i].find(2) != sets[i].end()) k = 1;' },
+    { name: 'reference binding to an element', body: '    vector<QQ> qs(3);\n    int i = 0;\n    QQ& qr = qs[i];\n    qr.val = 3;' },
+    { name: 'range-for over an element by reference', body: "    vector<string> names(3);\n    int i = 0;\n    for (char& c : names[i]) c = 'z';" },
+    { name: 'assign through back() of an element', body: "    vector<string> names(3);\n    int i = 0;\n    names[i].back() = 'q';" },
+    {
+      name: 'an element passed to a lambda taking a non-const reference',
+      body: '    array<int, 3> ar{};\n    auto inc = [](int& x) { x += 1; };\n    inc(ar[1]);',
+      absent: 'inc(tracecode::',
+    },
+    {
+      name: 'an element passed to a recursive lambda through self',
+      body: [
+        '    array<int, 3> ar{};',
+        '    auto walk = [&](auto&& self, int& cell, int depth) -> void {',
+        '      if (depth > 0) self(self, ar[0], depth - 1);',
+        '      cell += 1;',
+        '    };',
+        '    walk(walk, ar[2], 2);',
+      ].join('\n'),
+      absent: 'self, tracecode::',
+    },
+    {
+      name: 'an element passed by const reference stays traced',
+      body: '    array<int, 3> ar{};\n    auto get = [](const int& x) { return x; };\n    k = get(ar[2]);',
+      present: 'get(tracecode::trace_index_read(ar',
+    },
+  ];
+  for (const testCase of cases) {
+    const failures: string[] = [];
+    let output = '';
+    try {
+      output = instrumentBody(prelude, testCase.body);
+    } catch (error) {
+      failures.push(`threw: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const functionOutput = output.slice(output.indexOf('int f('));
+    for (const problem of writesThroughReadHelper(functionOutput)) failures.push(`writes through a copy: ${problem}`);
+    if (testCase.absent && functionOutput.includes(testCase.absent)) failures.push(`output has ${testCase.absent}`);
+    if (testCase.present && !functionOutput.includes(testCase.present)) failures.push(`output lacks ${testCase.present}`);
+    if (testCase.once) {
+      const code = functionOutput.replace(/"(?:\\.|[^"\\])*"/g, '""');
+      const count = code.split(testCase.once).length - 1;
+      if (count !== 1) failures.push(`${testCase.once} is evaluated ${count} times`);
+    }
+    results.push({ name: `single evaluation, no write through a copy: ${testCase.name}`, failures });
+  }
+  // Reads keep their read events.
+  const reads = instrumentBody(prelude, '    vector<QQ> qs(3);\n    vector<string> names(3);\n    int i = 0;\n    k = qs[i].val + (int)names[i].size();');
+  results.push({
+    name: 'indexed reads stay traced',
+    failures: reads.includes('trace_index_field_read(qs') && reads.includes('trace_index_read(names')
+      ? []
+      : ['an indexed read lost its read event'],
+  });
 }
 
 const failed = results.filter((result) => result.failures.length > 0);
