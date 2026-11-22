@@ -157,7 +157,7 @@ function caseOutcome(side: Side, id: string) {
 }
 
 async function main() {
-  const reportPath = process.env.TRACECODE_PARITY_REPORT;
+  const reportPath = process.env.TRACECODE_PARITY_REPORT ?? '';
   if (!reportPath) throw new Error('Set TRACECODE_PARITY_REPORT to the output JSON path.');
   const requested = csv(process.env.TRACECODE_PARITY_LANGUAGES);
   const languages = (requested.length ? requested : Object.keys(extensions)).map((language) => {
