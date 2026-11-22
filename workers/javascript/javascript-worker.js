@@ -7233,6 +7233,8 @@ async function executeWithTracing(payload) {
         buildScriptExecutionRunner(executableCode, code);
       }
     } catch (untracedBuildError) {
+      // Untraced Submit's route compiled it; only this traced route cannot.
+      if (payload.untracedCompiles === true) return TRACE_UNAVAILABLE_RESULT;
       const untraced = await executeWithTracing({ ...payload, tracingEnabled: false });
       if (!untraced.success) return untraced;
       // The same build works the second time: the first failure was not the program's.
