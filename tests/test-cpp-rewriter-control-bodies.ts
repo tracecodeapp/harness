@@ -571,7 +571,7 @@ const REFUSED: Array<{ name: string; prelude: string; body: string }> = [
   {
     name: 'a multi-statement macro as a braceless body',
     prelude: '#define TWICE(x) x; x',
-    body: '    if (a < t) TWICE(k++); else b += 1;',
+    body: '    if (a < t) TWICE(k++);',
   },
   {
     name: 'a loop-header macro whose braceless body is on the next line',
@@ -658,7 +658,7 @@ for (const accepted of ACCEPTED_MACROS) {
   const refusedSource = programFor({
     name: 'refused',
     prelude: '#define TWICE(x) x; x',
-    body: '    if (a < t) TWICE(k++); else b += 1;',
+    body: '    if (a < t) TWICE(k++);',
     expect: [],
   }).source;
   const opsSource = [
@@ -668,7 +668,7 @@ for (const accepted of ACCEPTED_MACROS) {
     'public:',
     '  Counter() {}',
     '  int bump(int a) {',
-    '    if (a > 0) TWICE(k++); else k--;',
+    '    if (a > 0) TWICE(k++);',
     '    return k;',
     '  }',
     '};',

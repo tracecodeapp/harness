@@ -206,7 +206,7 @@ const PROGRAMS: ParityProgram[] = [
   },
   {
     id: 'refused-multi-statement-macro-body',
-    code: refusedProgram('#define TWICE(x) x; x', '    if (a < t) TWICE(k++); else b += 1;'),
+    code: refusedProgram('#define TWICE(x) x; x', '    if (a < t) TWICE(k++);'),
     functionName: 'solve',
     cases: formsCases([{ name: 'refused', body: '' }]),
     tracedCaseIds: ['form-1-input-1'],
