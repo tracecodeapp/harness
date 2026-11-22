@@ -9167,29 +9167,97 @@ const CPP_VALUE_RETURNING_CONST_METHODS = new Set([
  * range-for, a subscript, a call, a non-const method such as push_back or
  * begin) must keep the learner's own expression.
  */
-function cppIndexedAccessIsPureRead(text, start, end) {
+// Calls whose result aliases, moves or swaps their argument: an indexed
+// argument must be the element itself.
+const CPP_ALIASING_CALLEES = new Set([
+  'move', 'forward', 'swap', 'exchange', 'iter_swap', 'ref', 'tie', 'addressof', 'getline', 'as_const',
+]);
+
+// Whether the expression text[start, end) is written through, or may be, by
+// its immediate context.
+function cppExpressionContextMayWrite(text, start, end) {
   const before = text.slice(0, start).replace(/\s+$/, '');
-  if (/(?:\+\+|--)$/.test(before)) return false;
-  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return false;
+  if (/(?:\+\+|--)$/.test(before)) return true;
+  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return true;
   // A range-for range (`for (auto& c : names[i])`; the header may arrive
   // without its `for (`), but not a ternary's `cond ? x : v[i]`.
-  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return false;
-  if (cppIsReferenceCallArgument(text, start, end)) return false;
+  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
   const next = nextNonWhitespace(text, end);
   const rest = text.slice(next.index, next.index + 3);
-  if (/^(?:\+\+|--|->)/.test(rest)) return false;
-  if (/^(?:[+\-*/%&|^]=|<<=|>>=)/.test(rest)) return false;
-  if (next.ch === '=' && text[next.index + 1] !== '=') return false;
-  if (next.ch === '[' || next.ch === '(') return false;
+  if (/^(?:\+\+|--|->)/.test(rest)) return true;
+  if (/^(?:[+\-*/%&|^]=|<<=|>>=)/.test(rest)) return true;
+  if (next.ch === '=' && text[next.index + 1] !== '=') return true;
+  if (next.ch === '[' || next.ch === '(') return true;
   if (next.ch === '.') {
     const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
-    return Boolean(method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
+    return !(method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
+  }
+  return false;
+}
+
+/**
+ * Whether the indexed access text[start, end) is only read. The read helpers
+ * (trace_index_read, trace_index_field_read) return a copy, so anything that
+ * could write through the access must keep the learner's own expression: an
+ * assignment, ++/--, a reference binding, a range-for, a subscript, a call, a
+ * non-const method such as push_back or begin, an argument at a reference
+ * parameter of a learner function, or any of those applied to an enclosing
+ * parenthesized expression or call that contains the access
+ * (`(a[0]).clear()`, `std::get<0>(rows[i]).clear()`, `std::move(v[i])`).
+ * When unsure, it is a write.
+ */
+function cppIndexedAccessIsPureRead(text, start, end) {
+  if (cppIsReferenceCallArgument(text, start, end)) return false;
+  if (cppExpressionContextMayWrite(text, start, end)) return false;
+  let cursor = start - 1;
+  let depth = 0;
+  for (; cursor >= 0; cursor -= 1) {
+    const ch = text[cursor];
+    if (ch === ')' || ch === ']' || ch === '}') depth += 1;
+    else if (ch === '(' || ch === '[' || ch === '{') {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      // Inside a subscript or a braced list: an index or a value, read.
+      if (ch !== '(') return true;
+      const close = findMatchingParen(text, cursor);
+      if (close < 0) return false;
+      const beforeOpen = text.slice(0, cursor).replace(/\s+$/, '');
+      // A control header's parentheses end the expression.
+      if (/(?:^|[^\w])(?:if|while|for|switch|return|sizeof|decltype)$/.test(beforeOpen)) return true;
+      if (/[\w>]$/.test(beforeOpen)) {
+        // A call: its callee expression (`std::get<0>`, `obj.method`) runs
+        // back over names, `::`, `.`, `->` and template arguments.
+        let calleeStart = beforeOpen.length;
+        while (calleeStart > 0) {
+          const previous = beforeOpen[calleeStart - 1];
+          if (/[\w:.<>\s]/.test(previous) && !(previous === '>' && beforeOpen[calleeStart - 2] === '>')) calleeStart -= 1;
+          else if (previous === '>' && beforeOpen[calleeStart - 2] === '-') calleeStart -= 2;
+          else break;
+        }
+        const name = /([A-Za-z_]\w*)\s*(?:<[^<>()]*>)?$/.exec(beforeOpen.slice(-120))?.[1];
+        // The element helper's argument is the element itself.
+        if (name === '__tracecode_element') return false;
+        // An argument of the tracer's own wrappers (`trace_index_ref(counts,
+        // "counts", text[i] - base, ...)++`, `seen.with_index_source(nums[i],
+        // ...) = i`) is an index or key: a value, read.
+        const calleeText = beforeOpen.slice(calleeStart);
+        if (/\btracecode::/.test(calleeText) || /(?:^|_)with_index_source$/.test(name || '')) return true;
+        if (name && CPP_ALIASING_CALLEES.has(name)) return false;
+        if (cppExpressionContextMayWrite(text, calleeStart, close + 1)) return false;
+      } else if (cppExpressionContextMayWrite(text, cursor, close + 1)) {
+        return false;
+      }
+    } else if (ch === ';' && depth === 0) {
+      return true;
+    }
   }
   return true;
 }
 
 // Argument positions, by callee name, of the learner's functions and lambdas
-// that take a non-const reference (`T&`, `T&&`, `auto&&`). Set for the
+// that take a reference (`T&`, `const T&`, `T&&`, `auto&&`). Set for the
 // duration of one instrumentCppSourceForTracing call.
 let activeCppReferenceParameterCallees = new Map();
 
@@ -9206,7 +9274,9 @@ function collectCppReferenceParameterCallees(signatures) {
     const positions = new Set();
     parameters.forEach((parameter, index) => {
       const type = String(parameter.type || '');
-      if (type.includes('&') && !/^\s*const\b/.test(type) && !/\bconst\s*&/.test(type)) positions.add(index);
+      // Every reference parameter, const included: a copy would change the
+      // argument's identity (`&a == &b`), and copy a whole row per call.
+      if (type.includes('&')) positions.add(index);
     });
     add(signature.name, positions);
     // A recursive lambda called through its own `self` parameter.
@@ -9218,8 +9288,8 @@ function collectCppReferenceParameterCallees(signatures) {
 
 /**
  * Whether text[start, end) is passed directly to a call of a learner function
- * at a position that takes a non-const reference: a copy would not bind, or
- * would be the one the callee changes.
+ * at a position that takes a reference: a copy would not bind, would be the
+ * one the callee changes, or would change the argument's identity.
  */
 function cppIsReferenceCallArgument(text, start, end) {
   if (activeCppReferenceParameterCallees.size === 0) return false;
@@ -9241,7 +9311,7 @@ function cppIsReferenceCallArgument(text, start, end) {
       return Boolean(callee && activeCppReferenceParameterCallees.get(callee)?.has(argumentIndex));
     } else if (ch === ',' && depth === 0) {
       argumentIndex += 1;
-    } else if (ch === ';') {
+    } else if (ch === ';' && depth === 0) {
       return false;
     }
   }
@@ -9285,6 +9355,20 @@ const CPP_ELEMENT_HELPER_SOURCE = [
   '  else return std::forward<__TcElement>(__tc_element);',
   '}',
 ].join('\n');
+
+/**
+ * An indexed argument at a reference parameter: the element itself (through
+ * the element helper for a traced vector's proxy), its index evaluated once,
+ * with the read event the copying read helper would have recorded.
+ */
+function cppReferenceArgumentRead(name, indexExpression, indexSource, lineNumber) {
+  return '([&]() -> decltype(auto) { ' +
+    `auto&& __tc_ref_index = (${indexExpression}); ` +
+    `auto&& __tc_ref_element = __tracecode_element(${name}[__tc_ref_index]); ` +
+    `if (tracecode::trace_event_admissible(true, ${lineNumber})) { ` +
+    `tracecode::emit_serialized_value_event("read", ${lineNumber}, tracecode::target_json_key_with_index_source(${cppStringLiteral(name)}, tracecode::materialize_trace_index(__tc_ref_index), ${indexSource}), tracecode::to_json(__tc_ref_element)); ` +
+    '} return (__tc_ref_element); }())';
+}
 
 // An index expression that may change state or call code when evaluated.
 function cppExpressionMayHaveSideEffects(expression) {
@@ -9425,6 +9509,15 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         }
         const afterNested = nextNonWhitespace(rewritten, secondCloseIndex + 1);
         const twoCharAfterNested = rewritten.slice(afterNested.index, afterNested.index + 2);
+        if (!previousIsAddressOf && cppIsReferenceCallArgument(rewritten, nameIndex, secondCloseIndex + 1)) {
+          // `same(g[0][0], g[0][0])`, `inc(grid[r][c])`: a traced row's
+          // proxy would hand the callee a temporary; pass the element.
+          const outer = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+          const replacement = `__tracecode_element(${name}[${outer}])${rewritten.slice(secondBracketIndex, secondCloseIndex + 1)}`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(secondCloseIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         if (
           previousIsAddressOf ||
           !cppIndexedAccessIsPureRead(rewritten, nameIndex, secondCloseIndex + 1) ||
@@ -9462,6 +9555,19 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
         !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)
       ) {
+        if (
+          twoCharNext !== '->' &&
+          cppIsReferenceCallArgument(rewritten, nameIndex, closeIndex + 1) &&
+          !/\bvector\s*<\s*bool\s*>/.test(normalizeCppType(variables.get(name)?.type || '', aliases))
+        ) {
+          // `rowSum(grid[i])`, `same(a[0], a[0])` with reference parameters:
+          // the callee gets the element itself (identity kept, no row copy),
+          // and the read is recorded beside it.
+          const replacement = cppReferenceArgumentRead(name, indexExpression, indexSource, lineNumber);
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         if (twoCharNext !== '->' && cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
           // `QQ& r = qs[i]`, `for (char& c : names[i])`, `bump(rows[i])`.
           const replacement = `__tracecode_element(${name}[${indexExpression}])`;
@@ -10003,14 +10109,14 @@ function isAssociativeCppType(type, aliases = new Map()) {
   return isMapCppType(type, aliases) || isUnorderedMapCppType(type, aliases) || isSetLikeCppType(type, aliases);
 }
 
-function cppValueTypeTempInitialization(containerName, tempName, argumentSource) {
-  const trimmedArgument = argumentSource.trim();
-  const initializer = trimmedArgument.startsWith('{') ? trimmedArgument : `(${trimmedArgument})`;
-  return `std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${initializer};`;
-}
-
+/**
+ * The argument of push_back/insert, evaluated once and passed on with its
+ * own value category (`v.push_back(std::move(s))` still moves, with no extra
+ * construction). Its JSON is taken before the call, which may move from it.
+ */
 function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '') {
   const trimmedArgument = argumentSource.trim();
+  const jsonName = `${tempName}_json`;
   if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
     const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: true })
       .map((arg) => arg.trim())
@@ -10019,16 +10125,30 @@ function buildMutationArgumentCapture(containerName, tempName, argumentSource, i
       const valueNames = aggregateArgs.map((_, index) => `${tempName}_field_${index}`);
       return {
         initLines: [
-          ...aggregateArgs.map((arg, index) => `${indent}  auto ${valueNames[index]} = ${arg};`),
-          `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = {${valueNames.join(', ')}};`,
+          ...aggregateArgs.map((arg, index) => `${indent}  auto&& ${valueNames[index]} = (${arg});`),
+          `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? std::string("[") + tracecode::mutation_args_json(${valueNames.join(', ')}) + "]" : std::string();`,
+          `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = {${valueNames.map((value) => `std::forward<decltype(${value})>(${value})`).join(', ')}};`,
         ],
-        argsJsonExpression: `std::string("[") + tracecode::mutation_args_json(${valueNames.join(', ')}) + "]"`,
+        callArgument: `std::move(${tempName})`,
+        argsJsonExpression: jsonName,
       };
     }
+    return {
+      initLines: [
+        `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${trimmedArgument};`,
+        `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? tracecode::mutation_args_json(${tempName}) : std::string();`,
+      ],
+      callArgument: `std::move(${tempName})`,
+      argsJsonExpression: jsonName,
+    };
   }
   return {
-    initLines: [`${indent}  ${cppValueTypeTempInitialization(containerName, tempName, argumentSource)}`],
-    argsJsonExpression: `tracecode::mutation_args_json(${tempName})`,
+    initLines: [
+      `${indent}  auto&& ${tempName} = (${trimmedArgument});`,
+      `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? tracecode::mutation_args_json(${tempName}) : std::string();`,
+    ],
+    callArgument: `std::forward<decltype(${tempName})>(${tempName})`,
+    argsJsonExpression: jsonName,
   };
 }
 
@@ -10046,12 +10166,14 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     if (variable && (isStdArrayCppType(variable.type, aliases) || shouldEmitPlainContainerMutation(variable, name, aliases, source))) {
       const args = splitTopLevelCommaList(argsSource).filter((arg) => arg.trim());
       if (args.length !== 1) return line;
-      // The argument is evaluated once, into the value fill copies anyway
-      // (`ar.fill(i++)` must advance i once).
+      // The argument is evaluated once (`ar.fill(i++)` advances i once) and
+      // bound as fill's own `const value_type&` parameter would bind it: no
+      // construction, no move (`ar.fill(std::move(seed))` leaves seed intact).
       const tempName = `__tc_fill_value_${lineNumber}_${name}`;
+      const fillArgument = args[0].trim().startsWith('{') ? args[0].trim() : `(${args[0].trim()})`;
       return [
         `${indent}{`,
-        `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
+        `${indent}  const std::decay_t<decltype(${name})>::value_type& ${tempName} = ${fillArgument};`,
         `${indent}  ${name}.fill(${tempName});`,
         `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${tempName}));`,
         `${indent}}`,
@@ -10098,7 +10220,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         const rewritten = [
           `${indent}{`,
           ...capture.initLines,
-          `${indent}  this->${name}.${method}(${tempName});`,
+          `${indent}  this->${name}.${method}(${capture.callArgument});`,
           `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isAssociativeInsert) {
@@ -10141,7 +10263,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         const rewritten = [
           `${indent}{`,
           ...capture.initLines,
-          `${indent}  ${name}.${method}(${tempName});`,
+          `${indent}  ${name}.${method}(${capture.callArgument});`,
           `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isAssociativeInsert) {
@@ -10790,6 +10912,9 @@ class CppTraceUnsupportedError extends Error {
     this.name = 'CppTraceUnsupportedError';
     this.code = CPP_TRACE_UNAVAILABLE_CODE;
     if (details.compilerOutput) this.compilerOutput = details.compilerOutput;
+    // The untraced build was already compiled and compiles: no need to check
+    // it again.
+    if (details.untracedCompiles) this.untracedCompiles = true;
   }
 }
 
@@ -10805,6 +10930,7 @@ function isCppCompileStageFailure(result) {
  * compiler's output for diagnosis.
  */
 function cppTracedCompileFailureRefusal(tracedResult) {
+  // Only built after the untraced build was compiled and compiled cleanly.
   const compilerOutput = String(tracedResult?.error || '')
     .split('\n')
     .slice(0, 12)
@@ -10814,7 +10940,7 @@ function cppTracedCompileFailureRefusal(tracedResult) {
     'C++ tracing cannot instrument this program: its traced build did not compile, though the program ' +
       'compiles without tracing (a Harness tracer defect, not an error in the program). Run it without tracing.' +
       (compilerOutput ? ` Compiler output for the traced build: ${compilerOutput}` : ''),
-    { compilerOutput }
+    { compilerOutput, untracedCompiles: true }
   );
 }
 
@@ -11045,26 +11171,28 @@ function collectCppUserMacros(tokens) {
   const macros = new Map();
   for (const token of tokens) {
     if (token.kind !== 'pp') continue;
-    const directive = token.text.replace(/\\\r?\n/g, ' ');
-    const define = /^#\s*define\s+([A-Za-z_]\w*)(\()?/.exec(directive);
-    if (!define) continue;
-    let replacement = directive.slice(define[0].length);
-    const functionLike = Boolean(define[2]);
+    // Read the directive as tokens, so a comment anywhere in it is
+    // whitespace (`#/**/define TWICE(x) x; x`, `#define F/**/(x)` is
+    // object-like), as the preprocessor reads it.
+    const directiveTokens = tokenizeCppForControlNormalization(token.text.slice(1), { preprocessor: false })
+      .filter((entry) => entry.kind !== 'comment');
+    if (directiveTokens[0]?.text !== 'define' || directiveTokens[1]?.kind !== 'ident') continue;
+    const define = [null, directiveTokens[1].text];
+    const functionLike = directiveTokens[2]?.text === '(' && directiveTokens[2].start === directiveTokens[1].end;
     const params = new Set();
+    let replacementStart = 2;
     if (functionLike) {
-      const close = replacement.indexOf(')');
+      const close = directiveTokens.findIndex((entry, index) => index > 2 && entry.text === ')');
       if (close < 0) {
         const previous = macros.get(define[1]);
         const definition = { functionLike, unknown: true };
         macros.set(define[1], previous ? { definitions: [...(previous.definitions || [previous]), definition] } : definition);
         continue;
       }
-      for (const param of replacement.slice(0, close).split(',')) params.add(param.trim());
-      replacement = replacement.slice(close + 1);
+      for (const param of directiveTokens.slice(3, close)) if (param.kind === 'ident') params.add(param.text);
+      replacementStart = close + 1;
     }
-    replacement = replacement.trim();
-    const replacementTokens = tokenizeCppForControlNormalization(replacement, { preprocessor: false })
-      .filter((entry) => entry.kind !== 'comment');
+    const replacementTokens = directiveTokens.slice(replacementStart);
     const own = { unbalanced: false, splits: false, opensIf: false, hasElse: false, header: false, jump: false, paste: false };
     let depth = 0;
     for (const entry of replacementTokens) {
@@ -16811,7 +16939,7 @@ async function handleInit(payload) {
  * is the tracer's), otherwise the untraced compile failure: the learner's own
  * error, in the learner's lines.
  */
-async function compileUntracedProgram({ source, functionName, executionStyle, scriptRequest, timings = {} }) {
+async function compileUntracedProgram({ source, functionName, executionStyle, scriptRequest, inputBatch = [{}], timings = {} }) {
   const driverStartedAt = now();
   let untracedDriverSource;
   try {
@@ -16819,7 +16947,8 @@ async function compileUntracedProgram({ source, functionName, executionStyle, sc
       ? buildPreparedOpsClassDriverSource(source, functionName, { executionStyle, tracing: false })
       : scriptRequest
       ? buildScriptDriverSource(source, { executionStyle, tracing: false })
-      : buildBatchDriverSource(source, functionName, [{}], { executionStyle, tracing: false });
+      // The traced request's own inputs: they choose the overload it binds.
+      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle, tracing: false });
   } catch (error) {
     return {
       success: false,
@@ -17653,7 +17782,7 @@ async function handleExecuteTraceBatch(payload) {
     // the client to report, never the learner's compile error, unless the
     // program does not compile at all.
     if (isCppTraceUnsupportedError(error)) {
-      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false });
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false, inputBatch });
       if (!untracedCompile) throw error;
       return failedBatchResult(untracedCompile.error);
     }
@@ -17672,7 +17801,7 @@ async function handleExecuteTraceBatch(payload) {
 
   if (!Array.isArray(result?.results) && isCppCompileStageFailure(result)) {
     // Compile safety net (see handlePrepareRuntimeProgram).
-    const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false });
+    const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false, inputBatch });
     if (!untracedCompile) throw cppTracedCompileFailureRefusal(result);
     Object.assign(result, {
       error: untracedCompile.error,
@@ -17769,6 +17898,7 @@ async function handleExecuteWithTracing(payload) {
     functionName,
     executionStyle: payload?.executionStyle || 'solution-method',
     scriptRequest: payload?.executionStyle === 'function' && !functionName.trim(),
+    inputBatch: [payload?.inputs || {}],
   };
   try {
     let result = await compileAndRun(source, functionName, payload?.inputs || {}, {
@@ -17802,14 +17932,28 @@ async function handleExecuteWithTracing(payload) {
     // Tracing refused (it would change the program): a provider failure for
     // the client to report, never the learner's compile error, unless the
     // program does not compile at all.
-    let failure = error;
     if (isCppTraceUnsupportedError(error)) {
+      if (error.untracedCompiles) throw error;
       const untracedCompile = await compileUntracedProgram(traceRequestShape);
       if (!untracedCompile) throw error;
-      failure = new Error(untracedCompile.error);
+      // The program does not compile: the learner's own untraced compile
+      // error is the result, not the tracer's refusal.
+      const learnerTrace = finalizeRuntimeTrace([
+        { kind: 'exception', line: untracedCompile.errorLine || 1, message: untracedCompile.error || 'C++ compilation failed.' },
+      ]).trace;
+      return {
+        ...untracedCompile,
+        success: false,
+        output: null,
+        trace: learnerTrace,
+        executionTimeMs: 0,
+        consoleOutput: untracedCompile.consoleOutput || [],
+        lineEventCount: learnerTrace.lineEventCount,
+        traceStepCount: learnerTrace.traceStepCount,
+      };
     }
     const trace = finalizeRuntimeTrace([
-      { kind: 'exception', line: 1, message: failure instanceof Error ? failure.message : String(failure) },
+      { kind: 'exception', line: 1, message: error instanceof Error ? error.message : String(error) },
     ]).trace;
     return {
       success: false,
