@@ -9208,14 +9208,37 @@ const CPP_ALIASING_CALLEES = new Set([
   'move', 'forward', 'swap', 'exchange', 'iter_swap', 'ref', 'tie', 'addressof', 'getline', 'as_const',
 ]);
 
+// Whether before (text up to an initializer: `... = `, `... {`, `... (`)
+// declares a reference to const (`const auto& x = `, `T const& x{`,
+// `const auto& [a, b] = `): the read helpers' const reference binds it to the
+// element itself, so the access is a read.
+function cppIsConstReferenceDeclaration(before) {
+  let text = String(before).replace(/\s*[={(]\s*$/, '');
+  for (let previous = ''; previous !== text;) {
+    previous = text;
+    text = text.replace(/<[^<>;{}()]*>/g, '<>');
+  }
+  const declaration = (/(?:^|[;{}(,])([^;{}(,]*)$/.exec(text)?.[1] || '').trim();
+  const match = /^([\s\S]*?)&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])$/.exec(declaration);
+  if (!match) return false;
+  const type = match[1];
+  return /\bconst\b/.test(type) && !/[*&]/.test(type);
+}
+
 // Whether the expression text[start, end) is written through, or may be, by
 // its immediate context.
 function cppExpressionContextMayWrite(text, start, end, { constMethodsSafe = false } = {}) {
   const before = text.slice(0, start).replace(/\s+$/, '');
   if (/(?:\+\+|--)$/.test(before)) return true;
-  // A reference initialized by the expression (`T& x = e`, `const T& x{e}`,
-  // `auto& x(e)`, `auto& [p, q] = e`) must bind the element itself.
-  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
+  // A reference initialized by the expression (`T& x = e`, `auto& x(e)`,
+  // `auto& [p, q] = e`) must bind the element itself; a reference to const
+  // binds it through the read helper.
+  if (
+    (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) &&
+    !cppIsConstReferenceDeclaration(before)
+  ) {
+    return true;
+  }
   // A range-for range (`for (auto& c : names[i])`; the header may arrive
   // without its `for (`), but not a ternary's `cond ? x : v[i]`.
   if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
@@ -9259,9 +9282,12 @@ function cppIndexedAccessIsPureRead(text, start, end, elementType = '') {
         depth -= 1;
         continue;
       }
-      // The braces or parentheses initialize a reference (`const int&
-      // first{a[0]}`, `auto& r((v[i]))`): the element itself.
-      if (ch !== '[' && CPP_REFERENCE_DECLARATION_OPEN.test(text.slice(0, cursor + 1))) return false;
+      // The braces or parentheses initialize a reference (`int&
+      // first{a[0]}`, `auto& r((v[i]))`): the element itself; a reference to
+      // const binds it through the read helper.
+      if (ch !== '[' && CPP_REFERENCE_DECLARATION_OPEN.test(text.slice(0, cursor + 1))) {
+        return cppIsConstReferenceDeclaration(text.slice(0, cursor + 1));
+      }
       // Inside a subscript or a braced list: an index or a value, read.
       if (ch !== '(') return true;
       const close = findMatchingParen(text, cursor);
@@ -9410,7 +9436,8 @@ function cppIsArrayDeclarator(text, nameIndex) {
   const prefix = text.slice(0, nameIndex);
   const statementStart = Math.max(prefix.lastIndexOf(';'), prefix.lastIndexOf('{'), prefix.lastIndexOf('}')) + 1;
   const segment = prefix.slice(statementStart);
-  if (!/[\w>*&]\s*$/.test(segment) || CPP_EXPRESSION_KEYWORD_START.test(segment)) return false;
+  // Only a type may precede the declarator: no `=`, parentheses or operators.
+  if (!/^[\s\w:<>,*&]*[\w>*&]\s*$/.test(segment) || CPP_EXPRESSION_KEYWORD_START.test(segment)) return false;
   return isCppDeclarationCondition(`${segment} __tc_name{`);
 }
 

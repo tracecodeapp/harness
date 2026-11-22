@@ -1016,8 +1016,11 @@ for (const accepted of ACCEPTED_MACROS) {
     // push_back arguments.
     {
       name: 'a reference initialized with braces or parentheses binds the element',
+      // A reference to const binds the read helper's const reference to the
+      // element (round 6); a non-const one binds the element directly.
       body: '    array<int, 3> ar{};\n    const int& first{ar[0]};\n    const auto& second(ar[1]);\n    vector<pair<int, int>> ps(2);\n    auto& [p, q]{ps[0]};',
-      absent: 'trace_index_read(',
+      present: 'const int& first{tracecode::trace_index_read(ar, "ar", 0',
+      absent: 'trace_index_read(ps',
     },
     {
       name: 'capacity of an element is not read from a copy',
@@ -1050,7 +1053,8 @@ for (const accepted of ACCEPTED_MACROS) {
     {
       name: 'a reference declared with a multi-word type binds the element',
       body: '    vector<long long> big(2);\n    const long long& first{big[0]};\n    long long const& second(big[1]);\n    vector<unsigned long long> big2(1);\n    unsigned long long& third{big2[0]};',
-      absent: 'trace_index_read(big',
+      present: 'const long long& first{tracecode::trace_index_read(big, "big", 0',
+      absent: 'trace_index_read(big2',
     },
     {
       name: 'an element in braces at a reference parameter is the element',
