@@ -7469,6 +7469,9 @@ var init_ses_algorithm_worker = __esm({
                   true
                 );
               } catch (error) {
+                if (!isLearnerEngineSyntaxError(error) && !(error instanceof SourceNormalizationInvariantError)) {
+                  throw error;
+                }
                 fail(request.id, error, "trace-compile");
                 return;
               }
