@@ -100,7 +100,7 @@ function matchBrackets(tokens: readonly Token[], lenient = false): number[] {
 
 const squash = (text: string) => text.replace(/\s+/g, '');
 const isControlLabel = (label: string) =>
-  /^(?:elseif|if|else|for|while|do|switch)(?!\w)/.test(label) && !label.includes('tracecode');
+  /^(?:elseifconstexpr|ifconstexpr|elseif|if|else|for|while|do|switch)(?!\w)/.test(label) && !label.includes('tracecode');
 
 // The control headers that open each block enclosing `offset`, outermost
 // first, as written before the block's `{` (`if (c)`, `else if (c)`, `else`,
@@ -140,6 +140,9 @@ function bracelessBodies(source: string): string[] {
     }
     if (token.text === 'do') {
       if (next !== '{') problems.push(`do followed by ${next}`);
+      else if (tokens[match[index + 1] + 1]?.text !== 'while') {
+        problems.push(`do block not followed by its while (by ${tokens[match[index + 1] + 1]?.text})`);
+      }
       return;
     }
     if (!['if', 'for', 'while', 'switch'].includes(token.text)) return;
@@ -456,6 +459,26 @@ const FORMS: Form[] = [
       { needle: 'k += 53;', path: [] },
     ],
   },
+  // Review finding 6: the tail on the line after the closing brace.
+  {
+    name: 'do-while with `while` on the line after `}`',
+    body: ['    do {', '      k += 1;', '    }', '    while (k < t);', '    b += 61;'].join('\n'),
+    expect: [
+      { needle: 'k += 1;', path: ['do'], traced: true },
+      { needle: 'b += 61;', path: [] },
+    ],
+  },
+  // Review finding 7: `else if constexpr` with a braceless body, then `else`.
+  {
+    name: 'else if constexpr with braceless bodies',
+    body: ['    if (a < t) k = 71;', '    else if constexpr (sizeof(int) == 4) k = 72;', '    else k = 73;'].join('\n'),
+    js: false,
+    expect: [
+      { needle: 'k = 71;', path: ['if (a < t)'], traced: true },
+      { needle: 'k = 72;', path: ['else if constexpr (sizeof(int) == 4)'], traced: true },
+      { needle: 'k = 73;', path: ['else'], traced: true },
+    ],
+  },
 ];
 
 const JS_INPUTS: Array<[number, number, number]> = [];
@@ -583,9 +606,65 @@ const REFUSED: Array<{ name: string; prelude: string; body: string }> = [
     prelude: '',
     body: ['    if (a < t)', '#ifdef NEVER_DEFINED', '      a += 1;', '#else', '      b += 1;', '#endif'].join('\n'),
   },
+  // Review findings: the forms below are rare and hard to instrument exactly.
+  {
+    name: 'an attributed block as a braceless body (finding 1)',
+    prelude: '',
+    body: ['    if (a == 99)', '      [[likely]] { ++k; }', '    k += 2;'].join('\n'),
+  },
+  {
+    name: 'a multi-statement macro reached through an alias (finding 2)',
+    prelude: '#define TWICE(x) x; x\n#define APPLY(x) TWICE(x)',
+    body: '    if (a < t) APPLY(++k);',
+  },
+  {
+    name: 'a multi-statement macro passed as a macro argument (finding 2)',
+    prelude: '#define TWICE(x) x; x\n#define CALL(f, x) f(x)',
+    body: '    if (a < t) CALL(TWICE, ++k);',
+  },
+  {
+    name: 'an object-like macro naming a multi-statement macro (finding 2)',
+    prelude: '#define TWICE(x) x; x\n#define T2 TWICE',
+    body: '    if (a < t) T2(++k);',
+  },
+  {
+    name: 'a line comment continued by a trailing backslash (finding 3)',
+    prelude: '',
+    body: ['    if (a < t) k = 1; // note \\', '    k = 5;'].join('\n'),
+  },
+  {
+    name: 'a raw string literal spanning lines (finding 4)',
+    prelude: '',
+    body: ['    s = R"(a', 'b)";'].join('\n'),
+  },
+  {
+    name: 'a #line directive in the learner source (finding 5)',
+    prelude: '',
+    body: ['#line 700', '    k = __LINE__;'].join('\n'),
+  },
+  {
+    name: '__func__ (lambda wrapping would rename the function)',
+    prelude: '',
+    body: '    s = __func__;',
+  },
+  {
+    name: 'a braceless switch body (finding 8)',
+    prelude: '',
+    body: ['    switch (t)', '      case 1: k = 7;'].join('\n'),
+  },
+  {
+    name: 'macros that hide braces',
+    prelude: '#define BEGIN {\n#define END }',
+    body: '    if (a < t) BEGIN k = 1; END',
+  },
+  {
+    name: 'a control statement the tracer cannot delimit (safety net)',
+    prelude: '#define REP(i, n) for (int i = 0; i < (n); i++)',
+    body: '    if (a < t) REP(i, 2) if (i) k += i;',
+  },
 ];
 
-const ACCEPTED_MACROS: Array<{ name: string; prelude: string; body: string; keeps: string }> = [
+const ACCEPTED_MACROS: Array<{ name: string; prelude: string; body: string; keeps: string; anywhere?: boolean }> = [
   {
     name: 'a loop-header macro with its body on the same line',
     prelude: '#define REP(i, n) for (int i = 0; i < (n); i++)',
@@ -603,6 +682,19 @@ const ACCEPTED_MACROS: Array<{ name: string; prelude: string; body: string; keep
     prelude: '#define TWICE(x) x; x',
     body: '    TWICE(k++);',
     keeps: 'TWICE(k++);',
+  },
+  {
+    name: 'an expression macro reached through an alias as a braceless body',
+    prelude: '#define INC(x) ((x) += 1)\n#define BUMP2(x) INC(x)',
+    body: '    if (a < t) BUMP2(k);',
+    keeps: ' BUMP2(k); ',
+    anywhere: true,
+  },
+  {
+    name: '__LINE__ (the same learner line in both builds)',
+    prelude: '',
+    body: '    k = __LINE__;',
+    keeps: 'k = __LINE__;',
   },
 ];
 
@@ -625,7 +717,10 @@ for (const accepted of ACCEPTED_MACROS) {
   const failures: string[] = [];
   try {
     const output = instrumentBody(accepted.prelude, accepted.body);
-    if (!output.split('\n').some((line) => line.trim() === accepted.keeps)) failures.push(`output lost "${accepted.keeps}" as one line`);
+    const kept = accepted.anywhere
+      ? output.includes(accepted.keeps)
+      : output.split('\n').some((line) => line.trim() === accepted.keeps);
+    if (!kept) failures.push(`output lost "${accepted.keeps}"`);
   } catch (error) {
     failures.push(`threw: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -644,9 +739,20 @@ for (const accepted of ACCEPTED_MACROS) {
     '    while (int* p = nullptr) {',
     '      k += *p;',
     '    }',
+    // Review finding 9: declarations with multi-word types, and a `for`
+    // condition that declares.
+    '    if (unsigned long n = a + 1) k += 1;',
+    '    if (unsigned long long u = b) { k += 2; }',
+    '    if (long double d = 0.5L * t) k += 3;',
+    '    if (const auto& r = a) k += 4;',
+    '    if (std::size_t z = t) k += 5;',
+    '    if (std::string::size_type q = s.size()) k += 6;',
+    '    if (int* p = &k) *p += 7;',
+    '    for (int i = 0; int j = 2 - i; ++i) k += j;',
   ].join('\n'));
   if (!output.includes('if (int m = a + b; tracecode::with_trace_line(')) failures.push('init-statement not kept before the traced condition');
-  if (/static_cast<bool>\((?:int|auto)\b/.test(output)) failures.push('a declaration was wrapped as an expression');
+  const wrappedDeclaration = /static_cast<bool>\((?:int|auto|unsigned|long|const|std::)\b[^)]*?=/.exec(output);
+  if (wrappedDeclaration) failures.push(`a declaration was wrapped as an expression: ${wrappedDeclaration[0]}`);
   results.push({ name: 'condition wrapping: if-init statement and declaration condition', failures });
 }
 

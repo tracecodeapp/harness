@@ -116,6 +116,29 @@ const COMPILE_FORMS: ParityForm[] = [
     name: 'one-line braceless if, for and while (unchanged forms)',
     body: ['    if (a < t) a += 41;', '    for (k = 0; k < 2; k++) b += 42;', '    while (k < 5) k += 1;'].join('\n'),
   },
+  // Review findings 6, 7, 9, and __LINE__ (the same learner line in both builds).
+  {
+    name: 'do-while with `while` on the line after `}`',
+    body: ['    do {', '      k += 1;', '    }', '    while (k < t);', '    b += 61;'].join('\n'),
+  },
+  {
+    name: 'else if constexpr with braceless bodies',
+    body: ['    if (a < t) k = 71;', '    else if constexpr (sizeof(int) == 4) k = 72;', '    else k = 73;'].join('\n'),
+  },
+  {
+    name: 'conditions that declare variables with multi-word types',
+    body: [
+      '    if (unsigned long n = a + 1) k += (int)n;',
+      '    if (unsigned long long u = b + 1) { k += 2 * (int)u; }',
+      '    if (long double d = 0.5L * t) k += 3;',
+      '    if (const auto& r = a) k += 4 * r;',
+      '    if (std::size_t z = t) k += 5 * (int)z;',
+      '    if (std::string::size_type q = s.size()) k += 6;',
+      '    if (int* p = &k) *p += 7;',
+      '    for (int i = 0; int j = 2 - i; ++i) k += j;',
+    ].join('\n'),
+  },
+  { name: '__LINE__', body: ['    k = __LINE__ % 1000;', '    if (a < t) k += __LINE__ % 100; else k -= __LINE__ % 10;'].join('\n') },
 ];
 
 const SILENT_FORMS: ParityForm[] = [
@@ -169,6 +192,23 @@ const REPRO_CASES: Array<{ nums: number[]; target: number; expected: number }> =
   { nums: [1, 3, 5, 7, 9, 11, 13], target: 1, expected: 0 },
 ];
 
+// [id, prelude, body]: programs the tracer refuses (rare forms it cannot
+// instrument without changing them); each is valid C++ that runs untraced.
+const REFUSED_PROGRAMS: Array<[string, string, string]> = [
+  ['multi-statement-macro-body', '#define TWICE(x) x; x', '    if (a < t) TWICE(k++);'],
+  ['loop-macro-body-on-next-line', '#define REP(i, n) for (int i = 0; i < (n); i++)', '    REP(i, 3)\n      k += i;'],
+  ['attributed-block-body', '', ['    if (a == 99)', '      [[likely]] { ++k; }', '    k += 2;'].join('\n')],
+  ['multi-statement-macro-alias', '#define TWICE(x) x; x\n#define APPLY(x) TWICE(x)', '    if (a < t) APPLY(++k);'],
+  ['multi-statement-macro-as-argument', '#define TWICE(x) x; x\n#define CALL(f, x) f(x)', '    if (a < t) CALL(TWICE, ++k);'],
+  ['line-comment-continued-by-backslash', '', ['    if (a < t) k = 1; // note \\', '    k = 5;'].join('\n')],
+  ['multiline-raw-string', '', ['    s = R"(a', 'b)";'].join('\n')],
+  ['learner-line-directive', '', ['#line 700', '    k = __LINE__;'].join('\n')],
+  ['function-name', '', '    s = __func__;'],
+  ['braceless-switch', '', ['    switch (t)', '      case 1: k = 7;'].join('\n')],
+  ['macros-hiding-braces', '#define BEGIN {\n#define END }', '    if (a < t) BEGIN k = 1; END'],
+  ['undelimited-control-statement', '#define REP(i, n) for (int i = 0; i < (n); i++)', '    if (a < t) REP(i, 2) if (i) k += i;'],
+];
+
 function refusedProgram(prelude: string, body: string): string {
   return formsProgram([{ name: 'refused', body }]).replace('class Solution {', `${prelude}\nclass Solution {`);
 }
@@ -211,11 +251,20 @@ const PROGRAMS: ParityProgram[] = [
     cases: formsCases([{ name: 'refused', body: '' }]),
     tracedCaseIds: ['form-1-input-1'],
   },
-  {
-    id: 'refused-loop-macro-body-on-next-line',
-    code: refusedProgram('#define REP(i, n) for (int i = 0; i < (n); i++)', '    REP(i, 3)\n      k += i;'),
+  ...REFUSED_PROGRAMS.map(([id, prelude, body]) => ({
+    id: `refused-${id}`,
+    code: refusedProgram(prelude, body),
     functionName: 'solve',
     cases: formsCases([{ name: 'refused', body: '' }]),
+    tracedCaseIds: ['form-1-input-1'],
+  })),
+  // A refused program that does not compile: the traced Run reports the
+  // learner's compile error, as the untraced evaluation does, not a refusal.
+  {
+    id: 'invalid-refused-program',
+    code: refusedProgram('#define TWICE(x) x; x', '    if (a < t) TWICE(k++); else b += 1;'),
+    functionName: 'solve',
+    cases: formsCases([{ name: 'invalid', body: '' }]),
     tracedCaseIds: ['form-1-input-1'],
   },
 ];
@@ -387,6 +436,19 @@ async function main(): Promise<void> {
         if (!refusalText.test(reported)) problems.push(`traced Run was not refused: ${describeRun(traced)} ${reported.slice(0, 400)}`);
         if (/"origin":"program"/.test(reported)) problems.push(`the refusal was reported as the learner's failure: ${reported.slice(0, 400)}`);
         console.log(`${problems.length ? 'FAIL' : 'ok  '} ${program.id}: traced ${describeRun(traced)}${traced.error ? '' : ` ${reported.slice(0, 200)}`}`);
+        failures.push(...problems.map((problem) => `${program.id}: ${problem}`));
+        continue;
+      }
+      if (program.id.startsWith('invalid-')) {
+        // Both builds report the learner's compile error, on the same line.
+        const problems: string[] = [];
+        const untraced = sample.untraced.compileFailure as { origin?: string; stage?: string; line?: number } | undefined;
+        const traced = sample.traced.compileFailure as { origin?: string; stage?: string; line?: number } | undefined;
+        if (untraced?.origin !== 'program') problems.push(`untraced evaluation: ${describeRun(sample.untraced)}`);
+        if (traced?.origin !== 'program' || traced?.stage !== untraced?.stage || traced?.line !== untraced?.line) {
+          problems.push(`traced Run: ${describeRun(sample.traced)}`);
+        }
+        console.log(`${problems.length ? 'FAIL' : 'ok  '} ${program.id}: traced ${describeRun(sample.traced).slice(0, 200)}`);
         failures.push(...problems.map((problem) => `${program.id}: ${problem}`));
         continue;
       }
