@@ -2890,3 +2890,33 @@ test('only the Judge\'s own trace truncation warning restores traceTruncated', a
     assert.equal('traceTruncated' in outcome, false, `${label}: an unrelated warning is not a trace budget`);
   }
 });
+
+test('traceLimitReason is a trace-only field with one rule at every entry point', () => {
+  const trace = createEmptyRuntimeTrace('python', { runId: 'python:run' });
+  // Untraced replies ignore it, as before it existed: even a value outside the
+  // closed set does not make a previously accepted reply malformed.
+  const untraced = liftCodeOutcome({
+    success: false, error: 'stopped', timeoutReason: 'line-limit', traceLimitReason: 'banana', consoleOutput: [],
+  } as unknown as Parameters<typeof liftCodeOutcome>[0]);
+  assert.equal(untraced.kind, 'limit');
+  assert.equal('traceTruncated' in untraced, false);
+  // Trace replies: an unknown value is malformed on every outcome kind ...
+  for (const raw of [
+    { success: true, output: 1, traceLimitReason: 'banana', consoleOutput: [] },
+    { success: false, error: 'x', timeoutReason: 'line-limit', traceLimitReason: 'banana', consoleOutput: [] },
+    { success: false, error: 'x', diagnosticStage: 'runtime', traceLimitReason: 'banana', consoleOutput: [] },
+  ]) {
+    assert.throws(
+      () => liftTraceOutcome(raw as unknown as Parameters<typeof liftTraceOutcome>[0], trace),
+      (error: unknown) => isRuntimeProviderError(error) && /unknown traceLimitReason/.test((error as Error).message)
+    );
+  }
+  // ... and a known one is the budget on every outcome kind, with or without
+  // traceLimitExceeded.
+  const completed = liftTraceOutcome({ success: true, output: 1, traceLimitReason: 'trace-byte-limit', consoleOutput: [] }, trace);
+  assert.equal(completed.kind === 'completed' ? completed.traceTruncated : undefined, 'trace-byte-limit');
+  const stopped = liftTraceOutcome({
+    success: false, error: 'x', timeoutReason: 'line-limit', traceLimitReason: 'trace-byte-limit', consoleOutput: [],
+  }, trace);
+  assert.equal(stopped.traceTruncated, 'trace-byte-limit');
+});

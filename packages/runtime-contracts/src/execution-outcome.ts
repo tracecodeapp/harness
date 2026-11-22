@@ -190,7 +190,6 @@ function checkedTraceLimitReason(
  */
 function assertClassificationFields(raw: RawExecutionPayload, fallbackError: string): void {
   checkedLimitReason(raw, fallbackError);
-  checkedTraceLimitReason(raw, fallbackError);
   const stage: unknown = raw.diagnosticStage;
   if (stage !== undefined && stage !== null && stage !== '' && !isExecutionDiagnosticStage(stage)) {
     throw malformedClassification('diagnosticStage', stage, fallbackError);
@@ -237,7 +236,10 @@ export interface RawExecutionPayload {
   /**
    * The trace budget that stopped recording, when the reply's own
    * `timeoutReason` may name something else (the limit that then stopped the
-   * program). Optional; trace replies only.
+   * program). Optional and trace-only: `liftTraceOutcome` checks it against
+   * the closed set and reports it as `traceTruncated` on every outcome kind
+   * (its presence alone means the recording was truncated);
+   * `liftCodeOutcome` ignores it.
    */
   traceLimitReason?: ExecutionLimitReason;
   executionTimeMs?: number;
@@ -310,9 +312,9 @@ export function liftTraceOutcome(
   fallbackError = 'Tracing failed'
 ): ExecutionResult {
   assertClassificationFields(raw, fallbackError);
+  const traceLimitReason = checkedTraceLimitReason(raw, fallbackError);
   const consoleOutput = raw.consoleOutput ?? [];
   const executionTimeMs = raw.executionTimeMs ?? 0;
-  const traceLimitReason = checkedTraceLimitReason(raw, fallbackError);
   if (raw.success) {
     return {
       kind: 'completed',
@@ -320,7 +322,7 @@ export function liftTraceOutcome(
       trace,
       executionTimeMs,
       consoleOutput,
-      ...(raw.traceLimitExceeded
+      ...(traceLimitReason || raw.traceLimitExceeded
         ? {
             traceTruncated:
               traceLimitReason ?? checkedLimitReason(raw, fallbackError) ?? 'trace-limit',

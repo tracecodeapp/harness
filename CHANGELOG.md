@@ -13,6 +13,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   ExecutionLimitReason` (optional, additive) is now also on the `failed` and
   `limit` variants of the trace `ExecutionResult`. `liftTraceOutcome` maps it
   from a reply's `traceLimitReason` on every outcome kind (Python sends it).
+  `traceLimitReason` is trace-only: `liftTraceOutcome` rejects a value
+  outside the closed limit set and treats a named budget as truncation even
+  without `traceLimitExceeded`; `liftCodeOutcome` ignores the field.
   Judge keeps it as a warning diagnostic beside the case's failure, and
   `judgeCaseExecutionOutcome` restores it. Outcomes from providers that do
   not report it are unchanged.
