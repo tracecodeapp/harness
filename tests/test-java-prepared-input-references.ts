@@ -446,6 +446,52 @@ class Solution {
   console.log('PASS: a constructor with reversed child parameters still gets each child by name');
 }
 
+function testEarlyNodeConstructorGetsBuiltReferences(): void {
+  // Only the fields that lead back to the node being built are null in its
+  // constructor; a reference to a node that already exists is passed.
+  const code = `class Node {
+  int val;
+  Node peer;
+  Node self;
+  boolean hadPeer;
+  Node(int val) { this.val = val; }
+  Node(int val, Node peer, Node self) {
+    this.val = val;
+    this.peer = peer;
+    this.self = self;
+    this.hadPeer = peer != null;
+  }
+}
+class Solution {
+  public String shape(Node a, Node b) {
+    return b.hadPeer + ":" + (b.peer == a) + ":" + (b.self == b);
+  }
+}`;
+  const a = { __id__: 'a', val: 1, peer: null, self: null };
+  const b = { __id__: 'b', val: 2, peer: { __ref__: 'a' }, self: { __ref__: 'b' } };
+  assert.deepEqual(runPrepared(code, 'shape', [[a, b]]), ['"true:true:true"']);
+  console.log('PASS: a node built before its links gets references that already resolve');
+}
+
+function testOpsTypedReferenceToObjectArgument(): void {
+  // An earlier operation took the node as Object; a later one asks for it
+  // typed, and gets it built as that type.
+  const code = `${learnerListNode}
+class Keeper {
+  Object raw;
+  public Keeper() {}
+  public void keepRaw(Object value) { this.raw = value; }
+  public boolean single(ListNode node) { return node.val == 1 && node.next == null; }
+  public boolean loop(ListNode node) { return node.val == 5 && node.next == node; }
+}`;
+  const outputs = runPrepared(code, 'Keeper', [
+    [{ operations: ['Keeper', 'keepRaw', 'single'], arguments: [[], [{ __id__: 'a', val: 1, next: null }], [{ __ref__: 'a' }]] }],
+    [{ operations: ['Keeper', 'keepRaw', 'loop'], arguments: [[], [{ __id__: 'r', val: 5, next: { __ref__: 'r' } }], [{ __ref__: 'r' }]] }],
+  ], 'ops-class');
+  assert.deepEqual(outputs, ['[null,null,true]', '[null,null,true]']);
+  console.log('PASS: a typed operation argument can refer to a node an earlier operation took as Object');
+}
+
 const tests = [
   testListCycleKeepsTheBackReference,
   testListBackReferenceIsTheSameNode,
@@ -462,6 +508,8 @@ const tests = [
   testRawSelfCycleUnderObject,
   testEarlyNodeUsesItsFullConstructor,
   testReversedChildrenConstructorKeepsChildrenByName,
+  testEarlyNodeConstructorGetsBuiltReferences,
+  testOpsTypedReferenceToObjectArgument,
 ];
 let failures = 0;
 for (const test of tests) {
