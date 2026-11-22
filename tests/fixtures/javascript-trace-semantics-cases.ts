@@ -242,6 +242,12 @@ export const traceSemanticsCases: readonly TraceSemanticsCase[] = [
   }
 }`, executionStyle: 'solution-method', expected: 'threw' },
 
+  { id: 'X1-private-brand-check', ...solve('class C { #x = 1; static has(o) { return #x in o; } } return [C.has(new C()), C.has({})].join();', 'true,false') },
+  { id: 'X1-private-fields', ...solve('class C { #a = [1]; #n = 0; run() { this.#a.push(2); this.#n++; this.#n += 2; return this.#a.length + this.#n; } } return new C().run();', 5) },
+  { id: 'X1-tagged-member', ...solve('const o = { k: 3, tag(strings) { return this.k; } }; const a = [o]; return o.tag`x` + a[0].tag`y`;', 6) },
+  { id: 'X1-super-member', ...solve('class A { get v() { return [1]; } m() { return 2; } } class B extends A { run() { return super.v[0] + super.m(); } } return new B().run();', 3) },
+  { id: 'X1-arguments-update', code: 'function solve() {\n  function f(x) { arguments[0]++; return x; }\n  return f(1);\n}', expected: 1 },
+
   // Destructuring assignment targets stay assignment targets.
   { id: 'D1-member-default', ...solve('const o = {}; const a = [0]; [o.x = 5, a[0] = 6] = []; return o.x + a[0];', 11) },
   { id: 'D1-rest', ...solve('let first, rest; [first, ...rest] = [1, 2, 3]; return rest.length;', 2) },

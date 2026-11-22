@@ -5563,6 +5563,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
           const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right, maxPathDepth);
           if (
             tracedMembershipTarget &&
+            !ts.isPrivateIdentifier(node.left) &&
             !expressionMayHaveSideEffects(ts, node.left) &&
             indicesHaveNoSideEffects(ts, tracedMembershipTarget.indices)
           ) {
@@ -5958,6 +5959,50 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   } finally {
     transformed.dispose();
   }
+}
+
+// The tracer could not instrument this program without changing it. Callers
+// fall back to an untraced run with a synthetic trace: never a different
+// result, and never the learner's error.
+class JavaScriptTraceUnavailableError extends Error {
+  constructor(message) {
+    super(`Tracing is unavailable for this program: ${message}`);
+    this.name = 'JavaScriptTraceUnavailableError';
+    this.code = 'ERR_HARNESS_TRACE_UNAVAILABLE';
+  }
+}
+
+// Whether source compiles as a function body: true, false for a SyntaxError,
+// or null when the check itself cannot run here.
+function javascriptSourceCompiles(source) {
+  try {
+    new Function(source);
+    return true;
+  } catch (error) {
+    return error instanceof SyntaxError || (error && typeof error === 'object' && error.name === 'SyntaxError')
+      ? false
+      : null;
+  }
+}
+
+async function instrumentExecutableCodeForTracing(code, executableCode, language, traceFunctionName, maxPathDepth) {
+  let instrumentedCode;
+  if (language === 'typescript') {
+    const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
+    instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
+  } else {
+    instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
+  }
+  // Safety net: an instrumented program that no longer compiles while the
+  // learner's does is a tracer defect, not the learner's compile error.
+  if (
+    typeof instrumentedCode === 'string' &&
+    javascriptSourceCompiles(instrumentedCode) === false &&
+    javascriptSourceCompiles(executableCode) === true
+  ) {
+    throw new JavaScriptTraceUnavailableError('the instrumented program does not compile.');
+  }
+  return instrumentedCode;
 }
 
 function buildScriptExecutionRunner(code, sourceCode = code) {
@@ -7257,22 +7302,13 @@ async function prepareExecutionRequest(payload) {
     const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
     traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
     try {
-      if (language === 'typescript') {
-        const instrumentedTypeScript = await instrumentCodeForTracing(
-          code,
-          language,
-          traceFunctionName,
-          maxPathDepth
-        );
-        instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
-      } else {
-        instrumentedCode = await instrumentCodeForTracing(
-          executableCode,
-          language,
-          traceFunctionName,
-          maxPathDepth
-        );
-      }
+      instrumentedCode = await instrumentExecutableCodeForTracing(
+        code,
+        executableCode,
+        language,
+        traceFunctionName,
+        maxPathDepth
+      );
     } catch (instrumentationError) {
       const message = instrumentationError instanceof Error
         ? instrumentationError.message
@@ -7513,12 +7549,13 @@ async function executeWithTracing(payload) {
       instrumentedCode = prepared.instrumentedCode;
     } else {
       try {
-        if (language === 'typescript') {
-          const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
-          instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
-        } else {
-          instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
-        }
+        instrumentedCode = await instrumentExecutableCodeForTracing(
+          code,
+          executableCode,
+          language,
+          traceFunctionName,
+          maxPathDepth
+        );
       } catch (instrumentationError) {
         const message =
           instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);

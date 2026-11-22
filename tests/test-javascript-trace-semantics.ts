@@ -79,7 +79,7 @@ function createWorkerHarness() {
     filename: 'javascript-worker.js',
   });
   const onmessage = selfObject.onmessage as (event: { data: WorkerMessage }) => void;
-  return function send<T>(type: string, payload?: unknown): Promise<T> {
+  return Object.assign(function send<T>(type: string, payload?: unknown): Promise<T> {
     const id = String(++nextId);
     return new Promise<T>((resolve, reject) => {
       pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
@@ -88,7 +88,7 @@ function createWorkerHarness() {
       }, 10_000);
       onmessage({ data: { id, type, payload, protocolToken: `token-${id}` } });
     });
-  };
+  }, { context });
 }
 
 async function run(
@@ -163,6 +163,24 @@ async function main() {
       console.log(`PASS: ${label}`);
     }
   }
+  // Safety net: when instrumentation yields a program that does not compile
+  // but the learner's program does, the Run is not blamed on the learner; it
+  // runs untraced with a synthetic trace.
+  if (selected.size === 0) {
+    const brokenSend = createWorkerHarness();
+    await brokenSend('init');
+    (brokenSend.context as Record<string, unknown>).instrumentCodeForTracing = async () => 'outer: { for (;;) { continue outer; } }';
+    for (const language of ['javascript', 'typescript'] as const) {
+      const program: TraceSemanticsCase = traceSemanticsCases.find(({ id }) => id === 'J1')!;
+      const traced = await run(brokenSend, program, language, true);
+      if (traced.kind !== 'result' || !traced.success || traced.output !== 0) {
+        failures.push(`${language}/safety-net: an uncompilable instrumented program must fall back, got ${JSON.stringify(traced)}`);
+      } else {
+        console.log(`PASS: ${language}/safety-net`);
+      }
+    }
+  }
+
   if (failures.length > 0) {
     console.error(`\n${failures.length} trace semantics failure(s):`);
     for (const failure of failures) console.error(`FAIL: ${failure}`);

@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.20be676572c4b46b85eda9112e497b13b13ec549355193452c81abb4e339b90d"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.4d1fbe63c635178f0d9f494e81c388db17d987c7c39bc82c69adb661e0837019"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "20be676572c4b46b85eda9112e497b13b13ec549355193452c81abb4e339b90d",
-  "totalPackagedRuntimeBytes": 152573859,
+  "packageTreeSha256": "4d1fbe63c635178f0d9f494e81c388db17d987c7c39bc82c69adb661e0837019",
+  "totalPackagedRuntimeBytes": 152575165,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.a06ffb869e1b5ddc311dc85802128a584515e85ccbae84884dbd1af7b241da4c",
@@ -1844,9 +1844,9 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.63f3f324ceafa05648b7f292658bcdf77265138e133088a1d0e19e05d91c74ab",
-      "treeSha256": "63f3f324ceafa05648b7f292658bcdf77265138e133088a1d0e19e05d91c74ab",
-      "totalBytes": 1819102,
+      "releaseId": "javascript+sha256.dc28279a01204441ee4cdf85e06ab6dfa58617a786f3f6ff827f8398edefec24",
+      "treeSha256": "dc28279a01204441ee4cdf85e06ab6dfa58617a786f3f6ff827f8398edefec24",
+      "totalBytes": 1820408,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
@@ -1864,9 +1864,9 @@
         },
         {
           "path": "workers/javascript/javascript-worker.js",
-          "size": 276801,
-          "sha256": "66dafe717955aa43bf5c93b65b809183d16985cb2874183f69b1fdc2e667c7e7",
-          "integrity": "sha256-Ztr+cXlVqkO/XJO2W4CRg9FphcsodBg/abH9wuZnx+c=",
+          "size": 278107,
+          "sha256": "5936cecc2d98df5e92e28337edfb7d0a462dde0c155d42b3e660d512ba5f697e",
+          "integrity": "sha256-WTbOzC2Y316S4oM37ft9CkYt3gwVXUKz5mDVErpfaX4=",
           "mediaType": "text/javascript"
         },
         {
@@ -2255,11 +2255,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428408613,
+    "bytes": 428409919,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425695624
+        "bytes": 425696930
       },
       "alias": {
         "files": 1,
@@ -2343,7 +2343,7 @@
       {
         "path": "javascript-worker.js",
         "files": 1,
-        "bytes": 276801
+        "bytes": 278107
       },
       {
         "path": "project-cpp-worker.js",
