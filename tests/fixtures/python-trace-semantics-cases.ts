@@ -839,4 +839,48 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     expected: { value: [1, 3] },
     traceUnavailable: true,
   },
+  // Recording never formats an exception with learner code: the raise site
+  // runs before the program's except clause, and a failure's message is
+  // formatted only after the program finished, with a failing __str__
+  // keeping the original failure.
+  {
+    id: 'exception-str-runs-only-when-the-program-asks',
+    code: lines(
+      'class Loud(Exception):',
+      '    seen = []',
+      '    def __str__(self):',
+      '        Loud.seen.append(len(Loud.seen))',
+      '        return "loud"',
+      'class Arg:',
+      '    def __repr__(self):',
+      '        Loud.seen.append("arg-repr")',
+      '        return "Arg"',
+      'def solve():',
+      '    try:',
+      '        raise Loud("x")',
+      '    except Loud as error:',
+      '        message = str(error)',
+      '    try:',
+      '        raise KeyError(Arg())',
+      '    except KeyError:',
+      '        pass',
+      '    try:',
+      '        raise ValueError("plain")',
+      '    except ValueError as error:',
+      '        plain = str(error)',
+      '    return [message, plain, Loud.seen]',
+    ),
+    expected: { value: ['loud', 'plain', [0]] },
+  },
+  {
+    id: 'uncaught-exception-with-failing-str',
+    code: lines(
+      'class Broken(Exception):',
+      '    def __str__(self):',
+      '        raise RuntimeError("no text")',
+      'def solve():',
+      '    raise Broken()',
+    ),
+    expected: { error: ['Broken', 'Execution failed'] },
+  },
 ];

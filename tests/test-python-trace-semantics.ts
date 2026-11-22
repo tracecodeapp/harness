@@ -74,7 +74,12 @@ try:
     _value = ${functionName}(**json.loads(${JSON.stringify(JSON.stringify(inputs))}))
     print(json.dumps({'value': _value}))
 except Exception as error:
-    print(json.dumps({'error': [type(error).__name__, str(error)]}))
+    # The untraced runner's wording when the exception cannot be formatted.
+    try:
+        _message = str(error)
+    except BaseException:
+        _message = 'Execution failed'
+    print(json.dumps({'error': [type(error).__name__, _message]}))
 `;
 }
 
