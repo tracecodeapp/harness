@@ -921,10 +921,7 @@ function completedOutput(
 
 
 test('a Java traced batch refuses only the case the tracer cannot trace', async () => {
-  const refusal = new RuntimeProviderError(
-    'TraceCode could not trace this case. The case runs normally without tracing.',
-    { code: TRACE_UNAVAILABLE_CODE }
-  );
+  const refusal = new RuntimeProviderError('TraceCode could not trace this case.', { code: TRACE_UNAVAILABLE_CODE });
   const fake = createFakeClient({
     traceFailureFor: (inputs) => (inputs.value === 5 ? refusal : undefined),
   });
@@ -959,20 +956,22 @@ test('a Java traced batch refuses only the case the tracer cannot trace', async 
   provider.dispose();
 });
 
-test('a Java trace the client cannot read back rejects that case as trace-unavailable without retiring the worker', async () => {
+test('a Java trace the client cannot read back refuses only that recorded case, without retiring the worker', async () => {
+  // An event that refers to a call stack the trace never recorded.
+  const unreadable = ['trace:{"kind":"line","line":2,"callStackRef":29}'];
   const replies: unknown[] = [
-    // An event that refers to a call stack the trace never recorded.
-    {
-      success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}',
-      events: ['trace:{"kind":"line","line":2,"callStackRef":29}'],
-    },
-    // The worker could not trace this case (tracing stopped while the Harness built its input).
-    {
-      success: false, traceUnavailable: true, diagnosticStage: 'runtime', executionTimeMs: 1, consoleOutput: [], events: [],
-      error: 'TraceCode could not trace this case: tracing stopped while the Harness was building its input. The case runs normally without tracing.',
-    },
-    { success: true, output: 2, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: [] },
+    { success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
+    { success: true, output: 2, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
+    { success: true, output: 3, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: [] },
   ];
+  const batchReply = {
+    success: true,
+    results: [
+      { success: true, output: 1, trace: { events: [] }, sourceText: '' },
+      { success: true, output: 2, trace: { events: unreadable }, sourceText: '' },
+      { success: true, output: 3, trace: { events: [] }, sourceText: '' },
+    ],
+  };
   let terminations = 0;
   const client = new JavaWorkerClient({
     workerUrl: '/workers/java-worker.js',
@@ -986,7 +985,9 @@ test('a Java trace the client cannot read back rejects that case as trace-unavai
           const request = message as { id: string; type: string; protocolToken: string };
           const payload = request.type === 'execute-prepared-runtime-program'
             ? replies.shift()
-            : { success: true, loadTimeMs: 0 };
+            : request.type === 'execute-prepared-runtime-program-batch'
+              ? batchReply
+              : { success: true, loadTimeMs: 0 };
           queueMicrotask(() => worker.onmessage?.({ data: {
             id: request.id, protocolToken: request.protocolToken, type: 'result', payload,
           } } as MessageEvent));
@@ -997,22 +998,31 @@ test('a Java trace the client cannot read back rejects that case as trace-unavai
     },
   });
   try {
-    for (const expected of [
-      /^TraceCode could not trace this case: the Java tracer produced an inconsistent trace\./,
-      /^TraceCode could not trace this case: tracing stopped while the Harness was building its input\./,
-    ]) {
-      await assert.rejects(
-        client.executePreparedWithTracing('prepared', { inputs: {} }),
-        (error: unknown) => {
-          assert.ok(isTraceUnavailableError(error), String(error));
-          assert.match((error as Error).message, expected);
-          assert.doesNotMatch((error as Error).message, /trace:|callStackRef/);
-          return true;
-        }
-      );
-    }
+    await assert.rejects(
+      client.executePreparedWithTracing('prepared', { inputs: {} }),
+      (error: unknown) => {
+        assert.ok(isTraceUnavailableError(error), String(error));
+        assert.equal((error as Error).message, 'TraceCode could not trace this case.');
+        return true;
+      }
+    );
+    // A case that did not record a trace is never refused as untraceable.
+    await assert.rejects(
+      client.executePreparedWithTracing('prepared', { inputs: {}, recordTrace: false }),
+      (error: unknown) => !isTraceUnavailableError(error)
+    );
     const traced = await client.executePreparedWithTracing('prepared', { inputs: {} });
-    assert.equal(traced.output, 2);
+    assert.equal(traced.output, 3);
+    // The direct batch client refuses only the entry it cannot read back.
+    const batch = await client.executePreparedTraceBatch('prepared', { inputBatch: [{}, {}, {}] });
+    assert.deepEqual(
+      batch.map((entry) => ({ success: entry.success, traceUnavailable: entry.traceUnavailable === true, error: entry.error })),
+      [
+        { success: true, traceUnavailable: false, error: undefined },
+        { success: false, traceUnavailable: true, error: 'TraceCode could not trace this case.' },
+        { success: true, traceUnavailable: false, error: undefined },
+      ]
+    );
     assert.equal(terminations, 0);
   } finally {
     client.terminate();
