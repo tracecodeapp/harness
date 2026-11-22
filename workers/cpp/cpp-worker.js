@@ -9162,11 +9162,21 @@ function cppIndexSourceForExpression(expression) {
   return 'nullptr';
 }
 
-// Methods whose call on a copy observes the same value as on the element.
-// (Not find: on a set or map it returns an iterator into the copy.)
+// Methods of the standard containers and std::string whose result is the
+// same on a copy as on the element: values computed from the contents only.
+// Not capacity (a copy does not keep it), not data/c_str/begin/end/find
+// (pointers or iterators into the copy), not front/back/at (references into
+// it). They count only for a standard element type: a learner type's own
+// `size()` may do anything.
 const CPP_VALUE_RETURNING_CONST_METHODS = new Set([
-  'size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with', 'capacity',
+  'size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with',
 ]);
+const CPP_STANDARD_VALUE_TYPE = /^(?:std::)?(?:string|vector|deque|list|set|multiset|map|multimap|unordered_set|unordered_multiset|unordered_map|unordered_multimap|array)\s*(?:<|$)/;
+
+// `T& name =`, `const auto& name{`, `auto& [a, b](`: a declaration binding a
+// reference to what follows (as opposed to `x && f(` in an expression).
+const CPP_REFERENCE_BINDING_ASSIGNMENT = /&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/;
+const CPP_REFERENCE_DECLARATION_OPEN = /(?:^|[;{}(,])\s*(?:(?:const|volatile|static|constexpr)\s+)*[A-Za-z_][\w:]*(?:\s*<[^;{}()]*>)?\s*(?:const\s*)?&{1,2}\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*[{(]$/;
 
 /**
  * Whether the indexed access text[start, end) is only read. The read helpers
@@ -9183,10 +9193,12 @@ const CPP_ALIASING_CALLEES = new Set([
 
 // Whether the expression text[start, end) is written through, or may be, by
 // its immediate context.
-function cppExpressionContextMayWrite(text, start, end) {
+function cppExpressionContextMayWrite(text, start, end, { constMethodsSafe = false } = {}) {
   const before = text.slice(0, start).replace(/\s+$/, '');
   if (/(?:\+\+|--)$/.test(before)) return true;
-  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return true;
+  // A reference initialized by the expression (`T& x = e`, `const T& x{e}`,
+  // `auto& x(e)`, `auto& [p, q] = e`) must bind the element itself.
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
   // A range-for range (`for (auto& c : names[i])`; the header may arrive
   // without its `for (`), but not a ternary's `cond ? x : v[i]`.
   if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
@@ -9198,7 +9210,7 @@ function cppExpressionContextMayWrite(text, start, end) {
   if (next.ch === '[' || next.ch === '(') return true;
   if (next.ch === '.') {
     const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
-    return !(method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
+    return !(constMethodsSafe && method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
   }
   return false;
 }
@@ -9214,9 +9226,10 @@ function cppExpressionContextMayWrite(text, start, end) {
  * (`(a[0]).clear()`, `std::get<0>(rows[i]).clear()`, `std::move(v[i])`).
  * When unsure, it is a write.
  */
-function cppIndexedAccessIsPureRead(text, start, end) {
+function cppIndexedAccessIsPureRead(text, start, end, elementType = '') {
   if (cppIsReferenceCallArgument(text, start, end)) return false;
-  if (cppExpressionContextMayWrite(text, start, end)) return false;
+  const constMethodsSafe = CPP_STANDARD_VALUE_TYPE.test(String(elementType || '').trim());
+  if (cppExpressionContextMayWrite(text, start, end, { constMethodsSafe })) return false;
   let cursor = start - 1;
   let depth = 0;
   for (; cursor >= 0; cursor -= 1) {
@@ -9227,6 +9240,9 @@ function cppIndexedAccessIsPureRead(text, start, end) {
         depth -= 1;
         continue;
       }
+      // The braces or parentheses initialize a reference (`const int&
+      // first{a[0]}`, `auto& r((v[i]))`): the element itself.
+      if (ch !== '[' && CPP_REFERENCE_DECLARATION_OPEN.test(text.slice(0, cursor + 1))) return false;
       // Inside a subscript or a braced list: an index or a value, read.
       if (ch !== '(') return true;
       const close = findMatchingParen(text, cursor);
@@ -9262,6 +9278,15 @@ function cppIndexedAccessIsPureRead(text, start, end) {
     }
   }
   return true;
+}
+
+function cppMatchingOpenParen(text, closeIndex) {
+  let depth = 0;
+  for (let cursor = closeIndex; cursor >= 0; cursor -= 1) {
+    if (text[cursor] === ')') depth += 1;
+    else if (text[cursor] === '(' && --depth === 0) return cursor;
+  }
+  return -1;
 }
 
 // Argument positions, by callee name, of the learner's functions and lambdas
@@ -9301,6 +9326,17 @@ function collectCppReferenceParameterCallees(signatures) {
  */
 function cppIsReferenceCallArgument(text, start, end) {
   if (activeCppReferenceParameterCallees.size === 0) return false;
+  // Grouping parentheses around the whole argument are transparent:
+  // `same((a[0]), a[0])`.
+  for (;;) {
+    const after = nextNonWhitespace(text, end);
+    if (after.ch !== ')') break;
+    const open = cppMatchingOpenParen(text, after.index);
+    if (open < 0 || !/^\s*$/.test(text.slice(open + 1, start))) break;
+    if (/[\w>\]]$/.test(text.slice(0, open).replace(/\s+$/, ''))) break;
+    start = open;
+    end = after.index + 1;
+  }
   const next = nextNonWhitespace(text, end);
   if (next.ch !== ')' && next.ch !== ',') return false;
   let depth = 0;
@@ -9341,7 +9377,7 @@ const CPP_ELEMENT_PROXY_FORWARDED_METHODS = new Set([
  */
 function cppIndexedAccessNeedsElement(text, start, end) {
   const before = text.slice(0, start).replace(/\s+$/, '');
-  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return true;
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
   if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
   if (cppIsReferenceCallArgument(text, start, end)) return true;
   const next = nextNonWhitespace(text, end);
@@ -9474,6 +9510,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         if (fieldMatch && !elementType?.replace(/^std::/, '').startsWith('vector<')) {
           const fieldName = fieldMatch[1];
           const fieldEnd = next.index + fieldMatch[0].length;
+          // A field's own type is not known here: no method counts as safe.
           if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, fieldEnd)) {
             cursor = fieldEnd;
             continue;
@@ -9493,7 +9530,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         }
         // `names[i].push_back(c)`, `sets[i].insert(x)`, `ps[i].begin()`: the
         // call must reach the element, not a copy of it.
-        if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)) {
+        if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1, elementType)) {
           if (cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
             const replacement = `__tracecode_element(${name}[${indexExpression}])`;
             rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
@@ -9561,7 +9598,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         twoCharNext === '--' ||
         (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
         (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
-        !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)
+        !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1, vectorElementCppType(variables.get(name)?.type || '', aliases))
       ) {
         if (
           twoCharNext !== '->' &&
@@ -10121,33 +10158,21 @@ function isAssociativeCppType(type, aliases = new Map()) {
  * The argument of push_back/insert, evaluated once and passed on with its
  * own value category (`v.push_back(std::move(s))` still moves, with no extra
  * construction). Its JSON is taken before the call, which may move from it.
+ * A braced list (`v.push_back({c, c++})`) is passed to the call unchanged:
+ * binding its elements first would change when they are initialized relative
+ * to later initializers. Its JSON is then read from the container after the
+ * call (the pushed element), or left empty for an associative insert.
  */
-function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '') {
+function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '', method = 'push_back') {
   const trimmedArgument = argumentSource.trim();
   const jsonName = `${tempName}_json`;
   if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
-    const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: true })
-      .map((arg) => arg.trim())
-      .filter(Boolean);
-    if (aggregateArgs.length > 0 && aggregateArgs.every((arg) => !arg.startsWith('{'))) {
-      const valueNames = aggregateArgs.map((_, index) => `${tempName}_field_${index}`);
-      return {
-        initLines: [
-          ...aggregateArgs.map((arg, index) => `${indent}  auto&& ${valueNames[index]} = (${arg});`),
-          `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? std::string("[") + tracecode::mutation_args_json(${valueNames.join(', ')}) + "]" : std::string();`,
-          `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = {${valueNames.map((value) => `std::forward<decltype(${value})>(${value})`).join(', ')}};`,
-        ],
-        callArgument: `std::move(${tempName})`,
-        argsJsonExpression: jsonName,
-      };
-    }
     return {
-      initLines: [
-        `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${trimmedArgument};`,
-        `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? tracecode::mutation_args_json(${tempName}) : std::string();`,
-      ],
-      callArgument: `std::move(${tempName})`,
-      argsJsonExpression: jsonName,
+      initLines: [],
+      callArgument: trimmedArgument,
+      argsJsonExpression: method === 'push_back'
+        ? `(tracecode::tracing_enabled() ? tracecode::mutation_args_json(${containerName}.back()) : std::string())`
+        : 'tracecode::mutation_args_json()',
     };
   }
   return {
@@ -10222,7 +10247,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
-        const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent);
+        const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent, method);
         const isAssociativeInsert = method === 'insert' && variable && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(this->${name}) - 1`;
         const rewritten = [
@@ -10265,7 +10290,7 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
-        const capture = buildMutationArgumentCapture(name, tempName, args[0], indent);
+        const capture = buildMutationArgumentCapture(name, tempName, args[0], indent, method);
         const isAssociativeInsert = variable && method === 'insert' && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(${name}) - 1`;
         const rewritten = [
