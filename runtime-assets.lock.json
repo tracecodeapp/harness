@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.4a2f4975c0b85a9a52fc12e6f466ead58176e58847732b36c8621812355007f3"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.40f1a54c55fc7dccfe1dc37c246accc6513e9b8419d4f18cae9c31e65d8c9fad"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "4a2f4975c0b85a9a52fc12e6f466ead58176e58847732b36c8621812355007f3",
-  "totalPackagedRuntimeBytes": 152595189,
+  "packageTreeSha256": "40f1a54c55fc7dccfe1dc37c246accc6513e9b8419d4f18cae9c31e65d8c9fad",
+  "totalPackagedRuntimeBytes": 152595726,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.a06ffb869e1b5ddc311dc85802128a584515e85ccbae84884dbd1af7b241da4c",
@@ -1844,9 +1844,9 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.912d74ec2340c905aca359dfaf810e452893c3ea2963af35ec28bac3656798ec",
-      "treeSha256": "912d74ec2340c905aca359dfaf810e452893c3ea2963af35ec28bac3656798ec",
-      "totalBytes": 1801413,
+      "releaseId": "javascript+sha256.64fee8ebfe537ca8a588162e4e2ab3b4dc39bb604ad3c4979d2d12ac20549b84",
+      "treeSha256": "64fee8ebfe537ca8a588162e4e2ab3b4dc39bb604ad3c4979d2d12ac20549b84",
+      "totalBytes": 1801950,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
@@ -1857,16 +1857,16 @@
         },
         {
           "path": "workers/javascript/javascript-ses-algorithm-worker.js",
-          "size": 616422,
-          "sha256": "6ca5591de66e9dce2d8feba3d0570dce130db9875f2128e3a1832e9fb90df770",
-          "integrity": "sha256-bKVZHeZunc4tj+uj0FcNzhMNuYdfISjjoYMun7kN93A=",
+          "size": 616630,
+          "sha256": "c33a5672d041497361e55931a0942f49143ea1a469b055d63e91cb5cd5d2120b",
+          "integrity": "sha256-wzpWctBBSXNh5VkxoJQvSRQ+oaRpsFXWPpHLXNXSEgs=",
           "mediaType": "text/javascript"
         },
         {
           "path": "workers/javascript/javascript-worker.js",
-          "size": 261768,
-          "sha256": "5445b98df7af02afeef9612493758925a795a225999da42002ff8a73c7a9a36e",
-          "integrity": "sha256-VEW5jfevAq/u+WEkk3WJJaeVoiWZnaQgAv+Kc8epo24=",
+          "size": 262097,
+          "sha256": "6161cb982ea82f82614e37c2c2633bd18db8242611b8f159cc8497799e503b03",
+          "integrity": "sha256-YWHLmC6oL4JhTjfCwmM70Y24JCYRuPFZzISXeZ5QOwM=",
           "mediaType": "text/javascript"
         },
         {
@@ -2255,11 +2255,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428429943,
+    "bytes": 428430480,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425716954
+        "bytes": 425717491
       },
       "alias": {
         "files": 1,
@@ -2338,12 +2338,12 @@
       {
         "path": "javascript-ses-algorithm-worker.js",
         "files": 1,
-        "bytes": 616422
+        "bytes": 616630
       },
       {
         "path": "javascript-worker.js",
         "files": 1,
-        "bytes": 261768
+        "bytes": 262097
       },
       {
         "path": "project-cpp-worker.js",
