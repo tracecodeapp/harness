@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.15b3484331192a93e10c9178a33bb4a7de7ab7a0733793e2a788d455e59d7924"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.2dc87753bbefe7cd9754654d3070ac905726afdd92a5471fb9e9c9a8008fff6e"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "15b3484331192a93e10c9178a33bb4a7de7ab7a0733793e2a788d455e59d7924",
-  "totalPackagedRuntimeBytes": 152573018,
+  "packageTreeSha256": "2dc87753bbefe7cd9754654d3070ac905726afdd92a5471fb9e9c9a8008fff6e",
+  "totalPackagedRuntimeBytes": 152575443,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.a06ffb869e1b5ddc311dc85802128a584515e85ccbae84884dbd1af7b241da4c",
@@ -1809,9 +1809,9 @@
       ]
     },
     "java": {
-      "releaseId": "java+sha256.07b28b6c3573703fa973d269a082e715812fea49f58bab43ccfb6cf88095016c",
-      "treeSha256": "07b28b6c3573703fa973d269a082e715812fea49f58bab43ccfb6cf88095016c",
-      "totalBytes": 651717,
+      "releaseId": "java+sha256.1a7aae36d047bff9e4030332948e51c552bd4a445bb1f2759ea10e06bee38092",
+      "treeSha256": "1a7aae36d047bff9e4030332948e51c552bd4a445bb1f2759ea10e06bee38092",
+      "totalBytes": 654142,
       "files": [
         {
           "path": "workers/java/java-runtime-worker.js",
@@ -1829,9 +1829,9 @@
         },
         {
           "path": "workers/java/java-worker.js",
-          "size": 349722,
-          "sha256": "d146743c3fc8c1443e7c93835a9fb6f1c693097045b40f8ac0ba06a66113820f",
-          "integrity": "sha256-0UZ0PD/IwUQ+fJODWp+28caTCXBFtA+KwLoGpmETgg8=",
+          "size": 352147,
+          "sha256": "3d565cdb47db338e25ab6777d475b68b1101ba1ce136e6f26ca1eaf790adc447",
+          "integrity": "sha256-PVZc20fbM44lq2d31HW2ixEBuhzhNubybKHq95CtxEc=",
           "mediaType": "text/javascript"
         },
         {
@@ -2255,11 +2255,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428407772,
+    "bytes": 428410197,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425694783
+        "bytes": 425697208
       },
       "alias": {
         "files": 1,
@@ -2323,7 +2323,7 @@
       {
         "path": "java-worker.js",
         "files": 1,
-        "bytes": 349722
+        "bytes": 352147
       },
       {
         "path": "java/tracejvm",
