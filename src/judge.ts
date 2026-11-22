@@ -27,7 +27,9 @@ export {
 } from './internal/judge-execution-outcome';
 export {
   isRuntimeProviderError,
+  isTraceUnavailableError,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
 } from '../packages/runtime-contracts/src/index';
 
 export type {
