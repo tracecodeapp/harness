@@ -8060,8 +8060,16 @@ function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new 
     if (variable && isVectorCppType(variable.type, aliases)) {
       const indexExpression = indexSource.trim();
       if (indexExpression) {
-        const rewritten = `${prefix}tracecode::indexed_nested_range_readable(${rangeName}, ${cppStringLiteral(rangeName)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}, ${lineNumber}, ${cppStringLiteral(bindingName)})${suffix}`;
-        return line.replace(stripped, rewritten);
+        // indexed_nested_range_readable only takes a traced vector of
+        // vectors. A row of any other element type (`vector<set<int>>`,
+        // `vector<string>`), or of a const container, is iterated as the
+        // element itself, so by-reference iteration still writes the element.
+        const elementType = String(vectorElementCppType(variable.type, aliases) || '').replace(/^std::/, '');
+        const readable = elementType.startsWith('vector<') && !/\bconst\b/.test(variable.type);
+        const range = readable
+          ? `tracecode::indexed_nested_range_readable(${rangeName}, ${cppStringLiteral(rangeName)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}, ${lineNumber}, ${cppStringLiteral(bindingName)})`
+          : `__tracecode_element(${rangeName}[${indexExpression}])`;
+        return line.replace(stripped, `${prefix}${range}${suffix}`);
       }
     }
   }
