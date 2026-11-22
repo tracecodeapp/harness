@@ -614,4 +614,26 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [[2, 1], { 0: 1, 1: 1, 2: 2 }] },
   },
+  // A learner call adds one frame, traced or not, so a recursion that fits
+  // under the limit untraced fits traced (functions and methods).
+  {
+    id: 'recursion-near-the-limit',
+    code: lines(
+      'import sys',
+      'def depth(n):',
+      '    return 0 if n == 0 else depth(n - 1) + 1',
+      'class Walker:',
+      '    def down(self, n, *, step=1):',
+      '        return 0 if n == 0 else self.down(n - step, step=step) + 1',
+      'def solve():',
+      '    here = 0',
+      '    frame = sys._getframe()',
+      '    while frame is not None:',
+      '        here += 1',
+      '        frame = frame.f_back',
+      '    target = sys.getrecursionlimit() - here - 50',
+      '    return [depth(target) == target, Walker().down(target) == target]',
+    ),
+    expected: { value: [true, true] },
+  },
 ];
