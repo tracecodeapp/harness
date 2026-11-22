@@ -3590,18 +3590,22 @@ function isScalarIdentifierUpdate(ts, node) {
 // __tracePath helpers): each segment before the last is read before the next
 // index expression runs. The last segment is a key ('key', for reads and
 // writes) or also read ('step', for a method call's receiver).
-function createTracePathExpression(ts, tracedTarget, visitedIndices, lastSegment, kinds = '') {
+function createTracePathExpression(ts, tracedTarget, visitedIndices, lastSegment, kinds = '', getCallee = '') {
   let expression = ts.factory.createCallExpression(ts.factory.createIdentifier('__tracePath'), undefined, [
     ts.factory.createStringLiteral(tracedTarget.variableName),
     tracedTarget.receiverExpression,
   ]);
   visitedIndices.forEach((index, position) => {
     const isLast = position === visitedIndices.length - 1;
-    const helper = kinds[position] === 'g'
-      ? '__traceStepGet'
-      : isLast && lastSegment === 'key'
-        ? '__traceKey'
-        : '__traceStep';
+    if (kinds[position] === 'g') {
+      const withMethod = ts.factory.createCallExpression(ts.factory.createIdentifier('__traceGetMethod'), undefined, [
+        expression,
+        ts.factory.createStringLiteral(getCallee),
+      ]);
+      expression = ts.factory.createCallExpression(ts.factory.createIdentifier('__traceStepGet'), undefined, [withMethod, index]);
+      return;
+    }
+    const helper = isLast && lastSegment === 'key' ? '__traceKey' : '__traceStep';
     expression = ts.factory.createCallExpression(ts.factory.createIdentifier(helper), undefined, [expression, index]);
   });
   return expression;
@@ -3893,12 +3897,17 @@ function extractTraceableMutatingCallReceiver(ts, receiver, maxPathDepth) {
     !ts.isSpreadElement(receiver.arguments[0])
   ) {
     const mapReceiver = unwrapParenthesizedExpression(ts, receiver.expression.expression);
+    const getCallee = renderV8CallSite(ts, receiver.expression);
+    if (getCallee === null) {
+      return null;
+    }
     if (ts.isIdentifier(mapReceiver)) {
       return {
         variableName: mapReceiver.text,
         receiverExpression: ts.factory.createIdentifier(mapReceiver.text),
         indices: [receiver.arguments[0]],
         kinds: 'g',
+        getCallee,
       };
     }
     const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver, maxPathDepth);
@@ -3908,6 +3917,7 @@ function extractTraceableMutatingCallReceiver(ts, receiver, maxPathDepth) {
         receiverExpression: tracedMapReceiver.receiverExpression,
         indices: [...tracedMapReceiver.indices, receiver.arguments[0]],
         kinds: 'e'.repeat(tracedMapReceiver.indices.length) + 'g',
+        getCallee,
       };
     }
   }
@@ -4550,9 +4560,9 @@ function createTraceMutatingCallExpressionForReceiver(
   const effectiveIndexSourceExpressions = ['set', 'get', 'has', 'delete'].includes(methodName) && args.length > 0
     ? [...indexSourceExpressions, args[0]]
     : indexSourceExpressions;
-  const resolvedCall = indices.length > 1
+  const resolvedCall = indices.length > 1 || tracedCall.kinds.includes('g')
     ? ts.factory.createCallExpression(ts.factory.createIdentifier('__traceResolveMutatingCallPath'), undefined, [
-        createTracePathExpression(ts, tracedCall, indices, 'step', tracedCall.kinds),
+        createTracePathExpression(ts, tracedCall, indices, 'step', tracedCall.kinds, tracedCall.getCallee),
         createIndexSourcesArrayExpression(ts, sourceFile, effectiveIndexSourceExpressions),
         ts.factory.createStringLiteral(methodName),
         createSourceLocationObject(ts, sourceFile, node),
@@ -6280,9 +6290,22 @@ function __traceStep(__path, __index) {
   return __path;
 }
 
+// A learner-written \`.get(key)\` segment: JavaScript reads \`get\` from the
+// receiver before it evaluates the key, so __traceGetMethod runs first and
+// __traceStepGet then calls that method with the receiver as \`this\`.
+function __traceGetMethod(__path, __callee) {
+  __path.method = __path.parent.get;
+  __path.methodCallee = __callee;
+  return __path;
+}
+
 function __traceStepGet(__path, __key) {
   __path.indices.push(__key);
-  __path.parent = __path.parent.get(__traceResolvedIndexValue(__key));
+  const __method = __path.method;
+  if (typeof __method !== 'function') {
+    throw new TypeError(__path.methodCallee + ' is not a function');
+  }
+  __path.parent = Reflect.apply(__method, __path.parent, [__traceResolvedIndexValue(__key)]);
   return __path;
 }
 
