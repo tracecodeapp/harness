@@ -6859,6 +6859,11 @@ def _tracer(frame, event, arg,
 
     # Skip visual noise from node constructors used only to build data structures.
     if _is_structural_constructor_frame(frame):
+        if event == 'return':
+            # Accesses recorded in the skipped frame are never flushed; drop
+            # them, or a later frame at the same address would inherit them.
+            _pending_accesses.pop(_tracecode_builtin_id(frame), None)
+            _last_trace_index_by_frame.pop(_tracecode_builtin_id(frame), None)
         return _tracer
     
     # Fast counter for any loops
@@ -6988,6 +6993,11 @@ def _tracer(frame, event, arg,
         return None
 
     if event == 'call':
+        # Nothing is recorded in a frame before its call event: entries under
+        # this frame's id belong to a dead frame that ended untraced (frame
+        # objects are reused at the same address).
+        _pending_accesses.pop(_tracecode_builtin_id(frame), None)
+        _last_trace_index_by_frame.pop(_tracecode_builtin_id(frame), None)
         # Comprehensions are expression implementation details, not learner
         # function activations. PEP 669 reports their synthetic frames while
         # the legacy tracing path did not publish them. Keep their line events
@@ -7028,7 +7038,7 @@ def _tracer(frame, event, arg,
             'function': func_name,
             'callStack': _snapshot_call_stack(),
             'stdoutLineCount': len(_console_output),
-            'accesses': __tracecode_flush_accesses(frame)
+            'accesses': []
         })
     elif event == 'line':
         if _MINIMAL_TRACE:
