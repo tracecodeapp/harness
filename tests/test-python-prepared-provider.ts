@@ -1707,3 +1707,23 @@ test('a traced Python case a guard stopped after its trace stopped recording kee
   assert.equal(legacy.kind, 'limit');
   assert.equal('traceTruncated' in legacy, false);
 });
+
+test('the Python trace client leaves an unknown traceLimitReason to the outcome contract, which rejects it', async () => {
+  const client = createPythonRuntimeClient({
+    executeWithTracing: async () => ({
+      success: false,
+      output: null,
+      error: 'stopped',
+      trace: { events: [] },
+      executionTimeMs: 1,
+      consoleOutput: [],
+      timeoutReason: 'line-limit',
+      traceLimitExceeded: true,
+      traceLimitReason: 'banana',
+    }),
+  } as unknown as Parameters<typeof createPythonRuntimeClient>[0]);
+  await assert.rejects(
+    client.executeWithTracing({ code: 'def solve():\n    return 4', functionName: 'solve', inputs: {}, executionStyle: 'function' }),
+    (error: unknown) => error instanceof Error && /unknown traceLimitReason/.test(error.message)
+  );
+});
