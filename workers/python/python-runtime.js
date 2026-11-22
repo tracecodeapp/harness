@@ -5282,7 +5282,10 @@ def _tracecode_safe_exception_message(error):
             return type_name
         for klass in error_type.__mro__:
             if '__str__' in klass.__dict__:
-                if klass.__module__ != 'builtins':
+                # Only the two __str__ implementations that read nothing but
+                # args: OSError's formats filename (any object, via repr),
+                # UnicodeError's and SyntaxError's read other attributes.
+                if klass is not _builtins.BaseException and klass is not _builtins.KeyError:
                     return type_name
                 args = _builtins.BaseException.args.__get__(error)
                 for arg in args:

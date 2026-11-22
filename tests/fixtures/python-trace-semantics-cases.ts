@@ -1099,4 +1099,31 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [null, 'learner', null] },
   },
+  // The raise site formats only exceptions whose __str__ reads nothing but
+  // plain args: OSError formats its filename with the filename's __repr__.
+  {
+    id: 'raise-site-never-formats-oserror-filename',
+    code: lines(
+      'class Path:',
+      '    reprs = 0',
+      '    def __repr__(self):',
+      '        Path.reprs += 1',
+      '        return "Path()"',
+      'def solve():',
+      '    try:',
+      '        raise OSError(2, "missing", Path())',
+      '    except OSError as error:',
+      '        code = error.errno',
+      '    try:',
+      '        raise FileNotFoundError(2, "gone", Path(), 5, Path())',
+      '    except OSError as error:',
+      '        second = error.strerror',
+      '    try:',
+      '        raise ValueError("plain")',
+      '    except ValueError as error:',
+      '        plain = str(error)',
+      '    return [code, second, plain, Path.reprs]',
+    ),
+    expected: { value: [2, 'gone', 'plain', 0] },
+  },
 ];
