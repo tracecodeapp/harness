@@ -300,6 +300,23 @@ const COPY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // Round 6: a reference declared with a type of several words, and an
+    // element in braces at reference parameters (const and not).
+    name: 'multi-word reference types and braced reference arguments',
+    body: [
+      '    vector<long long> big = {7, 8};',
+      '    const long long& first{big[0]};',
+      '    long long const& second(big[1]);',
+      '    big[0] = a;',
+      '    big[1] = b;',
+      '    vector<int> arr = {1, 2};',
+      '    auto same = [](const int& p, const int& q) { return &p == &q; };',
+      '    auto bump = [](int& p) { p += 5; };',
+      '    bump({arr[1]});',
+      '    k = (int)first * 10 + (int)second + (same({arr[0]}, arr[0]) ? 1000 : 0) + arr[1] * 100;',
+    ].join('\n'),
+  },
+  {
     name: 'struct members of an element',
     body: [
       '    vector<QQ> qs(3);',
@@ -312,6 +329,104 @@ const COPY_FORMS: ParityForm[] = [
       '    qs[i].seen.insert(3);',
       '    k = (int)qs[i].name.size() * 100 + qs[i].adj[0] * 10 + (int)qs[i].seen.size();',
       '    s = qs[i].name;',
+    ].join('\n'),
+  },
+];
+
+// Ordinary code that writes through elements, rows and references: each
+// must trace (no refusal) and compute what it computes untraced.
+const ORDINARY_FORMS: ParityForm[] = [
+  {
+    name: 'graph rows, weighted adjacency, maps of vectors, sorting a row',
+    body: [
+      '    vector<vector<int>> graph(3);',
+      '    vector<vector<pair<int, int>>> adj(3);',
+      '    map<int, vector<int>> m;',
+      '    unordered_map<string, vector<int>> um;',
+      '    int u = 1, v = 2, w = a + 5;',
+      '    graph[u].push_back(v);',
+      '    graph[u].push_back(b);',
+      '    adj[u].push_back({v, w});',
+      '    m[u].push_back(w);',
+      '    um["x"].push_back(v);',
+      '    sort(graph[u].begin(), graph[u].end());',
+      '    k = graph[u][0] * 10 + (int)graph[u].size() + adj[u][0].second * 100 + m[u][0] * 1000 + (int)um["x"].size() * 7;',
+    ].join('\n'),
+  },
+  {
+    name: 'grid and dp cells written in place, counters incremented',
+    body: [
+      '    vector<vector<int>> grid(3, vector<int>(3, 0));',
+      '    vector<vector<long long>> dp(3, vector<long long>(3, 1));',
+      '    vector<vector<int>> cnt(2, vector<int>(4, 0));',
+      '    vector<unordered_map<char, int>> freqs(2);',
+      '    int r = 1, c = 2;',
+      '    grid[r][c] = a + 3;',
+      '    dp[r][c] += b;',
+      '    dp[r][c] += grid[r][c];',
+      '    cnt[1][3]++;',
+      '    cnt[1][3]++;',
+      "    freqs[0]['z']++;",
+      "    k = grid[r][c] * 100 + (int)dp[r][c] * 10 + cnt[1][3] + freqs[0]['z'] * 1000;",
+    ].join('\n'),
+  },
+  {
+    name: 'elements incremented, swapped, chained assignments, back()',
+    body: [
+      '    vector<int> v = {a, b, t, 7};',
+      '    array<int, 26> freq{};',
+      '    v[1]++;',
+      '    swap(v[0], v[3]);',
+      '    ++freq[2];',
+      '    ++freq[2];',
+      '    v[2] = v[1] = 0;',
+      '    v.back() += 1;',
+      '    k = v[0] * 1000 + v[1] * 100 + v[2] * 10 + v[3] + freq[2] * 10000;',
+    ].join('\n'),
+  },
+  {
+    name: 'strings, sets and struct members of elements',
+    body: [
+      '    vector<string> names(2, "n");',
+      '    vector<set<int>> sets(2);',
+      '    vector<QQ> qs(2);',
+      "    char ch = (char)('a' + (b & 3));",
+      '    names[1] += ch;',
+      "    names[1].push_back('q');",
+      '    sets[0].insert(a);',
+      '    sets[0].insert(b);',
+      '    qs[1].val = t + 4;',
+      '    qs[1].adj.push_back(a);',
+      '    k = (int)names[1].size() * 100 + (int)sets[0].size() * 10 + qs[1].val + (int)qs[1].adj.size() * 1000;',
+      '    s = names[1];',
+    ].join('\n'),
+  },
+  {
+    name: 'C arrays of vectors, queue fronts, range-for by reference',
+    body: [
+      '    vector<int> adjc[3];',
+      '    adjc[1].push_back(a);',
+      '    adjc[1].push_back(b);',
+      '    queue<pair<int, int>> q;',
+      '    q.push({a, b});',
+      '    q.front().second++;',
+      '    vector<vector<int>> grid(2, vector<int>(2, t));',
+      '    for (auto& row : grid) row[0] = 1;',
+      '    vector<int> vals = {a, b};',
+      '    for (auto& x : vals) x *= 2;',
+      '    k = (int)adjc[1].size() * 1000 + q.front().second * 100 + grid[1][0] * 10 + grid[1][1] + vals[1] * 10000;',
+    ].join('\n'),
+  },
+  {
+    name: 'references bound to a row and to an element',
+    body: [
+      '    vector<vector<int>> dp(3, vector<int>(3, 0));',
+      '    vector<int> arr = {a, b, t};',
+      '    auto& cur = dp[1];',
+      '    cur[2] = a + 9;',
+      '    int& x = arr[1];',
+      '    x++;',
+      '    k = dp[1][2] * 100 + arr[1] * 10 + (int)cur.size();',
     ].join('\n'),
   },
 ];
@@ -452,6 +567,8 @@ const PROGRAMS: ParityProgram[] = [
   formsParityProgram('compile-forms', COMPILE_FORMS),
   formsParityProgram('silent-forms', SILENT_FORMS),
   formsParityProgram('copy-forms', COPY_FORMS),
+  // One program per ordinary form, so a refusal names its form.
+  ...ORDINARY_FORMS.map((form, index) => formsParityProgram(`ordinary-form-${index + 1}`, [form])),
   {
     id: 'repro',
     code: REPRO,
@@ -550,6 +667,8 @@ function formName(programId: string, caseId: string): string {
     ? SILENT_FORMS
     : programId === 'copy-forms'
     ? COPY_FORMS
+    : programId.startsWith('ordinary-form-')
+    ? [ORDINARY_FORMS[Number(programId.slice('ordinary-form-'.length)) - 1]]
     : null;
   const match = /^form-(\d+)-input-(\d+)$/.exec(caseId);
   if (!forms || !match) return caseId;

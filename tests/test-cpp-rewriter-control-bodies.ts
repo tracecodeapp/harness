@@ -1045,6 +1045,54 @@ for (const accepted of ACCEPTED_MACROS) {
       present: 'parts.push_back({c, c++});',
       absent: '__tc_mutation_arg',
     },
+    // Round 6: a reference declared with a type of several words, and an
+    // element in braces at a reference parameter.
+    {
+      name: 'a reference declared with a multi-word type binds the element',
+      body: '    vector<long long> big(2);\n    const long long& first{big[0]};\n    long long const& second(big[1]);\n    vector<unsigned long long> big2(1);\n    unsigned long long& third{big2[0]};',
+      absent: 'trace_index_read(big',
+    },
+    {
+      name: 'an element in braces at a reference parameter is the element',
+      body: '    array<int, 3> ar{};\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same({ar[0]}, ar[0]);',
+      absent: 'trace_index_read(ar',
+    },
+    {
+      name: 'an element in braces inside an expression is still read',
+      body: '    vector<int> big(2);\n    k = max({big[0], 1}) + min({big[1]});',
+      present: 'trace_index_read(big',
+    },
+    // Round 6: references to rows and elements of traced vectors keep the
+    // reference (they used to become `auto x = <read>`, a copy), and array
+    // declarators are not reads.
+    {
+      name: 'auto& to a row of a traced vector stays a reference to the row',
+      body: '    vector<vector<int>> dp(3, vector<int>(3, 0));\n    int i = 1;\n    auto& cur = dp[i];\n    cur[2] = a;',
+      present: 'auto& cur = __tracecode_element(dp[',
+      absent: 'auto cur',
+    },
+    {
+      name: 'auto& and int& to an element stay references to the element',
+      body: '    vector<int> arr(3);\n    auto& x = arr[1];\n    x++;\n    int& y = arr[2];\n    y = 4;',
+      present: 'auto& x = __tracecode_element(arr[1]);',
+      absent: 'auto x',
+    },
+    {
+      name: 'auto& to front() of a traced vector binds the element',
+      body: '    vector<int> arr(3);\n    auto& f = arr.front();\n    f = 2;',
+      present: 'auto& f = __tracecode_element(arr.front());',
+    },
+    {
+      name: 'a reference to a nested element binds through the row',
+      body: '    vector<vector<int>> grid(3, vector<int>(3, 0));\n    int& c = grid[1][2];\n    c = 5;',
+      present: 'int& c = __tracecode_element(grid[1])[2];',
+    },
+    {
+      name: 'an array of vectors is declared, not read',
+      body: '    vector<int> adjc[3];\n    int memo[4];\n    adjc[1].push_back(a);\n    memo[0] = 1;',
+      present: 'vector<int> adjc[3];',
+      absent: 'trace_index_read(adjc, "adjc", 3',
+    },
     // Round 4, item 4: fill binds its argument by const reference.
     {
       name: 'fill with std::move binds by const reference, without a move',
