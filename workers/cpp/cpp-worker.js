@@ -1590,7 +1590,12 @@ function postFailure(id, error) {
     id,
     type: 'error',
     ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
-    payload: { error: error instanceof Error ? error.message : String(error) },
+    payload: {
+      error: error instanceof Error ? error.message : String(error),
+      ...(error && typeof error.code === 'string' && error.name === 'CppTraceUnsupportedError'
+        ? { code: error.code }
+        : {}),
+    },
   });
 }
 
@@ -9144,6 +9149,105 @@ function cppIndexSourceForExpression(expression) {
   return 'nullptr';
 }
 
+// Methods whose call on a copy observes the same value as on the element.
+// (Not find: on a set or map it returns an iterator into the copy.)
+const CPP_VALUE_RETURNING_CONST_METHODS = new Set([
+  'size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with', 'capacity',
+]);
+
+/**
+ * Whether the indexed access text[start, end) is only read. The read helpers
+ * (trace_index_read, trace_index_field_read) return a copy, so anything that
+ * could write through the access (assignment, ++/--, a reference binding, a
+ * range-for, a subscript, a call, a non-const method such as push_back or
+ * begin) must keep the learner's own expression.
+ */
+function cppIndexedAccessIsPureRead(text, start, end) {
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  if (/(?:\+\+|--)$/.test(before)) return false;
+  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return false;
+  // A range-for range (`for (auto& c : names[i])`; the header may arrive
+  // without its `for (`), but not a ternary's `cond ? x : v[i]`.
+  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return false;
+  if (cppIsReferenceCallArgument(text, start, end)) return false;
+  const next = nextNonWhitespace(text, end);
+  const rest = text.slice(next.index, next.index + 3);
+  if (/^(?:\+\+|--|->)/.test(rest)) return false;
+  if (/^(?:[+\-*/%&|^]=|<<=|>>=)/.test(rest)) return false;
+  if (next.ch === '=' && text[next.index + 1] !== '=') return false;
+  if (next.ch === '[' || next.ch === '(') return false;
+  if (next.ch === '.') {
+    const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
+    return Boolean(method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
+  }
+  return true;
+}
+
+// Argument positions, by callee name, of the learner's functions and lambdas
+// that take a non-const reference (`T&`, `T&&`, `auto&&`). Set for the
+// duration of one instrumentCppSourceForTracing call.
+let activeCppReferenceParameterCallees = new Map();
+
+function collectCppReferenceParameterCallees(signatures) {
+  const callees = new Map();
+  const add = (name, positions) => {
+    if (!name || positions.size === 0) return;
+    const existing = callees.get(name) || new Set();
+    for (const position of positions) existing.add(position);
+    callees.set(name, existing);
+  };
+  for (const signature of signatures) {
+    const parameters = signature.parameters || [];
+    const positions = new Set();
+    parameters.forEach((parameter, index) => {
+      const type = String(parameter.type || '');
+      if (type.includes('&') && !/^\s*const\b/.test(type) && !/\bconst\s*&/.test(type)) positions.add(index);
+    });
+    add(signature.name, positions);
+    // A recursive lambda called through its own `self` parameter.
+    const first = parameters[0];
+    if (signature.lambda && first && /^auto\s*&{1,2}$/.test(String(first.type || '').trim())) add(first.name, positions);
+  }
+  return callees;
+}
+
+/**
+ * Whether text[start, end) is passed directly to a call of a learner function
+ * at a position that takes a non-const reference: a copy would not bind, or
+ * would be the one the callee changes.
+ */
+function cppIsReferenceCallArgument(text, start, end) {
+  if (activeCppReferenceParameterCallees.size === 0) return false;
+  const next = nextNonWhitespace(text, end);
+  if (next.ch !== ')' && next.ch !== ',') return false;
+  let depth = 0;
+  let argumentIndex = 0;
+  for (let cursor = start - 1; cursor >= 0; cursor -= 1) {
+    const ch = text[cursor];
+    if (ch === ')' || ch === ']' || ch === '}') depth += 1;
+    else if (ch === '(' || ch === '[' || ch === '{') {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      if (ch !== '(') return false;
+      if (!/^\s*$/.test(text.slice(cursor + 1, start).split(',').at(-1))) return false;
+      const callee = /([A-Za-z_]\w*)\s*$/.exec(text.slice(0, cursor))?.[1];
+      return Boolean(callee && activeCppReferenceParameterCallees.get(callee)?.has(argumentIndex));
+    } else if (ch === ',' && depth === 0) {
+      argumentIndex += 1;
+    } else if (ch === ';') {
+      return false;
+    }
+  }
+  return false;
+}
+
+// An index expression that may change state or call code when evaluated.
+function cppExpressionMayHaveSideEffects(expression) {
+  return /\+\+|--|\(|(?<![=!<>])=(?!=)/.test(stripCppStringsAndComments(expression));
+}
+
 function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), lineNumber = 1) {
   if (
     line.includes('tracecode::trace_index_read') ||
@@ -9235,12 +9339,26 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         if (fieldMatch && !elementType?.replace(/^std::/, '').startsWith('vector<')) {
           const fieldName = fieldMatch[1];
           const fieldEnd = next.index + fieldMatch[0].length;
-          const replacement = `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
+          if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, fieldEnd)) {
+            cursor = fieldEnd;
+            continue;
+          }
+          // The helper takes the index and the field value; an index with side
+          // effects (`ps[i++].val`, `ps[find(x)].val`) is evaluated once.
+          const replacement = cppExpressionMayHaveSideEffects(indexExpression)
+            ? `([&]() -> decltype(auto) { auto&& __tc_field_index = (${indexExpression}); return tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, __tc_field_index, ${cppStringLiteral(fieldName)}, ${name}[__tc_field_index].${fieldName}, ${lineNumber}, ${indexSource}); }())`
+            : `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
           rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(fieldEnd)}`;
           cursor = nameIndex + replacement.length;
           continue;
         }
         if (elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          cursor = closeIndex + 1;
+          continue;
+        }
+        // `names[i].push_back(c)`, `sets[i].insert(x)`, `ps[i].begin()`: the
+        // call must reach the element, not a copy of it.
+        if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)) {
           cursor = closeIndex + 1;
           continue;
         }
@@ -9260,6 +9378,7 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         const twoCharAfterNested = rewritten.slice(afterNested.index, afterNested.index + 2);
         if (
           previousIsAddressOf ||
+          !cppIndexedAccessIsPureRead(rewritten, nameIndex, secondCloseIndex + 1) ||
           afterNested.ch === '[' ||
           afterNested.ch === '.' ||
           twoCharAfterNested === '->' ||
@@ -9291,7 +9410,8 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         twoCharNext === '++' ||
         twoCharNext === '--' ||
         (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
-        (next.ch === '=' && rewritten[next.index + 1] !== '=')
+        (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
+        !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)
       ) {
         cursor = closeIndex + 1;
         continue;
@@ -9869,9 +9989,16 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     const variable = variables?.get(name);
     if (variable && (isStdArrayCppType(variable.type, aliases) || shouldEmitPlainContainerMutation(variable, name, aliases, source))) {
       const args = splitTopLevelCommaList(argsSource).filter((arg) => arg.trim());
+      if (args.length !== 1) return line;
+      // The argument is evaluated once, into the value fill copies anyway
+      // (`ar.fill(i++)` must advance i once).
+      const tempName = `__tc_fill_value_${lineNumber}_${name}`;
       return [
-        line,
-        `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${args.join(', ')}));`,
+        `${indent}{`,
+        `${indent}  ${cppValueTypeTempInitialization(name, tempName, args[0])}`,
+        `${indent}  ${name}.fill(${tempName});`,
+        `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${tempName}));`,
+        `${indent}}`,
       ].join('\n');
     }
   }
@@ -10596,11 +10723,43 @@ function cppForHeaderDeclaredNames(strippedLine) {
  * computes. The Harness refuses to trace it (a provider-side refusal, never
  * the learner's compile error) instead of running a different program.
  */
+// The machine-readable marker of a program the Harness could not trace; the
+// client turns it into RuntimeProviderError({ code: 'trace-unavailable' }) and
+// Judge into the `trace-unavailable` diagnostic code.
+const CPP_TRACE_UNAVAILABLE_CODE = 'trace-unavailable';
+
 class CppTraceUnsupportedError extends Error {
-  constructor(message) {
+  constructor(message, details = {}) {
     super(message);
     this.name = 'CppTraceUnsupportedError';
+    this.code = CPP_TRACE_UNAVAILABLE_CODE;
+    if (details.compilerOutput) this.compilerOutput = details.compilerOutput;
   }
+}
+
+const CPP_COMPILE_FAILURE_STAGES = new Set(['compile', 'driver-compile', 'trace-driver-compile', 'driver-link']);
+
+function isCppCompileStageFailure(result) {
+  return Boolean(result) && result.success === false && CPP_COMPILE_FAILURE_STAGES.has(result.diagnosticStage);
+}
+
+/**
+ * A traced build failed to compile while the untraced build compiles: the
+ * generated instrumentation is at fault, never the learner. Refused with the
+ * compiler's output for diagnosis.
+ */
+function cppTracedCompileFailureRefusal(tracedResult) {
+  const compilerOutput = String(tracedResult?.error || '')
+    .split('\n')
+    .slice(0, 12)
+    .join('\n')
+    .slice(0, 1500);
+  return new CppTraceUnsupportedError(
+    'C++ tracing cannot instrument this program: its traced build did not compile, though the program ' +
+      'compiles without tracing (a Harness tracer defect, not an error in the program). Run it without tracing.' +
+      (compilerOutput ? ` Compiler output for the traced build: ${compilerOutput}` : ''),
+    { compilerOutput }
+  );
 }
 
 function isCppTraceUnsupportedError(error) {
@@ -10839,7 +10998,9 @@ function collectCppUserMacros(tokens) {
     if (functionLike) {
       const close = replacement.indexOf(')');
       if (close < 0) {
-        macros.set(define[1], { functionLike, unknown: true });
+        const previous = macros.get(define[1]);
+        const definition = { functionLike, unknown: true };
+        macros.set(define[1], previous ? { definitions: [...(previous.definitions || [previous]), definition] } : definition);
         continue;
       }
       for (const param of replacement.slice(0, close).split(',')) params.add(param.trim());
@@ -10848,7 +11009,7 @@ function collectCppUserMacros(tokens) {
     replacement = replacement.trim();
     const replacementTokens = tokenizeCppForControlNormalization(replacement, { preprocessor: false })
       .filter((entry) => entry.kind !== 'comment');
-    const own = { unbalanced: false, splits: false, branch: false, header: false, jump: false, paste: false };
+    const own = { unbalanced: false, splits: false, opensIf: false, hasElse: false, header: false, jump: false, paste: false };
     let depth = 0;
     for (const entry of replacementTokens) {
       if (entry.kind === 'punct' && (entry.text === '(' || entry.text === '[' || entry.text === '{')) {
@@ -10861,20 +11022,26 @@ function collectCppUserMacros(tokens) {
       } else if (depth === 0 && entry.kind === 'punct' && entry.text === ';') {
         own.splits = true;
       } else if (depth === 0 && entry.kind === 'ident') {
-        if (entry.text === 'if' || entry.text === 'else') own.branch = true;
+        if (entry.text === 'if') own.opensIf = true;
+        else if (entry.text === 'else') own.hasElse = true;
         else if (/^(?:for|while|switch|do)$/.test(entry.text)) own.header = true;
         else if (CPP_MACRO_JUMP_KEYWORDS.has(entry.text)) own.jump = true;
       }
     }
     if (depth !== 0) own.unbalanced = true;
-    // `do { ... } while (0)`: one complete statement, whatever is inside.
-    const doWhileZero = !own.unbalanced && /^do\s*\{[\s\S]*\}\s*while\s*\(\s*(?:0|false)\s*\)$/.test(replacement);
+    // `do { ... } while (0)`, exactly one, with nothing after it: one complete
+    // statement whatever is inside (`do {} while (0); do {} while (0)` is two).
+    const doWhileZero = !own.unbalanced && isCppSingleDoWhileZero(replacementTokens);
     const references = new Set(
       replacementTokens
         .filter((entry) => entry.kind === 'ident' && !params.has(entry.text))
         .map((entry) => entry.text)
     );
-    macros.set(define[1], { functionLike, own, doWhileZero, references });
+    // A name defined more than once (`#undef`, redefinition): every
+    // definition counts, since any of them may be the one in effect.
+    const definition = { functionLike, own, doWhileZero, references };
+    const previous = macros.get(define[1]);
+    macros.set(define[1], previous ? { definitions: [...(previous.definitions || [previous]), definition] } : definition);
   }
   return macros;
 }
@@ -10884,18 +11051,44 @@ function collectCppUserMacros(tokens) {
  * (aliases, nested macros), conservatively: a cycle or an unparsable
  * definition is `unknown`.
  */
+function isCppSingleDoWhileZero(tokens) {
+  const isPunct = (index, text) => tokens[index]?.kind === 'punct' && tokens[index].text === text;
+  if (tokens[0]?.text !== 'do' || !isPunct(1, '{')) return false;
+  let depth = 0;
+  let close = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (isPunct(index, '{')) depth += 1;
+    else if (isPunct(index, '}') && --depth === 0) {
+      close = index;
+      break;
+    }
+  }
+  return close > 0 &&
+    tokens[close + 1]?.text === 'while' &&
+    isPunct(close + 2, '(') &&
+    (tokens[close + 3]?.text === '0' || tokens[close + 3]?.text === 'false') &&
+    isPunct(close + 4, ')') &&
+    tokens.length === close + 5;
+}
+
 function cppUserMacroFeatures(macros, name, visiting = new Set()) {
-  const macro = macros.get(name);
-  const features = { unbalanced: false, splits: false, branch: false, header: false, jump: false, paste: false, unknown: false };
-  if (!macro) return features;
-  if (macro.unknown || visiting.has(name) || visiting.size > 32) return { ...features, unknown: true };
-  if (macro.doWhileZero) return features;
-  Object.assign(features, macro.own);
+  const entry = macros.get(name);
+  const features = { unbalanced: false, splits: false, opensIf: false, hasElse: false, header: false, jump: false, paste: false, unknown: false };
+  if (!entry) return features;
+  if (visiting.has(name) || visiting.size > 32) return { ...features, unknown: true };
   visiting.add(name);
-  for (const reference of macro.references) {
-    if (!macros.has(reference)) continue;
-    const nested = cppUserMacroFeatures(macros, reference, visiting);
-    for (const key of Object.keys(features)) features[key] ||= nested[key];
+  for (const macro of entry.definitions || [entry]) {
+    if (macro.unknown) {
+      features.unknown = true;
+      continue;
+    }
+    if (macro.doWhileZero) continue;
+    for (const key of Object.keys(macro.own)) features[key] ||= macro.own[key];
+    for (const reference of macro.references) {
+      if (!macros.has(reference)) continue;
+      const nested = cppUserMacroFeatures(macros, reference, visiting);
+      for (const key of Object.keys(features)) features[key] ||= nested[key];
+    }
   }
   visiting.delete(name);
   return features;
@@ -10930,12 +11123,11 @@ function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } =
   // change meaning:
   // - a backslash-newline splices lines before comments and literals are
   //   recognized (a `//` comment ending in `\` swallows the next line);
+  //   (in a directive too: the emitter puts a #line inside a continued
+  //   directive or a `//` comment that a backslash continues);
   const ppTokens = tokens.filter((token) => token.kind === 'pp');
-  for (const splice of source.matchAll(/\\\r?\n/g)) {
-    if (!ppTokens.some((token) => splice.index >= token.start && splice.index < token.end)) {
-      refuseAtLine(lineAtOffset(splice.index), 'a backslash at the end of a line continues it onto the next line');
-    }
-  }
+  const splice = /\\\r?\n/.exec(source);
+  if (splice) refuseAtLine(lineAtOffset(splice.index), 'a backslash at the end of a line continues it onto the next line');
   // - a literal spanning lines (a raw string) would get #line directives
   //   inside it;
   const multilineLiteral = tokens.find((token) => token.kind === 'literal' && token.line !== token.endLine);
@@ -10943,7 +11135,12 @@ function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } =
   // - the learner's own #line directives are overridden by the emitter's
   //   (changing __LINE__, __FILE__ and assert messages); the script wrapper's
   //   first and last directives are the Harness's own;
-  const lineDirectives = ppTokens.filter((token) => /^#\s*(?:line\b|\d)/.test(token.text));
+  const directiveName = (token) =>
+    /^#\s*([A-Za-z_]\w*|\d)/.exec(token.text.replace(/\/\*[\s\S]*?\*\//g, ' '))?.[1] || '';
+  const lineDirectives = ppTokens.filter((token) => {
+    const name = directiveName(token);
+    return name === 'line' || /^\d$/.test(name);
+  });
   const harnessDirectives = scriptWrapper
     ? new Set([lineDirectives[0], lineDirectives.at(-1)].filter(
         (token) => token && new RegExp(`^#line \\d+ "${escapeRegExp(CPP_USER_SOURCE_FILE)}"$`).test(token.text)
@@ -10953,10 +11150,16 @@ function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } =
   if (userLineDirective) refuseAtLine(userLineDirective.line, 'a #line directive');
   // - instrumentation wraps conditions and calls in lambdas, so the current
   //   function's name (and a source location's column) would change.
+  //   Macro bodies count: `#define FN __func__` observes the same lambda.
   const functionNameToken = sig.find(
     (token) => token.kind === 'ident' && CPP_TRACE_LOCATION_IDENTIFIERS.has(token.text)
+  ) || ppTokens.find((token) =>
+    tokenizeCppForControlNormalization(token.text.slice(1), { preprocessor: false })
+      .some((entry) => entry.kind === 'ident' && CPP_TRACE_LOCATION_IDENTIFIERS.has(entry.text))
   );
-  if (functionNameToken) refuseAtLine(functionNameToken.line, `${functionNameToken.text} (it names the enclosing function or source column)`);
+  if (functionNameToken) {
+    refuseAtLine(functionNameToken.line, 'a name of the enclosing function or source location (__func__, source_location)');
+  }
 
   const match = matchCppNormalizerBrackets(sig);
   // Unbalanced brackets: either the program does not compile, or a macro
@@ -11293,15 +11496,19 @@ function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } =
       if (features.unbalanced || features.unknown) {
         refuse(index, `the macro ${token.text} expands to unbalanced brackets or could not be read`);
       }
-      if (features.branch) {
-        refuse(index, `the macro ${token.text} expands to an if or else`);
+      // A macro that expands to `else` can attach to any surrounding `if`.
+      // One that opens an `if` is refused where it can capture something:
+      // as a braceless body (below) or when the statement continues on the
+      // next line (below); an `else` after it is refused by the parse.
+      if (features.hasElse) {
+        refuse(index, `the macro ${token.text} expands to an else`);
       }
       if (!isCppExpressionMacroFeatures(features) && wrappedBodies.some((body) => index >= body.start && index < body.end)) {
         refuse(index, `the macro ${token.text} is not a single expression and is the body of a control statement without braces`);
       }
       const next = invocationEnd + 1;
       if (
-        (features.header || features.jump || features.splits) &&
+        (features.header || features.opensIf || features.jump || features.splits) &&
         sig[next] &&
         sig[next].line > sig[invocationEnd].endLine &&
         !isPunct(next, '{') &&
@@ -11489,6 +11696,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       .filter((signature) => !signature.skipInstrumentation && signature.name && !signature.name.startsWith('<'))
       .map((signature) => signature.name)
   );
+  activeCppReferenceParameterCallees = collectCppReferenceParameterCallees(signatures);
+  try {
+    return instrumentCppLinesForTracing();
+  } finally {
+    activeCppReferenceParameterCallees = new Map();
+  }
+
+  function instrumentCppLinesForTracing() {
   // Braceless control bodies get braces first, on virtual lines that keep the
   // learner's line numbers (see normalizeCppControlBodiesForTracing).
   const normalizedControl = normalizeCppControlBodiesForTracing(source, {
@@ -11960,6 +12175,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   }
 
   return output.join('\n');
+  }
 }
 
 function buildDriverSource(userCode, functionName, inputs, options = {}) {
@@ -16531,36 +16747,37 @@ async function handleInit(payload) {
 }
 
 /**
- * A refused trace of a program that does not compile: the untraced build's
- * compile failure (the learner's, in the learner's lines). Returns null when
- * the untraced program compiles, so the refusal stands.
+ * Compiles the untraced build of a program whose trace was refused or whose
+ * traced build failed to compile. Returns null when it compiles (the failure
+ * is the tracer's), otherwise the untraced compile failure: the learner's own
+ * error, in the learner's lines.
  */
-async function compileUntracedForTraceRefusal(buildPreparedDriver, context) {
+async function compileUntracedProgram({ source, functionName, executionStyle, scriptRequest, timings = {} }) {
+  const driverStartedAt = now();
   let untracedDriverSource;
   try {
-    untracedDriverSource = buildPreparedDriver(false);
+    untracedDriverSource = executionStyle === 'ops-class'
+      ? buildPreparedOpsClassDriverSource(source, functionName, { executionStyle, tracing: false })
+      : scriptRequest
+      ? buildScriptDriverSource(source, { executionStyle, tracing: false })
+      : buildBatchDriverSource(source, functionName, [{}], { executionStyle, tracing: false });
   } catch (error) {
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),
       diagnosticStage: 'compile',
       consoleOutput: [],
-      timings: {
-        driverBuildMs: elapsedMs(context.driverStartedAt),
-        totalMs: elapsedMs(context.startedAt),
-      },
+      timings: { ...timings, driverBuildMs: elapsedMs(driverStartedAt) },
     };
   }
-  const result = await compileAndRun(context.source, context.functionName, {}, {
-    executionStyle: context.executionStyle,
+  const result = await compileAndRun(source, functionName, {}, {
+    executionStyle,
     tracing: false,
     preparedDriverSource: untracedDriverSource,
-    preparedScriptRequest: context.scriptRequest,
-    preparedInputMode: context.scriptRequest ? 'script' : 'named-batch',
+    preparedScriptRequest: scriptRequest,
+    preparedInputMode: scriptRequest ? 'script' : 'named-batch',
     prepareOnly: true,
-    timings: {
-      driverBuildMs: elapsedMs(context.driverStartedAt),
-    },
+    timings: { ...timings, driverBuildMs: elapsedMs(driverStartedAt) },
   });
   return result?.success ? null : result;
 }
@@ -16625,14 +16842,7 @@ async function handlePrepareRuntimeProgram(payload) {
       // certain what the program is). If the program does not compile at
       // all, that is the learner's compile error and is reported as such;
       // otherwise the refusal is a provider failure, never the learner's.
-      const untracedCompile = await compileUntracedForTraceRefusal(buildPreparedDriver, {
-        source,
-        functionName,
-        executionStyle,
-        scriptRequest,
-        driverStartedAt,
-        startedAt,
-      });
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest });
       if (untracedCompile) return untracedCompile;
       throw error;
     }
@@ -16663,6 +16873,14 @@ async function handlePrepareRuntimeProgram(payload) {
     },
   });
   if (!result?.success) {
+    if (tracing && isCppCompileStageFailure(result)) {
+      // Compile safety net: a traced build that does not compile is either
+      // the learner's error (the untraced build fails too: report that one)
+      // or the instrumentation's (refuse tracing; never the learner's).
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest });
+      if (untracedCompile) return untracedCompile;
+      throw cppTracedCompileFailureRefusal(result);
+    }
     return result;
   }
   if (!result.preparedArtifact?.programModule) {
@@ -17373,8 +17591,13 @@ async function handleExecuteTraceBatch(payload) {
     });
   } catch (error) {
     // Tracing refused (it would change the program): a provider failure for
-    // the client to report, never the learner's compile error.
-    if (isCppTraceUnsupportedError(error)) throw error;
+    // the client to report, never the learner's compile error, unless the
+    // program does not compile at all.
+    if (isCppTraceUnsupportedError(error)) {
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false });
+      if (!untracedCompile) throw error;
+      return failedBatchResult(untracedCompile.error);
+    }
     return failedBatchResult(error instanceof Error ? error.message : String(error));
   }
 
@@ -17387,6 +17610,18 @@ async function handleExecuteTraceBatch(payload) {
     batchTrace: true,
     inputBatch,
   });
+
+  if (!Array.isArray(result?.results) && isCppCompileStageFailure(result)) {
+    // Compile safety net (see handlePrepareRuntimeProgram).
+    const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false });
+    if (!untracedCompile) throw cppTracedCompileFailureRefusal(result);
+    Object.assign(result, {
+      error: untracedCompile.error,
+      diagnosticStage: untracedCompile.diagnosticStage,
+      ...(untracedCompile.errorLine !== undefined ? { errorLine: untracedCompile.errorLine } : {}),
+      ...(untracedCompile.diagnostic !== undefined ? { diagnostic: untracedCompile.diagnostic } : {}),
+    });
+  }
 
   if (!Array.isArray(result?.results)) {
     const diagnostics = [
@@ -17470,12 +17705,30 @@ async function handleExecuteWithTracing(payload) {
     };
   }
 
+  const traceRequestShape = {
+    source,
+    functionName,
+    executionStyle: payload?.executionStyle || 'solution-method',
+    scriptRequest: payload?.executionStyle === 'function' && !functionName.trim(),
+  };
   try {
-    const result = await compileAndRun(source, functionName, payload?.inputs || {}, {
+    let result = await compileAndRun(source, functionName, payload?.inputs || {}, {
       tracing: true,
       traceOptions: payload?.options || {},
       executionStyle: payload?.executionStyle || 'solution-method',
     });
+    if (isCppCompileStageFailure(result)) {
+      // Compile safety net (see handlePrepareRuntimeProgram).
+      const untracedCompile = await compileUntracedProgram(traceRequestShape);
+      if (!untracedCompile) throw cppTracedCompileFailureRefusal(result);
+      result = {
+        ...result,
+        error: untracedCompile.error,
+        diagnosticStage: untracedCompile.diagnosticStage,
+        ...(untracedCompile.errorLine !== undefined ? { errorLine: untracedCompile.errorLine } : {}),
+        ...(untracedCompile.diagnostic !== undefined ? { diagnostic: untracedCompile.diagnostic } : {}),
+      };
+    }
     if (result.trace) return result;
     const trace = finalizeRuntimeTrace([{ kind: 'exception', line: result.errorLine || 1, message: result.error || 'C++ tracing failed.' }]).trace;
     return {
@@ -17488,10 +17741,16 @@ async function handleExecuteWithTracing(payload) {
     };
   } catch (error) {
     // Tracing refused (it would change the program): a provider failure for
-    // the client to report, never the learner's compile error.
-    if (isCppTraceUnsupportedError(error)) throw error;
+    // the client to report, never the learner's compile error, unless the
+    // program does not compile at all.
+    let failure = error;
+    if (isCppTraceUnsupportedError(error)) {
+      const untracedCompile = await compileUntracedProgram(traceRequestShape);
+      if (!untracedCompile) throw error;
+      failure = new Error(untracedCompile.error);
+    }
     const trace = finalizeRuntimeTrace([
-      { kind: 'exception', line: 1, message: error instanceof Error ? error.message : String(error) },
+      { kind: 'exception', line: 1, message: failure instanceof Error ? failure.message : String(failure) },
     ]).trace;
     return {
       success: false,
