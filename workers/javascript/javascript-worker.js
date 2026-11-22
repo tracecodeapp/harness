@@ -1829,8 +1829,11 @@ function normalizeTracePathSegment(index, serializePathValue) {
   if (typeof index === 'number' && Number.isInteger(index)) return Math.trunc(index);
   if (typeof index === 'string' && index.length > 0) return index;
   if (index && typeof index === 'object') {
-    if (typeof index.__id__ === 'string' && index.__id__.length > 0) return index.__id__;
-    if (typeof index.__ref__ === 'string' && index.__ref__.length > 0) return index.__ref__;
+    // Own data properties only: a key's getter never runs.
+    const idDescriptor = Object.getOwnPropertyDescriptor(index, '__id__');
+    if (idDescriptor && typeof idDescriptor.value === 'string' && idDescriptor.value.length > 0) return idDescriptor.value;
+    const refDescriptor = Object.getOwnPropertyDescriptor(index, '__ref__');
+    if (refDescriptor && typeof refDescriptor.value === 'string' && refDescriptor.value.length > 0) return refDescriptor.value;
     if (typeof serializePathValue === 'function') {
       const serialized = serializePathValue(index);
       if (serialized && typeof serialized === 'object') {
@@ -2553,6 +2556,15 @@ function createTraceRecorder(options = {}) {
       });
     },
     recordAccess(event) {
+      // Recording is an observation: a failure while recording (an exotic
+      // learner value) skips the record; it never becomes the learner's error.
+      try {
+        this.recordAccessUnchecked(event);
+      } catch (error) {
+        if (error && typeof error === 'object' && error.__traceLimitExceeded === true) throw error;
+      }
+    },
+    recordAccessUnchecked(event) {
       if (traceLimitExceeded) {
         return;
       }
