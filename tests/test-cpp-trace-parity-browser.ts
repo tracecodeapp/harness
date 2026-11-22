@@ -451,6 +451,24 @@ const ORDINARY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // Interview references (recipe-batch-calculator, pubsub-broker,
+    // rate-limiter-enforcement): a const map iterated, a mapped deque bound
+    // by auto& and popped.
+    name: 'const maps iterated and mapped values bound by reference',
+    body: [
+      '    map<string, int> stock = {{"a", a + 2}, {"b", b + 1}};',
+      '    const map<string, int>& view = stock;',
+      '    for (const auto& [name, count] : view) k += count;',
+      '    unordered_map<string, deque<int>> queues;',
+      '    string user = "u";',
+      '    auto& queue = queues[user];',
+      '    queue.push_back(t);',
+      '    queue.push_back(t + 1);',
+      '    queue.pop_front();',
+      '    k += queue.front() * 100 + (int)queues[user].size() * 1000;',
+    ].join('\n'),
+  },
+  {
     name: 'references bound to a row and to an element',
     body: [
       '    vector<vector<int>> dp(3, vector<int>(3, 0));',

@@ -9364,6 +9364,11 @@ function cppMatchingOpenBracket(text, closeIndex) {
 // duration of one instrumentCppSourceForTracing call.
 let activeCppReferenceParameterCallees = new Map();
 
+// `name@declarationLine` of local maps the tracer leaves unwrapped (a value
+// is bound by `auto&` to its proxy otherwise): their accesses stay the
+// learner's. Set for the duration of one instrumentCppSourceForTracing call.
+let activeCppUnwrappedMapLocals = new Set();
+
 function collectCppReferenceParameterCallees(signatures) {
   const callees = new Map();
   const add = (name, positions) => {
@@ -9534,10 +9539,45 @@ const CPP_READ_HELPER_SOURCE = [
   '}',
 ].join('\n');
 
+// Range-for over a map the tracer does not wrap, or a const one (`const
+// map<K, V>& m` parameters, members in a const method): the runtime's
+// keyed_range_readable takes only its own non-const maps. This fallback
+// iterates the map itself; the runtime's overloads stay the better match for
+// the maps they take.
+const CPP_KEYED_RANGE_FALLBACK_SOURCE = [
+  'namespace tracecode {',
+  'template <typename __TcContainer>',
+  'inline __TcContainer& keyed_range_readable(__TcContainer& container, int, const char* = nullptr, const char* = nullptr) { return container; }',
+  '}',
+].join('\n');
+
+// A trie-like node whose children are a map keyed by strings (or any key):
+// the runtime serializes vector, array and unordered_map<char> children only.
+// Declared in the global namespace, where argument-dependent lookup finds it
+// from the runtime's serializer for the learner's node type.
+const CPP_TRIE_MAP_CHILDREN_SOURCE = [
+  'template <typename __TcKey, typename __TcNode, typename __TcCompare, typename __TcAllocator>',
+  'std::string to_json_trie_children(const std::map<__TcKey, __TcNode*, __TcCompare, __TcAllocator>& children, std::unordered_map<const void*, std::string>& refs) {',
+  '  std::string json = "{";',
+  '  bool first = true;',
+  '  for (const auto& entry : children) {',
+  '    if (entry.second == nullptr) continue;',
+  '    if (!first) json += ",";',
+  '    first = false;',
+  '    json += tracecode::to_json(entry.first) + ":" + tracecode::to_json_trie_like_node(entry.second, refs);',
+  '  }',
+  '  json += "}";',
+  '  return json;',
+  '}',
+].join('\n');
+const CPP_TRIE_MAP_CHILDREN_DECLARATION = /\bmap\s*<[^;{}]*\*\s*>\s+children\b/;
+
 const CPP_ELEMENT_HELPER_SOURCE = [
   '#line 1 "TraceCodeDriver.cpp"',
   'template <typename __TcRef> struct __tracecode_is_element_ref : std::false_type {};',
   'template <typename __TcT> struct __tracecode_is_element_ref<tracecode::VectorElementRef<__TcT>> : std::true_type {};',
+  'template <typename __TcK, typename __TcV> struct __tracecode_is_element_ref<tracecode::MapValueRef<__TcK, __TcV>> : std::true_type {};',
+  'template <typename __TcK, typename __TcV> struct __tracecode_is_element_ref<tracecode::UnorderedMapValueRef<__TcK, __TcV>> : std::true_type {};',
   'template <typename __TcElement> inline decltype(auto) __tracecode_element(__TcElement&& __tc_element) {',
   '  if constexpr (__tracecode_is_element_ref<std::remove_cvref_t<__TcElement>>::value) return (__tc_element.get());',
   '  else return std::forward<__TcElement>(__tc_element);',
@@ -10006,15 +10046,16 @@ function isKeyedIndexSourceInstrumentableCppType(type, aliases = new Map()) {
   return isUnorderedMapCppType(type, aliases) || isMapCppType(type, aliases);
 }
 
-function isKeyedIndexSourceInstrumentableVariable(variable, aliases = new Map()) {
+function isKeyedIndexSourceInstrumentableVariable(variable, aliases = new Map(), name = '') {
   if (!variable || !isKeyedIndexSourceInstrumentableCppType(variable.type, aliases)) return false;
   if (variable.parameter && !variable.traceWrapped) return false;
+  if (name && activeCppUnwrappedMapLocals.has(`${name}@${variable.declarationLine}`)) return false;
   return true;
 }
 
 function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new Map(), lineNumber = 0) {
   const candidateNames = [...(variables || []).entries()]
-    .filter(([, variable]) => isKeyedIndexSourceInstrumentableVariable(variable, aliases))
+    .filter(([name, variable]) => isKeyedIndexSourceInstrumentableVariable(variable, aliases, name))
     .map(([name]) => name)
     .sort((left, right) => right.length - left.length);
   if (candidateNames.length === 0) return line;
@@ -10068,7 +10109,13 @@ function rewriteKeyedIndexSourceInstrumentation(line, variables, aliases = new M
       }
       const indexExpression = rewritten.slice(bracketIndex + 1, closeIndex).trim();
       const indexSource = cppIndexSourceForExpression(indexExpression);
-      const replacement = `${name}.with_index_source(${indexExpression}, ${indexSource}, ${lineNumber})`;
+      const keyedAccess = `${name}.with_index_source(${indexExpression}, ${indexSource}, ${lineNumber})`;
+      // `auto& queue = queues[user]`: the reference binds the mapped value
+      // itself (the proxy cannot bind to `auto&`), read through the helper.
+      const beforeAccess = rewritten.slice(0, nameIndex).replace(/\s+$/, '');
+      const replacement = CPP_REFERENCE_BINDING_ASSIGNMENT.test(beforeAccess) || CPP_REFERENCE_DECLARATION_OPEN.test(beforeAccess)
+        ? `__tracecode_element(${keyedAccess})`
+        : keyedAccess;
       rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
       cursor = nameIndex + replacement.length;
     }
@@ -10587,7 +10634,7 @@ function detectMapIteratorAlias(line, variables, aliases = new Map(), scopeDepth
   if (!match) return null;
   const [, iteratorName, containerName, keySource] = match;
   const variable = variables?.get(containerName);
-  if (!isKeyedIndexSourceInstrumentableVariable(variable, aliases)) return null;
+  if (!isKeyedIndexSourceInstrumentableVariable(variable, aliases, containerName)) return null;
   const keyExpression = splitTopLevelCommaList(keySource)[0]?.trim();
   return {
     name: iteratorName,
@@ -10622,6 +10669,19 @@ function rewriteMapIteratorSecondMutationInstrumentation(line, lineNumber, itera
  * it the element.
  */
 function rewriteTraceContainerProxyReferences(line, variables, aliases = new Map()) {
+  // `auto& dq = counts_[user]` on a map (a traced map's subscript is a value
+  // proxy, which cannot bind to `auto&`) or on a name not known here (a
+  // member): the element helper yields the mapped value itself, and is the
+  // identity for anything that is not a proxy.
+  const keyed = line.match(/^(\s*(?:const\s+)?auto\s*&\s*[A-Za-z_]\w*\s*=\s*)((?:this\s*->\s*)?([A-Za-z_]\w*)\s*\[[^\[\];]+\])(\s*;\s*)$/);
+  if (keyed) {
+    const [, declaration, access, name, suffix] = keyed;
+    const type = variables?.get(name)?.type;
+    if (!type || isUnorderedMapCppType(type, aliases) || isMapCppType(type, aliases)) {
+      return `${declaration}__tracecode_element(${access})${suffix}`;
+    }
+    return line;
+  }
   const match = line.match(/^(\s*(?:const\s+)?auto\s*&\s*[A-Za-z_]\w*\s*=\s*)([A-Za-z_]\w*)(\s*\.\s*(?:front|back)\s*\(\s*\))(\s*;\s*)$/);
   if (!match) return line;
   const [, declaration, name, access, suffix] = match;
@@ -10787,7 +10847,10 @@ function rewriteTraceContainerLocal(line, lineNumber, aliases = new Map(), sourc
     normalizeCppType(declaredType, aliases).startsWith('deque<') &&
     localDequeUsedWithStructuredFrontBackBinding(source, name)
   ) return line;
-  if (hasUnsafeMapProxyAutoReferenceBinding(declaredType, source, name, aliases)) return line;
+  if (hasUnsafeMapProxyAutoReferenceBinding(declaredType, source, name, aliases)) {
+    activeCppUnwrappedMapLocals.add(`${name}@${lineNumber}`);
+    return line;
+  }
   const normalized = normalizeCppType(declaredType, aliases);
   const kind = normalized.slice(0, normalized.indexOf('<'));
   const initializerType = resolveCppType(declaredType, aliases)
@@ -12104,15 +12167,20 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
     const instrumented = instrumentCppLinesForTracing();
     const usesElementHelper = instrumented.includes('__tracecode_element(');
     const usesReadHelpers = /\btracecode::trace_(?:index|index_field|nested_index)_read_ref\(/.test(instrumented);
-    if (!usesElementHelper && !usesReadHelpers) return instrumented;
+    const usesKeyedRange = instrumented.includes('tracecode::keyed_range_readable(');
+    const hasTrieMapChildren = CPP_TRIE_MAP_CHILDREN_DECLARATION.test(stripCppStringsAndComments(source));
+    if (!usesElementHelper && !usesReadHelpers && !usesKeyedRange && !hasTrieMapChildren) return instrumented;
     // CPP_ELEMENT_HELPER_SOURCE starts with the driver's #line.
     return [
       usesElementHelper ? CPP_ELEMENT_HELPER_SOURCE : '#line 1 "TraceCodeDriver.cpp"',
       ...(usesReadHelpers ? [CPP_READ_HELPER_SOURCE] : []),
+      ...(usesKeyedRange ? [CPP_KEYED_RANGE_FALLBACK_SOURCE] : []),
+      ...(hasTrieMapChildren ? [CPP_TRIE_MAP_CHILDREN_SOURCE] : []),
       instrumented,
     ].join('\n');
   } finally {
     activeCppReferenceParameterCallees = new Map();
+    activeCppUnwrappedMapLocals = new Set();
   }
 
   function instrumentCppLinesForTracing() {

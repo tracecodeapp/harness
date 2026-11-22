@@ -1128,6 +1128,17 @@ for (const accepted of ACCEPTED_MACROS) {
       present: 'trace_nested_index_ref(freqs, "freqs", 0, \'z\', nullptr, "\'z\'") += 1;',
       absent: 'trace_nested_index_read_ref(freqs',
     },
+    // Round 6: interview references whose traced build did not compile.
+    {
+      name: 'auto& to a mapped value binds the value through the element helper',
+      body: '    unordered_map<string, deque<int>> queues;\n    string user = "u";\n    auto& queue = queues[user];\n    queue.push_back(1);\n    queue.pop_front();',
+      present: 'auto& queue = __tracecode_element(queues',
+    },
+    {
+      name: 'auto& to a subscript of an unknown name (a member) binds through the element helper',
+      body: '    auto& dq = allowed_[s];\n    k += (int)dq.size();',
+      present: 'auto& dq = __tracecode_element(allowed_[s]);',
+    },
     // Round 4, item 4: fill binds its argument by const reference.
     {
       name: 'fill with std::move binds by const reference, without a move',
@@ -1154,6 +1165,15 @@ for (const accepted of ACCEPTED_MACROS) {
     }
     results.push({ name: `single evaluation, no write through a copy: ${testCase.name}`, failures });
   }
+  // Round 6: a keyed range-for comes with the fallback overload that takes
+  // const and unwrapped maps (the runtime's takes only its own non-const ones).
+  const keyedRange = instrumentBody(prelude, '    map<string, int> stock = {{"a", 1}};\n    const map<string, int>& view = stock;\n    for (const auto& [name, count] : view) k += count;');
+  results.push({
+    name: 'a keyed range-for has the fallback keyed_range_readable for const maps',
+    failures: keyedRange.includes('tracecode::keyed_range_readable(') && !keyedRange.includes('inline __TcContainer& keyed_range_readable(')
+      ? ['the keyed range has no fallback overload']
+      : [],
+  });
   // Reads keep their read events.
   const reads = instrumentBody(prelude, '    vector<QQ> qs(3);\n    vector<string> names(3);\n    int i = 0;\n    k = qs[i].val + (int)names[i].size();');
   results.push({
