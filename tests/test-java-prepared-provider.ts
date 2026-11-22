@@ -962,6 +962,7 @@ test('a Java trace the client cannot read back refuses only that recorded case, 
   const replies: unknown[] = [
     { success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
     { success: true, output: 2, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
+    { success: true, output: 9, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}' },
     { success: true, output: 3, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: [] },
   ];
   const batchReply = {
@@ -1010,6 +1011,16 @@ test('a Java trace the client cannot read back refuses only that recorded case, 
     await assert.rejects(
       client.executePreparedWithTracing('prepared', { inputs: {}, recordTrace: false }),
       (error: unknown) => !isTraceUnavailableError(error)
+    );
+    // A success reply without an events array is a broken reply, not a case
+    // the runtime could not trace.
+    await assert.rejects(
+      client.executePreparedWithTracing('prepared', { inputs: {} }),
+      (error: unknown) => {
+        assert.ok(!isTraceUnavailableError(error), String(error));
+        assert.equal((error as { reason?: string }).reason, 'protocol');
+        return true;
+      }
     );
     const traced = await client.executePreparedWithTracing('prepared', { inputs: {} });
     assert.equal(traced.output, 3);
