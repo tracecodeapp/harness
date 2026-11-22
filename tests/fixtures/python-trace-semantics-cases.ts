@@ -795,4 +795,23 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [[7, 0], [9, 9, 9], 1, [[0, 3]]] },
   },
+  // Recording extend reads the appended cells back; it never iterates the
+  // argument again (a builtin zip over a learner iterator).
+  {
+    id: 'extend-records-without-reiterating',
+    code: lines(
+      'from collections import deque',
+      'def solve():',
+      '    it = iter([1, 2, 3, 4, 5, 6])',
+      '    a = []',
+      '    a.extend(zip(it, [0]))',
+      '    grid = [[], []]',
+      '    grid[1].extend(map(lambda x: x * 10, it))',
+      '    q = deque([0])',
+      '    rest = iter([7, 8, 9])',
+      '    q.extend(zip(rest, "a"))',
+      '    return [a, grid, list(q), list(rest)]',
+    ),
+    expected: { value: [[[1, 0]], [[], [30, 40, 50, 60]], [0, [7, 'a']], [9]] },
+  },
 ];

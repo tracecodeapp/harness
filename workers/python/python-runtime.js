@@ -4650,16 +4650,16 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
                     __tracecode_make_access_event(var_name, 'indexed-write', [0], value=_serialize(args[0])),
                 )
             elif method_name == 'extend' and len(args) >= 1:
+                # The appended cells are read back from the container (an
+                # exact list or deque): iterating the argument again would
+                # consume a learner iterator (zip(it, ...)) a second time.
                 try:
                     budget = __tracecode_pending_access_budget(frame)
-                    if not __tracecode_is_runtime_value(args[0]):
-                        raise _TracecodePeekRefused()
-                    for offset, value in enumerate(args[0]):
-                        if offset >= budget:
-                            break
+                    added = len(container) - before_len
+                    for offset in range(max(0, min(added, budget))):
                         __tracecode_record_access(
                             frame,
-                            __tracecode_make_access_event(var_name, 'indexed-write', [before_len + offset], value=_serialize(value)),
+                            __tracecode_make_access_event(var_name, 'indexed-write', [before_len + offset], value=_serialize(container[before_len + offset])),
                         )
                 except Exception:
                     pass
@@ -4726,16 +4726,14 @@ def _tracecode_mutating_index_call(bound, /, *args, **kwargs):
                     __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [0], index_sources=list(index_sources or []) + [None], value=_serialize(args[0])),
                 )
             elif method_name == 'extend' and len(args) >= 1:
+                # Read back from the target (see _tracecode_mutating_call).
                 try:
                     budget = __tracecode_pending_access_budget(frame)
-                    if not __tracecode_is_runtime_value(args[0]):
-                        raise _TracecodePeekRefused()
-                    for offset, value in enumerate(args[0]):
-                        if offset >= budget:
-                            break
+                    added = len(target) - before_len
+                    for offset in range(max(0, min(added, budget))):
                         __tracecode_record_access(
                             frame,
-                            __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [before_len + offset], index_sources=list(index_sources or []) + [None], value=_serialize(value)),
+                            __tracecode_make_access_event(var_name, 'indexed-write', list(normalized) + [before_len + offset], index_sources=list(index_sources or []) + [None], value=_serialize(target[before_len + offset])),
                         )
                 except Exception:
                     pass
