@@ -73,6 +73,8 @@ jobs:
         run: pnpm test:workspace-authority-browser
       - name: Test JavaScript SES browser provider integration
         run: pnpm test:javascript-ses-provider-browser
+      - name: Test that untraced decides whether traced JavaScript and TypeScript compile
+        run: pnpm test:javascript-trace-compile
       - name: Test Python public browser Judge boundary
         run: TRACECODE_ALGORITHM_BATCH_LANGUAGES=python TRACECODE_PYTHON_COMPATIBILITY_CASES=3 pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts
       - name: Test process and engine-lease regressions
