@@ -8364,11 +8364,18 @@ ${executionCallInNestedTry}
             if _tracecode_execution_user_frames
             else None
         )
-        _tracecode_execution_message = (
-            'the program exited with status ' + str(_tracecode_execution_error.code)
-            if isinstance(_tracecode_execution_error, SystemExit)
-            else str(_tracecode_execution_error).strip().split('\\n')[0]
-        )
+        # Formatting runs the learner's __str__; a failure there keeps the
+        # program's own failure, in the batch runner's wording.
+        try:
+            _tracecode_execution_message = (
+                'the program exited with status ' + str(_tracecode_execution_error.code)
+                if isinstance(_tracecode_execution_error, SystemExit)
+                else str(_tracecode_execution_error).strip().split('\\n')[0]
+            )
+        except _InterviewGuardTriggered:
+            raise
+        except BaseException:
+            _tracecode_execution_message = 'Execution failed'
         _tracecode_execution_prefix = type(
             _tracecode_execution_error
         ).__name__
