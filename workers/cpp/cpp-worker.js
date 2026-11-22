@@ -7930,11 +7930,49 @@ function buildCurrentLineInstrumentation(lineNumber) {
   return `tracecode::TraceHooks::setCurrentLine(${lineNumber});`;
 }
 
+/**
+ * Whether a condition declares a variable (`unsigned long n = f()`,
+ * `const auto& [a, b] = p`, `std::vector<int>::size_type i{0}`, `T* p = q`)
+ * rather than being an expression: a type of one or more words (with `::`,
+ * template arguments, `*`, `&`) followed by a name and `=` or `{`. An
+ * expression never has two names in a row before an `=`.
+ */
 function isCppDeclarationCondition(condition) {
-  // `T name = value`, `T* name = value`, `auto& [a, b] = value`, `T name{value}`.
-  return /^(?:const\s+|constexpr\s+|volatile\s+)*[A-Za-z_][\w:]*(?:\s*<[^;]*>)?(?:\s*[*&]+\s*|\s+)(?:[A-Za-z_]\w*|\[[^\]]*\])\s*(?:=(?!=)|\{)/.test(
-    stripCppStringsAndComments(condition).trim()
-  );
+  const tokens = tokenizeCppForControlNormalization(String(condition || ''), { preprocessor: false })
+    .filter((token) => token.kind !== 'comment');
+  const isPunct = (index, text) => tokens[index]?.kind === 'punct' && tokens[index].text === text;
+  const startsInitializer = (index) => (isPunct(index, '=') && !isPunct(index + 1, '=')) || isPunct(index, '{');
+  let typeWords = 0;
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.kind === 'ident') {
+      if (typeWords > 0 && startsInitializer(index + 1)) return true;
+      typeWords += 1;
+      index += 1;
+    } else if (isPunct(index, '::')) {
+      index += 1;
+    } else if (typeWords > 0 && isPunct(index, '<')) {
+      let depth = 0;
+      let cursor = index;
+      for (; cursor < tokens.length; cursor += 1) {
+        if (isPunct(cursor, '<')) depth += 1;
+        else if (isPunct(cursor, '>') && --depth === 0) break;
+        else if (isPunct(cursor, ';') || isPunct(cursor, '{') || isPunct(cursor, '=')) return false;
+      }
+      if (cursor >= tokens.length) return false;
+      index = cursor + 1;
+    } else if (typeWords > 0 && (isPunct(index, '*') || isPunct(index, '&'))) {
+      index += 1;
+    } else if (typeWords > 0 && isPunct(index, '[')) {
+      let cursor = index;
+      while (cursor < tokens.length && !isPunct(cursor, ']')) cursor += 1;
+      return startsInitializer(cursor + 1);
+    } else {
+      return false;
+    }
+  }
+  return false;
 }
 
 function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(), aliases = new Map()) {
@@ -7962,6 +8000,8 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
   if (keyword === 'for') {
     const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
     if (parts.length !== 3 || !parts[1].trim()) return line;
+    // `for (...; T x = f(); ...)` declares in its condition: not an expression.
+    if (isCppDeclarationCondition(parts[1])) return line;
     let condition = rewriteFieldContainerCountInstrumentation(parts[1].trim(), lineNumber);
     condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     rewrittenSource = `${parts[0]}; tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); }); ${parts[2]}`;
@@ -10592,6 +10632,20 @@ const CPP_NORMALIZER_STATEMENT_KEYWORDS = new Set([
   'if', 'for', 'while', 'do', 'switch', 'else', 'try', 'case', 'default',
 ]);
 const CPP_NORMALIZER_VIRTUAL_BREAK = '\u0000';
+// A statement keyword cannot appear inside an expression statement unless a
+// macro put it there; such a statement's extent is unknown.
+const CPP_NORMALIZER_EXPRESSION_STOP_KEYWORDS = new Set([
+  'if', 'else', 'for', 'while', 'do', 'switch', 'try', 'catch', 'case', 'default', 'return', 'break', 'continue', 'goto',
+]);
+const CPP_NORMALIZER_PARSE_FAILURES = {
+  preprocessor: 'a preprocessor directive inside a control statement whose body has no braces',
+  attribute: 'an attributed statement as the body of a control statement',
+  'macro-header': 'a control statement whose body the tracer cannot delimit (a macro hides part of it)',
+};
+const CPP_TRACE_LOCATION_IDENTIFIERS = new Set([
+  '__func__', '__FUNCTION__', '__PRETTY_FUNCTION__', 'source_location',
+  '__builtin_FUNCTION', '__builtin_COLUMN', '__builtin_source_location',
+]);
 
 function tokenizeCppForControlNormalization(source, { preprocessor = true } = {}) {
   const tokens = [];
@@ -10765,13 +10819,14 @@ function matchCppNormalizerBrackets(tokens) {
   return stack.length === 0 ? match : null;
 }
 
+const CPP_MACRO_JUMP_KEYWORDS = new Set(['return', 'break', 'continue', 'goto', 'case', 'default', 'try', 'catch']);
+
 /**
- * User macros whose expansion is not a single expression or a whole
- * statement. `statement`: expands to several statements or an `if`/`else`
- * (braces around it change its meaning). `header`: expands to an open loop or
- * branch header that takes the next statement as its body.
+ * The user's own macros (`#define` in the learner's source), with what their
+ * replacement contains at its top level (outside brackets). Library macros
+ * (assert, INT_MAX) are not visible here and are expressions by convention.
  */
-function collectCppStatementMacros(tokens) {
+function collectCppUserMacros(tokens) {
   const macros = new Map();
   for (const token of tokens) {
     if (token.kind !== 'pp') continue;
@@ -10780,47 +10835,77 @@ function collectCppStatementMacros(tokens) {
     if (!define) continue;
     let replacement = directive.slice(define[0].length);
     const functionLike = Boolean(define[2]);
+    const params = new Set();
     if (functionLike) {
       const close = replacement.indexOf(')');
-      if (close < 0) continue;
+      if (close < 0) {
+        macros.set(define[1], { functionLike, unknown: true });
+        continue;
+      }
+      for (const param of replacement.slice(0, close).split(',')) params.add(param.trim());
       replacement = replacement.slice(close + 1);
     }
     replacement = replacement.trim();
-    if (!replacement) continue;
-    if (/^do\s*\{[\s\S]*\}\s*while\s*\(\s*(?:0|false)\s*\)$/.test(replacement)) continue;
     const replacementTokens = tokenizeCppForControlNormalization(replacement, { preprocessor: false })
       .filter((entry) => entry.kind !== 'comment');
+    const own = { unbalanced: false, splits: false, branch: false, header: false, jump: false, paste: false };
     let depth = 0;
-    let balanced = true;
-    let splitsStatements = false;
-    let opensHeader = false;
     for (const entry of replacementTokens) {
       if (entry.kind === 'punct' && (entry.text === '(' || entry.text === '[' || entry.text === '{')) {
         depth += 1;
       } else if (entry.kind === 'punct' && (entry.text === ')' || entry.text === ']' || entry.text === '}')) {
         depth -= 1;
-        if (depth < 0) balanced = false;
+        if (depth < 0) own.unbalanced = true;
+      } else if (entry.kind === 'punct' && entry.text === '#') {
+        own.paste = true;
       } else if (depth === 0 && entry.kind === 'punct' && entry.text === ';') {
-        splitsStatements = true;
-      } else if (depth === 0 && entry.kind === 'ident' && (entry.text === 'if' || entry.text === 'else')) {
-        splitsStatements = true;
-      } else if (depth === 0 && entry.kind === 'ident' && /^(?:for|while|switch|do)$/.test(entry.text)) {
-        opensHeader = true;
+        own.splits = true;
+      } else if (depth === 0 && entry.kind === 'ident') {
+        if (entry.text === 'if' || entry.text === 'else') own.branch = true;
+        else if (/^(?:for|while|switch|do)$/.test(entry.text)) own.header = true;
+        else if (CPP_MACRO_JUMP_KEYWORDS.has(entry.text)) own.jump = true;
       }
     }
-    if (depth !== 0) balanced = false;
-    const last = replacementTokens.at(-1);
-    const openEnded = !last || !(last.kind === 'punct' && (last.text === ';' || last.text === '}'));
-    if (!balanced || splitsStatements) {
-      macros.set(define[1], { kind: 'statement', functionLike, header: (opensHeader || splitsStatements) && openEnded });
-    } else if (opensHeader) {
-      macros.set(define[1], { kind: 'header', functionLike, header: openEnded });
-    }
+    if (depth !== 0) own.unbalanced = true;
+    // `do { ... } while (0)`: one complete statement, whatever is inside.
+    const doWhileZero = !own.unbalanced && /^do\s*\{[\s\S]*\}\s*while\s*\(\s*(?:0|false)\s*\)$/.test(replacement);
+    const references = new Set(
+      replacementTokens
+        .filter((entry) => entry.kind === 'ident' && !params.has(entry.text))
+        .map((entry) => entry.text)
+    );
+    macros.set(define[1], { functionLike, own, doWhileZero, references });
   }
   return macros;
 }
 
-function normalizeCppControlBodiesForTracing(source) {
+/**
+ * What a user macro can expand to, through every user macro it names
+ * (aliases, nested macros), conservatively: a cycle or an unparsable
+ * definition is `unknown`.
+ */
+function cppUserMacroFeatures(macros, name, visiting = new Set()) {
+  const macro = macros.get(name);
+  const features = { unbalanced: false, splits: false, branch: false, header: false, jump: false, paste: false, unknown: false };
+  if (!macro) return features;
+  if (macro.unknown || visiting.has(name) || visiting.size > 32) return { ...features, unknown: true };
+  if (macro.doWhileZero) return features;
+  Object.assign(features, macro.own);
+  visiting.add(name);
+  for (const reference of macro.references) {
+    if (!macros.has(reference)) continue;
+    const nested = cppUserMacroFeatures(macros, reference, visiting);
+    for (const key of Object.keys(features)) features[key] ||= nested[key];
+  }
+  visiting.delete(name);
+  return features;
+}
+
+function isCppExpressionMacroFeatures(features) {
+  return !Object.values(features).some(Boolean);
+}
+
+function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } = {}) {
   const identity = () => {
     const lines = source.split(/\r?\n/);
     return {
@@ -10829,30 +10914,67 @@ function normalizeCppControlBodiesForTracing(source) {
       lastPiece: lines.map(() => true),
     };
   };
-  if (!/\b(?:if|for|while|do|else)\b/.test(source) || source.includes(CPP_NORMALIZER_VIRTUAL_BREAK)) {
-    return identity();
-  }
-  const tokens = tokenizeCppForControlNormalization(source);
-  const sig = tokens.filter((token) => token.kind !== 'comment');
-  const match = matchCppNormalizerBrackets(sig);
-  // Unbalanced brackets: the program does not compile; leave it to the
-  // compiler to say so.
-  if (!match) return identity();
-
-  const isPunct = (index, text) => sig[index]?.kind === 'punct' && sig[index].text === text;
-  const isWord = (index, text) => sig[index]?.kind === 'ident' && sig[index].text === text;
-  const refuse = (index, reason) => {
+  const refuseAtLine = (line, reason) => {
     throw new CppTraceUnsupportedError(
-      `C++ tracing cannot instrument this program without changing its behavior (line ${sig[index]?.line ?? 1}: ${reason}). ` +
+      `C++ tracing cannot instrument this program without changing its behavior (line ${line}: ${reason}). ` +
         'Run it without tracing.'
     );
   };
+  const lineAtOffset = (offset) => source.slice(0, offset).split('\n').length;
+  if (source.includes(CPP_NORMALIZER_VIRTUAL_BREAK)) refuseAtLine(lineAtOffset(source.indexOf(CPP_NORMALIZER_VIRTUAL_BREAK)), 'a NUL character');
+  const tokens = tokenizeCppForControlNormalization(source);
+  const sig = tokens.filter((token) => token.kind !== 'comment');
+
+  // The instrumented source is emitted line by line, each line under its own
+  // #line directive. Constructs that span or depend on physical lines would
+  // change meaning:
+  // - a backslash-newline splices lines before comments and literals are
+  //   recognized (a `//` comment ending in `\` swallows the next line);
+  const ppTokens = tokens.filter((token) => token.kind === 'pp');
+  for (const splice of source.matchAll(/\\\r?\n/g)) {
+    if (!ppTokens.some((token) => splice.index >= token.start && splice.index < token.end)) {
+      refuseAtLine(lineAtOffset(splice.index), 'a backslash at the end of a line continues it onto the next line');
+    }
+  }
+  // - a literal spanning lines (a raw string) would get #line directives
+  //   inside it;
+  const multilineLiteral = tokens.find((token) => token.kind === 'literal' && token.line !== token.endLine);
+  if (multilineLiteral) refuseAtLine(multilineLiteral.line, 'a string literal that spans lines');
+  // - the learner's own #line directives are overridden by the emitter's
+  //   (changing __LINE__, __FILE__ and assert messages); the script wrapper's
+  //   first and last directives are the Harness's own;
+  const lineDirectives = ppTokens.filter((token) => /^#\s*(?:line\b|\d)/.test(token.text));
+  const harnessDirectives = scriptWrapper
+    ? new Set([lineDirectives[0], lineDirectives.at(-1)].filter(
+        (token) => token && new RegExp(`^#line \\d+ "${escapeRegExp(CPP_USER_SOURCE_FILE)}"$`).test(token.text)
+      ))
+    : new Set();
+  const userLineDirective = lineDirectives.find((token) => !harnessDirectives.has(token));
+  if (userLineDirective) refuseAtLine(userLineDirective.line, 'a #line directive');
+  // - instrumentation wraps conditions and calls in lambdas, so the current
+  //   function's name (and a source location's column) would change.
+  const functionNameToken = sig.find(
+    (token) => token.kind === 'ident' && CPP_TRACE_LOCATION_IDENTIFIERS.has(token.text)
+  );
+  if (functionNameToken) refuseAtLine(functionNameToken.line, `${functionNameToken.text} (it names the enclosing function or source column)`);
+
+  const match = matchCppNormalizerBrackets(sig);
+  // Unbalanced brackets: either the program does not compile, or a macro
+  // hides braces (`#define BEGIN {`) and the rewriter would count them wrong.
+  if (!match) refuseAtLine(1, 'brackets that do not balance in the source text');
+
+  const isPunct = (index, text) => sig[index]?.kind === 'punct' && sig[index].text === text;
+  const isWord = (index, text) => sig[index]?.kind === 'ident' && sig[index].text === text;
+  const refuse = (index, reason) => refuseAtLine(sig[index]?.line ?? 1, reason);
 
   // A statement's extent: { end } (exclusive token index), or { error }.
   const parseStatement = (start) => {
     const token = sig[start];
     if (!token) return { error: 'eof' };
     if (token.kind === 'pp') return { error: 'preprocessor', at: start };
+    // `[[likely]] { ... }`, `[[fallthrough]];`: attributed statements are rare
+    // as control bodies; refuse rather than guess their extent.
+    if (isPunct(start, '[') && isPunct(start + 1, '[')) return { error: 'attribute' };
     if (isPunct(start, '{')) return { end: match[start] + 1 };
     if (isPunct(start, ';')) return { end: start + 1 };
     if (token.kind === 'ident') {
@@ -10904,8 +11026,8 @@ function normalizeCppControlBodiesForTracing(source) {
         }
         if (entry.text === ';') return { end: cursor + 1, simple: true };
         if (entry.text === ')' || entry.text === ']' || entry.text === '}') return { error: 'unterminated' };
-      } else if (entry.kind === 'ident' && cursor > start && CPP_NORMALIZER_CONTROL_KEYWORDS.has(entry.text)) {
-        // Only a macro can put a control keyword inside an expression
+      } else if (entry.kind === 'ident' && cursor > start && CPP_NORMALIZER_EXPRESSION_STOP_KEYWORDS.has(entry.text)) {
+        // Only a macro can put a statement keyword inside an expression
         // statement (`REP(i, n) if (...)`); its extent is unknown.
         return { error: 'macro-header' };
       }
@@ -10929,11 +11051,14 @@ function normalizeCppControlBodiesForTracing(source) {
   // `consteval`/`!consteval` with a required block.
   const parseIfHeader = (keywordIndex) => {
     let cursor = keywordIndex + 1;
+    // `if constexpr` / `if consteval`: the rewriter's patterns expect `(`
+    // right after `if`, so these clauses are always given explicit braces.
+    const special = isWord(cursor, 'constexpr') || isPunct(cursor, '!') || isWord(cursor, 'consteval');
     if (isWord(cursor, 'constexpr')) cursor += 1;
     if (isPunct(cursor, '!')) cursor += 1;
-    if (isWord(cursor, 'consteval')) return isPunct(cursor + 1, '{') ? { headerEnd: cursor } : null;
+    if (isWord(cursor, 'consteval')) return isPunct(cursor + 1, '{') ? { headerEnd: cursor, special } : null;
     if (!isPunct(cursor, '(')) return null;
-    return { headerEnd: match[cursor] };
+    return { headerEnd: match[cursor], special };
   };
 
   function parseIf(start) {
@@ -10941,7 +11066,7 @@ function normalizeCppControlBodiesForTracing(source) {
     if (!header) return { error: 'header' };
     const thenBody = parseBody(header.headerEnd + 1);
     if (thenBody.error) return thenBody;
-    const clauses = [{ keywordIndex: start, headerEnd: header.headerEnd, body: thenBody }];
+    const clauses = [{ keywordIndex: start, headerEnd: header.headerEnd, body: thenBody, special: header.special }];
     let cursor = thenBody.end;
     while (isWord(cursor, 'else')) {
       const elseIndex = cursor;
@@ -10953,7 +11078,7 @@ function normalizeCppControlBodiesForTracing(source) {
         if (!elseIfHeader) return { error: 'header' };
         const body = parseBody(elseIfHeader.headerEnd + 1);
         if (body.error) return body;
-        clauses.push({ elseIndex, keywordIndex: cursor + 1, headerEnd: elseIfHeader.headerEnd, body });
+        clauses.push({ elseIndex, keywordIndex: cursor + 1, headerEnd: elseIfHeader.headerEnd, body, special: elseIfHeader.special });
         cursor = body.end;
         continue;
       }
@@ -11036,6 +11161,7 @@ function normalizeCppControlBodiesForTracing(source) {
       breakBeforeNextClause = false;
       if (
         construct.kind !== 'do' &&
+        !clause.special &&
         startsLine &&
         endsLine &&
         sig[clauseStart].line === sig[bodyLast].endLine &&
@@ -11077,6 +11203,14 @@ function normalizeCppControlBodiesForTracing(source) {
       }
       const open = body.start;
       const close = body.end - 1;
+      if (construct.kind === 'do' && sig[close].line !== sig[construct.tail].line) {
+        // `}` then `while (c);` on the next line: a line starting `while (c);`
+        // reads as a loop of its own to the rewriter, and instrumentation
+        // would land between the brace and the tail. The brace moves down.
+        removed.push(sig[close]);
+        editedLines.add(sig[close].line);
+        insert(sig[construct.tail].start, sig[construct.tail].line, '} ', 0, seq);
+      }
       if (sig[open].line !== header.endLine) {
         // Allman `{` on its own line: the rewriter would put post-line
         // instrumentation between the header and the brace, where it
@@ -11109,18 +11243,25 @@ function normalizeCppControlBodiesForTracing(source) {
       continue;
     }
     if (token.kind !== 'ident' || !CPP_NORMALIZER_CONTROL_KEYWORDS.has(token.text) || consumed.has(index)) continue;
-    if (token.text === 'else' || token.text === 'switch') continue;
     const innermost = stack.at(-1);
     // File scope, or inside parentheses: not a statement.
     if (innermost === undefined || !isPunct(innermost, '{')) continue;
     // A block that opens and closes on one line (a one-line function, lambda
     // or braced body) is one rewriter line; leave what is inside it alone.
     if (sig[innermost].line === sig[match[innermost]].line && !splitBlocks.has(innermost)) continue;
-    const parsed = token.text === 'if' ? parseIf(index) : token.text === 'do' ? parseDo(index) : parseLoop(index);
-    if (parsed.error === 'preprocessor') {
-      refuse(parsed.at ?? index, 'a preprocessor directive inside a control statement whose body has no braces');
+    // An `else` not consumed by its `if` means that `if` was not parsed.
+    if (token.text === 'else') refuse(index, 'an else whose if statement could not be parsed');
+    if (token.text === 'switch') {
+      // A braceless switch body is rare; the rewriter would put a statement
+      // between the header and the body.
+      if (!isPunct(index + 1, '(') || !isPunct(match[index + 1] + 1, '{')) refuse(index, 'a switch whose body has no braces');
+      continue;
     }
-    if (!parsed.construct) continue;
+    const parsed = token.text === 'if' ? parseIf(index) : token.text === 'do' ? parseDo(index) : parseLoop(index);
+    if (!parsed.construct) {
+      // Not certain what this statement is: refuse rather than guess.
+      refuse(parsed.at ?? index, CPP_NORMALIZER_PARSE_FAILURES[parsed.error] || `a ${token.text} statement the tracer could not parse`);
+    }
     for (const clause of parsed.construct.clauses) {
       if (clause.elseIndex !== undefined) consumed.add(clause.elseIndex);
       consumed.add(clause.keywordIndex);
@@ -11129,27 +11270,44 @@ function normalizeCppControlBodiesForTracing(source) {
     planConstruct(parsed.construct);
   }
 
-  // User macros that braces or line-level instrumentation would change.
-  const macros = collectCppStatementMacros(tokens);
+  // User macros. A braceless body is given braces (here, or by the rewriter
+  // for a one-line clause), which changes a macro that expands to several
+  // statements or a branch; a loop or branch macro whose body starts on the
+  // next line gets a statement inserted before that body. The check is
+  // conservative: every user macro named in the body, in its arguments, or in
+  // any macro it expands to (aliases included) must be a plain expression.
+  const macros = collectCppUserMacros(tokens);
   if (macros.size > 0) {
     for (let index = 0; index < sig.length; index += 1) {
       const token = sig[index];
       if (token.kind !== 'ident' || !macros.has(token.text)) continue;
-      const macro = macros.get(token.text);
-      if (macro.functionLike && !isPunct(index + 1, '(')) continue;
-      const invocationEnd = macro.functionLike ? match[index + 1] : index;
-      if (macro.kind === 'statement' && wrappedBodies.some((body) => index >= body.start && index < body.end)) {
-        refuse(index, `the macro ${token.text} expands to more than one statement and is the body of a control statement without braces`);
+      const hasArguments = isPunct(index + 1, '(');
+      const invocationEnd = hasArguments ? match[index + 1] : index;
+      const features = cppUserMacroFeatures(macros, token.text);
+      for (let argument = index + 1; argument <= invocationEnd; argument += 1) {
+        if (sig[argument].kind === 'ident' && macros.has(sig[argument].text)) {
+          const nested = cppUserMacroFeatures(macros, sig[argument].text);
+          for (const key of Object.keys(features)) features[key] ||= nested[key];
+        }
+      }
+      if (features.unbalanced || features.unknown) {
+        refuse(index, `the macro ${token.text} expands to unbalanced brackets or could not be read`);
+      }
+      if (features.branch) {
+        refuse(index, `the macro ${token.text} expands to an if or else`);
+      }
+      if (!isCppExpressionMacroFeatures(features) && wrappedBodies.some((body) => index >= body.start && index < body.end)) {
+        refuse(index, `the macro ${token.text} is not a single expression and is the body of a control statement without braces`);
       }
       const next = invocationEnd + 1;
       if (
-        macro.header &&
+        (features.header || features.jump || features.splits) &&
         sig[next] &&
         sig[next].line > sig[invocationEnd].endLine &&
         !isPunct(next, '{') &&
         !isPunct(next, ';')
       ) {
-        refuse(index, `the macro ${token.text} opens a loop or branch whose body has no braces and starts on the next line`);
+        refuse(index, `the macro ${token.text} opens a statement that continues on the next line`);
       }
     }
   }
@@ -11333,7 +11491,9 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   );
   // Braceless control bodies get braces first, on virtual lines that keep the
   // learner's line numbers (see normalizeCppControlBodiesForTracing).
-  const normalizedControl = normalizeCppControlBodiesForTracing(source);
+  const normalizedControl = normalizeCppControlBodiesForTracing(source, {
+    scriptWrapper: functionName === CPP_SCRIPT_FUNCTION_NAME,
+  });
   const lines = normalizedControl.lines;
   const output = [];
   let nextSignatureIndex = 0;
@@ -16370,6 +16530,41 @@ async function handleInit(payload) {
   };
 }
 
+/**
+ * A refused trace of a program that does not compile: the untraced build's
+ * compile failure (the learner's, in the learner's lines). Returns null when
+ * the untraced program compiles, so the refusal stands.
+ */
+async function compileUntracedForTraceRefusal(buildPreparedDriver, context) {
+  let untracedDriverSource;
+  try {
+    untracedDriverSource = buildPreparedDriver(false);
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      diagnosticStage: 'compile',
+      consoleOutput: [],
+      timings: {
+        driverBuildMs: elapsedMs(context.driverStartedAt),
+        totalMs: elapsedMs(context.startedAt),
+      },
+    };
+  }
+  const result = await compileAndRun(context.source, context.functionName, {}, {
+    executionStyle: context.executionStyle,
+    tracing: false,
+    preparedDriverSource: untracedDriverSource,
+    preparedScriptRequest: context.scriptRequest,
+    preparedInputMode: context.scriptRequest ? 'script' : 'named-batch',
+    prepareOnly: true,
+    timings: {
+      driverBuildMs: elapsedMs(context.driverStartedAt),
+    },
+  });
+  return result?.success ? null : result;
+}
+
 async function handlePrepareRuntimeProgram(payload) {
   const startedAt = now();
   const mode = payload?.mode;
@@ -16404,29 +16599,43 @@ async function handlePrepareRuntimeProgram(payload) {
   }
 
   const driverStartedAt = now();
+  const buildPreparedDriver = (traceDriver) => executionStyle === 'ops-class'
+    ? buildPreparedOpsClassDriverSource(source, functionName, {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      })
+    : scriptRequest
+    ? buildScriptDriverSource(source, {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      })
+    : buildBatchDriverSource(source, functionName, [{}], {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      });
   let preparedDriverSource;
   try {
-    preparedDriverSource = executionStyle === 'ops-class'
-      ? buildPreparedOpsClassDriverSource(source, functionName, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
-      : scriptRequest
-      ? buildScriptDriverSource(source, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
-      : buildBatchDriverSource(source, functionName, [{}], {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        });
+    preparedDriverSource = buildPreparedDriver(tracing);
   } catch (error) {
-    // Tracing refused (it would change the program): a provider failure for
-    // the client to report, never the learner's compile error.
-    if (isCppTraceUnsupportedError(error)) throw error;
+    if (isCppTraceUnsupportedError(error)) {
+      // Tracing refused (it would change the program, or the tracer is not
+      // certain what the program is). If the program does not compile at
+      // all, that is the learner's compile error and is reported as such;
+      // otherwise the refusal is a provider failure, never the learner's.
+      const untracedCompile = await compileUntracedForTraceRefusal(buildPreparedDriver, {
+        source,
+        functionName,
+        executionStyle,
+        scriptRequest,
+        driverStartedAt,
+        startedAt,
+      });
+      if (untracedCompile) return untracedCompile;
+      throw error;
+    }
     // The driver generator could not bind the learner's source (no matching
     // class or method, an unsupported signature): the learner's compile stage.
     return {
