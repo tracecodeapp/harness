@@ -29,9 +29,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   the warning unmarked: on a completed case with no marked diagnostic, an
   unmarked warning with 0.20.2's exact message (`Trace recording stopped at
   the <code> budget after execution completed.`) is still read as that budget,
-  for any code 0.20.2 used (`trace-limit`, `trace-byte-limit`, `line-limit`,
-  `single-line-limit`). Other unmarked warnings, and any unmarked warning on a
-  failed or limited case, are not.
+  for the codes 0.20.2 could write (`trace-limit`, `trace-byte-limit`,
+  `line-limit`, `single-line-limit`, and JavaScript's `recursion-limit`).
+  Other unmarked warnings, and any unmarked warning on a failed or limited
+  case, are not.
 
 ### Fixed
 
