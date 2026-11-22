@@ -35,7 +35,7 @@ export interface TraceCompileCase {
 const JS = ['javascript'] as const;
 const TS = ['typescript'] as const;
 
-const invalid: readonly TraceCompileCase[] = [
+const invalid: readonly TraceCompileCase[] = ([
   // The learner mistakes the coordinator named.
   { id: 'missing-brace', edit: (code) => code.slice(0, code.lastIndexOf('}')) },
   { id: 'extra-brace', edit: (code) => `${code}\n}` },
@@ -58,7 +58,7 @@ const invalid: readonly TraceCompileCase[] = [
   { id: 'await-in-sync-function', body: 'const value = await Promise.resolve(1);' },
   { id: 'super-outside-class', top: 'function noSuper() { super(); }' },
   { id: 'bad-regex', languages: JS, body: 'const pattern = /(/;' },
-].map((testCase) => ({ ...testCase, untraced: 'rejects' as const }));
+] satisfies TraceCompileCase[]).map((testCase) => ({ ...testCase, untraced: 'rejects' as const }));
 
 const modernSyntax: readonly TraceCompileCase[] = [
   { id: 'plain', untraced: 'passes' },
@@ -69,6 +69,8 @@ const modernSyntax: readonly TraceCompileCase[] = [
   { id: 'class-fields', untraced: 'passes', member: 'count = 0;\nstatic limit = 5;' },
   { id: 'logical-assignment', untraced: 'passes', body: 'let a = null;\na ??= 1;\nlet b = 0;\nb ||= 2;\nlet c = 1;\nc &&= 3;' },
   { id: 'logical-assignment-element', untraced: 'passes', body: 'const groups = {};\ngroups["k"] ??= [];' },
+  { id: 'logical-assignment-property', untraced: 'passes', body: 'const o = {};\no.x ??= 5;' },
+  { id: 'unsigned-shift-property', untraced: 'passes', body: 'const o = { x: -1 };\no.x >>>= 28;' },
   { id: 'numeric-separators', untraced: 'passes', body: 'const big = 1_000_000;' },
   { id: 'bigint', untraced: 'passes', body: 'const huge = 9_007_199_254_740_993n;' },
   { id: 'optional-chaining', untraced: 'passes', body: 'const o = { a: { b: [1] } };\nconst found = o?.a?.b?.[0] ?? 0;' },
@@ -128,8 +130,6 @@ const tracedBuildFails: readonly TraceCompileCase[] = [
   { id: 'helper-name-collision', top: 'const __traceReadIndex = 1;' },
   { id: 'recorder-name-collision', top: 'const __traceRecorder = 1;' },
   { id: 'destructuring-member-default', body: 'const o = {};\n[o.x = 5] = [];' },
-  { id: 'property-logical-assignment', body: 'const o = {};\no.x ??= 5;' },
-  { id: 'property-unsigned-shift', body: 'const o = { x: -1 };\no.x >>>= 28;' },
   { id: 'for-of-member-target', body: 'const o = {};\nfor (o.x of [1, 2]) { }' },
   { id: 'await-in-index', top: 'async function fill() {\n  const g = [[0]];\n  g[0][await Promise.resolve(0)] = 7;\n}' },
 ].map((testCase) => ({ ...testCase, untraced: 'passes' as const, traced: 'refused' as const }));

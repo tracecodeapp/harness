@@ -47,6 +47,8 @@ const ORIGINAL_ALL_SCRIPTS = [
   'test:csharp-worker-browser',
   'test:cpp-rewriter',
   'test:js-runtime',
+  'test:javascript-trace-compile',
+  'test:javascript-trace-compile-browser',
   'test:project',
   'test:runtime-contract',
   'test:judge',
