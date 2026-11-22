@@ -3,22 +3,22 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.526414df8ba36ace58b302e70638e74180768a2b1a79583b477b1b0f54d675ef"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.38dff954470715bb94016531c41beb58ccc529a683c0c228a636e59554e71ff4"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "526414df8ba36ace58b302e70638e74180768a2b1a79583b477b1b0f54d675ef",
-  "totalPackagedRuntimeBytes": 152612395,
+  "packageTreeSha256": "38dff954470715bb94016531c41beb58ccc529a683c0c228a636e59554e71ff4",
+  "totalPackagedRuntimeBytes": 152620455,
   "components": {
     "cpp": {
-      "releaseId": "cpp+sha256.f9a3a17e9004b4da2bfe132186be62fa1bd75b310450bad23be7f7bf7462ae31",
-      "treeSha256": "f9a3a17e9004b4da2bfe132186be62fa1bd75b310450bad23be7f7bf7462ae31",
-      "totalBytes": 958885,
+      "releaseId": "cpp+sha256.81ba87efa318d8e3abbc01f63fc9d8c8212d089dc4eaf20476d44febcdfb7215",
+      "treeSha256": "81ba87efa318d8e3abbc01f63fc9d8c8212d089dc4eaf20476d44febcdfb7215",
+      "totalBytes": 966945,
       "files": [
         {
           "path": "workers/cpp/cpp-worker.js",
-          "size": 694987,
-          "sha256": "7777924d22a4ed8ec41338f400a429539b3604e6763bb72459146359a6f46ef8",
-          "integrity": "sha256-d3eSTSKk7Y7EEzj0AKQpU5s2BOZ2O7ckWRRjWab0bvg=",
+          "size": 703047,
+          "sha256": "a45680101880c04d94a4e155807e96b3f229bc1bbbbbe35d27b0a76ed3f74a7f",
+          "integrity": "sha256-pFaAEBiAwE2UpOFVgH6Ws/IpvBu7u+NdJ7CnbtP3Sn8=",
           "mediaType": "text/javascript"
         },
         {
@@ -2255,15 +2255,15 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428503374,
+    "bytes": 428519494,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425734160
+        "bytes": 425742220
       },
       "alias": {
         "files": 1,
-        "bytes": 694987
+        "bytes": 703047
       },
       "metadata": {
         "files": 258,
@@ -2275,8 +2275,8 @@
         "path": "project-cpp-worker.js",
         "aliasOf": "cpp-worker.js",
         "source": "workers/cpp/cpp-worker.js",
-        "size": 694987,
-        "sha256": "7777924d22a4ed8ec41338f400a429539b3604e6763bb72459146359a6f46ef8"
+        "size": 703047,
+        "sha256": "a45680101880c04d94a4e155807e96b3f229bc1bbbbbe35d27b0a76ed3f74a7f"
       }
     ],
     "groups": [
@@ -2293,7 +2293,7 @@
       {
         "path": "cpp-worker.js",
         "files": 1,
-        "bytes": 694987
+        "bytes": 703047
       },
       {
         "path": "cpp/tracecc",
@@ -2348,7 +2348,7 @@
       {
         "path": "project-cpp-worker.js",
         "files": 1,
-        "bytes": 694987
+        "bytes": 703047
       },
       {
         "path": "python",
