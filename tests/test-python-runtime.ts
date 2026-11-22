@@ -4164,6 +4164,49 @@ print(json.dumps({
   console.log('PASS: traced Python subscripts typing aliases, learner __getitem__ classes, range, bytes and array');
 }
 
+async function assertTupleStoresRefreshListSnapshots(): Promise<void> {
+  // A tuple store is performed natively, so it bypasses the per-element patch
+  // of the cached list representation; the cache must be dropped instead, for
+  // the list and for a row reached through it (a local alias of that row).
+  const runtime = await loadPythonRuntime();
+  const deps: RuntimeDeps = {
+    PYTHON_CLASS_DEFINITIONS_SNIPPET: PYTHON_CLASS_DEFINITIONS,
+    PYTHON_CONVERSION_HELPERS_SNIPPET: PYTHON_CONVERSION_HELPERS,
+    PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_TRACE_SERIALIZE_FUNCTION,
+    PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET: PYTHON_EXECUTE_SERIALIZE_FUNCTION,
+    toPythonLiteral,
+  };
+  const source = [
+    'def solve():',
+    '    a = [1, 2, 3]',
+    '    grid = [[4, 5, 6]]',
+    '    row = grid[0]',
+    '    a[1], a[2] = a[2], a[1]',
+    '    grid[0][0], grid[0][2] = grid[0][2], grid[0][0]',
+    '    done = True',
+    '    return a',
+    '',
+  ].join('\n');
+  const payload = runtime.generateTracingCode(deps, source, 'solve', {}, 'function', {});
+  const stdout = await runPythonScript(`${payload.code}
+print(json.dumps([json.loads(event) for event in _trace_events]))
+`);
+  const events = JSON.parse(stdout.trim().split('\n').pop()!) as RuntimeTraceEvent[];
+  // A line's snapshot is the state after that line ran.
+  const snapshot = (variable: string, needle: string) => {
+    const line = payload.userCodeStartLine + userLineNumber(source, needle) - 1;
+    return events.find((event) =>
+      event.kind === 'snapshot' && event.line === line && event.target?.variable === variable)?.value;
+  };
+  const a = snapshot('a', 'a[1], a[2] =');
+  const row = snapshot('row', 'grid[0][0], grid[0][2] =');
+  assertCondition(
+    JSON.stringify(a) === JSON.stringify([1, 3, 2]) && JSON.stringify(row) === JSON.stringify([6, 5, 4]),
+    `Python snapshots after tuple stores must show the stored values, received a=${JSON.stringify(a)} row=${JSON.stringify(row)}`
+  );
+  console.log('PASS: Python snapshots after tuple stores show the stored values');
+}
+
 async function main(): Promise<void> {
   await assertPyodideProjectFsEventsRejectTraversal();
   await assertPyodideProjectEventsApplyResourceBudgets();
@@ -4215,6 +4258,7 @@ async function main(): Promise<void> {
   await assertBlankFunctionSelectorRunsAsScriptUntraced();
   await assertKeylessTreeAndListNodesHaveNoneLinks();
   await assertTracedSubscriptsOfAnyObjectSubscript();
+  await assertTupleStoresRefreshListSnapshots();
   await assertVirtualScandirMatchesIteratorContract();
   console.log('\nPython runtime checks passed.');
 }
