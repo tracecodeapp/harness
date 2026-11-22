@@ -492,6 +492,10 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
       executionTimeMs: finiteNumber(record.executionTimeMs) ?? 0,
       consoleOutput: normalizeStringArray(record.consoleOutput),
       ...(record.traceLimitExceeded === true ? { traceLimitExceeded: true } : {}),
+      // Checked by liftTraceOutcome (a malformed notice is a protocol error).
+      ...(record.traceUnavailable !== undefined && record.traceUnavailable !== null
+        ? { traceUnavailable: record.traceUnavailable }
+        : {}),
       ...(timeoutReason ? { timeoutReason } : {}),
       ...(record.diagnostic !== undefined ? { diagnostic: sanitizeJsonValue(record.diagnostic) } : {}),
       ...(timings ? { timings } : {}),

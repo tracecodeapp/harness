@@ -158,9 +158,9 @@ const traceExecutor = await runtime.executeWithTracing(
 );
 assertCondition(
   traceExecutor.__preparedSource.includes(
-    'if __tracecode_tracing_enabled:\n    _tracecode_arm_tracing()'
+    'if __tracecode_tracing_enabled and _tracecode_trace_unavailable is None:\n    _tracecode_arm_tracing()'
   ),
-  'Prepared trace executor must conditionally arm tracing'
+  'Prepared trace executor must conditionally arm tracing (and run untraced when tracing is unavailable)'
 );
 const traceExecutorBase64 = Buffer.from(
   traceExecutor.__preparedSource,

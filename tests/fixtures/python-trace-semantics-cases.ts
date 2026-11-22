@@ -8,6 +8,8 @@ export interface PythonTraceSemanticsCase {
   code: string;
   inputs?: Record<string, unknown>;
   expected: { value: unknown } | { error: [string, string] };
+  /** The rewriter cannot instrument this program: its traced Run falls back. */
+  traceUnavailable?: true;
 }
 
 const lines = (...source: string[]) => source.join('\n') + '\n';
