@@ -5,6 +5,7 @@
 // TRACECODE_PARITY_LANGUAGES and TRACECODE_PARITY_PROBLEMS accept comma-separated IDs.
 // TRACECODE_PARITY_SUITE selects catalog, targeted, or the direct Box.get probe.
 // TRACECODE_PARITY_REPORT is checkpointed after every complete problem pair.
+// TRACECODE_PARITY_STRICT=1 fails the run when any compared case differs.
 
 import { createReadStream, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
@@ -282,6 +283,15 @@ async function main() {
     await runner.evaluate((session) => session.dispose());
     report.complete = true;
     await saveReport();
+    if (process.env.TRACECODE_PARITY_STRICT === '1') {
+      const differing = (report.problems as Array<{ id: string; language: string; different: number }>)
+        .filter((problem) => problem.different > 0)
+        .map((problem) => problem.language + '/' + problem.id);
+      if (differing.length) {
+        throw new Error('Traced and untraced results differ: ' + differing.join(', '));
+      }
+      console.log('All ' + report.problems.length + ' problems matched.');
+    }
   } finally {
     await browser?.close();
     await server?.close();

@@ -1,4 +1,5 @@
 import type { ParityProblem } from './browser-trace-parity-entry';
+import { pythonTraceSemanticsCases, pythonTraceSemanticsPositionCases } from './python-trace-semantics-cases';
 
 const pythonPrograms: [string, string, unknown][] = [
   ['P1', `class Box:
@@ -98,11 +99,25 @@ class Solution:
   cases: [{ id: 'box-get', input: {}, expected: 7 }],
 };
 
+// The Node-level semantics programs (tests/test-python-trace-semantics.ts),
+// run through the browser Judge as well.
+const pythonSemanticsCases = [...pythonTraceSemanticsCases, ...pythonTraceSemanticsPositionCases].map(
+  ({ id, code, inputs, expected }): ParityProblem => ({
+    id: 'PS-' + id,
+    language: 'python',
+    functionName: 'solve',
+    executionStyle: 'function',
+    code,
+    cases: [{ id: 'PS-' + id, input: inputs ?? {}, expected: 'value' in expected ? expected.value : null }],
+  }),
+);
+
 export const targetedCases: readonly ParityProblem[] = [
   direct,
   pythonCases[0],
   lru,
   ...pythonCases.slice(1),
+  ...pythonSemanticsCases,
   ...(['javascript', 'typescript'] as const).flatMap((language) =>
     jsCases.map(([id, body, expected, typedDeclaration, returnType]): ParityProblem => {
       const typescript = language === 'typescript';
