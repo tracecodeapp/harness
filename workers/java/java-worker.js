@@ -2271,6 +2271,30 @@ function buildDynamicInputHelperMethods() {
     return arguments;
   }
 
+  /**
+   * Tracing stopped while the Harness was building a case's receiver or an
+   * operation's arguments, so the case cannot be traced. The worker reports
+   * it as the provider's trace-unavailable refusal of that case (it matches
+   * this class by name), never as the program's failure or a trace limit.
+   */
+  static final class TraceCodeTraceUnavailable extends RuntimeException {
+    TraceCodeTraceUnavailable(String message) {
+      super(message);
+    }
+  }
+
+  private static void refuseTraceIfBudgetTripped(Throwable error) {
+    for (Throwable current = error; current != null; current = current.getCause()) {
+      if (current instanceof tracecode.user.TraceBudgetExceededError) {
+        throw new TraceCodeTraceUnavailable(
+            "TraceCode could not trace this case: tracing stopped while the Harness was building its input. " +
+                "The case runs normally without tracing."
+        );
+      }
+      if (current.getCause() == current) break;
+    }
+  }
+
   private static Object constructPreparedReceiver(
       Class<?> targetType,
       java.util.List<?> rawArguments
@@ -2286,6 +2310,9 @@ function buildDynamicInputHelperMethods() {
         constructor.setAccessible(true);
         return constructor.newInstance(arguments);
       } catch (Throwable error) {
+        // A trace budget that trips inside a constructor is not a constructor
+        // that did not fit; constructor selection is otherwise unchanged.
+        refuseTraceIfBudgetTripped(error);
         lastFailure = error;
       }
     }
@@ -2309,7 +2336,8 @@ function buildDynamicInputHelperMethods() {
           preparedArguments(rawArguments, method.getGenericParameterTypes());
           method.setAccessible(true);
           return method;
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException probeFailure) {
+          refuseTraceIfBudgetTripped(probeFailure);
         }
       }
     }
@@ -8771,6 +8799,16 @@ function preparedJavaInputProperties(program, inputs) {
   );
 }
 
+const JAVA_HARNESS_TRACE_UNAVAILABLE_MESSAGE =
+  'TraceCode could not trace this case: tracing stopped while the Harness was building its input. ' +
+  'The case runs normally without tracing.';
+
+/** The generated Exports' TraceCodeTraceUnavailable, matched by its nested class name. */
+function isJavaTraceUnavailableReport(report) {
+  const text = typeof report?.runtimeError === 'string' ? report.runtimeError : '';
+  return /\$TraceCodeTraceUnavailable(?::|\s|$)/u.test(text.split(/\r?\n/u)[0] ?? '');
+}
+
 function preparedJavaResultFromReport(
   program,
   report,
@@ -8799,6 +8837,24 @@ function preparedJavaResultFromReport(
       ? {}
       : { runnerProcessCount: report.runnerProcessCount }),
   };
+
+  if (program.mode === 'trace' && report.success !== true && isJavaTraceUnavailableReport(report)) {
+    // Tracing stopped while the Harness built this case's input or receiver:
+    // the provider refuses to trace this case. No partial trace, no limit.
+    return {
+      success: false,
+      traceUnavailable: true,
+      error: JAVA_HARNESS_TRACE_UNAVAILABLE_MESSAGE,
+      diagnosticStage: 'runtime',
+      events: [],
+      executionTimeMs,
+      consoleOutput,
+      runtimeIsolation: report.isolation,
+      algorithmIsolationProfile: report.algorithmIsolationProfile,
+      retirementRecommended: report.retirementRecommended === true,
+      timings,
+    };
+  }
 
   if (program.mode === 'trace') {
     const events = normalizeJavaTraceEvents(

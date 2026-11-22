@@ -29,7 +29,11 @@ import type {
   RuntimeCommandResult,
   RuntimeProjectCommandRequest,
 } from '@tracecode/runtime-contracts';
-import { javaTraceHooksEventsToRuntimeTrace } from '@tracecode/runtime-contracts';
+import {
+  javaTraceHooksEventsToRuntimeTrace,
+  RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
+} from '@tracecode/runtime-contracts';
 import { createEmptyRuntimeTrace, type RuntimeTrace } from '@tracecode/runtime-contracts';
 import {
   closeKernelHttpSyncServers,
@@ -95,6 +99,38 @@ interface WarmupResult {
   timings?: RuntimeExecutionTimings;
 }
 
+const JAVA_TRACE_UNAVAILABLE_MESSAGE =
+  'TraceCode could not trace this case: the Java tracer produced an inconsistent trace. ' +
+  'The case runs normally without tracing.';
+
+/**
+ * The runtime trace of a traced Java case, or a trace-unavailable rejection
+ * of that one case when the tracer's events cannot be read back (for
+ * example, an event that refers to a call stack the trace never recorded).
+ */
+function javaTraceOrRefusal(
+  result: JavaWorkerRawTraceResult,
+  options: Parameters<typeof javaTraceHooksEventsToRuntimeTrace>[2]
+): RuntimeTrace {
+  try {
+    return javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, options);
+  } catch (error) {
+    throw new RuntimeProviderError(JAVA_TRACE_UNAVAILABLE_MESSAGE, {
+      cause: error,
+      code: TRACE_UNAVAILABLE_CODE,
+    });
+  }
+}
+
+/** A case the worker reported it could not trace rejects as trace-unavailable. */
+function rejectJavaTraceUnavailable(result: JavaWorkerRawTraceResult): void {
+  if (result.traceUnavailable !== true) return;
+  throw new RuntimeProviderError(
+    result.error || 'TraceCode could not trace this case. The case runs normally without tracing.',
+    { code: TRACE_UNAVAILABLE_CODE }
+  );
+}
+
 export interface JavaWorkerRawTraceResult {
   success: boolean;
   output?: unknown;
@@ -111,6 +147,11 @@ export interface JavaWorkerRawTraceResult {
   droppedEventCount?: number;
   timings?: RuntimeExecutionTimings;
   retirementRecommended?: boolean;
+  /**
+   * The worker could not trace this case (a trace failure while the Harness
+   * built the case's input or receiver); `error` says so in a plain sentence.
+   */
+  traceUnavailable?: boolean;
   runtimeIsolation?: unknown;
   /** Default-off VM diagnostics used by compatibility/performance campaigns. */
   bytecodeProfile?: unknown;
@@ -642,24 +683,28 @@ export class JavaWorkerClient {
       )
     );
 
+    let result: JavaWorkerRawTraceResult;
     try {
-      const result = await this.core.runClientEffect(program, signal);
+      result = await this.core.runClientEffect(program, signal);
       await kernelProcess.complete(result.success ? 0 : 1);
       if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
-      return {
-        ...result,
-        trace: result.success
-          ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
-              runId: 'java:run',
-              file: JAVA_DEFAULT_FILE,
-              maxPathDepth: traceOptions?.maxPathDepth,
-            })
-          : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
-      };
     } catch (error) {
       await kernelProcess.fail(error);
       throw error;
     }
+    // The worker and its process finished normally; a trace that cannot be
+    // read back refuses this case only.
+    rejectJavaTraceUnavailable(result);
+    return {
+      ...result,
+      trace: result.success
+        ? javaTraceOrRefusal(result, {
+            runId: 'java:run',
+            file: JAVA_DEFAULT_FILE,
+            maxPathDepth: traceOptions?.maxPathDepth,
+          })
+        : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
+    };
   }
 
   async executeCode(call: RuntimeCodeCall & { traceOptions?: JavaTraceExecutionOptions }): Promise<CodeExecutionResult> {
@@ -895,28 +940,32 @@ export class JavaWorkerClient {
         )
       )
     );
+    let result: JavaWorkerRawTraceResult;
     try {
-      const result = await this.core.runClientEffect(program, call.signal);
+      result = await this.core.runClientEffect(program, call.signal);
       await kernelProcess.complete(result.success ? 0 : 1);
       if (kernelProcess.retireWorkerAfterCompletion) this.core.closeSession();
-      return {
-        ...result,
-        trace: result.success
-          ? javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, {
-              runId: 'java:run',
-              file: JAVA_DEFAULT_FILE,
-              maxPathDepth: traceOptions?.maxPathDepth,
-            })
-          : createEmptyRuntimeTrace('java', {
-              runId: 'java:run',
-              file: JAVA_DEFAULT_FILE,
-            }),
-        ...javaPreparedExecutionMetadata(result),
-      };
     } catch (error) {
       await kernelProcess.fail(error);
       throw error;
     }
+    // The worker and its process finished normally; a case the tracer could
+    // not trace refuses this case only.
+    rejectJavaTraceUnavailable(result);
+    return {
+      ...result,
+      trace: result.success
+        ? javaTraceOrRefusal(result, {
+            runId: 'java:run',
+            file: JAVA_DEFAULT_FILE,
+            maxPathDepth: traceOptions?.maxPathDepth,
+          })
+        : createEmptyRuntimeTrace('java', {
+            runId: 'java:run',
+            file: JAVA_DEFAULT_FILE,
+          }),
+      ...javaPreparedExecutionMetadata(result),
+    };
   }
 
   async executePreparedTraceBatch(

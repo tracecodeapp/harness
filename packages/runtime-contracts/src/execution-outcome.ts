@@ -25,7 +25,7 @@ import type {
   ExecutionResult,
   RuntimeExecutionTimings,
 } from './types';
-import type { RuntimeTrace } from './runtime-trace';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from './runtime-trace';
 
 /**
  * The runtime provider itself failed, for a reason the learner's program did
@@ -73,6 +73,37 @@ export const TRACE_UNAVAILABLE_CODE = 'trace-unavailable' as const;
 export function isTraceUnavailableError(error: unknown): boolean {
   return error instanceof Error &&
     (error as { readonly code?: unknown }).code === TRACE_UNAVAILABLE_CODE;
+}
+
+/**
+ * One case of a traced batch that the runtime could not trace. A provider
+ * that runs a traced batch case by case returns this for that case when the
+ * case rejected with a trace-unavailable error, so the batch's other cases
+ * keep their results. It carries no trace and no value.
+ */
+export function traceUnavailableOutcome(
+  error: Error,
+  language: RuntimeTrace['language']
+): ExecutionResult {
+  return {
+    kind: 'failed',
+    error: error.message,
+    trace: {
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+      language,
+      runId: `${language}:run`,
+      events: [],
+      lineEventCount: 0,
+      traceStepCount: 0,
+    },
+    executionTimeMs: 0,
+    consoleOutput: [],
+    diagnosticStage: 'runtime',
+    providerFailure: {
+      code: TRACE_UNAVAILABLE_CODE,
+      message: error.message,
+    },
+  };
 }
 
 export function isRuntimeProviderError(error: unknown): error is RuntimeProviderError {
