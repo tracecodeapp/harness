@@ -1,5 +1,11 @@
 #!/usr/bin/env npx tsx
 
+// Run with tsconfig.base.json. Catalog files live outside the Harness checkout.
+// TRACECODE_PARITY_CORPUS points at problems/ and reference-solutions/.
+// TRACECODE_PARITY_LANGUAGES and TRACECODE_PARITY_PROBLEMS accept comma-separated IDs.
+// TRACECODE_PARITY_SUITE selects catalog, targeted, or the direct Box.get probe.
+// TRACECODE_PARITY_REPORT is checkpointed after every complete problem pair.
+
 import { createReadStream, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -170,12 +176,17 @@ async function main() {
       (!ids.length || ids.includes(id)));
   if (!fixtures.length) throw new Error('No problems selected.');
   const providers = [...new Set(fixtures.map(({ language }) => language))];
+  const budgetMs = Number(process.env.TRACECODE_PARITY_BUDGET_MS ?? 40 * 60_000);
+  if (!Number.isSafeInteger(budgetMs) || budgetMs <= 0 || budgetMs > 40 * 60_000) {
+    throw new Error('TRACECODE_PARITY_BUDGET_MS must be between 1 and 2400000.');
+  }
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-trace-parity-'));
   const report = {
     browser: 'chromium',
     browserVersion: '',
     suite,
     complete: false,
+    nextProblem: undefined as { id: string; language: JudgeAlgorithmLanguage } | undefined,
     selected: fixtures.map(({ id, language }) => ({ id, language })),
     problems: [] as unknown[],
   };
@@ -229,12 +240,28 @@ async function main() {
         return createTraceParityRunner(providers);
       }, providers),
     ]);
+    const deadline = Date.now() + budgetMs;
     for (const problem of fixtures) {
+      const remainingMs = deadline - Date.now();
+      report.nextProblem = { id: problem.id, language: problem.language };
+      if (remainingMs <= 0) {
+        await saveReport();
+        throw new Error('Parity time budget exhausted before ' + problem.id);
+      }
       const started = Date.now();
+      let budgetTimer: ReturnType<typeof setTimeout> | undefined;
       const result = await Promise.race([
         crashed,
         runner.evaluate((session, fixture) => session.run(fixture), problem),
-      ]);
+        new Promise<never>((_, reject) => {
+          budgetTimer = setTimeout(() => {
+            reject(new Error('Parity time budget exhausted during ' + problem.id));
+          }, remainingMs);
+        }),
+      ]).catch(async (error) => {
+        await saveReport();
+        throw error;
+      }).finally(() => clearTimeout(budgetTimer));
       const cases = problem.cases.map(({ id, expected }) => {
         const untraced = caseOutcome(result.untraced, id);
         const traced = caseOutcome(result.traced, id);
@@ -247,6 +274,7 @@ async function main() {
         ...(suite === 'catalog' ? {} : { code: problem.code }),
         different, cases, ...result,
       });
+      report.nextProblem = undefined;
       await saveReport();
       console.log(language + '/' + id + ' ' + different + '/' + cases.length + ' different (' +
         (Date.now() - started) + 'ms)');
