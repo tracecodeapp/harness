@@ -5751,7 +5751,9 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
       }
 
       if (ts.isCallExpression(node)) {
-        if (!consoleIsShadowed && isConsoleLogCall(ts, node)) {
+        // An optional call (`console.log?.()`, `console?.log()`) must keep
+        // short-circuiting, so it is left as written.
+        if (!consoleIsShadowed && !(node.flags & ts.NodeFlags.OptionalChain) && isConsoleLogCall(ts, node)) {
           return createTraceStdoutExpression(ts, sourceFile, node);
         }
         const isUserMethodCall = ts.isPropertyAccessExpression(node.expression) &&
