@@ -566,6 +566,24 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     expected: { value: [[1, 4], [[11, 2], [13, 4]]] },
   },
   {
+    // Recording an extend used to iterate the argument a second time.
+    id: 'recording-runs-no-learner-code',
+    code: lines(
+      'calls = []',
+      'class Source:',
+      '    def __iter__(self):',
+      '        calls.append("iter")',
+      '        return iter([7, 8])',
+      'def solve():',
+      '    a = [3, 1]',
+      '    a.extend(Source())',
+      '    rows = [[5]]',
+      '    rows[0].extend(Source())',
+      '    return [a, rows, calls]',
+    ),
+    expected: { value: [[3, 1, 7, 8], [[5, 7, 8]], ['iter', 'iter']] },
+  },
+  {
     id: 'module-level-global-root',
     code: lines(
       'counts = [0, 0]',

@@ -2921,7 +2921,7 @@ _tracecode_tracemalloc_started = False
 _TRACE_MUTATING_METHODS = {'append', 'appendleft', 'pop', 'popleft', 'extend', 'insert', 'add', 'remove', 'discard', 'clear', 'sort', 'reverse'}
 _tracecode_user_class_names = _builtins.set()
 _tracecode_explicit_return_function_names = _builtins.set()
-_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
+_internal_funcs = {'_serialize', '_serialize_output', '_tracecode_ref_id', '_tracer', '_custom_print', '_dict_to_tree', '_dict_to_list', '_tracecode_materialize_input', '_tracecode_materialize_custom_input', '_tracecode_materialize_named_inputs', '_tracecode_annotation_preserves_literal_shape', '_tracecode_hydrate_for_annotation', '_tracecode_resolve_target_callable', '_tracecode_hydrate_annotated_inputs', '_tracecode_resolve_entry_callable', '_tracecode_invoke_entry', '_is_structural_constructor_frame', '_snapshot_call_stack', '_snapshot_locals', '_stable_token', '_looks_like_adjacency_list', '_looks_like_indexed_adjacency_list', '_resolve_inplace_result', 'TraceHooks', '_TracecodeTraceHooks', 'flush_completed_line', 'flush_callsite_line', '_resolve_previous_step', '_append_step_runtime_events', '__tracecode_pending_access_budget', '__tracecode_record_access', '__tracecode_flush_accesses', '__tracecode_append_trace_step', '__tracecode_append_trace_events_for_step', '__tracecode_append_runtime_event', '__tracecode_frame_id_for_step', '__tracecode_access_target', '__tracecode_access_binding', '__tracecode_access_kind', '__tracecode_value_at_path', '__tracecode_access_value', '__tracecode_attach_accesses_to_previous_step', '__tracecode_normalize_index_component', '__tracecode_normalize_index_sources', '__tracecode_normalize_indices', '__tracecode_serialize_call_arg', '__tracecode_serialize_call_args', '__tracecode_make_callsite_frame_id', '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses', '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value', '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_user_call', '_tracecode_sum', '_tracecode_read_index', '_tracecode_record_index_write', '_tracecode_write_scalar', '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_is_runtime_value', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_len', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collect_user_function_names', '_tracecode_collect_user_method_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents', '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code', '<listcomp>', '<dictcomp>', '<setcomp>', '<genexpr>'}
 _internal_locals = {
     '_trace_data', '_trace_events', '_trace_line_event_count', '_console_output', '_original_print', '_target_function',
     '_MIRROR_PRINT_TO_WORKER_CONSOLE', '_MINIMAL_TRACE', '_SKIP_SENTINEL',
@@ -2949,7 +2949,7 @@ _internal_locals = {
     '__tracecode_make_access_event', '__tracecode_make_iteration_access_event', '__tracecode_record_destructured_iteration_accesses',
     '__tracecode_is_indexable_sequence', '__tracecode_is_mutable_container', '__tracecode_read_value',
     '__tracecode_apply_augmented_value', '__tracecode_apply_inplace_augmented_value', '_tracecode_read_index', '_tracecode_record_index_write', '_tracecode_write_scalar',
-    '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
+    '_TracecodeAttrStep', '_TracecodeAttrSteps', '_tracecode_attrs', '__tracecode_store_step', '__tracecode_load_step', '__tracecode_note_store', '_TracecodePeekRefused', '__tracecode_invalidate_path', '__tracecode_is_runtime_value', '__tracecode_peek_key', '__tracecode_peek_value', '_tracecode_read_path', '__tracecode_record_path_access', '_tracecode_note_parent', '_tracecode_record_store', '_tracecode_record_delete', '__tracecode_augassign_open', '__tracecode_augassign_close', '_tracecode_augassign_index_open', '_tracecode_augassign_index_close', '_tracecode_bind_target_method', '_tracecode_bind_index_method', '_tracecode_contains_key_in', '__tracecode_record_contains', '_tracecode_is_deferrable_index', '_tracecode_augassign_scalar', '_tracecode_augassign_index', '_tracecode_user_call', '_tracecode_sum', '_tracecode_mutating_call', '_tracecode_mutating_index_call', '_tracecode_heapq_mutation', '_tracecode_read_attr', '_tracecode_contains_key', '_tracecode_contains_key_indexed', '_tracecode_dict_get', '_tracecode_dict_get_indexed', '_tracecode_enumerate', '_tracecode_iter_bind', '_tracecode_iter_bind_literal', '_tracecode_iter_bind_expr', '_tracecode_iter_bind_indexed', '_tracecode_iter_bind_slice', '_tracecode_range_bind', '_tracecode_for_target_binding_name', '_tracecode_scalar_target_names', '_tracecode_assignment_write_targets', '_tracecode_source_string_node', '_tracecode_exception_value', '_tracecode_collapsed_literal_lines',
     '_tracecode_collect_user_function_names', '_tracecode_collect_user_class_names', '_tracecode_collect_explicit_return_function_names', '_tracecode_is_pure_literal_scaffold', '_tracecode_collect_collapsed_literal_lines', '__tracecode_attach_parents',
     '_tracecode_extract_named_subscript', '_tracecode_extract_mutable_container_target', '_tracecode_is_internal_name', '__TracecodeAccessTransformer', '__tracecode_compile_user_code',
     '_InfiniteLoopDetected', '_tb', '_result', '_exc_type', '_exc_msg', '_exc_tb',
@@ -4153,7 +4153,7 @@ def __tracecode_make_iteration_access_event(var_name, kind, indices, binding_nam
 def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_indices, value, binding_names, index_sources=None):
     if not isinstance(binding_names, _builtins.list) or len(binding_names) <= 1:
         return
-    if not isinstance(value, (_builtins.list, _builtins.tuple)):
+    if not isinstance(value, (_builtins.list, _builtins.tuple)) or not __tracecode_is_runtime_value(value):
         return
     normalized_base = list(base_indices)
     normalized_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else [None for _ in normalized_base]
@@ -4175,6 +4175,12 @@ def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_ind
                 sources,
             ),
         )
+
+def __tracecode_is_runtime_value(value):
+    # Recording may take len() of, index or iterate a value only when its
+    # type comes from the runtime (builtins, collections, array): a learner
+    # class, including a list or dict subclass, could run code there.
+    return _builtins.type(value).__module__ in ('builtins', 'collections', '_collections', 'array')
 
 def __tracecode_is_indexable_sequence(value):
     return isinstance(value, (list, tuple, _builtins.str)) or (
@@ -4564,12 +4570,12 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
         container_class_name = getattr(getattr(container, '__class__', None), '__name__', '')
         if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and (
             isinstance(container, _builtins.list) or container_class_name == 'deque'
-        ):
+        ) and __tracecode_is_runtime_value(container):
             before_len = len(container)
     except Exception:
         before_len = None
     result = method(*args, **kwargs)
-    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(container):
+    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(container) and __tracecode_is_runtime_value(container):
         if (
             len(args) >= 1 and
             method_name in {'pop', 'remove', 'discard'} and
@@ -4607,6 +4613,8 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
             elif method_name == 'extend' and len(args) >= 1:
                 try:
                     budget = __tracecode_pending_access_budget(frame)
+                    if not __tracecode_is_runtime_value(args[0]):
+                        raise _TracecodePeekRefused()
                     for offset, value in enumerate(args[0]):
                         if offset >= budget:
                             break
@@ -4650,13 +4658,13 @@ def _tracecode_mutating_index_call(bound, /, *args, **kwargs):
     _tc_rep_invalidate(target)
     before_len = None
     try:
-        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and __tracecode_is_mutable_container(target):
+        if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and __tracecode_is_mutable_container(target) and __tracecode_is_runtime_value(target):
             before_len = _builtins.len(target)
     except Exception:
         before_len = None
     result = method(*args, **kwargs)
     normalized = __tracecode_normalize_indices(effective_indices)
-    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(target):
+    if method_name in _TRACE_MUTATING_METHODS and __tracecode_is_mutable_container(target) and __tracecode_is_runtime_value(target):
         if normalized is None:
             return result
         __tracecode_record_access(
@@ -4681,6 +4689,8 @@ def _tracecode_mutating_index_call(bound, /, *args, **kwargs):
             elif method_name == 'extend' and len(args) >= 1:
                 try:
                     budget = __tracecode_pending_access_budget(frame)
+                    if not __tracecode_is_runtime_value(args[0]):
+                        raise _TracecodePeekRefused()
                     for offset, value in enumerate(args[0]):
                         if offset >= budget:
                             break
@@ -4712,7 +4722,7 @@ def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
         snapshot_budget = __tracecode_pending_access_budget(frame, reserve=2)
-        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and snapshot_budget > 0 else None
+        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and __tracecode_is_runtime_value(target) and snapshot_budget > 0 else None
     except Exception:
         before_values = None
     if not invalid_nested_path:
@@ -4814,7 +4824,7 @@ def _tracecode_sum(sum_func, var_name, iterable, /, *args, **kwargs):
         return sum_func(iterable, *args, **kwargs)
     frame = sys._getframe(1)
     try:
-        if __tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range):
+        if (__tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range)) and __tracecode_is_runtime_value(iterable):
             budget = __tracecode_pending_access_budget(frame, reserve=1)
             total_length = None
             try:
@@ -5055,6 +5065,8 @@ def _tracecode_iter_bind_indexed(var_name, container, base_indices, index_source
 def _tracecode_iter_bind_slice(var_name, container, start, start_source, binding_name, binding_names=None):
     sliced = container[start:]
     try:
+        if not __tracecode_is_runtime_value(container) or not __tracecode_is_runtime_value(start):
+            raise _TracecodePeekRefused()
         normalized_start = start.__index__() if hasattr(start, '__index__') else start
         if normalized_start is None:
             offset = 0
