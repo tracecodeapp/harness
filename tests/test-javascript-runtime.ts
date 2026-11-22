@@ -271,6 +271,58 @@ async function main(): Promise<void> {
   assertCondition(typeof init.loadTimeMs === 'number', 'Init should return loadTimeMs');
   console.log('PASS: worker init');
 
+  // A program that does not compile must fail the same way traced as untraced.
+  // The tracer prints instrumented code with the TypeScript printer, which
+  // repairs some syntax errors (a missing closing brace is added back), so a
+  // traced Run used to pass a program the untraced Run rejects.
+  const compileErrorPrograms: Array<{ label: string; code: string; functionName?: string; language: 'javascript' | 'typescript' }> = [
+    { label: 'missing closing brace', code: 'function solve() {\n  return 7', functionName: 'solve', language: 'javascript' },
+    { label: 'extra closing brace', code: 'function solve() {\n  return 7;\n}}', functionName: 'solve', language: 'javascript' },
+    { label: 'stray parenthesis', code: 'function solve() {\n  const a = (1 + 2));\n  return a;\n}', functionName: 'solve', language: 'javascript' },
+    { label: 'script missing closing brace', code: 'let result = 1;\nif (result) {\n  result = 2;\n', language: 'javascript' },
+    // TypeScript's own transpile diagnostics already reject these in both paths.
+    { label: 'TypeScript missing closing brace', code: 'function solve(): number {\n  return 7', functionName: 'solve', language: 'typescript' },
+    { label: 'TypeScript script missing closing brace', code: 'let result: number = 1;\nif (result) {\n  result = 2;\n', language: 'typescript' },
+  ];
+  for (const program of compileErrorPrograms) {
+    const payload = {
+      code: program.code,
+      ...(program.functionName ? { functionName: program.functionName } : {}),
+      inputs: {},
+      executionStyle: 'function',
+      language: program.language,
+    };
+    const untraced = await harness.sendMessage<{ success: boolean; output?: unknown; error?: string; diagnosticStage?: string }>('execute-code', payload);
+    const traced = await harness.sendMessage<{ success: boolean; output?: unknown; error?: string; diagnosticStage?: string }>('execute-with-tracing', payload);
+    const pick = (result: typeof untraced) => ({
+      success: result.success,
+      output: result.output,
+      error: result.error,
+      diagnosticStage: result.diagnosticStage,
+    });
+    assertCondition(untraced.success === false, `${program.label}: the untraced run should fail: ${JSON.stringify(untraced)}`);
+    assertCondition(
+      program.language !== 'javascript' || untraced.diagnosticStage === 'compile',
+      `${program.label}: the untraced JavaScript run should be a compile error: ${JSON.stringify(untraced)}`
+    );
+    assertCondition(
+      JSON.stringify(pick(traced)) === JSON.stringify(pick(untraced)),
+      `${program.label}: the traced run must report the untraced compile error: traced ${JSON.stringify(pick(traced))} untraced ${JSON.stringify(pick(untraced))}`
+    );
+  }
+  const compilingTraced = await harness.sendMessage<{ success: boolean; output?: unknown; trace?: { events?: unknown[] } }>('execute-with-tracing', {
+    code: 'function solve() {\n  const x = 7;\n  return x;\n}',
+    functionName: 'solve',
+    inputs: {},
+    executionStyle: 'function',
+    language: 'javascript',
+  });
+  assertCondition(
+    compilingTraced.success === true && compilingTraced.output === 7 && (compilingTraced.trace?.events?.length ?? 0) > 0,
+    `a program that compiles is still traced: ${JSON.stringify(compilingTraced).slice(0, 300)}`
+  );
+  console.log('PASS: traced runs report the learner compile error the untraced run reports');
+
   const spoofHarness = createWorkerHarness(workerSource);
   await spoofHarness.sendMessage<{ success: boolean }>('init');
   const spoofedResult = await spoofHarness.sendMessage<{ success: boolean; output: unknown }>('execute-code', {
