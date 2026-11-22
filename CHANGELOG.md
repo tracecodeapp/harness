@@ -42,8 +42,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   clock (~30 s) and lost its recorded trace; the tracer now stays installed
   and records nothing more. The per-case clock, the untraced line ceiling
   (`line-limit`) and the memory limit still stop the program, and the case
-  reports that limit with its trace kept: the app's never-ending loop is
-  stopped in ~1.5 s. Once recording stops, only the learner's own lines
+  reports that limit with its trace kept: the app's never-ending loop now
+  stops at that ceiling (4,000,000 lines, or 1,500,000 on one line) after
+  several seconds, about 9 s on a busy build host, instead of at the client's
+  clock. Once recording stops, only the learner's own lines
   count toward the ceiling. Before, the `sys.settrace` path also counted the
   harness's helper lines (about 14 per learner line), so a correct program
   could be stopped after ~43k lines. Helper generators (`for` over range, a
