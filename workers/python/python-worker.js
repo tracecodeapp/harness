@@ -324,10 +324,14 @@ function emitRuntimeDiagnostic(level, phase, message, detail) {
 }
 
 // Interview mode runtime guard defaults. These are intentionally coarse
-// safeguards to stop runaway executions without exposing internals.
+// safeguards to stop runaway executions without exposing internals. They
+// apply to untraced cases when the caller sets no limit (the app's Run and
+// Submit set none). The heaviest correct catalog case, n-queens with n = 9,
+// runs about 1.15 million lines, 331,000 of them on one line; these leave
+// room above it while still stopping a two-line infinite loop in seconds.
 const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
-  maxLineEvents: 400000,
-  maxSingleLineHits: 150000,
+  maxLineEvents: 4000000,
+  maxSingleLineHits: 1500000,
   maxCallDepth: 2000,
   maxMemoryBytes: 96 * 1024 * 1024, // 96 MB
   memoryCheckEvery: 200,
