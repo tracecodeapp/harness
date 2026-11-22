@@ -1528,45 +1528,22 @@ function buildJavaExpression(value, expectedType) {
 function buildDynamicInputHelperMethods() {
   return `
   // A node that appears more than once in a case's input graph (a list cycle,
-  // a shared subtree, a node two parameters share) is written once with
-  // "__id__" and afterwards as {"__ref__": id}. These tables give every such
-  // occurrence the one object, and build each parsed JSON object once. They
-  // cover one case: run() clears them before it reads its first input.
+  // a node two parameters share) is written once with "__id__" and afterwards
+  // as {"__ref__": id}. These tables give every such occurrence the one
+  // object and build each parsed JSON node once. They cover one case: run()
+  // clears them before it reads its first input.
   private static java.util.HashMap<String, Object> preparedNodesById = new java.util.HashMap<>();
   private static java.util.IdentityHashMap<Object, Object> preparedNodesBySource = new java.util.IdentityHashMap<>();
-  private static java.util.IdentityHashMap<Object, java.util.HashMap<java.lang.reflect.Type, Object>> preparedValuesBySource =
-      new java.util.IdentityHashMap<>();
-  // From the scan of each input document: JSON objects whose own subtree
-  // refers back to them, and JSON values whose subtree holds any reference.
+  // From the scan of each input document: JSON objects with a reference back
+  // to themselves inside their own subtree, and JSON values holding any
+  // reference.
   private static java.util.IdentityHashMap<Object, Boolean> preparedSelfReferenced = new java.util.IdentityHashMap<>();
   private static java.util.IdentityHashMap<Object, Boolean> preparedHoldsReference = new java.util.IdentityHashMap<>();
   private static java.util.IdentityHashMap<Object, Boolean> preparedRawResolved = new java.util.IdentityHashMap<>();
 
-  // A case whose input the Harness cannot build fails with this marker so the
-  // worker reports the provider's failure, not the learner's.
-  private static final String PREPARED_INPUT_FAILURE = "__TRACECODE_PREPARED_INPUT_FAILURE__:";
-
-  private static RuntimeException preparedInputFailure(Throwable failure) {
-    rethrowBudgetAbort(failure);
-    if (failure instanceof RuntimeException && String.valueOf(failure.getMessage()).startsWith(PREPARED_INPUT_FAILURE)) {
-      return (RuntimeException) failure;
-    }
-    Throwable cause = failure instanceof java.lang.reflect.InvocationTargetException && failure.getCause() != null
-        ? failure.getCause()
-        : failure;
-    StringBuilder detail = new StringBuilder(String.valueOf(cause));
-    Throwable root = cause;
-    for (int depth = 0; depth < 8 && root.getCause() != null && root.getCause() != root; depth += 1) {
-      root = root.getCause();
-    }
-    if (root != cause) detail.append(" (caused by ").append(root).append(')');
-    return new RuntimeException(PREPARED_INPUT_FAILURE + "TraceCode could not build this case's input: " + detail);
-  }
-
   private static void beginPreparedInputCase() {
     preparedNodesById = new java.util.HashMap<>();
     preparedNodesBySource = new java.util.IdentityHashMap<>();
-    preparedValuesBySource = new java.util.IdentityHashMap<>();
     preparedSelfReferenced = new java.util.IdentityHashMap<>();
     preparedHoldsReference = new java.util.IdentityHashMap<>();
     preparedRawResolved = new java.util.IdentityHashMap<>();
@@ -1579,22 +1556,20 @@ function buildDynamicInputHelperMethods() {
   }
 
   /**
-   * Numbers the document's values in preorder and records, for each JSON
-   * object with an __id__, whether a reference to that id sits inside its
-   * own subtree (its preorder span). Only such an object has to exist before
-   * its links are built; every other object can be built whole.
+   * Numbers the document's values in preorder and records each JSON object
+   * with an __id__ that a reference inside its own subtree (its preorder
+   * span) points back to. Only such an object has to exist before its links
+   * are built; every other one is built as before.
    */
   private static void scanPreparedReferences(Object document) {
     java.util.HashMap<String, java.util.ArrayList<Integer>> referencePositions = new java.util.HashMap<>();
     java.util.ArrayList<Object> definitions = new java.util.ArrayList<>();
     java.util.ArrayList<int[]> spans = new java.util.ArrayList<>();
-    int[] counter = new int[] { 0 };
-    scanPreparedValue(document, counter, referencePositions, definitions, spans);
+    scanPreparedValue(document, new int[] { 0 }, referencePositions, definitions, spans);
     for (int index = 0; index < definitions.size(); index += 1) {
       Object definition = definitions.get(index);
       int[] span = spans.get(index);
-      Object id = ((java.util.Map<?, ?>) definition).get("__id__");
-      java.util.ArrayList<Integer> positions = referencePositions.get(id);
+      java.util.ArrayList<Integer> positions = referencePositions.get(((java.util.Map<?, ?>) definition).get("__id__"));
       if (positions == null) continue;
       for (int position : positions) {
         if (position > span[0] && position <= span[1]) {
@@ -1615,6 +1590,7 @@ function buildDynamicInputHelperMethods() {
     int position = counter[0]++;
     boolean holdsReference = false;
     java.util.Collection<?> children;
+    int[] span = null;
     if (value instanceof java.util.Map<?, ?>) {
       java.util.Map<?, ?> fields = (java.util.Map<?, ?>) value;
       Object target = fields.get("__ref__");
@@ -1622,17 +1598,16 @@ function buildDynamicInputHelperMethods() {
         referencePositions.computeIfAbsent((String) target, key -> new java.util.ArrayList<>()).add(position);
         holdsReference = true;
       }
+      if (fields.get("__id__") instanceof String) {
+        span = new int[] { position, position };
+        definitions.add(value);
+        spans.add(span);
+      }
       children = fields.values();
     } else if (value instanceof java.util.List<?>) {
       children = (java.util.List<?>) value;
     } else {
       return false;
-    }
-    int[] span = null;
-    if (value instanceof java.util.Map<?, ?> && ((java.util.Map<?, ?>) value).get("__id__") instanceof String) {
-      span = new int[] { position, position };
-      definitions.add(value);
-      spans.add(span);
     }
     for (Object child : children) {
       if (scanPreparedValue(child, counter, referencePositions, definitions, spans)) holdsReference = true;
@@ -1642,12 +1617,16 @@ function buildDynamicInputHelperMethods() {
     return holdsReference;
   }
 
-  private static Object readJsonInputProperty(String key, java.lang.reflect.Type targetType) {
+  private static String preparedInputSource(String key) {
     String source = System.getProperty(key);
     if (source == null) {
       throw new RuntimeException("Missing TraceCode prepared input " + key);
     }
-    return coerceJsonInput(parsePreparedJsonInput(source), targetType);
+    return source;
+  }
+
+  private static Object readJsonInputProperty(String key, java.lang.reflect.Type targetType) {
+    return coerceJsonInput(parsePreparedJsonInput(preparedInputSource(key)), targetType);
   }
 
   private static Object readJsonInput(String path, java.lang.reflect.Type targetType) {
@@ -1801,19 +1780,9 @@ function buildDynamicInputHelperMethods() {
       Object instance,
       java.util.Map<?, ?> fields
   ) throws ReflectiveOperationException {
-    assignPreparedJsonFields(targetType, instance, fields, java.util.Collections.emptySet());
-  }
-
-  /** Assigns the input's fields by name, except those a constructor already took. */
-  private static void assignPreparedJsonFields(
-      Class<?> targetType,
-      Object instance,
-      java.util.Map<?, ?> fields,
-      java.util.Set<String> constructorTook
-  ) throws ReflectiveOperationException {
     for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
       String name = String.valueOf(entry.getKey());
-      if (name.startsWith("__") || constructorTook.contains(name)) continue;
+      if (name.startsWith("__")) continue;
       java.lang.reflect.Field field = preparedField(targetType, name);
       if (field == null) continue;
       field.setAccessible(true);
@@ -1853,34 +1822,24 @@ function buildDynamicInputHelperMethods() {
       }
       return node;
     }
-    // Constructor arguments and the by-name field assignment can both reach
-    // the same JSON object; build it once so each subtree is not built again.
+    // Constructor arguments and the by-name field assignment both reach the
+    // same JSON node; build it once so each subtree is not built again.
     Object built = preparedNodesBySource.get(fields);
     if (built != null && targetType.isInstance(built)) return built;
-    java.util.LinkedHashMap<String, Object> values = new java.util.LinkedHashMap<>();
-    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
-      String name = String.valueOf(entry.getKey());
-      if (!name.startsWith("__")) values.put(name, entry.getValue());
-    }
-    // Something inside a self-referenced node points back to it, so it has to
-    // exist before the links that lead there are built: its constructor gets
-    // only the values that cannot lead back (scalars, and structures holding
-    // no reference); the rest are assigned once it is registered.
-    java.util.Set<String> deferred = new java.util.HashSet<>();
     if (preparedSelfReferenced.containsKey(fields)) {
-      for (java.util.Map.Entry<String, Object> entry : values.entrySet()) {
-        if (preparedHoldsReference.containsKey(entry.getValue())) deferred.add(entry.getKey());
+      // Something inside this node points back to it, so it has to exist
+      // before the links that lead there are built.
+      Object instance = allocateSelfReferencedPreparedObject(fields, targetType);
+      recordPreparedNode(fields, instance);
+      try {
+        assignPreparedJsonFields(targetType, instance, fields);
+      } catch (ReflectiveOperationException error) {
+        rethrowBudgetAbort(error);
+        throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
       }
+      return instance;
     }
-    PreparedConstruction construction = instantiatePreparedJsonObject(targetType, values, deferred);
-    recordPreparedNode(fields, construction.instance);
-    try {
-      assignPreparedJsonFields(targetType, construction.instance, fields, construction.constructorTook);
-    } catch (ReflectiveOperationException error) {
-      rethrowBudgetAbort(error);
-      throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
-    }
-    return construction.instance;
+    return recordPreparedNode(fields, constructPreparedJsonObject(fields, targetType));
   }
 
   private static Object recordPreparedNode(java.util.Map<?, ?> fields, Object instance) {
@@ -1890,273 +1849,179 @@ function buildDynamicInputHelperMethods() {
     return instance;
   }
 
-  private static final class PreparedConstruction {
-    final Object instance;
-    final java.util.Set<String> constructorTook;
-
-    PreparedConstruction(Object instance, java.util.Set<String> constructorTook) {
-      this.instance = instance;
-      this.constructorTook = constructorTook;
-    }
-  }
-
-  private static boolean isPreparedIntegral(Number value) {
-    if (value instanceof Double || value instanceof Float) {
-      double number = value.doubleValue();
-      return !Double.isInfinite(number) && !Double.isNaN(number) && number == Math.rint(number) &&
-          Math.abs(number) <= 9.007199254740992E15;
-    }
-    return true;
-  }
-
-  /**
-   * How well a JSON value fits a parameter for choosing a constructor: lower
-   * is a closer type, and -1 rejects a conversion that loses information (a
-   * fraction to an integer, a value out of the parameter's range) or makes no
-   * sense. The chosen constructor's arguments are then converted normally.
-   */
-  private static int preparedConversionCost(Object value, Class<?> type) {
-    if (type == Object.class) return 40;
-    if (value == null) return type.isPrimitive() ? -1 : 0;
+  private static boolean preparedScalarFits(Object value, Class<?> type) {
     if (value instanceof Number) {
-      Number number = (Number) value;
-      if (isPreparedIntegral(number)) {
-        double asDouble = number.doubleValue();
-        long asLong = number.longValue();
-        boolean fitsLong = !(number instanceof Double || number instanceof Float) || Math.abs(asDouble) < 9.2E18;
-        boolean fitsInt = fitsLong && asLong >= Integer.MIN_VALUE && asLong <= Integer.MAX_VALUE;
-        if (type == int.class) return fitsInt ? 0 : -1;
-        if (type == Integer.class) return fitsInt ? 1 : -1;
-        if (type == long.class) return fitsLong ? 2 : -1;
-        if (type == Long.class) return fitsLong ? 3 : -1;
-        if (type == double.class) return 4;
-        if (type == Double.class) return 5;
-        if (type == float.class) return 6;
-        if (type == Float.class) return 7;
-        boolean fitsShort = fitsLong && asLong >= Short.MIN_VALUE && asLong <= Short.MAX_VALUE;
-        boolean fitsByte = fitsLong && asLong >= Byte.MIN_VALUE && asLong <= Byte.MAX_VALUE;
-        if (type == short.class) return fitsShort ? 8 : -1;
-        if (type == Short.class) return fitsShort ? 9 : -1;
-        if (type == byte.class) return fitsByte ? 10 : -1;
-        if (type == Byte.class) return fitsByte ? 11 : -1;
-      } else {
-        if (type == double.class) return 0;
-        if (type == Double.class) return 1;
-        if (type == float.class) return 2;
-        if (type == Float.class) return 3;
-      }
-      return type == String.class ? 30 : -1;
+      return type == int.class || type == long.class || type == double.class || type == float.class ||
+          type == short.class || type == byte.class || Number.class.isAssignableFrom(type);
     }
-    if (value instanceof Boolean) {
-      if (type == boolean.class) return 0;
-      if (type == Boolean.class) return 1;
-      return type == String.class ? 30 : -1;
-    }
+    if (value instanceof Boolean) return type == boolean.class || type == Boolean.class;
     if (value instanceof String) {
-      String text = (String) value;
-      if (type == String.class) return 0;
-      if ((type == char.class || type == Character.class) && text.length() == 1) return type == char.class ? 2 : 3;
-      if (type.isEnum()) return 4;
-      if (type == StringBuilder.class) return 5;
-      return -1;
+      return type == String.class ||
+          ((type == char.class || type == Character.class) && ((String) value).length() == 1);
     }
-    // A JSON object or array: any reference type may take it; converting it
-    // decides whether this constructor can.
-    if (type.isPrimitive() || type == String.class || type == Boolean.class || type == Character.class ||
-        Number.class.isAssignableFrom(type)) {
-      return -1;
-    }
-    return 0;
-  }
-
-  private static java.util.List<java.lang.reflect.Constructor<?>> rankedPreparedConstructors(
-      java.lang.reflect.Constructor<?>[] constructors,
-      Object[] values,
-      java.util.Set<Integer> nullPositions
-  ) {
-    java.util.ArrayList<java.lang.reflect.Constructor<?>> ranked = new java.util.ArrayList<>();
-    java.util.HashMap<java.lang.reflect.Constructor<?>, Integer> costs = new java.util.HashMap<>();
-    for (java.lang.reflect.Constructor<?> constructor : constructors) {
-      Class<?>[] parameterTypes = constructor.getParameterTypes();
-      if (parameterTypes.length != values.length || values.length == 0) continue;
-      int total = 0;
-      for (int index = 0; index < values.length && total >= 0; index += 1) {
-        int cost = nullPositions.contains(index)
-            ? (parameterTypes[index].isPrimitive() ? -1 : 0)
-            : preparedConversionCost(values[index], parameterTypes[index]);
-        total = cost < 0 ? -1 : total + cost;
-      }
-      if (total < 0) continue;
-      costs.put(constructor, total);
-      ranked.add(constructor);
-    }
-    ranked.sort(
-        java.util.Comparator.comparingInt((java.lang.reflect.Constructor<?> constructor) -> costs.get(constructor))
-            .thenComparing(java.lang.reflect.Constructor::toGenericString)
-    );
-    return ranked;
-  }
-
-  private static Object newPreparedInstance(
-      java.lang.reflect.Constructor<?> constructor,
-      Object[] arguments
-  ) throws ReflectiveOperationException {
-    constructor.setAccessible(true);
-    return constructor.newInstance(arguments);
+    return false;
   }
 
   /**
-   * Constructs targetType from the input's field values and reports which
-   * fields the constructor took, so the by-name assignment leaves those to the
-   * constructor. Values named in deferred lead back to the node being built:
-   * they are passed as null, if at all, and assigned afterwards.
-   *
-   * Order, as before this table existed: a constructor taking every value in
-   * field order (the closest types first, never a lossy conversion); then a
-   * no-arg constructor. Only where no such constructor exists: one whose
-   * parameter names name given fields; one taking the leading scalar values;
-   * and last, one called with type-default arguments. A constructor that
-   * accepts the values' types but throws on the values themselves is never
-   * bypassed with default arguments.
+   * Constructs a node that its own input points back to, before its links
+   * are built. The constructor gets the input's real values, with null for
+   * the fields that lead back to the node: a constructor taking every field
+   * in order; a no-arg one; one taking the leading scalar values; and only
+   * then one called with type-default arguments. The by-name field
+   * assignment that follows supplies the rest, as for every node.
    */
-  private static PreparedConstruction instantiatePreparedJsonObject(
-      Class<?> targetType,
-      java.util.LinkedHashMap<String, Object> values,
-      java.util.Set<String> deferred
+  private static Object allocateSelfReferencedPreparedObject(
+      java.util.Map<?, ?> fields,
+      Class<?> targetType
   ) {
-    java.lang.reflect.Constructor<?>[] constructors = targetType.getDeclaredConstructors();
-    java.util.ArrayList<String> keys = new java.util.ArrayList<>(values.keySet());
-    Object[] ordered = values.values().toArray();
-    java.util.Set<Integer> nullPositions = new java.util.HashSet<>();
-    java.util.Set<String> took = new java.util.LinkedHashSet<>();
-    for (int index = 0; index < keys.size(); index += 1) {
-      if (deferred.contains(keys.get(index))) nullPositions.add(index);
-      else took.add(keys.get(index));
+    java.util.ArrayList<Object> values = new java.util.ArrayList<>();
+    java.util.ArrayList<Boolean> leadsBack = new java.util.ArrayList<>();
+    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
+      if (String.valueOf(entry.getKey()).startsWith("__")) continue;
+      values.add(entry.getValue());
+      leadsBack.add(preparedHoldsReference.containsKey(entry.getValue()));
     }
-    Throwable rejectedValues = null;
-    for (java.lang.reflect.Constructor<?> constructor : rankedPreparedConstructors(constructors, ordered, nullPositions)) {
-      Object[] arguments = new Object[ordered.length];
+    java.lang.reflect.Constructor<?>[] constructors = targetType.getDeclaredConstructors();
+    for (java.lang.reflect.Constructor<?> constructor : constructors) {
+      if (constructor.getParameterCount() != values.size() || values.isEmpty()) continue;
       try {
         java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
-        for (int index = 0; index < ordered.length; index += 1) {
-          arguments[index] = nullPositions.contains(index) ? null : coerceJsonInput(ordered[index], parameterTypes[index]);
+        Class<?>[] rawTypes = constructor.getParameterTypes();
+        Object[] arguments = new Object[values.size()];
+        for (int index = 0; index < values.size(); index += 1) {
+          if (leadsBack.get(index)) {
+            if (rawTypes[index].isPrimitive()) throw new IllegalArgumentException("primitive back-reference");
+            arguments[index] = null;
+          } else {
+            arguments[index] = coerceJsonInput(values.get(index), parameterTypes[index]);
+          }
         }
-      } catch (IllegalArgumentException candidateFailure) {
-        rethrowBudgetAbort(candidateFailure);
-        continue;
-      }
-      try {
-        return new PreparedConstruction(newPreparedInstance(constructor, arguments), took);
+        constructor.setAccessible(true);
+        return constructor.newInstance(arguments);
       } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
-        if (candidateFailure instanceof java.lang.reflect.InvocationTargetException) rejectedValues = candidateFailure.getCause();
       }
     }
-    java.util.Set<String> none = java.util.Collections.emptySet();
     for (java.lang.reflect.Constructor<?> constructor : constructors) {
       if (constructor.getParameterCount() != 0) continue;
       try {
-        return new PreparedConstruction(newPreparedInstance(constructor, new Object[0]), none);
+        constructor.setAccessible(true);
+        return constructor.newInstance();
       } catch (ReflectiveOperationException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
-        if (candidateFailure instanceof java.lang.reflect.InvocationTargetException) rejectedValues = candidateFailure.getCause();
       }
     }
-    java.util.LinkedHashMap<String, Object> available = new java.util.LinkedHashMap<>();
-    for (java.util.Map.Entry<String, Object> entry : values.entrySet()) {
-      if (!deferred.contains(entry.getKey())) available.put(entry.getKey(), entry.getValue());
+    java.util.ArrayList<Object> leadingScalars = new java.util.ArrayList<>();
+    for (int index = 0; index < values.size(); index += 1) {
+      Object value = values.get(index);
+      if (leadsBack.get(index) || value == null || value instanceof java.util.Map<?, ?> || value instanceof java.util.List<?>) break;
+      leadingScalars.add(value);
     }
     java.lang.reflect.Constructor<?>[] widestFirst = constructors.clone();
     java.util.Arrays.sort(
         widestFirst,
         java.util.Comparator.comparingInt((java.lang.reflect.Constructor<?> constructor) -> constructor.getParameterCount()).reversed()
-            .thenComparing(java.lang.reflect.Constructor::toGenericString)
     );
     for (java.lang.reflect.Constructor<?> constructor : widestFirst) {
-      java.lang.reflect.Parameter[] parameters = constructor.getParameters();
-      if (parameters.length == 0) continue;
-      boolean named = true;
-      for (java.lang.reflect.Parameter parameter : parameters) {
-        if (!parameter.isNamePresent() || !available.containsKey(parameter.getName()) ||
-            preparedConversionCost(available.get(parameter.getName()), parameter.getType()) < 0) {
-          named = false;
-          break;
-        }
+      Class<?>[] parameterTypes = constructor.getParameterTypes();
+      if (parameterTypes.length == 0 || parameterTypes.length > leadingScalars.size()) continue;
+      boolean fits = true;
+      for (int index = 0; index < parameterTypes.length && fits; index += 1) {
+        fits = preparedScalarFits(leadingScalars.get(index), parameterTypes[index]);
       }
-      if (!named) continue;
-      java.util.Set<String> namedTook = new java.util.LinkedHashSet<>();
+      if (!fits) continue;
       try {
-        java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
-        Object[] arguments = new Object[parameters.length];
-        for (int index = 0; index < parameters.length; index += 1) {
-          arguments[index] = coerceJsonInput(available.get(parameters[index].getName()), parameterTypes[index]);
-          namedTook.add(parameters[index].getName());
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = coerceJsonInput(leadingScalars.get(index), parameterTypes[index]);
         }
-        return new PreparedConstruction(newPreparedInstance(constructor, arguments), namedTook);
+        constructor.setAccessible(true);
+        return constructor.newInstance(arguments);
       } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
-        if (candidateFailure instanceof java.lang.reflect.InvocationTargetException) rejectedValues = candidateFailure.getCause();
       }
     }
-    // Learner types often declare one convenience constructor (the classic
-    // ListNode(int val)) that takes fewer values than the input has fields.
-    java.util.ArrayList<String> leadingKeys = new java.util.ArrayList<>();
-    for (java.util.Map.Entry<String, Object> entry : available.entrySet()) {
-      Object value = entry.getValue();
-      if (value == null || value instanceof java.util.Map<?, ?> || value instanceof java.util.List<?>) break;
-      leadingKeys.add(entry.getKey());
-    }
-    for (int width = leadingKeys.size(); width >= 1; width -= 1) {
-      Object[] prefix = new Object[width];
-      for (int index = 0; index < width; index += 1) prefix[index] = available.get(leadingKeys.get(index));
-      for (java.lang.reflect.Constructor<?> constructor : rankedPreparedConstructors(constructors, prefix, java.util.Collections.emptySet())) {
-        try {
-          Class<?>[] parameterTypes = constructor.getParameterTypes();
-          Object[] arguments = new Object[width];
-          for (int index = 0; index < width; index += 1) {
-            arguments[index] = coerceJsonInput(prefix[index], parameterTypes[index]);
-          }
-          return new PreparedConstruction(
-              newPreparedInstance(constructor, arguments),
-              new java.util.LinkedHashSet<>(leadingKeys.subList(0, width))
-          );
-        } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
-          rethrowBudgetAbort(candidateFailure);
-          if (candidateFailure instanceof java.lang.reflect.InvocationTargetException) rejectedValues = candidateFailure.getCause();
-        }
-      }
-    }
-    if (rejectedValues != null) {
-      throw new RuntimeException(
-          "TraceCode could not construct prepared input " + targetType.getSimpleName() +
-              ": its constructor rejected the input's values " + values.keySet() + ": " + rejectedValues
-      );
-    }
-    // No constructor takes the input's values. Call one with type-default
-    // arguments and let the by-name field assignment supply the values.
-    Throwable lastFailure = null;
-    java.lang.reflect.Constructor<?>[] narrowestFirst = widestFirst.clone();
-    java.util.Collections.reverse(java.util.Arrays.asList(narrowestFirst));
-    for (java.lang.reflect.Constructor<?> constructor : narrowestFirst) {
+    for (java.lang.reflect.Constructor<?> constructor : declaredByArity(constructors)) {
       try {
         Class<?>[] parameterTypes = constructor.getParameterTypes();
         Object[] arguments = new Object[parameterTypes.length];
-        for (int parameter = 0; parameter < parameterTypes.length; parameter += 1) {
-          arguments[parameter] = defaultJsonArgument(parameterTypes[parameter]);
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = defaultJsonArgument(parameterTypes[index]);
         }
-        return new PreparedConstruction(newPreparedInstance(constructor, arguments), none);
+        constructor.setAccessible(true);
+        return constructor.newInstance(arguments);
       } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
-        lastFailure = candidateFailure instanceof java.lang.reflect.InvocationTargetException && candidateFailure.getCause() != null
-            ? candidateFailure.getCause()
-            : candidateFailure;
       }
     }
-    throw new RuntimeException(
-        "TraceCode could not construct prepared input " + targetType.getSimpleName() +
-            ": no constructor takes its values " + values.keySet() +
-            (lastFailure != null ? ", and a constructor called with default values threw: " + lastFailure : "")
-    );
+    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
+  }
+
+  private static java.lang.reflect.Constructor<?>[] declaredByArity(java.lang.reflect.Constructor<?>[] constructors) {
+    java.lang.reflect.Constructor<?>[] sorted = constructors.clone();
+    java.util.Arrays.sort(sorted, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
+    return sorted;
+  }
+
+  private static Object constructPreparedJsonObject(
+      java.util.Map<?, ?> fields,
+      Class<?> targetType
+  ) {
+    java.util.ArrayList<Object> materializedValues = new java.util.ArrayList<>();
+    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
+      if (!String.valueOf(entry.getKey()).startsWith("__")) {
+        materializedValues.add(entry.getValue());
+      }
+    }
+    Object[] values = materializedValues.toArray();
+    for (java.lang.reflect.Constructor<?> constructor : targetType.getDeclaredConstructors()) {
+      if (constructor.getParameterCount() != values.length) continue;
+      try {
+        java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
+        Object[] arguments = new Object[values.length];
+        for (int index = 0; index < values.length; index += 1) {
+          arguments[index] = coerceJsonInput(values[index], parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance(arguments);
+        assignPreparedJsonFields(targetType, instance, fields);
+        return instance;
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    try {
+      java.lang.reflect.Constructor<?> constructor = targetType.getDeclaredConstructor();
+      constructor.setAccessible(true);
+      Object instance = constructor.newInstance();
+      assignPreparedJsonFields(targetType, instance, fields);
+      return instance;
+    } catch (ReflectiveOperationException candidateFailure) {
+      rethrowBudgetAbort(candidateFailure);
+    }
+    // Learner types often declare a single convenience constructor (the classic
+    // TreeNode(int val)) and no no-arg constructor, so an interior node that
+    // serializes as {val,left,right} matches no constructor arity. Construct
+    // with type-default arguments and let the by-name field assignment below
+    // populate the real values.
+    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
+    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
+    for (java.lang.reflect.Constructor<?> constructor : declared) {
+      try {
+        Class<?>[] parameterTypes = constructor.getParameterTypes();
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = defaultJsonArgument(parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        Object instance = constructor.newInstance(arguments);
+        assignPreparedJsonFields(targetType, instance, fields);
+        return instance;
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
   }
 
   private static Object preparedLinkedNodes(
@@ -2231,62 +2096,6 @@ function buildDynamicInputHelperMethods() {
     if (value == null) return null;
     Class<?> rawType = preparedRawClass(targetType);
     if (rawType == Object.class) return resolvePreparedRawReferences(value);
-    // A constructor and the by-name field assignment can both reach the same
-    // JSON list or map; give both the one container, as the input has one.
-    boolean container = value instanceof java.util.List<?> ||
-        (value instanceof java.util.Map<?, ?> && java.util.Map.class.isAssignableFrom(rawType));
-    if (!container) return coerceJsonInputOnce(value, targetType, rawType);
-    java.util.HashMap<java.lang.reflect.Type, Object> built = preparedValuesBySource.get(value);
-    if (built != null && built.containsKey(targetType)) return built.get(targetType);
-    Object result = coerceJsonInputOnce(value, targetType, rawType);
-    preparedValuesBySource.computeIfAbsent(value, key -> new java.util.HashMap<>()).put(targetType, result);
-    return result;
-  }
-
-  /**
-   * An input declared Object keeps its JSON shape, but a reference inside it
-   * still names the node it refers to, and a JSON object there that defines
-   * an id can be referred to from elsewhere in the case.
-   */
-  @SuppressWarnings("unchecked")
-  private static Object resolvePreparedRawReferences(Object value) {
-    if (value instanceof java.util.Map<?, ?>) {
-      java.util.Map<Object, Object> fields = (java.util.Map<Object, Object>) value;
-      Object reference = fields.get("__ref__");
-      if (reference instanceof String && fields.size() == 1) {
-        Object node = preparedNodesById.get(reference);
-        if (node == null) {
-          throw new IllegalStateException(
-              "Prepared input reference " + reference + " does not name an earlier node in this case"
-          );
-        }
-        return node;
-      }
-      // A constructor and the field assignment can both reach this value, and
-      // once resolved it may contain itself; resolve each one once.
-      if (preparedRawResolved.put(value, Boolean.TRUE) != null) return value;
-      Object id = fields.get("__id__");
-      if (id instanceof String) preparedNodesById.putIfAbsent((String) id, value);
-      for (java.util.Map.Entry<Object, Object> entry : fields.entrySet()) {
-        entry.setValue(resolvePreparedRawReferences(entry.getValue()));
-      }
-      return value;
-    }
-    if (value instanceof java.util.List<?>) {
-      if (preparedRawResolved.put(value, Boolean.TRUE) != null) return value;
-      java.util.List<Object> items = (java.util.List<Object>) value;
-      for (int index = 0; index < items.size(); index += 1) {
-        items.set(index, resolvePreparedRawReferences(items.get(index)));
-      }
-    }
-    return value;
-  }
-
-  private static Object coerceJsonInputOnce(
-      Object value,
-      java.lang.reflect.Type targetType,
-      Class<?> rawType
-  ) {
     if (rawType.isArray()) {
       java.util.List<?> list = (java.util.List<?>) value;
       Class<?> componentType = rawType.getComponentType();
@@ -2357,6 +2166,39 @@ function buildDynamicInputHelperMethods() {
     );
   }
 
+  /**
+   * An input declared Object keeps its JSON shape, but a reference inside it
+   * names the node it refers to once that node exists, and a JSON object
+   * there that defines an id can be referred to from elsewhere in the case.
+   */
+  @SuppressWarnings("unchecked")
+  private static Object resolvePreparedRawReferences(Object value) {
+    if (value instanceof java.util.Map<?, ?>) {
+      java.util.Map<Object, Object> fields = (java.util.Map<Object, Object>) value;
+      Object reference = fields.get("__ref__");
+      if (reference instanceof String && fields.size() == 1) {
+        Object node = preparedNodesById.get(reference);
+        return node != null ? node : value;
+      }
+      // Once resolved, a value can contain itself: resolve each one once.
+      if (preparedRawResolved.put(value, Boolean.TRUE) != null) return value;
+      Object id = fields.get("__id__");
+      if (id instanceof String) preparedNodesById.putIfAbsent((String) id, value);
+      for (java.util.Map.Entry<Object, Object> entry : fields.entrySet()) {
+        entry.setValue(resolvePreparedRawReferences(entry.getValue()));
+      }
+      return value;
+    }
+    if (value instanceof java.util.List<?>) {
+      if (preparedRawResolved.put(value, Boolean.TRUE) != null) return value;
+      java.util.List<Object> items = (java.util.List<Object>) value;
+      for (int index = 0; index < items.size(); index += 1) {
+        items.set(index, resolvePreparedRawReferences(items.get(index)));
+      }
+    }
+    return value;
+  }
+
   private static Object[] preparedArguments(
       java.util.List<?> rawArguments,
       java.lang.reflect.Type[] parameterTypes
@@ -2376,30 +2218,19 @@ function buildDynamicInputHelperMethods() {
       java.util.List<?> rawArguments
   ) {
     Throwable lastFailure = null;
-    Throwable inputFailure = null;
     for (java.lang.reflect.Constructor<?> constructor : targetType.getDeclaredConstructors()) {
       if (constructor.getParameterCount() != rawArguments.size()) continue;
-      Object[] arguments;
       try {
-        arguments = preparedArguments(
+        Object[] arguments = preparedArguments(
             rawArguments,
             constructor.getGenericParameterTypes()
         );
-      } catch (Throwable error) {
-        rethrowBudgetAbort(error);
-        inputFailure = error;
-        continue;
-      }
-      try {
         constructor.setAccessible(true);
         return constructor.newInstance(arguments);
       } catch (Throwable error) {
         lastFailure = error;
       }
     }
-    // Only the arguments could not be built: the Harness's failure, not the
-    // learner constructor's.
-    if (lastFailure == null && inputFailure != null) throw preparedInputFailure(inputFailure);
     throw new RuntimeException(
         "No matching prepared Java constructor for " + targetType.getName(),
         lastFailure
@@ -2411,7 +2242,6 @@ function buildDynamicInputHelperMethods() {
       String operation,
       java.util.List<?> rawArguments
   ) {
-    Throwable inputFailure = null;
     for (java.lang.reflect.Method method : targetType.getDeclaredMethods()) {
       if (
           method.getName().equals(operation) &&
@@ -2421,14 +2251,10 @@ function buildDynamicInputHelperMethods() {
           preparedArguments(rawArguments, method.getGenericParameterTypes());
           method.setAccessible(true);
           return method;
-        } catch (RuntimeException | StackOverflowError probeFailure) {
-          rethrowBudgetAbort(probeFailure);
-          inputFailure = probeFailure;
+        } catch (RuntimeException ignored) {
         }
       }
     }
-    // The operation exists but its arguments could not be built.
-    if (inputFailure != null) throw preparedInputFailure(inputFailure);
     throw new IllegalArgumentException(
         "No matching prepared Java operation " + targetType.getName() + "." + operation
     );
@@ -2504,14 +2330,11 @@ function buildDynamicInputHelperMethods() {
           operation,
           methodArguments
       );
-      Object[] invocationArguments;
       try {
-        invocationArguments = preparedArguments(methodArguments, method.getGenericParameterTypes());
-      } catch (Throwable inputFailure) {
-        throw preparedInputFailure(inputFailure);
-      }
-      try {
-        Object result = method.invoke(receiver, invocationArguments);
+        Object result = method.invoke(
+            receiver,
+            preparedArguments(methodArguments, method.getGenericParameterTypes())
+        );
         output.add(method.getReturnType() == void.class ? null : result);
       } catch (ReflectiveOperationException error) {
         Throwable cause = error.getCause();
@@ -5076,12 +4899,9 @@ ${helperMethods}
 
   public static String run() {
     beginPreparedInputCase();
-    Object input;
-    try {
-      input = readJsonInputProperty(${JSON.stringify(preparedOpsInput.property)}, Object.class);
-    } catch (Throwable inputFailure) {
-      throw preparedInputFailure(inputFailure);
-    }
+    // The envelope is parsed as is: each operation's arguments are converted
+    // to their declared types when that operation runs.
+    Object input = parsePreparedJsonInput(preparedInputSource(${JSON.stringify(preparedOpsInput.property)}));
     return runPreparedOperations(${functionName}.class, input);
   }
 }
@@ -5150,8 +4970,6 @@ ${lines.join('\n')}
   const usedLocalNames = new Set(['solution', ...invocationKeys]);
   const resultLocalName = uniqueJavaIdentifier('__tracecode_result', usedLocalNames);
   const materializedArgs = [];
-  const preparedDeclarations = [];
-  const preparedAssignments = [];
   let readsPreparedInput = false;
   for (let index = 0; index < invocationKeys.length; index += 1) {
     const key = invocationKeys[index];
@@ -5171,26 +4989,8 @@ ${lines.join('\n')}
     if (dynamicInput && !expression) {
       throw new Error(`Unsupported dynamic Java input type: ${type}`);
     }
-    if (dynamicInput) {
-      readsPreparedInput = true;
-      preparedDeclarations.push(`    ${type} ${key};`);
-      preparedAssignments.push(`      ${key} = ${expression};`);
-    } else {
-      materializedArgs.push(`    ${type} ${key} = ${expression};`);
-    }
-  }
-  if (readsPreparedInput) {
-    // A failure building a prepared argument is the Harness's, not the
-    // learner's: preparedInputFailure marks it for the worker.
-    const failureName = uniqueJavaIdentifier('__tracecode_input_failure', usedLocalNames);
-    materializedArgs.push(
-      ...preparedDeclarations,
-      '    try {',
-      ...preparedAssignments,
-      `    } catch (Throwable ${failureName}) {`,
-      `      throw preparedInputFailure(${failureName});`,
-      '    }'
-    );
+    if (dynamicInput) readsPreparedInput = true;
+    materializedArgs.push(`    ${type} ${key} = ${expression};`);
   }
   const invocationArgs = invocationKeys.join(', ');
   const invocationLine = returnType === 'void'
@@ -6196,21 +5996,7 @@ function boundedJavaDiagnosticPath(value, fallback = '.') {
 
 // A failed run's message: what the program or the compiler said, as plain
 // text. Report fields are never rendered as labelled sections.
-// Generated Exports code marks a case whose prepared input the Harness could
-// not build (see preparedInputFailure). That is the provider's failure, never
-// the learner's, so it rejects instead of reporting a runtime failure.
-const JAVA_PREPARED_INPUT_FAILURE_MARKER = '__TRACECODE_PREPARED_INPUT_FAILURE__:';
-
-function throwIfJavaPreparedInputFailure(report) {
-  const text = typeof report?.runtimeError === 'string' ? report.runtimeError : '';
-  const at = text.indexOf(JAVA_PREPARED_INPUT_FAILURE_MARKER);
-  if (at < 0) return;
-  const detail = text.slice(at + JAVA_PREPARED_INPUT_FAILURE_MARKER.length).split(/\r?\n/u)[0].trim();
-  throw new Error(detail || "TraceCode could not build this case's input.");
-}
-
 function javaReportFailureMessage(report, fallback = 'Java execution failed') {
-  throwIfJavaPreparedInputFailure(report);
   const compilerStdout = typeof report?.compilerStdout === 'string'
     ? sanitizeJavaCompilerDiagnostic(report.compilerStdout).trim()
     : '';
@@ -6560,7 +6346,6 @@ function javaRuntimeExceptionDiagnostic(report) {
 // that run fail (an exception, a VM error, the program ending the JVM) is the
 // learner's runtime stage. Harness failures throw instead of reporting.
 function javaReportFailure(report, fallback = 'Java execution failed') {
-  throwIfJavaPreparedInputFailure(report);
   const diagnostic = javaRuntimeExceptionDiagnostic(report);
   return {
     error: diagnostic?.stack || javaReportFailureMessage(report, fallback),

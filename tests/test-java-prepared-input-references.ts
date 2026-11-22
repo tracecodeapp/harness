@@ -303,33 +303,24 @@ class Solution {
 }
 class Solution {
   public String shape(ListNode head) {
-    StringBuilder out = new StringBuilder();
-    ListNode node = head;
-    for (int index = 0; index < 4; index += 1, node = node.next) {
-      out.append(node.initialValue).append(index < 3 ? "," : "");
-    }
-    return out + ":" + (node == head.next);
+    return head.next.initialValue + ":" + head.next.val + ":" + (head.next.next.next.next == head.next);
   }
 }`;
-  assert.deepEqual(runPrepared(recordingNode, 'shape', [[cycleToIndexOne]]), ['"3,2,0,-4:true"']);
-  console.log('PASS: list nodes, cyclic or not, are constructed with their own values');
+  // n1 is the node the tail points back to, so it is built before its links.
+  assert.deepEqual(runPrepared(recordingNode, 'shape', [[cycleToIndexOne]]), ['"2:2:true"']);
+  console.log('PASS: a node its input points back to is constructed with its own values');
 }
 
-function testSharedAcyclicNodeIsBuiltWithItsValues(): void {
+function testSharedAcyclicNodeIsOneNode(): void {
   const code = `class TreeNode {
-  final int initialValue;
   int val;
   TreeNode left;
   TreeNode right;
-  TreeNode(int val) {
-    if (val == 0) throw new IllegalArgumentException("a node value of 0 is not allowed here");
-    this.val = val;
-    this.initialValue = val;
-  }
+  TreeNode(int val) { this.val = val; }
 }
 class Solution {
   public String shape(TreeNode root) {
-    return (root.left == root.right) + ":" + root.left.initialValue + ":" + root.initialValue;
+    return (root.left == root.right) + ":" + root.left.val + ":" + root.val;
   }
 }`;
   const input = {
@@ -338,29 +329,7 @@ class Solution {
     right: { __ref__: 'shared' },
   };
   assert.deepEqual(runPrepared(code, 'shape', [[input]]), ['"true:5:1"']);
-  console.log('PASS: a node two branches share is built once with its own values');
-}
-
-function testUnbuildableNodeReportsWhy(): void {
-  const code = `class ListNode {
-  int val;
-  ListNode next;
-  ListNode(String label, boolean strict) {
-    if (label == null) throw new IllegalArgumentException("label is required");
-  }
-}
-class Solution {
-  public int first(ListNode head) {
-    return head.val;
-  }
-}`;
-  const [output] = runPrepared(code, 'first', [[{ __id__: 'n0', val: 1, next: { __ref__: 'n0' } }]]);
-  assert.match(
-    output ?? '',
-    /^error:__TRACECODE_PREPARED_INPUT_FAILURE__:.*TraceCode could not construct prepared input ListNode/,
-    String(output)
-  );
-  console.log('PASS: a node no constructor can build fails with a clear message');
+  console.log('PASS: a node two branches share is one node');
 }
 
 function testObjectTypedReferencesResolve(): void {
@@ -388,31 +357,6 @@ class Solution {
   console.log('PASS: references reached through Object-typed fields and containers resolve');
 }
 
-function testContainersAreBuiltOnce(): void {
-  const code = `class Box {
-  List<Integer> items;
-  List<Integer> original;
-  int[] values;
-  int[] originalValues;
-  Box(List<Integer> items, int[] values) {
-    this.items = items;
-    this.original = items;
-    this.values = values;
-    this.originalValues = values;
-  }
-}
-class Solution {
-  public String shape(Box box) {
-    return (box.items == box.original) + ":" + (box.values == box.originalValues) + ":" + box.items;
-  }
-}`;
-  assert.deepEqual(
-    runPrepared(code, 'shape', [[{ items: [1, 2, 3], values: [4, 5] }]]),
-    ['"true:true:[1, 2, 3]"']
-  );
-  console.log('PASS: a container a constructor received is not replaced by a second copy');
-}
-
 function testOpsClassReferencesAcrossOperations(): void {
   const code = `${learnerListNode}
 class Keeper {
@@ -436,52 +380,6 @@ class Keeper {
   console.log('PASS: a later operation can refer to an object an earlier one received');
 }
 
-const INPUT_FAILURE = /^error:__TRACECODE_PREPARED_INPUT_FAILURE__:/;
-
-function testInputFailuresAreMarkedForTheProvider(): void {
-  const code = `class ListNode {
-  int val;
-  ListNode next;
-  ListNode(int val) {
-    if (val < 0) throw new IllegalArgumentException("negative values are not allowed");
-    this.val = val;
-  }
-}
-class Solution {
-  public int first(ListNode head) {
-    if (head.val == 9) throw new IllegalStateException("the learner's own failure");
-    return head.val;
-  }
-}`;
-  const outputs = runPrepared(code, 'first', [
-    [{ val: -1, next: null }],
-    [{ val: 1, next: { __ref__: 'missing' } }],
-    [{ val: 9, next: null }],
-  ]);
-  assert.match(outputs[0] ?? '', INPUT_FAILURE, `a constructor that rejects the input: ${outputs[0]}`);
-  assert.match(outputs[1] ?? '', INPUT_FAILURE, `an unknown reference: ${outputs[1]}`);
-  assert.equal(outputs[2], "error:the learner's own failure", 'a failure in the learner method stays the learner\'s');
-  console.log('PASS: input construction failures carry the provider marker; learner failures do not');
-}
-
-function testOpsArgumentFailuresAreMarkedForTheProvider(): void {
-  const code = `${learnerListNode}
-class Keeper {
-  private ListNode kept;
-  public Keeper(int limit) {
-    if (limit < 0) throw new IllegalArgumentException("the learner's constructor failed");
-  }
-  public void keep(ListNode node) { this.kept = node; }
-}`;
-  const outputs = runPrepared(code, 'Keeper', [
-    [{ operations: ['Keeper', 'keep'], arguments: [[1], [{ val: 1, next: { __ref__: 'missing' } }]] }],
-    [{ operations: ['Keeper', 'keep'], arguments: [[-1], [null]] }],
-  ], 'ops-class');
-  assert.match(outputs[0] ?? '', INPUT_FAILURE, `an operation argument that cannot be built: ${outputs[0]}`);
-  assert.doesNotMatch(outputs[1] ?? '', INPUT_FAILURE, `the learner's own constructor failure: ${outputs[1]}`);
-  console.log('PASS: ops-class argument failures carry the provider marker; receiver failures do not');
-}
-
 function testRawSelfCycleUnderObject(): void {
   const code = `class Box {
   Object raw;
@@ -492,13 +390,9 @@ class Solution {
     return ((Map<?, ?>) box.raw).get("self") == box.raw;
   }
 }`;
-  const outputs = runPrepared(code, 'selfLoop', [
-    [{ raw: { __id__: 'r', self: { __ref__: 'r' } } }],
-    [{ raw: { self: { __ref__: 'missing' } } }],
-  ]);
+  const outputs = runPrepared(code, 'selfLoop', [[{ raw: { __id__: 'r', self: { __ref__: 'r' } } }]]);
   assert.equal(outputs[0], 'true', `a raw object that refers to itself: ${outputs[0]}`);
-  assert.match(outputs[1] ?? '', INPUT_FAILURE, `an unknown reference under Object: ${outputs[1]}`);
-  console.log('PASS: a raw Object input that refers to itself resolves once; an unknown one is a provider failure');
+  console.log('PASS: a raw Object input that refers to itself resolves once');
 }
 
 function testEarlyNodeUsesItsFullConstructor(): void {
@@ -524,56 +418,32 @@ class Solution {
   console.log('PASS: a node built before its links still gets its value from its full constructor');
 }
 
-function testConstructorChoiceIsStable(): void {
-  const numbers = `class Value {
-  String chosen;
-  Value(long value) { chosen = "long"; }
-  Value(double value) { chosen = "double"; }
-  Value(int value) { chosen = "int"; }
-}
-class Solution {
-  public String chosen(Value value) { return value.chosen; }
-}`;
-  assert.deepEqual(
-    runPrepared(numbers, 'chosen', [[{ value: 3 }], [{ value: 3.5 }], [{ value: 3000000000 }]]),
-    ['"int"', '"double"', '"long"']
-  );
-  const text = `class Letter {
-  String chosen;
-  Letter(char value) { chosen = "char"; }
-  Letter(String value) { chosen = "String"; }
-}
-class Solution {
-  public String chosen(Letter letter) { return letter.chosen; }
-}`;
-  assert.deepEqual(runPrepared(text, 'chosen', [[{ value: 'x' }]]), ['"String"']);
-  const noArg = `class ListNode {
-  String chosen;
+function testReversedChildrenConstructorKeepsChildrenByName(): void {
+  // The constructor declares right before left; the by-name field assignment
+  // after it puts each child where the input says, as it always has.
+  const code = `class TreeNode {
   int val;
-  ListNode next;
-  ListNode() { chosen = "no-arg"; }
-  ListNode(int val) { chosen = "int"; this.val = val; }
-}
-class Solution {
-  public String chosen(ListNode head) { return head.chosen + ":" + head.val; }
-}`;
-  assert.deepEqual(runPrepared(noArg, 'chosen', [[{ val: 4, next: null }]]), ['"no-arg:4"']);
-  console.log('PASS: constructor choice prefers exact types, never a lossy one, and keeps the no-arg constructor');
-}
-
-function testConstructorKeepsItsOwnCopy(): void {
-  const code = `class Box {
-  List<Integer> items;
-  Box(List<Integer> items) {
-    this.items = new ArrayList<>(items);
-    this.items.add(99);
+  TreeNode left;
+  TreeNode right;
+  TreeNode(int val) { this.val = val; }
+  TreeNode(int val, TreeNode right, TreeNode left) {
+    this.val = val;
+    this.right = right;
+    this.left = left;
   }
 }
 class Solution {
-  public String items(Box box) { return String.valueOf(box.items); }
+  public String shape(TreeNode root) {
+    return root.val + ":" + root.left.val + ":" + root.right.val + ":" + root.left.left.val;
+  }
 }`;
-  assert.deepEqual(runPrepared(code, 'items', [[{ items: [1, 2, 3] }]]), ['"[1, 2, 3, 99]"']);
-  console.log('PASS: a field the constructor set is not overwritten afterwards');
+  const input = {
+    val: 1,
+    left: { val: 2, left: { val: 4, left: null, right: null }, right: null },
+    right: { val: 3, left: null, right: null },
+  };
+  assert.deepEqual(runPrepared(code, 'shape', [[input]]), ['"1:2:3:4"']);
+  console.log('PASS: a constructor with reversed child parameters still gets each child by name');
 }
 
 const tests = [
@@ -586,17 +456,12 @@ const tests = [
   testOpsClassArguments,
   testNodesAreBuiltOnce,
   testReferencedNodeGetsItsRealConstructorValues,
-  testSharedAcyclicNodeIsBuiltWithItsValues,
-  testUnbuildableNodeReportsWhy,
+  testSharedAcyclicNodeIsOneNode,
   testObjectTypedReferencesResolve,
-  testContainersAreBuiltOnce,
   testOpsClassReferencesAcrossOperations,
-  testInputFailuresAreMarkedForTheProvider,
-  testOpsArgumentFailuresAreMarkedForTheProvider,
   testRawSelfCycleUnderObject,
   testEarlyNodeUsesItsFullConstructor,
-  testConstructorChoiceIsStable,
-  testConstructorKeepsItsOwnCopy,
+  testReversedChildrenConstructorKeepsChildrenByName,
 ];
 let failures = 0;
 for (const test of tests) {
