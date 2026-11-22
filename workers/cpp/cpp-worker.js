@@ -9243,6 +9243,44 @@ function cppIsReferenceCallArgument(text, start, end) {
   return false;
 }
 
+// Methods a traced vector's element proxy (tracecode::VectorElementRef)
+// forwards to the element, recording the access.
+const CPP_ELEMENT_PROXY_FORWARDED_METHODS = new Set([
+  'begin', 'end', 'contains', 'count', 'find', 'insert', 'push_back', 'size', 'empty', 'length', 'substr',
+]);
+
+/**
+ * Whether a non-read use of text[start, end) needs the element itself rather
+ * than whatever `name[i]` yields: for a traced vector that is an element proxy
+ * which cannot bind to `T&`, be iterated, or call a method it does not
+ * forward. `__tracecode_element(...)` returns the element reference for the
+ * proxy and is the identity otherwise.
+ */
+function cppIndexedAccessNeedsElement(text, start, end) {
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  if (/&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/.test(before)) return true;
+  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
+  if (cppIsReferenceCallArgument(text, start, end)) return true;
+  const next = nextNonWhitespace(text, end);
+  if (next.ch !== '.') return false;
+  const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
+  return Boolean(
+    method &&
+    !CPP_ELEMENT_PROXY_FORWARDED_METHODS.has(method[1]) &&
+    !CPP_VALUE_RETURNING_CONST_METHODS.has(method[1])
+  );
+}
+
+const CPP_ELEMENT_HELPER_SOURCE = [
+  '#line 1 "TraceCodeDriver.cpp"',
+  'template <typename __TcRef> struct __tracecode_is_element_ref : std::false_type {};',
+  'template <typename __TcT> struct __tracecode_is_element_ref<tracecode::VectorElementRef<__TcT>> : std::true_type {};',
+  'template <typename __TcElement> inline decltype(auto) __tracecode_element(__TcElement&& __tc_element) {',
+  '  if constexpr (__tracecode_is_element_ref<std::remove_cvref_t<__TcElement>>::value) return (__tc_element.get());',
+  '  else return std::forward<__TcElement>(__tc_element);',
+  '}',
+].join('\n');
+
 // An index expression that may change state or call code when evaluated.
 function cppExpressionMayHaveSideEffects(expression) {
   return /\+\+|--|\(|(?<![=!<>])=(?!=)/.test(stripCppStringsAndComments(expression));
@@ -9359,6 +9397,12 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         // `names[i].push_back(c)`, `sets[i].insert(x)`, `ps[i].begin()`: the
         // call must reach the element, not a copy of it.
         if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)) {
+          if (cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
+            const replacement = `__tracecode_element(${name}[${indexExpression}])`;
+            rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+            cursor = nameIndex + replacement.length;
+            continue;
+          }
           cursor = closeIndex + 1;
           continue;
         }
@@ -9413,6 +9457,13 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
         !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1)
       ) {
+        if (twoCharNext !== '->' && cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
+          // `QQ& r = qs[i]`, `for (char& c : names[i])`, `bump(rows[i])`.
+          const replacement = `__tracecode_element(${name}[${indexExpression}])`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         cursor = closeIndex + 1;
         continue;
       }
@@ -11698,7 +11749,10 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   );
   activeCppReferenceParameterCallees = collectCppReferenceParameterCallees(signatures);
   try {
-    return instrumentCppLinesForTracing();
+    const instrumented = instrumentCppLinesForTracing();
+    return instrumented.includes('__tracecode_element(')
+      ? `${CPP_ELEMENT_HELPER_SOURCE}\n${instrumented}`
+      : instrumented;
   } finally {
     activeCppReferenceParameterCallees = new Map();
   }
