@@ -1,4 +1,5 @@
 import type { ParityProblem } from './browser-trace-parity-entry';
+import { traceSemanticsCases } from './javascript-trace-semantics-cases';
 
 const pythonPrograms: [string, string, unknown][] = [
   ['P1', `class Box:
@@ -118,5 +119,18 @@ export const targetedCases: readonly ParityProblem[] = [
         cases: [{ id, input: {}, expected }],
       };
     }),
+  ),
+  // The Node worker test's traced-vs-untraced programs, run in the browser.
+  ...(['javascript', 'typescript'] as const).flatMap((language) =>
+    traceSemanticsCases
+      .filter((testCase) => !testCase.languages || testCase.languages.includes(language))
+      .map((testCase): ParityProblem => ({
+        id: 'S-' + testCase.id,
+        language,
+        functionName: testCase.functionName ?? 'solve',
+        executionStyle: testCase.executionStyle ?? 'function',
+        code: (language === 'typescript' && testCase.typescript) || testCase.code,
+        cases: [{ id: testCase.id, input: testCase.inputs ?? {}, expected: testCase.expected }],
+      })),
   ),
 ];

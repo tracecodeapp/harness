@@ -493,6 +493,8 @@ function createConsoleProxy(output) {
     warn: capture,
     error: capture,
     debug: capture,
+    // Lets traced console.log record the line it wrote (see __traceStdout).
+    [Symbol.for('tracecode.consoleTail')]: () => ({ count: output.length, last: output[output.length - 1] }),
   };
 }
 
@@ -1848,6 +1850,24 @@ function buildRuntimeStatementSourceMap(code) {
   return spans;
 }
 
+// Describes a thrown value for the trace without running learner code
+// (a thrown object's toString may throw or have side effects).
+function describeThrownValue(value) {
+  if (value instanceof Error) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(value, 'message');
+      if (!descriptor) return '';
+      return typeof descriptor.value === 'string' ? descriptor.value : 'Error';
+    } catch {
+      return 'Error';
+    }
+  }
+  if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
+    return Array.isArray(value) ? '[object Array]' : typeof value === 'function' ? '[function]' : '[object Object]';
+  }
+  return String(value);
+}
+
 function createTraceRecorder(options = {}) {
   const trace = [];
   const runtimeTraceEvents = [];
@@ -2697,7 +2717,7 @@ function createTraceRecorder(options = {}) {
             ? functionNameOverride
             : callStack[callStack.length - 1]?.function ?? '<module>',
         callStack: snapshotCallStack(),
-        returnValue: error instanceof Error ? error.message : String(error),
+        returnValue: describeThrownValue(error),
       });
     },
     recordStdout(lineNumber, text) {
@@ -3336,10 +3356,11 @@ function isTraceStateMutationHelperCall(ts, expression) {
     return false;
   }
   return [
-    '__traceMutatingCall',
+    '__traceInvokeMutatingCall',
     '__traceRecordIndexWrite',
     '__traceWriteIndex',
-    '__traceAugAssignIndex',
+    '__traceWriteRefValue',
+    '__traceAugAssignApply',
     '__traceUpdateIndex',
     '__traceUpdateScalar',
   ].includes(current.expression.text);
@@ -3487,16 +3508,6 @@ function isAssignmentLikeLeftOperand(ts, node) {
   );
 }
 
-function isTraceablePropertyWriteLeftOperand(ts, node) {
-  const parent = node?.parent;
-  return Boolean(
-    parent &&
-      ts.isBinaryExpression(parent) &&
-      parent.left === node &&
-      parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
-  );
-}
-
 function isUpdateExpressionOperand(ts, node) {
   const parent = node?.parent;
   if (!parent) return false;
@@ -3541,6 +3552,200 @@ function isDestructuringAssignmentTarget(ts, node) {
       parent.left === current &&
       isAssignmentOperatorToken(ts, parent.operatorToken.kind)
   );
+}
+
+function skipOuterExpressionParents(ts, node) {
+  let current = node;
+  let parent = node?.parent;
+  while (
+    parent &&
+    (ts.isParenthesizedExpression(parent) ||
+      (typeof ts.isAsExpression === 'function' && ts.isAsExpression(parent)) ||
+      (typeof ts.isTypeAssertionExpression === 'function' && ts.isTypeAssertionExpression(parent)) ||
+      (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(parent)) ||
+      (typeof ts.isNonNullExpression === 'function' && ts.isNonNullExpression(parent)))
+  ) {
+    current = parent;
+    parent = parent.parent;
+  }
+  return { current, parent };
+}
+
+// Whether an array or object literal is a destructuring assignment pattern
+// (`[a, b] = …`, `for ([k, v] of …)`) rather than a value.
+function isAssignmentPatternLiteral(ts, node) {
+  const { current, parent } = skipOuterExpressionParents(ts, node);
+  if (!parent) return false;
+  if (ts.isBinaryExpression(parent)) {
+    return parent.left === current && parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+  }
+  if (ts.isForOfStatement(parent) || ts.isForInStatement(parent)) {
+    return parent.initializer === current;
+  }
+  return isAssignmentPatternPosition(ts, current);
+}
+
+// Whether a node is an element of a destructuring assignment pattern: an
+// array element, a property value, a rest element, or a `target = default`.
+function isAssignmentPatternPosition(ts, node) {
+  const { current, parent } = skipOuterExpressionParents(ts, node);
+  if (!parent) return false;
+  if (ts.isArrayLiteralExpression(parent)) {
+    return isAssignmentPatternLiteral(ts, parent);
+  }
+  if (ts.isSpreadElement(parent)) {
+    return parent.expression === current && isAssignmentPatternPosition(ts, parent);
+  }
+  if (ts.isPropertyAssignment(parent)) {
+    return parent.initializer === current && isAssignmentPatternLiteral(ts, parent.parent);
+  }
+  if (ts.isShorthandPropertyAssignment(parent) || ts.isSpreadAssignment(parent)) {
+    return isAssignmentPatternLiteral(ts, parent.parent);
+  }
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === current &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    return isAssignmentPatternPosition(ts, parent);
+  }
+  return false;
+}
+
+// Whether a member expression is used as a reference (something assigned,
+// updated, deleted or bound) rather than read. Rewriting a reference into a
+// helper call would change what the program does.
+function isReferencePosition(ts, node) {
+  const { current, parent } = skipOuterExpressionParents(ts, node);
+  if (!parent) return false;
+  if (ts.isDeleteExpression(parent)) return true;
+  if (ts.isBinaryExpression(parent)) {
+    if (parent.left === current && isAssignmentOperatorToken(ts, parent.operatorToken.kind)) return true;
+  }
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) {
+    if (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    ) {
+      return true;
+    }
+  }
+  if ((ts.isForOfStatement(parent) || ts.isForInStatement(parent)) && parent.initializer === current) {
+    return true;
+  }
+  return isAssignmentPatternPosition(ts, current);
+}
+
+// Whether a member expression is the callee of a call or tagged template,
+// where rewriting it would lose the receiver (`this`).
+function isCalleePosition(ts, node) {
+  const { current, parent } = skipOuterExpressionParents(ts, node);
+  if (!parent) return false;
+  if (ts.isCallExpression(parent) && parent.expression === current) return true;
+  if (ts.isTaggedTemplateExpression(parent) && parent.tag === current) return true;
+  return false;
+}
+
+function isScalarIdentifierUpdate(ts, node) {
+  const unwrapped = unwrapParenthesizedExpression(ts, node);
+  return Boolean(
+    unwrapped &&
+      (ts.isPrefixUnaryExpression(unwrapped) || ts.isPostfixUnaryExpression(unwrapped)) &&
+      (unwrapped.operator === ts.SyntaxKind.PlusPlusToken ||
+        unwrapped.operator === ts.SyntaxKind.MinusMinusToken) &&
+      ts.isIdentifier(unwrapped.operand)
+  );
+}
+
+// Trace helpers evaluate a member path's index expressions before walking the
+// path; JavaScript reads `a[i]` before evaluating `j` in `a[i][j]`. The two
+// orders agree when every index after the first has no side effect beyond
+// updating a plain variable (which the walk never reads).
+function indicesEvaluateFaithfully(ts, indices) {
+  return indices.every((index, position) =>
+    position === 0 || !expressionMayHaveSideEffects(ts, index) || isScalarIdentifierUpdate(ts, index)
+  );
+}
+
+function indicesHaveNoSideEffects(ts, indices) {
+  return indices.every((index) => !expressionMayHaveSideEffects(ts, index));
+}
+
+// Renders an expression the way V8 names it in a TypeError ("a.push is not a
+// function", "rows[i] is not iterable"), or null when the rendering is not
+// certain. A traced helper that performs the operation for the learner throws
+// the same message the untraced program would.
+//
+// In 'iterable' mode (the callee in "f is not a function or its return value
+// is not iterable") V8 drops the parentheses of calls in the callee chain and
+// prints array literals: `[...w].reverse()` names `[(...w)].reverse`.
+function renderV8CallSite(ts, node, mode = 'call') {
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current) return null;
+  if (ts.isIdentifier(current)) return current.text;
+  if (mode === 'iterable' && ts.isArrayLiteralExpression(current)) {
+    const elements = current.elements.map((element) => {
+      if (ts.isSpreadElement(element)) {
+        return ts.isIdentifier(element.expression) ? `(...${element.expression.text})` : null;
+      }
+      return ts.isIdentifier(element) || ts.isNumericLiteral(element) ? renderV8CallSite(ts, element, mode) : null;
+    });
+    return elements.every((element) => element !== null) ? `[${elements.join(',')}]` : null;
+  }
+  if (ts.isThis(current)) return 'this';
+  if (ts.isNumericLiteral(current)) {
+    return /^(0|[1-9][0-9]{0,14})$/.test(current.text) ? current.text : null;
+  }
+  if (ts.isPropertyAccessExpression(current)) {
+    if (ts.isPrivateIdentifier(current.name) || isOptionalChainAccess(ts, current)) return null;
+    const receiver = renderV8CallSite(ts, current.expression, mode);
+    return receiver === null ? null : `${receiver}.${current.name.text}`;
+  }
+  if (ts.isElementAccessExpression(current)) {
+    if (isOptionalChainAccess(ts, current)) return null;
+    if (mode === 'iterable' && ts.isCallExpression(unwrapParenthesizedExpression(ts, current.expression))) return null;
+    const receiver = renderV8CallSite(ts, current.expression, mode);
+    if (receiver === null) return null;
+    const argument = unwrapParenthesizedExpression(ts, current.argumentExpression);
+    if (argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) {
+      return /^[^\n\r\u2028\u2029]+$/.test(argument.text) ? `${receiver}.${argument.text}` : null;
+    }
+    const key = renderV8IndexExpression(ts, argument);
+    return key === null ? null : `${receiver}[${key}]`;
+  }
+  if (ts.isCallExpression(current)) {
+    if (isOptionalChainAccess(ts, current) || (current.flags & ts.NodeFlags.OptionalChain)) return null;
+    const callee = renderV8CallSite(ts, current.expression, mode);
+    if (callee === null) return null;
+    return mode === 'iterable' ? callee : `${callee}(...)`;
+  }
+  return null;
+}
+
+function renderV8IndexExpression(ts, node) {
+  const current = unwrapParenthesizedExpression(ts, node);
+  if (!current) return null;
+  if (ts.isBinaryExpression(current)) {
+    const operators = new Map([
+      [ts.SyntaxKind.PlusToken, '+'],
+      [ts.SyntaxKind.MinusToken, '-'],
+      [ts.SyntaxKind.AsteriskToken, '*'],
+      [ts.SyntaxKind.SlashToken, '/'],
+      [ts.SyntaxKind.PercentToken, '%'],
+    ]);
+    const operator = operators.get(current.operatorToken.kind);
+    const left = operator ? renderV8IndexExpression(ts, current.left) : null;
+    const right = operator ? renderV8IndexExpression(ts, current.right) : null;
+    return left === null || right === null ? null : `(${left} ${operator} ${right})`;
+  }
+  if (isScalarIdentifierUpdate(ts, current)) {
+    const operator = current.operator === ts.SyntaxKind.PlusPlusToken ? '++' : '--';
+    return ts.isPrefixUnaryExpression(current)
+      ? `(${operator}${current.operand.text})`
+      : `(${current.operand.text}${operator})`;
+  }
+  if (ts.isCallExpression(current)) return null;
+  return renderV8CallSite(ts, current);
 }
 
 function isNestedElementAccessExpression(ts, node) {
@@ -3682,7 +3887,16 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
   if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
     return null;
   }
+  // `a?.push(x)`, `a.push?.(x)` and calls inside an optional chain must keep
+  // short-circuiting; the trace helper would always call.
+  if ((node.flags & ts.NodeFlags.OptionalChain) || node.questionDotToken) {
+    return null;
+  }
   if (ts.isPrivateIdentifier(node.expression.name)) {
+    return null;
+  }
+  const callee = renderV8CallSite(ts, node.expression);
+  if (callee === null) {
     return null;
   }
 
@@ -3691,26 +3905,23 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
   if (!receiver || !isTraceableMutatingMethod(methodName)) {
     return null;
   }
+  const traced = extractTraceableMutatingCallReceiver(ts, receiver, maxPathDepth);
+  if (!traced || !indicesEvaluateFaithfully(ts, traced.indices)) {
+    return null;
+  }
+  return { ...traced, methodName, callee };
+}
 
+// The receiver of a traced method call as a variable and a path. Segment kinds
+// are 'e' for a property or bracket read and 'g' for a learner-written
+// `.get(key)` call.
+function extractTraceableMutatingCallReceiver(ts, receiver, maxPathDepth) {
   if (ts.isIdentifier(receiver)) {
     return {
       variableName: receiver.text,
       receiverExpression: ts.factory.createIdentifier(receiver.text),
-      methodName,
       indices: [],
-    };
-  }
-
-  if (
-    ts.isPropertyAccessExpression(receiver) &&
-    !ts.isPrivateIdentifier(receiver.name) &&
-    ts.isThis(unwrapParenthesizedExpression(ts, receiver.expression))
-  ) {
-    return {
-      variableName: 'this',
-      receiverExpression: ts.factory.createThis(),
-      methodName,
-      indices: [ts.factory.createStringLiteral(receiver.name.text)],
+      kinds: '',
     };
   }
 
@@ -3719,24 +3930,27 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
     return {
       variableName: indexedReceiver.variableName,
       receiverExpression: indexedReceiver.receiverExpression,
-      methodName,
       indices: indexedReceiver.indices,
+      kinds: 'e'.repeat(indexedReceiver.indices.length),
     };
   }
 
   if (
     ts.isCallExpression(receiver) &&
+    !(receiver.flags & ts.NodeFlags.OptionalChain) &&
     ts.isPropertyAccessExpression(receiver.expression) &&
+    !ts.isPrivateIdentifier(receiver.expression.name) &&
     receiver.expression.name.text === 'get' &&
-    receiver.arguments.length === 1
+    receiver.arguments.length === 1 &&
+    !ts.isSpreadElement(receiver.arguments[0])
   ) {
     const mapReceiver = unwrapParenthesizedExpression(ts, receiver.expression.expression);
     if (ts.isIdentifier(mapReceiver)) {
       return {
         variableName: mapReceiver.text,
         receiverExpression: ts.factory.createIdentifier(mapReceiver.text),
-        methodName,
         indices: [receiver.arguments[0]],
+        kinds: 'g',
       };
     }
     const tracedMapReceiver = extractTraceableElementAccess(ts, mapReceiver, maxPathDepth);
@@ -3744,8 +3958,8 @@ function extractTraceableMutatingCall(ts, node, maxPathDepth = DEFAULT_TRACE_MAX
       return {
         variableName: tracedMapReceiver.variableName,
         receiverExpression: tracedMapReceiver.receiverExpression,
-        methodName,
         indices: [...tracedMapReceiver.indices, receiver.arguments[0]],
+        kinds: 'e'.repeat(tracedMapReceiver.indices.length) + 'g',
       };
     }
   }
@@ -3856,6 +4070,8 @@ function getCompoundAssignmentOperatorName(ts, tokenKind) {
       return 'lshift';
     case ts.SyntaxKind.GreaterThanGreaterThanEqualsToken:
       return 'rshift';
+    case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken:
+      return 'urshift';
     case ts.SyntaxKind.AmpersandEqualsToken:
       return 'bitand';
     case ts.SyntaxKind.BarEqualsToken:
@@ -4024,77 +4240,14 @@ function createTraceWriteIndexExpression(ts, sourceFile, node, variableName, ind
   ]);
 }
 
-function createTraceResolvedWriteIndexExpression(
-  ts,
-  sourceFile,
-  node,
-  variableName,
-  receiverExpression,
-  indices,
-  value,
-  indexSourceExpressions,
-  visit
-) {
-  if (!Array.isArray(indices) || indices.length < 2) {
-    return createTraceWriteIndexExpression(ts, sourceFile, node, variableName, indices, value, indexSourceExpressions);
-  }
-
-  const statements = [];
-  const evaluatedIndices = [];
-  let parentExpression = receiverExpression;
-
-  for (let index = 0; index < indices.length - 1; index += 1) {
-    const indexName = ts.factory.createUniqueName('__traceWriteIndexPart');
-    const visitedIndex = ts.visitNode(indices[index], visit);
-    statements.push(createConstDeclarationStatement(ts, indexName, visitedIndex));
-    evaluatedIndices.push(indexName);
-    parentExpression = ts.factory.createElementAccessExpression(parentExpression, indexName);
-  }
-
-  const parentName = ts.factory.createUniqueName('__traceWriteParent');
-  statements.push(createConstDeclarationStatement(ts, parentName, parentExpression));
-
-  const finalIndexName = ts.factory.createUniqueName('__traceWriteIndexPart');
-  const visitedFinalIndex = ts.visitNode(indices[indices.length - 1], visit);
-  statements.push(createConstDeclarationStatement(ts, finalIndexName, visitedFinalIndex));
-  evaluatedIndices.push(finalIndexName);
-
-  statements.push(ts.factory.createReturnStatement(ts.factory.createCallExpression(
-    ts.factory.createIdentifier('__traceWriteResolvedIndex'),
-    undefined,
-    [
-      ts.factory.createStringLiteral(variableName),
-      parentName,
-      finalIndexName,
-      createIndicesArrayExpression(ts, evaluatedIndices),
-      createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
-      value,
-      createSourceLocationObject(ts, sourceFile, node),
-    ]
-  )));
-
-  return ts.factory.createCallExpression(
-    ts.factory.createParenthesizedExpression(ts.factory.createArrowFunction(
-      undefined,
-      undefined,
-      [],
-      undefined,
-      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-      ts.factory.createBlock(statements, true)
-    )),
-    undefined,
-    []
-  );
-}
-
-function createConstDeclarationStatement(ts, name, initializer) {
-  return ts.factory.createVariableStatement(
-    undefined,
-    ts.factory.createVariableDeclarationList(
-      [ts.factory.createVariableDeclaration(name, undefined, undefined, initializer)],
-      ts.NodeFlags.Const
-    )
-  );
+function createTraceIndexRefExpression(ts, sourceFile, node, helperName, tracedTarget, visitedIndices) {
+  return ts.factory.createCallExpression(ts.factory.createIdentifier(helperName), undefined, [
+    ts.factory.createStringLiteral(tracedTarget.variableName),
+    tracedTarget.receiverExpression,
+    createIndicesArrayExpression(ts, visitedIndices),
+    createIndexSourcesArrayExpression(ts, sourceFile, tracedTarget.indices),
+    createSourceLocationObject(ts, sourceFile, node),
+  ]);
 }
 
 function createTraceRecordIndexWriteExpression(ts, sourceFile, node, variableName, indices, indexSourceExpressions = indices) {
@@ -4411,31 +4564,6 @@ function traceIndexedWriteStatementsForDestructuringAssignmentStatement(
   return statements;
 }
 
-function createTraceAugAssignExpression(
-  ts,
-  sourceFile,
-  node,
-  variableName,
-  indices,
-  operatorName,
-  rhs,
-  indexSourceExpressions = indices
-) {
-  return ts.factory.createCallExpression(
-    ts.factory.createIdentifier('__traceAugAssignIndex'),
-    undefined,
-    [
-      ts.factory.createStringLiteral(variableName),
-      ts.factory.createIdentifier(variableName),
-      createIndicesArrayExpression(ts, indices),
-      createIndexSourcesArrayExpression(ts, sourceFile, indexSourceExpressions),
-      ts.factory.createStringLiteral(operatorName),
-      rhs,
-      createSourceLocationObject(ts, sourceFile, node),
-    ]
-  );
-}
-
 function createTraceUpdateExpression(
   ts,
   sourceFile,
@@ -4465,28 +4593,33 @@ function createTraceMutatingCallExpressionForReceiver(
   ts,
   sourceFile,
   node,
-  variableName,
-  receiverExpression,
-  methodName,
+  tracedCall,
   args,
-  indices = [],
+  indices,
   indexSourceExpressions = indices
 ) {
+  const methodName = tracedCall.methodName;
   const effectiveIndexSourceExpressions = ['set', 'get', 'has', 'delete'].includes(methodName) && args.length > 0
     ? [...indexSourceExpressions, args[0]]
     : indexSourceExpressions;
-  return ts.factory.createCallExpression(
-    ts.factory.createIdentifier('__traceMutatingCall'),
+  const resolvedCall = ts.factory.createCallExpression(
+    ts.factory.createIdentifier('__traceResolveMutatingCall'),
     undefined,
     [
-      ts.factory.createStringLiteral(variableName),
-      receiverExpression,
+      ts.factory.createStringLiteral(tracedCall.variableName),
+      tracedCall.receiverExpression,
       createIndicesArrayExpression(ts, indices),
       createIndexSourcesArrayExpression(ts, sourceFile, effectiveIndexSourceExpressions),
+      ts.factory.createStringLiteral(tracedCall.kinds),
       ts.factory.createStringLiteral(methodName),
       createSourceLocationObject(ts, sourceFile, node),
-      ...args,
+      ts.factory.createStringLiteral(tracedCall.callee),
     ]
+  );
+  return ts.factory.createCallExpression(
+    ts.factory.createIdentifier('__traceInvokeMutatingCall'),
+    undefined,
+    [resolvedCall, ...args]
   );
 }
 
@@ -4770,6 +4903,37 @@ function wrapTraceCondition(ts, expression, deferAccessesToNextLine = false) {
   );
 }
 
+function isIterationOrLabeledStatement(ts, statement) {
+  return Boolean(
+    statement &&
+      (ts.isForStatement(statement) ||
+        ts.isForInStatement(statement) ||
+        ts.isForOfStatement(statement) ||
+        ts.isWhileStatement(statement) ||
+        ts.isDoStatement(statement) ||
+        ts.isLabeledStatement(statement))
+  );
+}
+
+// A loop rewrite may return a block that starts with the loop and adds trace
+// statements after it. The label must stay on the loop itself, or a
+// `continue label` inside it no longer names an iteration statement.
+function relabelRewrittenStatement(ts, labeledStatement, visitedStatement) {
+  if (
+    visitedStatement &&
+    ts.isBlock(visitedStatement) &&
+    isIterationOrLabeledStatement(ts, labeledStatement.statement) &&
+    isIterationOrLabeledStatement(ts, visitedStatement.statements[0])
+  ) {
+    const [loop, ...rest] = visitedStatement.statements;
+    return ts.factory.updateBlock(visitedStatement, [
+      ts.factory.updateLabeledStatement(labeledStatement, labeledStatement.label, loop),
+      ...rest,
+    ]);
+  }
+  return ts.factory.updateLabeledStatement(labeledStatement, labeledStatement.label, visitedStatement);
+}
+
 function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variableNames, lineFunctionMap, defaultFunctionName) {
   const originalNode = ts.getOriginalNode(whileStatement) ?? whileStatement;
   const excludedVariableNames = controlHeaderSnapshotExclusions(ts, originalNode);
@@ -4791,13 +4955,15 @@ function rewriteWhileStatementForTracing(ts, sourceFile, whileStatement, variabl
     ts.factory.createBreakStatement(),
     undefined
   );
+  // The body keeps its own block: a declaration in the body must not shadow
+  // a variable the condition reads (`while (x) { let x … }`).
   return ts.factory.createWhileStatement(
     ts.factory.createTrue(),
     ts.factory.createBlock(
       [
         tracedLine,
         guardedBreak,
-        ...visitedBodyBlock.statements,
+        visitedBodyBlock,
         createAttachPendingAccessesStatement(ts),
       ],
       true
@@ -4825,31 +4991,75 @@ function rewriteForStatementForTracing(ts, sourceFile, forStatement, variableNam
       wrapTraceCondition(ts, condition)
     )
   );
-  const initializerWriteStatements = [];
-  if (forStatement.initializer && ts.isVariableDeclarationList(forStatement.initializer)) {
-    for (const declaration of forStatement.initializer.declarations) {
-      if (!ts.isIdentifier(declaration.name)) continue;
-      initializerWriteStatements.push(createTraceScalarWriteStatement(ts, sourceFile, originalNode, declaration.name.text));
+  // Initial-value writes are recorded by one extra declarator at the end of
+  // the loop's own declaration list. The declarations stay in the loop head,
+  // so `let` keeps one binding per iteration (closures see their iteration's
+  // value) and a label on the loop still names the loop.
+  let initializer = forStatement.initializer;
+  if (initializer && ts.isVariableDeclarationList(initializer)) {
+    const writes = [];
+    for (const declaration of initializer.declarations) {
+      for (const variableName of collectBindingNames(ts, declaration.name)) {
+        writes.push(createTraceScalarWriteStatement(ts, sourceFile, originalNode, variableName).expression);
+      }
+    }
+    if (writes.length > 0) {
+      const recorder = ts.factory.createVariableDeclaration(
+        ts.factory.createUniqueName('__traceForInit'),
+        undefined,
+        undefined,
+        ts.factory.createParenthesizedExpression(
+          ts.factory.createCommaListExpression([...writes, ts.factory.createNumericLiteral(0)])
+        )
+      );
+      initializer = ts.factory.updateVariableDeclarationList(initializer, [
+        ...initializer.declarations,
+        recorder,
+      ]);
     }
   }
-  const rewrittenFor = ts.factory.updateForStatement(
+  return ts.factory.updateForStatement(
     forStatement,
-    initializerWriteStatements.length > 0 ? undefined : forStatement.initializer,
+    initializer,
     tracedCondition,
     forStatement.incrementor,
     forStatement.statement
   );
-  if (initializerWriteStatements.length === 0 || !forStatement.initializer || !ts.isVariableDeclarationList(forStatement.initializer)) {
-    return rewrittenFor;
+}
+
+// The TypeError a for-of loop throws for a non-iterable value, as a string
+// (V8 names the expression), null when V8 describes the value instead (the
+// helper builds that text), or undefined when it cannot be predicted.
+function iterableNotIterableMessage(ts, expression) {
+  const current = unwrapParenthesizedExpression(ts, expression);
+  if (!current) return undefined;
+  if (ts.isCallExpression(current)) {
+    if (current.flags & ts.NodeFlags.OptionalChain) return undefined;
+    const callee = renderV8CallSite(ts, current.expression, 'iterable');
+    return callee === null ? undefined : `${callee} is not a function or its return value is not iterable`;
   }
-  return ts.factory.createBlock(
-    [
-      ts.factory.createVariableStatement(undefined, forStatement.initializer),
-      ...initializerWriteStatements,
-      rewrittenFor,
-    ],
-    true
-  );
+  const rendered = renderV8CallSite(ts, current);
+  if (rendered !== null) return `${rendered} is not iterable`;
+  if (
+    ts.isArrayLiteralExpression(current) ||
+    ts.isStringLiteral(current) ||
+    ts.isNoSubstitutionTemplateLiteral(current) ||
+    ts.isTemplateExpression(current)
+  ) {
+    // Always iterable: the message is never used.
+    return null;
+  }
+  if (
+    ts.isBinaryExpression(current) &&
+    (current.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      current.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) &&
+    ts.isArrayLiteralExpression(unwrapParenthesizedExpression(ts, current.right))
+  ) {
+    // `x || []` and `x ?? []` fail only for a non-iterable `x`, which V8
+    // reports by type and value.
+    return null;
+  }
+  return undefined;
 }
 
 function rewriteForOfStatementForTracing(
@@ -4876,49 +5086,58 @@ function rewriteForOfStatementForTracing(
         : null;
   const lineNumber = sourceFile.getLineAndCharacterOfPosition(originalNode.getStart(sourceFile)).line + 1;
   const excludedVariableNames = controlHeaderSnapshotExclusions(ts, originalNode);
-  const tracedExpression =
-    iterableSource && bindingName && iterableSource.indices.length > 0
-      ? ts.factory.createCallExpression(
-          ts.factory.createIdentifier('__traceIterableBindIndexed'),
-          undefined,
-          [
-            ts.factory.createStringLiteral(iterableSource.variableName),
-            forOfStatement.expression,
-            createIndicesArrayExpression(ts, iterableSource.indices),
-            createIndexSourcesArrayExpression(ts, sourceFile, iterableSource.indices),
-            ts.factory.createStringLiteral(bindingName),
-            ts.factory.createObjectLiteralExpression([
-              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
-            ]),
-          ]
-        )
-      : iterableSource && bindingName
-      ? ts.factory.createCallExpression(
-          ts.factory.createIdentifier('__traceIterableBind'),
-          undefined,
-          [
-            ts.factory.createStringLiteral(iterableSource.variableName),
-            forOfStatement.expression,
-            ts.factory.createStringLiteral(bindingName),
-            ts.factory.createObjectLiteralExpression([
-              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
-            ]),
-          ]
-        )
-      : bindingName
-      ? ts.factory.createCallExpression(
-          ts.factory.createIdentifier('__traceIterableBind'),
-          undefined,
-          [
-            ts.factory.createStringLiteral(expressionLabelText(ts, sourceFile, originalExpression)),
-            forOfStatement.expression,
-            ts.factory.createStringLiteral(bindingName),
-            ts.factory.createObjectLiteralExpression([
-              ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
-            ]),
-          ]
-        )
-      : forOfStatement.expression;
+  const locationObject = ts.factory.createObjectLiteralExpression([
+    ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(lineNumber)),
+  ]);
+  // The binder wraps the iterable after it is evaluated once. It is skipped
+  // for `for await` (the binder is a sync iterator) and when the TypeError
+  // for a non-iterable value cannot be the one the learner's loop would throw.
+  const notIterableMessage = forOfStatement.awaitModifier || !bindingName
+    ? undefined
+    : iterableNotIterableMessage(ts, originalExpression);
+  const notIterableArgument = typeof notIterableMessage === 'string'
+    ? ts.factory.createStringLiteral(notIterableMessage)
+    : ts.factory.createNull();
+  let tracedExpression = forOfStatement.expression;
+  if (notIterableMessage !== undefined) {
+    if (
+      iterableSource &&
+      iterableSource.indices.length > 0 &&
+      arePassiveTraceIndexExpressions(ts, iterableSource.indices)
+    ) {
+      // Passive indices (names and literals) can be read again for the trace
+      // without running anything twice.
+      tracedExpression = ts.factory.createCallExpression(
+        ts.factory.createIdentifier('__traceIterableBindIndexed'),
+        undefined,
+        [
+          ts.factory.createStringLiteral(iterableSource.variableName),
+          forOfStatement.expression,
+          createIndicesArrayExpression(ts, iterableSource.indices),
+          createIndexSourcesArrayExpression(ts, sourceFile, iterableSource.indices),
+          ts.factory.createStringLiteral(bindingName),
+          locationObject,
+          notIterableArgument,
+        ]
+      );
+    } else {
+      tracedExpression = ts.factory.createCallExpression(
+        ts.factory.createIdentifier('__traceIterableBind'),
+        undefined,
+        [
+          ts.factory.createStringLiteral(
+            iterableSource && iterableSource.indices.length === 0
+              ? iterableSource.variableName
+              : expressionLabelText(ts, sourceFile, originalExpression)
+          ),
+          forOfStatement.expression,
+          ts.factory.createStringLiteral(bindingName),
+          locationObject,
+          notIterableArgument,
+        ]
+      );
+    }
+  }
   const createHeaderLine = () => createTraceLineStatement(
     ts,
     sourceFile,
@@ -4976,11 +5195,20 @@ function instrumentStatementList(
   variableNames,
   lineFunctionMap,
   defaultFunctionName,
-  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH
+  maxPathDepth = DEFAULT_TRACE_MAX_PATH_DEPTH,
+  isFunctionBody = false
 ) {
   const nextStatements = [];
+  let inDirectivePrologue = isFunctionBody;
   for (let index = 0; index < visitedStatements.length; index += 1) {
     const visitedStatement = visitedStatements[index];
+    if (inDirectivePrologue) {
+      if (ts.isExpressionStatement(visitedStatement) && ts.isStringLiteral(visitedStatement.expression)) {
+        nextStatements.push(visitedStatement);
+        continue;
+      }
+      inDirectivePrologue = false;
+    }
     const originalStatement =
       originalStatements[index] ??
       ts.getOriginalNode(visitedStatement) ??
@@ -5203,8 +5431,17 @@ function wrapFunctionBodyForTracing(
     []
   );
 
+  // A directive prologue ("use strict") only counts at the top of the body.
+  const directiveCount = rewrittenBody.statements.findIndex((statement) =>
+    !(ts.isExpressionStatement(statement) && ts.isStringLiteral(statement.expression))
+  );
+  const prologueLength = directiveCount < 0 ? rewrittenBody.statements.length : directiveCount;
+  const directives = rewrittenBody.statements.slice(0, prologueLength);
+  const bodyStatements = rewrittenBody.statements.slice(prologueLength);
+
   const wrappedBody = ts.factory.createBlock(
     [
+      ...directives,
       createTraceRecorderStatement(ts, 'pushCall', [
         ts.factory.createStringLiteral(traceFunctionName),
         argsSnapshotExpression,
@@ -5213,7 +5450,7 @@ function wrapFunctionBodyForTracing(
       ts.factory.createTryStatement(
         ts.factory.createBlock(
           [
-            ...rewrittenBody.statements,
+            ...bodyStatements,
             createTraceRecorderStatement(ts, 'recordReturn', [
               ts.factory.createNumericLiteral(functionEndLine),
               ts.factory.createIdentifier('undefined'),
@@ -5257,6 +5494,12 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
       ? traceFunctionName
       : '<module>';
   const lineFunctionMap = buildLineFunctionMap(ts, sourceFile, effectiveFunctionName);
+  // A learner binding named `console` means console.log is not the Harness
+  // console the stdout helper would call.
+  const consoleIsShadowed =
+    localVariableNames.has('console') ||
+    userCallsiteNames.functionNames.has('console') ||
+    userCallsiteNames.classNames.has('console');
 
   const transformer = (context) => {
     const visit = (node) => {
@@ -5268,7 +5511,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             : node.operator === ts.SyntaxKind.MinusMinusToken
               ? 'dec'
               : null;
-        if (tracedOperand && operatorName) {
+        if (tracedOperand && operatorName && indicesEvaluateFaithfully(ts, tracedOperand.indices)) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedOperand.indices, visit);
           return createTraceUpdateExpression(
             ts,
@@ -5300,7 +5543,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
       if (
         ts.isSpreadElement(node) &&
         ts.isIdentifier(node.expression) &&
-        localVariableNames.has(node.expression.text)
+        localVariableNames.has(node.expression.text) &&
+        !isAssignmentPatternPosition(ts, node)
       ) {
         return ts.factory.updateSpreadElement(
           node,
@@ -5308,10 +5552,20 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         );
       }
 
+      if (ts.isBinaryExpression(node) && isAssignmentPatternPosition(ts, node)) {
+        // `target = default` inside a destructuring pattern: the target stays
+        // a target; only the default value is an ordinary expression.
+        return ts.factory.updateBinaryExpression(node, node.left, node.operatorToken, ts.visitNode(node.right, visit));
+      }
+
       if (ts.isBinaryExpression(node)) {
         if (node.operatorToken.kind === ts.SyntaxKind.InKeyword) {
           const tracedMembershipTarget = extractTraceableMembershipTarget(ts, node.right, maxPathDepth);
-          if (tracedMembershipTarget) {
+          if (
+            tracedMembershipTarget &&
+            !expressionMayHaveSideEffects(ts, node.left) &&
+            indicesHaveNoSideEffects(ts, tracedMembershipTarget.indices)
+          ) {
             const visitedKey = ts.visitNode(node.left, visit);
             const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedMembershipTarget.indices, visit);
             return createTraceHasIndexExpressionForReceiver(
@@ -5328,55 +5582,47 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         }
 
         const tracedLeft = extractTraceableElementAccess(ts, node.left, maxPathDepth);
-        if (tracedLeft && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
+        const compoundOperatorName = getCompoundAssignmentOperatorName(ts, node.operatorToken.kind);
+        if (
+          tracedLeft &&
+          (node.operatorToken.kind === ts.SyntaxKind.EqualsToken || compoundOperatorName) &&
+          indicesEvaluateFaithfully(ts, tracedLeft.indices)
+        ) {
+          // The reference (parent object and key) is resolved, and for a
+          // compound assignment the current value read, before the
+          // right-hand side runs, as in JavaScript.
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedLeft.indices, visit);
-          const visitedRight = ts.visitNode(node.right, visit);
-          if (tracedLeft.indices.length > 1 && expressionMayHaveSideEffects(ts, node.right)) {
-            return ts.factory.updateBinaryExpression(
-              node,
-              node.left,
-              node.operatorToken,
-              visitedRight
-            );
-          }
-          if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-            if (tracedLeft.indices.length > 1) {
-              return createTraceResolvedWriteIndexExpression(
-                ts,
-                sourceFile,
-                node.left,
-                tracedLeft.variableName,
-                tracedLeft.receiverExpression,
-                tracedLeft.indices,
-                visitedRight,
-                tracedLeft.indices,
-                visit
-              );
-            }
+          if (node.operatorToken.kind === ts.SyntaxKind.EqualsToken && tracedLeft.indices.length === 1) {
             return createTraceWriteIndexExpression(
               ts,
               sourceFile,
               node.left,
               tracedLeft.variableName,
               visitedIndices,
-              visitedRight,
+              ts.visitNode(node.right, visit),
               tracedLeft.indices
             );
           }
-
-          const operatorName = getCompoundAssignmentOperatorName(ts, node.operatorToken.kind);
-          if (operatorName) {
-            return createTraceAugAssignExpression(
-              ts,
-              sourceFile,
-              node.left,
-              tracedLeft.variableName,
-              visitedIndices,
-              operatorName,
-              visitedRight,
-              tracedLeft.indices
-            );
-          }
+          const isCompound = node.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
+          const reference = createTraceIndexRefExpression(
+            ts,
+            sourceFile,
+            node.left,
+            isCompound ? '__traceAugAssignRef' : '__traceWriteRef',
+            tracedLeft,
+            visitedIndices
+          );
+          const visitedRight = ts.visitNode(node.right, visit);
+          return isCompound
+            ? ts.factory.createCallExpression(ts.factory.createIdentifier('__traceAugAssignApply'), undefined, [
+                reference,
+                ts.factory.createStringLiteral(compoundOperatorName),
+                visitedRight,
+              ])
+            : ts.factory.createCallExpression(ts.factory.createIdentifier('__traceWriteRefValue'), undefined, [
+                reference,
+                visitedRight,
+              ]);
         }
 
         if (ts.isIdentifier(node.left) && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
@@ -5411,26 +5657,23 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
       }
 
       if (ts.isCallExpression(node)) {
-        if (isConsoleLogCall(ts, node)) {
+        if (!consoleIsShadowed && isConsoleLogCall(ts, node)) {
           return createTraceStdoutExpression(ts, sourceFile, node);
         }
         const isUserMethodCall = ts.isPropertyAccessExpression(node.expression) &&
           userCallsiteNames.methodNames.has(node.expression.name.text);
         const tracedCall = extractTraceableMutatingCall(ts, node, maxPathDepth);
         if (tracedCall) {
+          const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedCall.indices, visit);
           const visitedArgs = node.arguments.map((arg) => ts.visitNode(arg, visit));
           return createTraceMutatingCallExpressionForReceiver(
             ts,
             sourceFile,
             node,
-            tracedCall.variableName,
-            tracedCall.receiverExpression,
-            tracedCall.methodName,
+            tracedCall,
             visitedArgs,
+            visitedIndices,
             tracedCall.indices
-              ? createTraceIndexOperandExpressions(ts, sourceFile, tracedCall.indices, visit)
-              : [],
-            tracedCall.indices ?? []
           );
         }
         const visitedCall = ts.visitEachChild(node, visit, context);
@@ -5499,13 +5742,15 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
           isAssignmentLikeLeftOperand(ts, node) ||
           isUpdateExpressionOperand(ts, node) ||
           isDestructuringAssignmentTarget(ts, node) ||
+          isReferencePosition(ts, node) ||
+          isCalleePosition(ts, node) ||
           (parent && ts.isCallExpression(parent) && parent.expression === node)
         ) {
           return ts.visitEachChild(node, visit, context);
         }
 
         const tracedAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
-        if (tracedAccess) {
+        if (tracedAccess && indicesEvaluateFaithfully(ts, tracedAccess.indices)) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedAccess.indices, visit);
           return createTraceReadIndexExpression(
             ts,
@@ -5522,7 +5767,8 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         const parent = node.parent;
         const grandparent = parent?.parent;
         if (
-          isTraceablePropertyWriteLeftOperand(ts, node) ||
+          isReferencePosition(ts, node) ||
+          isCalleePosition(ts, node) ||
           isDestructuringAssignmentTarget(ts, node) ||
           (parent && ts.isCallExpression(parent) && parent.expression === node) ||
           (parent &&
@@ -5536,7 +5782,11 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
         }
 
         const tracedIndexedPropertyAccess = extractTraceableElementAccess(ts, node, maxPathDepth);
-        if (tracedIndexedPropertyAccess && tracedIndexedPropertyAccess.indices.length > 1) {
+        if (
+          tracedIndexedPropertyAccess &&
+          tracedIndexedPropertyAccess.indices.length > 1 &&
+          indicesEvaluateFaithfully(ts, tracedIndexedPropertyAccess.indices)
+        ) {
           const visitedIndices = createTraceIndexOperandExpressions(ts, sourceFile, tracedIndexedPropertyAccess.indices, visit);
           return createTraceReadIndexExpression(
             ts,
@@ -5606,9 +5856,14 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
             variableNames,
             lineFunctionMap,
             effectiveFunctionName,
-            maxPathDepth
+            maxPathDepth,
+            Boolean(node.parent && ts.isFunctionLike(node.parent))
           )
         );
+      }
+
+      if (ts.isLabeledStatement(node)) {
+        return relabelRewrittenStatement(ts, node, ts.visitNode(node.statement, visit));
       }
 
       if (ts.isWhileStatement(node)) {
@@ -5804,20 +6059,22 @@ function __traceNormalizeIndexSources(__indexSources, __pathLength) {
   return __normalized.some((__source) => __source !== null) ? __normalized : null;
 }
 
-function __traceReadValueAtIndices(__container, __indices) {
+// Walks the first __end segments of a member path exactly as the learner's
+// expression does: a bracket or dot segment reads the property, and only a
+// segment the learner wrote as \`.get(key)\` (kind 'g') calls \`get\`.
+function __traceWalkPath(__container, __indices, __end, __kinds) {
   let __current = __container;
-  const __resolvedIndices = __traceResolveIndexValues(__indices);
-  for (let __i = 0; __i < __resolvedIndices.length; __i += 1) {
-    const __index = __resolvedIndices[__i];
-    if (
-      __i === __resolvedIndices.length - 1 &&
-      __traceIsMetadataProperty(__current, __index)
-    ) {
-      return __current[__index];
-    }
-    __current = __traceIsMapLike(__current) ? __current.get(__index) : __current[__index];
+  for (let __i = 0; __i < __end; __i += 1) {
+    const __index = __traceResolvedIndexValue(__indices[__i]);
+    __current = typeof __kinds === 'string' && __kinds[__i] === 'g'
+      ? __current.get(__index)
+      : __current[__index];
   }
   return __current;
+}
+
+function __traceReadValueAtIndices(__container, __indices) {
+  return __traceWalkPath(__container, __indices, __indices.length);
 }
 
 function __traceIsMapLike(__value) {
@@ -5831,17 +6088,79 @@ function __traceIsMapLike(__value) {
 }
 
 function __traceWriteValueAtIndices(__container, __indices, __value) {
-  const __effectiveIndices = __traceResolveIndexValues(__indices);
-  if (__effectiveIndices.length === 1) {
-    __container[__effectiveIndices[0]] = __value;
-    return __value;
-  }
-  let __parent = __container;
-  for (let __i = 0; __i < __effectiveIndices.length - 1; __i++) {
-    __parent = __parent[__effectiveIndices[__i]];
-  }
-  __parent[__effectiveIndices[__effectiveIndices.length - 1]] = __value;
+  const __last = __indices.length - 1;
+  const __parent = __traceWalkPath(__container, __indices, __last);
+  __parent[__traceResolvedIndexValue(__indices[__last])] = __value;
   return __value;
+}
+
+// Resolves a member reference once, before the right-hand side runs, as
+// JavaScript does: the parent object and key are fixed, and a compound
+// assignment reads the current value here.
+function __traceIndexRef(__varName, __container, __indices, __indexSources, __location, __readCurrent) {
+  const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
+  const __normalized = __traceNormalizeIndices(__effectiveIndices);
+  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
+  const __last = __effectiveIndices.length - 1;
+  const __parent = __traceWalkPath(__container, __effectiveIndices, __last);
+  const __key = __traceResolvedIndexValue(__effectiveIndices[__last]);
+  const __ref = {
+    varName: __varName,
+    parent: __parent,
+    key: __key,
+    indices: __effectiveIndices,
+    normalized: __normalized,
+    normalizedSources: __normalizedSources,
+    location: __location,
+    current: undefined,
+  };
+  if (__readCurrent) {
+    __ref.current = __parent[__key];
+    if (__normalized) {
+      __traceRecorder.recordAccess({
+        variable: __varName,
+        kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
+        indices: __normalized,
+        ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
+        pathDepth: __normalized.length,
+        ...__traceNormalizeSourceLocation(__location),
+      });
+    }
+  }
+  return __ref;
+}
+
+function __traceStoreRef(__ref, __value) {
+  __ref.parent[__ref.key] = __value;
+  if (__ref.normalized) {
+    __traceRecorder.recordAccess({
+      variable: __ref.varName,
+      kind: __ref.normalized.length === 2 ? 'cell-write' : 'indexed-write',
+      indices: __ref.normalized,
+      ...(Array.isArray(__ref.normalizedSources) ? { indexSources: __ref.normalizedSources } : {}),
+      pathDepth: __ref.normalized.length,
+      value: __value,
+      ...__traceNormalizeSourceLocation(__ref.location),
+    });
+  }
+  __traceFlushDeferredScalarUpdates(__ref.indices);
+  return __value;
+}
+
+function __traceWriteRef(__varName, __container, __indices, __indexSources, __location) {
+  return __traceIndexRef(__varName, __container, __indices, __indexSources, __location, false);
+}
+
+function __traceWriteRefValue(__ref, __value) {
+  return __traceStoreRef(__ref, __value);
+}
+
+function __traceAugAssignRef(__varName, __container, __indices, __indexSources, __location) {
+  return __traceIndexRef(__varName, __container, __indices, __indexSources, __location, true);
+}
+
+function __traceAugAssignApply(__ref, __op, __rhs) {
+  return __traceStoreRef(__ref, __traceApplyAugmentedValue(__ref.current, __op, __rhs));
 }
 
 function __traceReadIndex(__varName, __container, __indices, __indexSources, __location) {
@@ -5939,45 +6258,29 @@ function __traceRecordDestructuredIterationBindings(__varName, __basePath, __bas
   }
 }
 
-function* __traceIterableBind(__varName, __iterable, __bindingName, __location) {
-  if (
-    typeof __varName !== 'string' ||
-    typeof __bindingName !== 'string' ||
-    (__iterable === null || __iterable === undefined) ||
-    typeof __iterable[Symbol.iterator] !== 'function'
-  ) {
-    yield* __iterable;
-    return;
+// for-of binders. The learner's iterable is evaluated once by the loop head;
+// the binder reads its iterator method once, throws the TypeError the loop
+// itself would throw for a non-iterable value (__notIterable is V8's message,
+// or null for V8's type-and-value form), and otherwise yields each value
+// after recording it.
+function __traceIteratorMethod(__iterable, __notIterable) {
+  if (__iterable !== null && __iterable !== undefined) {
+    const __method = __iterable[Symbol.iterator];
+    if (typeof __method === 'function') return __method;
   }
-  let __index = 0;
-  for (const __value of __iterable) {
-    const __sources = [null];
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: 'indexed-read',
-      indices: [__index],
-      pathDepth: 1,
-      indexSources: __sources,
-      value: __value,
-      binding: { kind: 'iteration', variable: __bindingName },
-      ...__traceNormalizeSourceLocation(__location),
-    });
-    __traceRecordDestructuredIterationBindings(__varName, [], [], __index, __value, __bindingName, __location);
-    __index += 1;
-    yield __value;
-  }
+  if (typeof __notIterable === 'string') throw new TypeError(__notIterable);
+  const __type = __iterable === null ? 'object' : typeof __iterable;
+  const __shown = __type === 'number' || __type === 'boolean' ? ' ' + String(__iterable) : '';
+  throw new TypeError(__type + __shown + ' is not iterable (cannot read property Symbol(Symbol.iterator))');
 }
 
-function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __indexSources, __bindingName, __location) {
-  if (
-    typeof __varName !== 'string' ||
-    typeof __bindingName !== 'string' ||
-    (__iterable === null || __iterable === undefined) ||
-    typeof __iterable[Symbol.iterator] !== 'function'
-  ) {
-    yield* __iterable;
-    return;
-  }
+function __traceIterableBind(__varName, __iterable, __bindingName, __location, __notIterable) {
+  const __method = __traceIteratorMethod(__iterable, __notIterable);
+  return __traceBoundIterations(__varName, __iterable, __method, __bindingName, __location, null, null);
+}
+
+function __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __indexSources, __bindingName, __location, __notIterable) {
+  const __method = __traceIteratorMethod(__iterable, __notIterable);
   const __base = __traceNormalizeIndices(__baseIndices);
   const __baseSources = __traceNormalizeIndexSources(__indexSources, __base?.length ?? 0);
   if (__base) {
@@ -5992,36 +6295,31 @@ function* __traceIterableBindIndexed(__varName, __iterable, __baseIndices, __ind
     });
   }
   __traceFlushDeferredScalarUpdates(__baseIndices);
+  return __traceBoundIterations(__varName, __iterable, __method, __bindingName, __location, __base ?? [], __baseSources);
+}
+
+function* __traceBoundIterations(__varName, __iterable, __method, __bindingName, __location, __base, __baseSources) {
+  const __source = { [Symbol.iterator]: () => Reflect.apply(__method, __iterable, []) };
   let __index = 0;
-  for (const __value of __iterable) {
-    if (__base) {
-      const __path = [...__base, __index];
-      const __sources = Array.isArray(__baseSources) ? [...__baseSources, null] : null;
+  for (const __value of __source) {
+    if (__base === null || __base.length > 0) {
+      const __path = __base === null ? [__index] : [...__base, __index];
+      const __sources = __base === null ? [null] : (Array.isArray(__baseSources) ? [...__baseSources, null] : null);
       __traceRecorder.recordAccess({
         variable: __varName,
-        kind: __path.length === 2 ? 'cell-read' : 'indexed-read',
+        kind: __base !== null && __path.length === 2 ? 'cell-read' : 'indexed-read',
         indices: __path,
         pathDepth: __path.length,
-        value: __value,
         ...(Array.isArray(__sources) ? { indexSources: __sources } : {}),
+        value: __value,
         binding: { kind: 'iteration', variable: __bindingName },
         ...__traceNormalizeSourceLocation(__location),
       });
-      __traceRecordDestructuredIterationBindings(__varName, __base, __baseSources, __index, __value, __bindingName, __location);
+      __traceRecordDestructuredIterationBindings(__varName, __base ?? [], __base === null ? [] : __baseSources, __index, __value, __bindingName, __location);
     }
     __index += 1;
     yield __value;
   }
-}
-
-function __traceIsMetadataProperty(__container, __propertyName) {
-  if (__propertyName === 'length') {
-    return Array.isArray(__container) || typeof __container === 'string';
-  }
-  if (__propertyName === 'size') {
-    return __traceIsMapLike(__container) || __container instanceof Set;
-  }
-  return false;
 }
 
 function __traceNormalizeSourceLocation(__location) {
@@ -6150,6 +6448,7 @@ function __traceApplyAugmentedValue(__current, __op, __rhs) {
     case 'pow': return __current ** __rhs;
     case 'lshift': return __current << __rhs;
     case 'rshift': return __current >> __rhs;
+    case 'urshift': return __current >>> __rhs;
     case 'bitand': return __current & __rhs;
     case 'bitor': return __current | __rhs;
     case 'bitxor': return __current ^ __rhs;
@@ -6157,69 +6456,14 @@ function __traceApplyAugmentedValue(__current, __op, __rhs) {
   }
 }
 
-function __traceAugAssignIndex(__varName, __container, __indices, __indexSources, __op, __rhs, __location) {
-  const __normalized = __traceNormalizeIndices(__indices);
-  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
-  const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
-  const __current = __traceReadValueAtIndices(__container, __effectiveIndices);
-  if (__normalized) {
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
-      indices: __normalized,
-      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-      pathDepth: __normalized.length,
-      ...__traceNormalizeSourceLocation(__location),
-    });
-  }
-  const __next = __traceApplyAugmentedValue(__current, __op, __rhs);
-  __traceWriteValueAtIndices(__container, __effectiveIndices, __next);
-  if (__normalized) {
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
-      indices: __normalized,
-      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-      pathDepth: __normalized.length,
-      value: __next,
-      ...__traceNormalizeSourceLocation(__location),
-    });
-  }
-  __traceFlushDeferredScalarUpdates(__effectiveIndices);
-  return __next;
-}
-
 function __traceUpdateIndex(__varName, __container, __indices, __indexSources, __op, __isPrefix, __location) {
-  const __normalized = __traceNormalizeIndices(__indices);
-  const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __normalized?.length ?? 0);
-  const __effectiveIndices = Array.isArray(__indices) ? __indices : [];
-  const __current = __traceReadValueAtIndices(__container, __effectiveIndices);
-  if (__normalized) {
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: __normalized.length === 2 ? 'cell-read' : 'indexed-read',
-      indices: __normalized,
-      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-      pathDepth: __normalized.length,
-      ...__traceNormalizeSourceLocation(__location),
-    });
-  }
-  const __delta = __op === 'dec' ? -1 : 1;
-  const __next = __current + __delta;
-  __traceWriteValueAtIndices(__container, __effectiveIndices, __next);
-  if (__normalized) {
-    __traceRecorder.recordAccess({
-      variable: __varName,
-      kind: __normalized.length === 2 ? 'cell-write' : 'indexed-write',
-      indices: __normalized,
-      ...(Array.isArray(__normalizedSources) ? { indexSources: __normalizedSources } : {}),
-      pathDepth: __normalized.length,
-      value: __next,
-      ...__traceNormalizeSourceLocation(__location),
-    });
-  }
-  __traceFlushDeferredScalarUpdates(__effectiveIndices);
-  return __isPrefix ? __next : __current;
+  const __ref = __traceIndexRef(__varName, __container, __indices, __indexSources, __location, true);
+  // The update operators themselves: ToNumeric once, BigInt-aware, and a
+  // postfix result that is the numeric old value.
+  let __next = __ref.current;
+  const __old = __op === 'dec' ? __next-- : __next++;
+  __traceStoreRef(__ref, __next);
+  return __isPrefix ? __next : __old;
 }
 
 function __traceNormalizeMethodName(__container, __method, __args) {
@@ -6228,32 +6472,69 @@ function __traceNormalizeMethodName(__container, __method, __args) {
   return __method;
 }
 
+function __traceConsoleTail() {
+  try {
+    const __read = console[Symbol.for('tracecode.consoleTail')];
+    return typeof __read === 'function' ? __read() : undefined;
+  } catch (_error) {
+    return undefined;
+  }
+}
+
 function __traceStdout(__line, ...__args) {
+  // The console formats the arguments once; the trace records the line the
+  // console wrote instead of stringifying learner values a second time.
+  const __before = __traceConsoleTail();
   console.log(...__args);
-  __traceRecorder.recordStdout(__line, __args.map((__arg) => String(__arg)).join(' '));
+  const __after = __traceConsoleTail();
+  if (__after && typeof __after.last === 'string' && (!__before || __after.count !== __before.count)) {
+    __traceRecorder.recordStdout(__line, __after.last);
+  }
 }
 
 function __traceExceptionValue(__line, __error) {
-  __traceRecorder.recordException(__line, __error);
+  // Recording must never replace or observe the thrown value.
+  try {
+    __traceRecorder.recordException(__line, __error);
+  } catch (_recordError) {}
   return __error;
 }
 
-function __traceMutatingCall(__varName, __container, __indices, __indexSources, __method, __location, ...__args) {
-  const __sourceLocation = __traceNormalizeSourceLocation(__location);
+// A traced method call runs in the learner's order: the receiver path and the
+// method are resolved first (__traceResolveMutatingCall), then the arguments
+// are evaluated, then the method is called with the resolved receiver.
+function __traceResolveMutatingCall(__varName, __container, __indices, __indexSources, __kinds, __method, __location, __callee) {
   const __rawPath = Array.isArray(__indices) ? __indices : [];
-  const __path = __traceResolveIndexValues(__rawPath);
-  let __target = __container;
-  for (const __index of __path) {
-    __target = __traceIsMapLike(__target) ? __target.get(__index) : __target[__index];
+  const __target = __traceWalkPath(__container, __rawPath, __rawPath.length, __kinds);
+  return {
+    varName: __varName,
+    target: __target,
+    fn: __target[__method],
+    rawPath: __rawPath,
+    indexSources: __indexSources,
+    method: __method,
+    location: __location,
+    callee: __callee,
+  };
+}
+
+function __traceInvokeMutatingCall(__call, ...__args) {
+  const __varName = __call.varName;
+  const __target = __call.target;
+  const __method = __call.method;
+  const __indexSources = __call.indexSources;
+  const __rawPath = __call.rawPath;
+  if (typeof __call.fn !== 'function') {
+    throw new TypeError(__call.callee + ' is not a function');
   }
+  const __sourceLocation = __traceNormalizeSourceLocation(__call.location);
+  const __path = __traceResolveIndexValues(__rawPath);
   const __sequenceInsertStartIndex = Array.isArray(__target) && (__method === 'push' || __method === 'unshift')
     ? (__method === 'push' ? __target.length : 0)
     : undefined;
-  const __mayMutate = ['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'add', 'insert', 'delete', 'clear'].includes(__method);
-  const __result = __target[__method](...__args);
+  const __result = Reflect.apply(__call.fn, __target, __args);
   if (['push', 'pop', 'shift', 'unshift', 'splice', 'sort', 'reverse', 'set', 'get', 'has', 'add', 'insert', 'delete', 'clear'].includes(__method)) {
     const __isMapLike = __traceIsMapLike(__target);
-    const __isNestedMap = __path.length > 0 && __traceIsMapLike(__target);
     if (__isMapLike && __method === 'set') {
       const __normalizedSources = __traceNormalizeIndexSources(__indexSources, __path.length + 1);
       const __targetPath = [...__path, __args[0]];

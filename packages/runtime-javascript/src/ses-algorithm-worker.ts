@@ -121,12 +121,15 @@ const CONSOLE_BOOTSTRAP_SOURCE = `(() => {
     output.push(line);
     totalCharacters += line.length;
   };
+  const tail = () => ({ count: output.length, last: output[output.length - 1] });
   globalThis.console = Object.freeze({
     log: capture,
     info: capture,
     warn: capture,
     error: capture,
     debug: capture,
+    // Lets traced console.log record the line it wrote (__traceStdout).
+    [Symbol.for('tracecode.consoleTail')]: tail,
   });
   return () => stringify({ lines: output, budgetExceeded });
 })()`;

@@ -192,6 +192,56 @@ export const traceSemanticsCases: readonly TraceSemanticsCase[] = [
   { id: 'J10-console', ...solve('let n = 0; const o = { toString() { n++; return "o"; } }; console.log(o); return n;', 0) },
   { id: 'J10-console-shadow', ...solve('const console = { log() { return 1; } }; console.log("x"); return 1;', 1) },
 
+  // Errors a traced helper throws for the learner match the untraced text.
+  { id: 'E1-call-not-iterable', ...solve('const o = { f() { return 5; } }; try { for (const x of o.f()) {} } catch (e) { return e.message; } return "no";', 'o.f is not a function or its return value is not iterable') },
+  { id: 'E1-chain-not-iterable', ...solve('const o = { s() { return { r() { return 5; } }; } }; try { for (const x of o.s().r()) {} } catch (e) { return e.message; } return "no";', 'o.s.r is not a function or its return value is not iterable') },
+  { id: 'E1-or-not-iterable', ...solve('const g = { a: 5 }; const n = "a"; try { for (const x of g[n] || []) {} } catch (e) { return e.message; } return "no";', 'number 5 is not iterable (cannot read property Symbol(Symbol.iterator))') },
+  { id: 'E1-name-not-iterable', ...solve('const n = 5; try { for (const x of n) {} } catch (e) { return e.message; } return "no";', 'n is not iterable') },
+  { id: 'E1-member-not-function', ...solve('const o = { list: {} }; try { o.list.push(1); } catch (e) { return e.message; } return "no";', 'o.list.push is not a function') },
+  { id: 'E1-get-not-function', ...solve('const m = new Map([["k", {}]]); try { m.get("k").push(1); } catch (e) { return e.message; } return "no";', 'm.get(...).push is not a function') },
+  { id: 'E1-index-not-function', ...solve('const a = [{}, {}]; const i = 0; try { a[i + 1].push(1); } catch (e) { return e.message; } return "no";', 'a[(i + 1)].push is not a function') },
+  { id: 'E1-this-not-function', code: `class Solution {
+  solve() {
+    this.items = {};
+    try { this.items.push(1); } catch (e) { return e.message; }
+    return "no";
+  }
+}`, executionStyle: 'solution-method', expected: 'this.items.push is not a function' },
+
+  // Other expression and statement forms the visitors touch.
+  { id: 'X1-new-member', ...solve('class Foo { constructor() { this.v = 4; } } const o = { Foo }; return new o.Foo().v;', 4) },
+  { id: 'X1-typeof-void', ...solve('const o = { x: 1 }; const a = [2]; return typeof o.x + typeof void a[0];', 'numberundefined') },
+  { id: 'X1-logical-short-circuit', ...solve('let n = 0; const f = () => { n++; return 9; }; const o = { x: 1 }; const a = [1]; o.x ||= f(); a[0] ||= f(); o.y &&= f(); a[1] ??= 2; a[1] ??= f(); return n + a.join() + o.x;', '01,21') },
+  { id: 'X1-class-field-arrow', code: `class Solution {
+  items = [];
+  add = (x) => this.items.push(x);
+  solve() { this.add(1); this.add(2); return this.items.length; }
+}`, executionStyle: 'solution-method', expected: 2 },
+  { id: 'X1-spread-arguments', ...solve('function f() { const a = []; a.push(...arguments); return a.length; } return f(1, 2, 3);', 3) },
+  { id: 'X1-optional-user-method', ...solve('class C { m() { return 5; } } const c = new C(); const d = null; return (c.m?.() ?? 0) + (d?.m() ?? 1);', 6) },
+  { id: 'X1-block-label', ...solve('let n = 0; blk: { n = 1; break blk; } return n;', 1) },
+  { id: 'X1-switch-continue', ...solve(`let s = 0;
+  for (const x of [1, 2, 3]) {
+    switch (x) { case 2: continue; default: s += x; }
+  }
+  return s;`, 4) },
+  { id: 'X1-for-var-destructure', ...solve('const out = []; for (var [a, b] = [0, 1]; a < 5; [a, b] = [b, a + b]) out.push(a); return out.join();', '0,1,1,2,3') },
+  { id: 'X1-for-let-shadow-body', ...solve('let s = 0; for (let i = 0; i < 2; i++) { let i2 = i; { let i = 5; s += i + i2; } } return s;', 11) },
+  { id: 'X1-generator-return', ...solve(`function* g() { try { yield 1; return 2; } finally { } }
+  const it = g();
+  return [it.next().value, it.next().value].join();`, '1,2') },
+  { id: 'X1-nested-getter-read', ...solve('let n = 0; const o = { get a() { n++; return [[5]]; } }; const v = o.a[0][0]; return v * 10 + n;', 51) },
+  { id: 'X1-in-key-order', ...solve('const log = []; const k = () => { log.push("k"); return "x"; }; const o = { x: 1 }; const r = k() in o; return log.join() + r;', 'ktrue') },
+  { id: 'X1-index-call-order', ...solve('const log = []; const a = [[1, 2]]; const i = () => { log.push("i"); return 0; }; const j = () => { log.push("j"); return 1; }; const v = a[i()][j()]; return log.join() + v;', 'i,j2') },
+  { id: 'X1-multi-index-rhs-side-effect', ...solve('const g = [[0, 0], [0, 0]]; let r = 0; g[r][1] = (r = 1, 7); return JSON.stringify(g);', '[[0,7],[0,0]]') },
+  { id: 'X1-sort-comparator', ...solve('const a = [3, 1, 2]; a.sort((x, y) => x - y); return a.join();', '1,2,3') },
+  { id: 'X1-string-index-write-strict', code: `class Solution {
+  solve() {
+    const s = "abc";
+    try { s[0] = "x"; return "no"; } catch (e) { return "threw"; }
+  }
+}`, executionStyle: 'solution-method', expected: 'threw' },
+
   // Destructuring assignment targets stay assignment targets.
   { id: 'D1-member-default', ...solve('const o = {}; const a = [0]; [o.x = 5, a[0] = 6] = []; return o.x + a[0];', 11) },
   { id: 'D1-rest', ...solve('let first, rest; [first, ...rest] = [1, 2, 3]; return rest.length;', 2) },
