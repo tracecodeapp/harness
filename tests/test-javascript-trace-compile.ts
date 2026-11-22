@@ -22,6 +22,8 @@ import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javas
 import { createNativeHarness } from '../packages/runtime-native/src/index';
 import { isRuntimeProviderError, isTraceUnavailableError } from '../packages/runtime-contracts/src/index';
 import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
+import { allCasesPassPolicy, createAlgorithmJudgeBundle } from '../src/judge';
+import type { TraceCompileLanguage } from './fixtures/javascript-trace-compile-cases';
 import {
   injectTraceBuildFault,
   runTraceCompileMatrix,
@@ -35,14 +37,34 @@ const pristine = { worker: read('javascript', WORKER), ses: read('javascript', S
 const policyScript = new vm.Script(read('shared', 'runtime-kernel-policy-classic.js'));
 const librariesScript = new vm.Script(read('vendor', 'javascript-libraries.js'));
 
+/** A failure of the runtime itself, not of building one program. */
+interface RuntimeFault {
+  readonly name: string;
+  readonly compilerImportFails?: boolean;
+  /** A posted message that kills its worker. */
+  readonly kills?: (data: any, worker: 'classic' | 'ses') => boolean;
+  /** A posted message that is never answered. */
+  readonly swallows?: (data: any) => boolean;
+  readonly edit?: { readonly file: string; readonly from: string; readonly to: string };
+}
+
 let activeFault: TraceBuildFault | undefined;
+let runtimeFault: RuntimeFault | undefined;
 const scripts = new Map<string, vm.Script>();
 
+function workerSource(file: string, source: string): string {
+  const injected = activeFault ? injectTraceBuildFault(file, source, activeFault) : source;
+  const edit = runtimeFault?.edit;
+  if (edit?.file !== file) return injected;
+  assert.ok(injected.includes(edit.from), `${runtimeFault!.name}: anchor not found in ${file}`);
+  return injected.replace(edit.from, () => edit.to);
+}
+
 function classicWorkerScript(): vm.Script {
-  const key = activeFault ?? '';
+  const key = `${activeFault ?? ''}/${runtimeFault?.edit ? runtimeFault.name : ''}`;
   let script = scripts.get(key);
   if (!script) {
-    const source = activeFault ? injectTraceBuildFault(WORKER, pristine.worker, activeFault) : pristine.worker;
+    const source = workerSource(WORKER, pristine.worker);
     script = new vm.Script(source, { filename: WORKER });
     scripts.set(key, script);
   }
@@ -56,13 +78,15 @@ class TestWorker {
   private terminated = false;
   private readonly post: (data: unknown) => void;
   private readonly stop: () => void;
+  private readonly kind: 'classic' | 'ses';
 
   constructor(url: string | URL) {
+    this.kind = String(url).includes(SES_WORKER) ? 'ses' : 'classic';
     const deliver = (data: unknown) => {
       if (!this.terminated) this.onmessage?.({ data });
     };
     if (String(url).includes(SES_WORKER)) {
-      const source = activeFault ? injectTraceBuildFault(SES_WORKER, pristine.ses, activeFault) : pristine.ses;
+      const source = workerSource(SES_WORKER, pristine.ses);
       const thread = new NodeWorker(
         `const { parentPort, workerData } = require('node:worker_threads');
          globalThis.self = globalThis;
@@ -98,7 +122,10 @@ class TestWorker {
       for (const imported of urls.map(String)) {
         if (imported.includes('runtime-kernel-policy-classic.js')) policyScript.runInContext(context);
         else if (imported.includes('javascript-libraries.js')) librariesScript.runInContext(context);
-        else if (imported.includes('typescript')) self.ts = ts;
+        else if (imported.includes('typescript')) {
+          if (runtimeFault?.compilerImportFails) throw new Error('injected compiler import failure');
+          self.ts = ts;
+        }
         else throw new Error(`Unexpected importScripts URL: ${imported}`);
       }
     };
@@ -110,6 +137,13 @@ class TestWorker {
   }
 
   postMessage(data: unknown): void {
+    if (runtimeFault?.kills?.(data, this.kind)) {
+      setImmediate(() => {
+        if (!this.terminated) this.onerror?.({ message: 'injected worker death', preventDefault() {} });
+      });
+      return;
+    }
+    if (runtimeFault?.swallows?.(data)) return;
     this.post(data);
   }
 
@@ -188,6 +222,215 @@ async function checkDirectCallers(): Promise<void> {
   console.log('PASS: refusals through direct callers');
 }
 
+/**
+ * Only a failure to build this program (parse, transform, print, re-transpile,
+ * runner compile) may refuse it. A failure of the runtime itself stays the
+ * provider's fault: no refusal, and no compile error of the learner's.
+ */
+async function checkRuntimeFaults(): Promise<string[]> {
+  const violations: string[] = [];
+  const check = async (name: string, fault: RuntimeFault | undefined, body: () => Promise<void>) => {
+    runtimeFault = fault;
+    try {
+      await body();
+      console.log(`PASS: ${name}`);
+    } catch (error) {
+      violations.push(`${name}: ${String(error instanceof Error ? error.message : error).slice(0, 700)}`);
+    } finally {
+      runtimeFault = undefined;
+    }
+  };
+  const code = 'function solve() { return 7 }';
+  const isProviderFault = (error: unknown) => {
+    assert.ok(!isTraceUnavailableError(error), `refused as trace-unavailable: ${String(error)}`);
+    assert.ok(isRuntimeProviderError(error), `not a RuntimeProviderError: ${String(error)}`);
+    return true;
+  };
+  const withClient = async (
+    algorithmExecution: 'disposable-worker' | 'ses-compartment-pool',
+    body: (client: JavaScriptWorkerClient) => Promise<void>,
+    typescriptCompilerPreflight?: () => Promise<void>
+  ) => {
+    const client = new JavaScriptWorkerClient({
+      workerUrl: `/workers/javascript/${WORKER}`,
+      algorithmWorkerUrl: `/workers/javascript/${SES_WORKER}`,
+      algorithmExecution,
+      debug: false,
+      ...(typescriptCompilerPreflight ? { typescriptCompilerPreflight } : {}),
+    });
+    try {
+      await body(client);
+    } finally {
+      client.terminate();
+    }
+  };
+  const tracedPreparation = { mode: 'trace', code, functionName: 'solve', executionStyle: 'function' } as const;
+  const judgeRun = async (language: TraceCompileLanguage, fault?: TraceBuildFault) => {
+    const host = createHost(fault);
+    try {
+      const started = await host.execute({
+        bundle: await createAlgorithmJudgeBundle({
+          id: `runtime-fault-${language}`,
+          language,
+          code,
+          functionName: 'solve',
+          executionStyle: 'function',
+          trace: true,
+          cases: ['1', '2', '3'].map((id) => ({ id, input: {}, expected: 7 })),
+          policy: allCasesPassPolicy(),
+        }),
+        interactive: true,
+        tracing: { caseIds: ['1'] },
+      });
+      if (started.executionId) await host.disposeExecution(started.executionId);
+      return started.evaluation as any;
+    } finally {
+      await host.dispose();
+      activeFault = undefined;
+    }
+  };
+
+  const compilerImport: RuntimeFault = { name: 'compiler-import', compilerImportFails: true };
+  for (const language of ['javascript', 'typescript'] as const) {
+    await check(`compiler import fails, ${language} Judge Run: provider fault`, compilerImport, async () => {
+      const text = JSON.stringify(await judgeRun(language));
+      assert.ok(!text.includes('"trace-unavailable"'), `refused: ${text}`);
+      assert.ok(!text.includes('"stage":"compile"'), `blamed on the learner: ${text}`);
+      assert.ok(text.includes('"origin":"provider"'), `not a provider fault: ${text}`);
+      assert.ok(text.includes('injected compiler import failure'), `lost the cause: ${text}`);
+    });
+    for (const route of ['disposable-worker', 'ses-compartment-pool'] as const) {
+      await check(`compiler import fails, ${language} prepared trace on ${route}: provider fault`, compilerImport, () =>
+        withClient(route, async (client) => {
+          await assert.rejects(async () => {
+            const prepared = await client.prepareProgram(tracedPreparation, language);
+            assert.equal(prepared.kind, 'prepared', `blamed on the learner: ${JSON.stringify(prepared)}`);
+            if (prepared.kind !== 'prepared' || prepared.program.mode !== 'trace') return;
+            await prepared.program.executeIsolated({ inputs: {} });
+          }, isProviderFault);
+        })
+      );
+      await check(`compiler import fails, ${language} direct trace on ${route}: provider fault`, compilerImport, () =>
+        withClient(route, async (client) => {
+          await assert.rejects(client.executeWithTracing({ code, functionName: 'solve', inputs: {}, language }), isProviderFault);
+        })
+      );
+    }
+    await check(`compiler import fails, ${language} executor without a prepared build: no refusal`, compilerImport, async () => {
+      const worker = new TestWorker(`/workers/javascript/${WORKER}?tracecodeRole=executor`);
+      const reply = await new Promise<any>((resolve) => {
+        worker.onmessage = ({ data }: { data: any }) => {
+          if (data.id === 'direct') resolve(data);
+        };
+        worker.postMessage({
+          id: 'direct',
+          protocolToken: 'direct',
+          type: 'execute-with-tracing',
+          payload: { code, functionName: 'solve', inputs: {}, executionStyle: 'function', language },
+        });
+      });
+      worker.terminate();
+      assert.equal(reply.type, 'error', `not a provider fault: ${JSON.stringify(reply).slice(0, 300)}`);
+      assert.notEqual(reply.payload.code, 'trace-unavailable', 'refused as trace-unavailable');
+      assert.match(reply.payload.error, /injected compiler import failure/);
+    });
+    await check(`control, printer fault, ${language} Judge Run: still refuses`, undefined, async () => {
+      const [traced, ...untraced] = (await judgeRun(language, 'printer-emits-invalid-code')).cases;
+      assert.equal(traced.diagnostics[0]?.code, 'trace-unavailable', JSON.stringify(traced));
+      assert.deepEqual(untraced.map((result: any) => result.verdict.kind), ['passed', 'passed']);
+    });
+  }
+
+  const passedTraced = async () => {
+    const [traced] = (await judgeRun('javascript')).cases;
+    assert.equal(traced?.verdict?.kind, 'passed', JSON.stringify(traced));
+    assert.ok(traced.trace.events.length > 0, 'passed with no trace');
+  };
+  await check('SES worker dies building the traced program: not refused, replayed', {
+    name: 'ses-death',
+    kills: (data, worker) => worker === 'ses' && data.type === 'prepare' && data.source.mode === 'trace',
+  }, passedTraced);
+  await check('SES runtime error building the traced program: not refused, replayed', {
+    name: 'ses-runtime-error',
+    edit: {
+      file: SES_WORKER,
+      from: 'const execute = compartment.evaluate(factorySource',
+      to: "if (tracing) throw new TypeError('injected SES runtime failure');\n  const execute = compartment.evaluate(factorySource",
+    },
+  }, passedTraced);
+  await check('an untraced build that fails only the first time: provider fault, not refused', {
+    name: 'transient-untraced-build',
+    edit: {
+      file: WORKER,
+      from: 'function buildFunctionExecutionRunner(',
+      to: `let __injectedBuildFailed = false;
+function buildFunctionExecutionRunner(...args) {
+  if (!__injectedBuildFailed) {
+    __injectedBuildFailed = true;
+    throw new RangeError('injected transient build failure');
+  }
+  return buildFunctionExecutionRunnerOriginal(...args);
+}
+function buildFunctionExecutionRunnerOriginal(`,
+    },
+  }, () => withClient('disposable-worker', async (client) => {
+    await assert.rejects(client.executeWithTracing({ code, functionName: 'solve', inputs: {} }), isProviderFault);
+  }));
+
+  for (const [name, type] of [['coordinator', 'prepare-execution'], ['executor', 'execute-with-tracing']] as const) {
+    await check(`${name} death: no refusal, no compile error`, {
+      name: `${name}-death`,
+      kills: (data, worker) => worker === 'classic' && data.type === type,
+    }, () => withClient('disposable-worker', async (client) => {
+      await assert.rejects(async () => {
+        const prepared = await client.prepareProgram(tracedPreparation);
+        assert.equal(prepared.kind, 'prepared', `blamed on the learner: ${JSON.stringify(prepared)}`);
+        if (prepared.kind !== 'prepared' || prepared.program.mode !== 'trace') return;
+        await prepared.program.executeIsolated({ inputs: {} });
+      }, (error) => {
+        assert.match(String(error), /injected worker death/);
+        assert.ok(!isTraceUnavailableError(error), 'refused as trace-unavailable');
+        return true;
+      });
+    }));
+  }
+  await check('abort while preparing: AbortError, no refusal', {
+    name: 'abort',
+    swallows: (data) => data.type === 'prepare-execution',
+  }, () => withClient('disposable-worker', async (client) => {
+    const controller = new AbortController();
+    const pending = client.prepareProgram({ ...tracedPreparation, signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+    await assert.rejects(pending, (error: Error) => error.name === 'AbortError' && !isTraceUnavailableError(error));
+  }));
+  await check('compiler asset preflight fails: rejects, no refusal', undefined, () =>
+    withClient('ses-compartment-pool', async (client) => {
+      await assert.rejects(client.prepareProgram(tracedPreparation), (error) => {
+        assert.match(String(error), /injected preflight failure/);
+        assert.ok(!isTraceUnavailableError(error), 'refused as trace-unavailable');
+        return true;
+      });
+    }, () => Promise.reject(new Error('injected preflight failure')))
+  );
+  return violations;
+}
+
+function createHost(fault?: TraceBuildFault) {
+  activeFault = fault;
+  return createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([createJavaScriptBrowserRuntimeProvider()]),
+    providers: ['javascript', 'typescript'],
+    featureOverrides: {
+      worker: true,
+      webAssembly: true,
+      webCrypto: true,
+      sharedArrayBuffer: true,
+      crossOriginIsolated: true,
+    },
+    debug: false,
+  }));
+}
+
 function list(name: string): string[] {
   return (process.env[`TRACECODE_TRACE_COMPILE_${name}`] ?? '').split(',').map((part) => part.trim()).filter(Boolean);
 }
@@ -196,26 +439,15 @@ async function main(): Promise<void> {
   Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: TestWorker });
   const startedAt = Date.now();
   await checkDirectCallers();
+  const faultViolations = await checkRuntimeFaults();
+  for (const violation of faultViolations) console.error(`FAIL: ${violation}`);
+  console.log(`${faultViolations.length ? 'FAIL' : 'PASS'}: runtime faults, ${faultViolations.length} violations`);
   const result = await runTraceCompileMatrix({
     languages: list('LANGUAGES'),
     styles: list('STYLES'),
     cases: list('CASES'),
     routes: list('ROUTES'),
-    createHost(fault) {
-      activeFault = fault;
-      return createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
-        providerRegistry: createBrowserRuntimeProviderRegistry([createJavaScriptBrowserRuntimeProvider()]),
-        providers: ['javascript', 'typescript'],
-        featureOverrides: {
-          worker: true,
-          webAssembly: true,
-          webCrypto: true,
-          sharedArrayBuffer: true,
-          crossOriginIsolated: true,
-        },
-        debug: false,
-      }));
-    },
+    createHost,
   });
   if (process.env.TRACECODE_TRACE_COMPILE_REPORT) {
     writeFileSync(process.env.TRACECODE_TRACE_COMPILE_REPORT, `${JSON.stringify(result, null, 1)}\n`);
@@ -226,7 +458,7 @@ async function main(): Promise<void> {
       `${result.violations.length} violations (${Math.round((Date.now() - startedAt) / 1000)} s)`
   );
   if (!result.checked) throw new Error('No trace compile programs selected.');
-  process.exit(result.violations.length ? 1 : 0);
+  process.exit(result.violations.length || faultViolations.length ? 1 : 0);
 }
 
 main().catch((error) => {
