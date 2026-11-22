@@ -2,13 +2,16 @@
 
 Browser-native execution for Python, JavaScript, TypeScript, Java, C#, and C++.
 
-The package has two public code entrypoints:
+The package has five public code entrypoints:
 
-- `@tracecode/harness/tracekernel` for interactive workspaces
-- `@tracecode/harness/judge` for isolated evaluation
+- `@tracecode/harness/tracekernel` for the kernel, contracts, and runtime metadata
+- `@tracecode/harness/tracekernel/workspace` for stateful project workspaces
+- `@tracecode/harness/tracekernel/browser` for browser execution and persistence
+- `@tracecode/harness/judge` for evaluation plans, policy, and grading
+- `@tracecode/harness/judge/browser` for executing Judge plans in the browser
 
-That is the entire public architecture. Runtime workers, provider registries,
-language adapters, and browser transport are private implementation details.
+Runtime workers, provider registries, language adapters, and browser transport
+are private implementation details.
 
 Project site: [tracecode.app](https://tracecode.app)
 
@@ -49,9 +52,7 @@ workspace and terminal contracts, browser persistence, execution-host
 plumbing, runtime capability information, and the browser workspace factory.
 
 ```ts
-import {
-  createBrowserWorkspace,
-} from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 
 const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',
@@ -96,10 +97,8 @@ input. The same bundle crosses unchanged into a browser mux slot, so local and
 remote evaluation do not maintain separate correctness implementations.
 
 ```ts
-import {
-  createAlgorithmJudgeBundle,
-  createBrowserJudgeHost,
-} from '@tracecode/harness/judge';
+import { createAlgorithmJudgeBundle } from '@tracecode/harness/judge';
+import { createBrowserJudgeHost } from '@tracecode/harness/judge/browser';
 
 const code = String.raw`
 def solve(nums):

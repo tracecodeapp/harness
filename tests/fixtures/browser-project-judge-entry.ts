@@ -1,11 +1,11 @@
 import * as Effect from 'effect/Effect';
 import {
-  createBrowserProjectJudge,
   PROJECT_ATTEMPT_SCHEMA,
   PROJECT_BUNDLE_SCHEMA,
   PROJECT_DEFINITION_SCHEMA,
   type JudgeProjectBundleV1,
 } from '../../src/judge';
+import { createBrowserProjectJudge } from '../../src/judge/browser';
 
 export async function runBrowserProjectJudge(
   assetBaseUrl: string

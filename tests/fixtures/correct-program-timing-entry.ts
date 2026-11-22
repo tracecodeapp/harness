@@ -1,7 +1,8 @@
 // Correct-program timing through the public BrowserJudgeHost. Uses only APIs
 // that exist in 0.19.0 as well, so the same file measures the baseline
 // (an unknown evaluateAlgorithm option is ignored there).
-import { createAlgorithmJudgeBundle, createBrowserJudgeHost } from '../../src/judge';
+import { createAlgorithmJudgeBundle } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 export type TimingLanguage = 'python' | 'javascript' | 'typescript' | 'java' | 'csharp' | 'cpp';

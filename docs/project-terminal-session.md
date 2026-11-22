@@ -12,7 +12,7 @@ workspaces, and any consumer UI that needs to show an active
 ## Basic Usage
 
 ```ts
-import { createBrowserWorkspace } from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 import type {
   RuntimeCommandEvent,
   RuntimeProjectTerminalInputState,

@@ -87,10 +87,10 @@ async function main(): Promise<void> {
       stdin: {
         contents: `export {
           createAlgorithmJudgeBundle,
-          createBrowserJudgeHost,
           judgeCaseExecutionOutcome,
           judgeCompileExecutionOutcome,
-        } from './src/judge';`,
+        } from './src/judge';
+        export { createBrowserJudgeHost } from './src/judge/browser';`,
         resolveDir: process.cwd(),
       },
       outfile: join(root, 'judge.mjs'),
@@ -129,7 +129,11 @@ async function main(): Promise<void> {
           await page.goto(`${server.origin}/index.html`, { timeout: 10_000 });
           const observed = await page.evaluate(async ({ language, code, cases }) => {
             const moduleUrl: string = '/judge.mjs';
-            const judge: typeof import('../src/judge') = await import(moduleUrl);
+            const judge: Pick<
+              typeof import('../src/judge'),
+              'createAlgorithmJudgeBundle' | 'judgeCaseExecutionOutcome' | 'judgeCompileExecutionOutcome'
+            > & Pick<typeof import('../src/judge/browser'), 'createBrowserJudgeHost'> =
+              await import(moduleUrl);
             const host = judge.createBrowserJudgeHost({
               assetBaseUrl: '/workers',
               providers: [language],

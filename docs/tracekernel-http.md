@@ -84,10 +84,8 @@ while separate `workspace.runCommand(...)` calls can run through the scheduler
 and interact with the same files and HTTP listeners.
 
 ```ts
-import {
-  createBrowserWorkspace,
-  runtimeHttpResponseText,
-} from '@tracecode/harness/tracekernel';
+import { runtimeHttpResponseText } from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 
 const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',

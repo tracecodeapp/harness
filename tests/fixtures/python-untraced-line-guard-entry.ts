@@ -1,7 +1,8 @@
 // Untraced Python line guard, through the public BrowserJudgeHost in a real
 // Pyodide worker: a correct program that runs a lot of lines must finish,
 // and a loop that never ends must still be stopped by the guard.
-import { createAlgorithmJudgeBundle, createBrowserJudgeHost } from '../../src/judge';
+import { createAlgorithmJudgeBundle } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 
 // count(n) runs 3n + 3 lines for n >= 0, n + 1 of them on the `while` line.
 // A negative n loops forever on two lines.

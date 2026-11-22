@@ -10,11 +10,11 @@ import {
   SUPPORTED_LANGUAGES,
   type Language,
 } from '@tracecode/harness/tracekernel';
+import type { JudgeEvaluationPlan } from '@tracecode/harness/judge';
 import {
   createBrowserJudgeHost,
-  type JudgeEvaluationPlan,
   type RuntimeJudgeBinding,
-} from '@tracecode/harness/judge';
+} from '@tracecode/harness/judge/browser';
 
 // ----------------------------------------------------------------------
 // Monaco Environment Setup

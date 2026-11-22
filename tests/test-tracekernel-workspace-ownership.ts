@@ -1,6 +1,7 @@
 #!/usr/bin/env npx tsx
 
 import * as publicTraceKernel from '../src/tracekernel';
+import * as publicWorkspace from '../src/tracekernel/workspace';
 import * as traceKernelWorkspace from '../packages/tracekernel/src/workspace/index';
 
 function assertCondition(
@@ -12,10 +13,10 @@ function assertCondition(
 
 async function main(): Promise<void> {
   assertCondition(
-    typeof publicTraceKernel.createRuntimeWorkspace === 'function' &&
+    typeof publicWorkspace.createRuntimeWorkspace === 'function' &&
       typeof traceKernelWorkspace.createRuntimeWorkspace ===
         'function',
-    'the public TraceKernel surface should expose the TraceKernel-owned workspace factory'
+    'the TraceKernel workspace entry should expose the TraceKernel-owned workspace factory'
   );
   assertCondition(
     typeof traceKernelWorkspace.runtimeHttpBodyText === 'function',
@@ -26,8 +27,7 @@ async function main(): Promise<void> {
     'the public TraceKernel surface should compose its shared HTTP helpers'
   );
 
-  const workspace =
-    await traceKernelWorkspace.createRuntimeWorkspace();
+  const workspace = await publicWorkspace.createRuntimeWorkspace();
   try {
     const result = await workspace.runCommand(
       'printf tracekernel-workspace'

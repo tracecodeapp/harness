@@ -1,10 +1,10 @@
 import {
   createAlgorithmJudgeBundle,
-  createBrowserJudgeHost,
   isRuntimeProviderError,
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
 } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 import {
   healthyProgram,

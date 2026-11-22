@@ -13,7 +13,7 @@ sandbox. For isolation limits, see [Isolation Boundaries](./isolation-boundaries
 Browser apps usually create a workspace through the environment factory:
 
 ```ts
-import { createBrowserWorkspace } from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 
 const workspace = await createBrowserWorkspace({
   assetBaseUrl: '/workers',

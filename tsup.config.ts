@@ -17,7 +17,9 @@ export default defineConfig([
     ],
     entry: {
       tracekernel: 'src/tracekernel.ts',
-      // Build-only declaration closure for the two public entrypoints.
+      'tracekernel/browser': 'src/tracekernel/browser.ts',
+      'tracekernel/workspace': 'src/tracekernel/workspace.ts',
+      // Build-only declaration closure for the public entrypoints.
       // These files are deliberately absent from the package export map.
       core: 'packages/runtime-contracts/src/index.ts',
       'internal/tracekernel': 'packages/tracekernel/src/index.ts',
@@ -25,6 +27,7 @@ export default defineConfig([
         'packages/tracekernel/src/workspace/index.ts',
       'internal/browser': 'packages/runtime-browser/src/internal.ts',
       judge: 'src/judge.ts',
+      'judge/browser': 'src/judge/browser.ts',
       'zlib-browser-shim': 'packages/tracekernel/src/zlib-browser-shim.ts',
       cli: 'src/cli.ts',
     },

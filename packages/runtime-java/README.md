@@ -10,7 +10,7 @@ algorithm runtime:
 
 ```ts
 import * as Effect from 'effect/Effect';
-import { createBrowserJudgeHost } from '@tracecode/harness/judge';
+import { createBrowserJudgeHost } from '@tracecode/harness/judge/browser';
 
 const host = createBrowserJudgeHost({
   providers: ['java'],
@@ -111,9 +111,7 @@ Browser project mode is exposed through
 implementation-neutral structural client factory:
 
 ```ts
-import {
-  createBrowserWorkspace,
-} from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 
 const workspace = await createBrowserWorkspace({
   providers: ['java'],

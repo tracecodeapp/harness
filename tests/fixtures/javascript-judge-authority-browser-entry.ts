@@ -1,8 +1,8 @@
 import {
   createAlgorithmJudgeBundle,
-  createBrowserJudgeHost,
   type JudgeEvaluationResult,
 } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 import type { Language } from '../../src/browser';
 
 export interface BrowserRuntimeEvaluationRequest {

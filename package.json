@@ -47,16 +47,59 @@
   },
   "exports": {
     "./tracekernel": {
-      "types": "./dist/tracekernel.d.ts",
-      "import": "./dist/tracekernel.js",
-      "require": "./dist/tracekernel.cjs",
+      "import": {
+        "types": "./dist/tracekernel.d.ts",
+        "default": "./dist/tracekernel.js"
+      },
+      "require": {
+        "types": "./dist/tracekernel.d.cts",
+        "default": "./dist/tracekernel.cjs"
+      },
       "default": "./dist/tracekernel.js"
     },
+    "./tracekernel/browser": {
+      "import": {
+        "types": "./dist/tracekernel/browser.d.ts",
+        "default": "./dist/tracekernel/browser.js"
+      },
+      "require": {
+        "types": "./dist/tracekernel/browser.d.cts",
+        "default": "./dist/tracekernel/browser.cjs"
+      },
+      "default": "./dist/tracekernel/browser.js"
+    },
+    "./tracekernel/workspace": {
+      "import": {
+        "types": "./dist/tracekernel/workspace.d.ts",
+        "default": "./dist/tracekernel/workspace.js"
+      },
+      "require": {
+        "types": "./dist/tracekernel/workspace.d.cts",
+        "default": "./dist/tracekernel/workspace.cjs"
+      },
+      "default": "./dist/tracekernel/workspace.js"
+    },
     "./judge": {
-      "types": "./dist/judge.d.ts",
-      "import": "./dist/judge.js",
-      "require": "./dist/judge.cjs",
+      "import": {
+        "types": "./dist/judge.d.ts",
+        "default": "./dist/judge.js"
+      },
+      "require": {
+        "types": "./dist/judge.d.cts",
+        "default": "./dist/judge.cjs"
+      },
       "default": "./dist/judge.js"
+    },
+    "./judge/browser": {
+      "import": {
+        "types": "./dist/judge/browser.d.ts",
+        "default": "./dist/judge/browser.js"
+      },
+      "require": {
+        "types": "./dist/judge/browser.d.cts",
+        "default": "./dist/judge/browser.cjs"
+      },
+      "default": "./dist/judge/browser.js"
     },
     "./package.json": "./package.json",
     "./runtime-assets.lock.json": "./runtime-assets.lock.json"

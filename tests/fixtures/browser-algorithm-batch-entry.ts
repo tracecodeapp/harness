@@ -1,7 +1,5 @@
-import {
-  createAlgorithmJudgeBundle,
-  createBrowserJudgeHost,
-} from '../../src/judge';
+import { createAlgorithmJudgeBundle } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 
 type BatchLanguage =
   | 'python'

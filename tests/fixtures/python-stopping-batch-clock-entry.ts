@@ -1,6 +1,7 @@
 // Time to a verdict for a Python Run whose case loops forever, through the
 // public BrowserJudgeHost in a real Pyodide worker.
-import { createAlgorithmJudgeBundle, createBrowserJudgeHost } from '../../src/judge';
+import { createAlgorithmJudgeBundle } from '../../src/judge';
+import { createBrowserJudgeHost } from '../../src/judge/browser';
 
 // Binary Search that never returns once it finds the target. The loop runs
 // inside C code, so the worker's line guard cannot see it: only a client

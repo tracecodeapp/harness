@@ -26,9 +26,7 @@ for retained interactive sessions.
 Bundle this module on the dedicated execution origin:
 
 ```ts
-import {
-  installBrowserExecutionWorkerHost,
-} from '@tracecode/harness/tracekernel';
+import { installBrowserExecutionWorkerHost } from '@tracecode/harness/tracekernel/browser';
 
 installBrowserExecutionWorkerHost({
   allowedParentOrigins: ['https://app.tracecode.app'],
@@ -64,10 +62,8 @@ Effect scope. The host can outlive one evaluation; the scope cannot.
 
 ```ts
 import * as Effect from 'effect/Effect';
-import {
-  createBrowserJudgeHost,
-  type JudgeEvaluationPlan,
-} from '@tracecode/harness/judge';
+import type { JudgeEvaluationPlan } from '@tracecode/harness/judge';
+import { createBrowserJudgeHost } from '@tracecode/harness/judge/browser';
 
 async function evaluateJava(
   plan: JudgeEvaluationPlan<Record<string, unknown>, unknown>,
@@ -152,7 +148,7 @@ contract, not a public engine selector or provider-specific API.
 ## Browser project workspaces
 
 Browser project mode has a separate public composition at
-`@tracecode/harness/tracekernel`. Python, JavaScript/TypeScript, C#, and C++
+`@tracecode/harness/tracekernel/browser`. Python, JavaScript/TypeScript, C#, and C++
 project workers can use the execution broker. TypeScript compilation occurs in
 the trusted page and emitted JavaScript runs through the JavaScript project
 worker, so hosted TypeScript requires the JavaScript project provider.
@@ -161,9 +157,7 @@ Java project mode uses the implementation-neutral client factory supplied by
 the application:
 
 ```ts
-import {
-  createBrowserWorkspace,
-} from '@tracecode/harness/tracekernel';
+import { createBrowserWorkspace } from '@tracecode/harness/tracekernel/browser';
 
 const workspace = await createBrowserWorkspace({
   providers: ['java'],

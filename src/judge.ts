@@ -1,18 +1,5 @@
-/**
- * Public browser Judge authority.
- *
- * Runtime provider registration and the browser runtime host are implementation
- * details. Consumers own one BrowserJudgeHost, optionally warm a selected
- * language, and create scoped Judge evaluations through that authority.
- */
-export {
-  BROWSER_WORKER_LIFECYCLE_POLICIES,
-  DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
-  createBrowserProjectJudge,
-  createBrowserJudgeHost,
-  evaluateJudgePlan,
-  structuralJsonComparator,
-} from './internal/browser-judge';
+/** Runtime-neutral Judge plans, grading, comparison, and execution outcomes. */
+export { evaluateJudgePlan, structuralJsonComparator } from '../packages/judge/src/index';
 
 /**
  * Total conversions from Judge results to the execution outcomes a learner
@@ -31,22 +18,6 @@ export {
 } from '../packages/runtime-contracts/src/index';
 
 export type {
-  BrowserSafeExecutionOptions,
-  BrowserJudgeCppOptions,
-  BrowserJudgeCSharpOptions,
-  BrowserJudgeExecutionHostOptions,
-  BrowserJudgeExecuteRequest,
-  BrowserJudgeInitialExecuteRequest,
-  BrowserJudgeContinueExecuteRequest,
-  BrowserJudgeHost,
-  BrowserJudgeJavaOptions,
-  BrowserJudgePythonOptions,
-  BrowserWorkerLifecyclePolicy,
-  BrowserProjectJudge,
-  BrowserProjectJudgeWorkspaceOptions,
-  CreateBrowserJudgeHostOptions,
-  CreateBrowserJudgeOptions,
-  CreateBrowserProjectJudgeOptions,
   JudgeCasePlan,
   JudgeCaseResult,
   JudgeCompileResult,
@@ -67,17 +38,7 @@ export type {
   JudgeRuntimeInvocationInput,
   JudgeRuntimeInvocationOutput,
   JudgeWorkspaceFile,
-  RuntimeJudge,
-  RuntimeJudgeExecuteRequest,
-  RuntimeJudgeExecuteResult,
-  RuntimeJudgeAlgorithmOptions,
-  RuntimeJudgeInitialExecuteRequest,
-  RuntimeJudgeContinueExecuteRequest,
-  RuntimeJudgeTraceSelection,
-  RuntimeJudgeBinding,
-  RuntimeJudgeCodeBinding,
-  RuntimeJudgeTraceBinding,
-} from './internal/browser-judge';
+} from '../packages/judge/src/index';
 
 export {
   PROJECT_ATTEMPT_SCHEMA,

@@ -10,7 +10,7 @@ import type { BrowserRuntimeAssetManifests } from '@tracecode/harness/tracekerne
 import type {
   BrowserWorkspaceProvider,
   CreateBrowserWorkspaceOptions,
-} from '@tracecode/harness/tracekernel';
+} from '@tracecode/harness/tracekernel/browser';
 
 type JavaProjectProviderConfiguration =
   NonNullable<CreateBrowserWorkspaceOptions['java']>;
@@ -64,7 +64,7 @@ async function bootProjectTerminal(): Promise<void> {
 
   appendLine('Loading tracekernel project workspace...');
 
-  const { createBrowserWorkspace } = await import('@tracecode/harness/tracekernel');
+  const { createBrowserWorkspace } = await import('@tracecode/harness/tracekernel/browser');
   (
     window as Window & {
       __tracecodeCreateBrowserProjectWorkspace?: typeof createBrowserWorkspace;

@@ -43,7 +43,7 @@ Without the environment variable, Java is omitted from the language selector.
 
 ## What It Demonstrates
 
-- `createBrowserJudgeHost(...)` from `@tracecode/harness/judge`
+- `createBrowserJudgeHost(...)` from `@tracecode/harness/judge/browser`
 - `host.createJudge(...)` for each scoped evaluation
 - `Effect.scoped(...)` ownership for each Judge evaluation
 - worker asset syncing through `tracecode-harness sync-assets`

@@ -6,6 +6,21 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Changed
+
+Server bundles no longer include browser execution when they import the two base entries.
+
+| Old import | New import | Moved names |
+| --- | --- | --- |
+| `@tracecode/harness/judge` | `@tracecode/harness/judge/browser` | `BROWSER_WORKER_LIFECYCLE_POLICIES`, `BrowserJudgeContinueExecuteRequest`, `BrowserJudgeCppOptions`, `BrowserJudgeCSharpOptions`, `BrowserJudgeExecuteRequest`, `BrowserJudgeExecutionHostOptions`, `BrowserJudgeHost`, `BrowserJudgeInitialExecuteRequest`, `BrowserJudgeJavaOptions`, `BrowserJudgePythonOptions`, `BrowserProjectJudge`, `BrowserProjectJudgeWorkspaceOptions`, `BrowserSafeExecutionOptions`, `BrowserWorkerLifecyclePolicy`, `createBrowserJudgeHost`, `CreateBrowserJudgeHostOptions`, `CreateBrowserJudgeOptions`, `createBrowserProjectJudge`, `CreateBrowserProjectJudgeOptions`, `DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS`, `RuntimeJudge`, `RuntimeJudgeAlgorithmOptions`, `RuntimeJudgeBinding`, `RuntimeJudgeCodeBinding`, `RuntimeJudgeContinueExecuteRequest`, `RuntimeJudgeExecuteRequest`, `RuntimeJudgeExecuteResult`, `RuntimeJudgeInitialExecuteRequest`, `RuntimeJudgeTraceBinding`, `RuntimeJudgeTraceSelection` |
+| `@tracecode/harness/tracekernel` | `@tracecode/harness/tracekernel/browser` | `createBrowserWorkspace`, `createIndexedDbKernelStorage`, `createBrowserExecutionWorkerHost`, `installBrowserExecutionWorkerHost`, `BrowserKernelStorage`, `BrowserKernelStorageBinding`, `BrowserKernelStorageSnapshot`, `BrowserWorkspaceExecutionHostOptions`, `BrowserWorkspaceJavaRuntimeOptions`, `BrowserWorkspaceNodeOptions`, `BrowserWorkspaceProvider`, `BrowserWorkspaceRuntimeProvider`, `BrowserWorkspaceRuntimeProviders`, `BrowserWorkspaceTypeScriptOptions`, `BrowserWorkspaceWorkerIsolation`, `BrowserWorkspaceWorkerPrewarmOptions`, `BrowserWorkspace`, `CreateBrowserWorkspaceOptions`, `IndexedDbKernelStorageOptions`, `InstallBrowserExecutionWorkerHostOptions`, `createPythonAnalysisClient`, `CreatePythonAnalysisClientOptions`, `PythonAnalysisClient`, `createBrowserRuntimeEnvironment`, `BrowserRuntimeEngine`, `BrowserRuntimeEnvironment`, `BrowserRuntimeEnvironmentOptions`, `BrowserRuntimeEnvironmentReport`, `BrowserRuntimeFeatureSupport`, `BrowserRuntimeKnownIssue`, `BrowserRuntimeReadiness`, `BrowserRuntimeReadinessStatus`, `BrowserRuntimeSurface` |
+| `@tracecode/harness/tracekernel` | `@tracecode/harness/tracekernel/workspace` | `RuntimeProjectWorkspace`, `createRuntimeWorkspace`, `JustBashRuntimeWorkspace`, `RuntimeProjectWorkspaceTerminalSession`, `createPackageManagerProjectCommands`, `syntheticIp`, `syntheticLatency`, `RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES`, `RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT`, `RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES`, `normalizeRuntimeWorkspaceStorageLimits`, `createPythonProjectCommands`, `createNodeProjectCommands`, `createTypeScriptProjectCommands`, `createJavaProjectCommands`, `createCppProjectCommands`, `createCSharpProjectCommands` |
+
+Workspace types remain available from `@tracecode/harness/tracekernel`.
+Consumers that render on the server should stub the three new specifiers at
+their SSR boundary. The specifiers are stable across builds, while generated
+chunk filenames can change.
+
 ## [0.20.2] - 2026-11-17
 
 ### Added

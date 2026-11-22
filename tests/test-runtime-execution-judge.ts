@@ -10,8 +10,8 @@ import {
   judgeCompileExecutionOutcome,
   type JudgeCaseResult,
   type JudgeEvaluationPlan,
-  type RuntimeJudgeBinding,
 } from '../src/judge';
+import { type RuntimeJudgeBinding } from '../src/judge/browser';
 import {
   DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
   createBrowserJudgeHostFromRuntimeHost,

@@ -27,13 +27,13 @@ The app syncs harness worker assets into `public/workers` before `dev`, `build`,
 To enable Java actions, inject `window.__tracecodeJavaProjectProvider` before
 boot with the `java` configuration accepted by
 `CreateBrowserWorkspaceOptions` from
-`@tracecode/harness/tracekernel`. The provider owns its Worker and runtime
+`@tracecode/harness/tracekernel/browser`. The provider owns its Worker and runtime
 assets. The example hides Java session/MVP actions when that provider is absent
 and never selects a runtime implementation.
 
 ## What It Demonstrates
 
-- `createBrowserWorkspace(...)` from `@tracecode/harness/tracekernel`
+- `createBrowserWorkspace(...)` from `@tracecode/harness/tracekernel/browser`
 - workspace and terminal contracts from `@tracecode/harness/tracekernel`
 - runtime and language metadata from `@tracecode/harness/tracekernel`
 - `ProjectSession` commands, readonly starter files, and hidden fixture data
