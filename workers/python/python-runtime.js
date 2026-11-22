@@ -5513,8 +5513,13 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             lasts.append(('subscript', capture))
         return root, raw, refs, sources, lasts
 
-    def _tracecode_build_prefix(self, root, raw, lasts, count):
+    def _tracecode_build_prefix(self, root, raw, lasts, count, root_temp=None):
+        # root_temp captures the root object where Python evaluates it, for a
+        # recorder that runs after the statement: reloading the name there
+        # would see a rebinding (or a nonlocal del) done by an index.
         expression = ast.Name(id=root, ctx=ast.Load())
+        if root_temp is not None:
+            expression = ast.NamedExpr(target=ast.Name(id=root_temp, ctx=ast.Store()), value=expression)
         for position in range(count):
             kind, value = lasts[position]
             if kind == 'attribute':
@@ -5657,7 +5662,14 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 step.slice,
             )
             refs.append(ast.Name(id=temp_name, ctx=ast.Load()))
-        return current.id, refs, sources
+        # The root object is captured where Python evaluates it (see
+        # _tracecode_build_prefix): the store is recorded after the statement.
+        root_temp = self._tracecode_next_temp_name('root')
+        steps[0].value = ast.copy_location(
+            ast.NamedExpr(target=ast.Name(id=root_temp, ctx=ast.Store()), value=current),
+            current,
+        )
+        return current.id, root_temp, refs, sources
 
     def _tracecode_next_temp_name(self, prefix):
         name = f'__tracecode_{prefix}_{self._tracecode_temp_counter}'
@@ -6016,7 +6028,8 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                 # the row read before the store.
                 root, raw, refs, sources, lasts = captured
                 value_temp = self._tracecode_next_temp_name('value')
-                parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1)
+                root_temp = self._tracecode_next_temp_name('root')
+                parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1, root_temp)
                 if len(raw) > 1:
                     parent = ast.Call(
                         func=ast.Name(id='_tracecode_note_parent', ctx=ast.Load()),
@@ -6042,7 +6055,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     func=ast.Name(id='_tracecode_record_store', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=root),
-                        ast.Name(id=root, ctx=ast.Load()),
+                        ast.Name(id=root_temp, ctx=ast.Load()),
                         self._tracecode_list(refs),
                         self._tracecode_list(sources),
                         ast.Name(id=value_temp, ctx=ast.Load()),
@@ -6068,12 +6081,12 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
                     prepared_write_targets.append(captured)
             visited = self.generic_visit(node)
             writes = []
-            for var_name, refs, sources in prepared_write_targets:
+            for var_name, root_temp, refs, sources in prepared_write_targets:
                 write_call = ast.Expr(value=ast.Call(
                     func=ast.Name(id='_tracecode_record_index_write', ctx=ast.Load()),
                     args=[
                         ast.Constant(value=var_name),
-                        ast.Name(id=var_name, ctx=ast.Load()),
+                        ast.Name(id=root_temp, ctx=ast.Load()),
                         ast.List(elts=refs, ctx=ast.Load()),
                         ast.List(elts=sources, ctx=ast.Load()),
                     ],
@@ -6189,7 +6202,8 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         if captured is None:
             return self.generic_visit(node)
         root, raw, refs, sources, lasts = captured
-        parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1)
+        root_temp = self._tracecode_next_temp_name('root')
+        parent = self._tracecode_build_prefix(root, raw, lasts, len(raw) - 1, root_temp)
         kind, last = lasts[-1]
         if kind == 'attribute':
             target = ast.Attribute(value=parent, attr=last, ctx=ast.Del())
@@ -6200,7 +6214,7 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
             func=ast.Name(id='_tracecode_record_delete', ctx=ast.Load()),
             args=[
                 ast.Constant(value=root),
-                ast.Name(id=root, ctx=ast.Load()),
+                ast.Name(id=root_temp, ctx=ast.Load()),
                 self._tracecode_list(refs),
                 self._tracecode_list(sources),
             ],

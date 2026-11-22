@@ -762,4 +762,37 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
       value: [[20, [10, 20], 3, 40, [20, 7, 40]], [20, 7, 40], [[8, 7], [3, 4]], ['index', 'index', 'index', 'index']],
     },
   },
+  // An index that deletes or rebinds the root (nonlocal) after Python has
+  // evaluated it: stores, deletes and tuple-target stores record the object
+  // Python wrote to.
+  {
+    id: 'index-unbinds-or-rebinds-the-root',
+    code: lines(
+      'def solve():',
+      '    a = [0, 0, 0]',
+      '    keep = a',
+      '    grid = [[0, 0]]',
+      '    def drop(k):',
+      '        nonlocal a',
+      '        del a',
+      '        return k',
+      '    def rebind(k):',
+      '        nonlocal a',
+      '        a = [9, 9, 9]',
+      '        return k',
+      '    a[drop(1)] = 5',
+      '    a = keep',
+      '    del a[drop(0)]',
+      '    a = keep',
+      '    a[rebind(0)], b = 7, 1',
+      '    rows = grid',
+      '    def drop_rows(k):',
+      '        nonlocal rows',
+      '        del rows',
+      '        return k',
+      '    rows[0][drop_rows(1)] = 3',
+      '    return [keep, a, b, grid]',
+    ),
+    expected: { value: [[7, 0], [9, 9, 9], 1, [[0, 3]]] },
+  },
 ];
