@@ -6,17 +6,71 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { test } from 'node:test';
+import { dirname, join, resolve } from 'node:path';
+import { after, test } from 'node:test';
+import { bundleServerEntries, inspectServerClosures } from './packaged-server-graph';
 
 const ROOT = process.cwd();
-const PUBLIC_CODE_EXPORTS = ['./tracekernel', './judge'] as const;
+const PUBLIC_CODE_EXPORTS = [
+  './judge', './judge/browser', './tracekernel', './tracekernel/browser', './tracekernel/workspace',
+] as const;
+const MOVED = {
+  './judge/browser': [
+    'createBrowserJudgeHost', 'createBrowserProjectJudge',
+    'BROWSER_WORKER_LIFECYCLE_POLICIES', 'DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS',
+  ],
+  './tracekernel/browser': [
+    'createBrowserWorkspace', 'createIndexedDbKernelStorage', 'createBrowserExecutionWorkerHost',
+    'installBrowserExecutionWorkerHost', 'createBrowserRuntimeEnvironment', 'createPythonAnalysisClient',
+  ],
+  './tracekernel/workspace': [
+    'RuntimeProjectWorkspace', 'createRuntimeWorkspace', 'JustBashRuntimeWorkspace',
+    'RuntimeProjectWorkspaceTerminalSession', 'createPackageManagerProjectCommands',
+    'syntheticIp', 'syntheticLatency', 'RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES',
+    'RUNTIME_WORKSPACE_DEFAULT_MAX_ENTRY_COUNT', 'RUNTIME_WORKSPACE_DEFAULT_MAX_FILE_BYTES',
+    'normalizeRuntimeWorkspaceStorageLimits', 'createPythonProjectCommands',
+    'createNodeProjectCommands', 'createTypeScriptProjectCommands', 'createJavaProjectCommands',
+    'createCppProjectCommands', 'createCSharpProjectCommands',
+  ],
+} as const;
+
+const fixture = await mkdtemp(join(tmpdir(), 'tracecode-packed-surface-'));
+after(() => rm(fixture, { recursive: true, force: true }));
+const packedRoot = join(fixture, 'node_modules', '@tracecode', 'harness');
+let packed: Promise<{ files: { path: string }[] }> | undefined;
+
+function packedPackage() {
+  return packed ??= (async () => {
+    const pack = spawnSync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['pack', '--json', '--ignore-scripts', '--pack-destination', fixture],
+      { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }
+    );
+    assert.equal(pack.status, 0, `${pack.stdout}\n${pack.stderr}`);
+    const [tarball] = JSON.parse(pack.stdout) as {
+      filename: string;
+      files: { path: string }[];
+    }[];
+    await mkdir(packedRoot, { recursive: true });
+    const extract = spawnSync('tar', [
+      '-xf', join(fixture, tarball.filename), '-C', packedRoot, '--strip-components=1',
+    ], { encoding: 'utf8' });
+    assert.equal(extract.status, 0, extract.stderr);
+    const { dependencies } = JSON.parse(await readFile(join(packedRoot, 'package.json'), 'utf8'));
+    for (const dependency of Object.keys(dependencies)) {
+      const target = join(fixture, 'node_modules', dependency);
+      await mkdir(dirname(target), { recursive: true });
+      await symlink(await realpath(join(ROOT, 'node_modules', dependency)), target, 'dir');
+    }
+    return tarball;
+  })();
+}
 const RETIRED_EXPORTS = [
   '.',
   './browser',
@@ -37,7 +91,7 @@ function runNode(
   );
 }
 
-test('published package has only TraceKernel and Judge code entrypoints', async () => {
+test('published package exposes the five entrypoints', async () => {
   const manifest = JSON.parse(
     await readFile(join(ROOT, 'package.json'), 'utf8')
   ) as {
@@ -50,8 +104,7 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
 
   assert.deepEqual(
     Object.keys(manifest.exports ?? {}).sort(),
-    ['./judge', './package.json', './runtime-assets.lock.json', './tracekernel'],
-    'the package export map should name only the two product authorities and their metadata (package and runtime asset lock)'
+    [...PUBLIC_CODE_EXPORTS, './package.json', './runtime-assets.lock.json'].sort()
   );
   assert.equal(manifest.main, undefined);
   assert.equal(manifest.module, undefined);
@@ -77,31 +130,21 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
     'utf8'
   );
   const judgeTypes = await readFile(join(ROOT, 'dist/judge.d.ts'), 'utf8');
-  assert.match(traceKernelTypes, /createBrowserWorkspace/u);
+  const browserJudgeTypes = await readFile(join(ROOT, 'dist/judge/browser.d.ts'), 'utf8');
+  assert.doesNotMatch(traceKernelTypes, /createBrowserWorkspace/u);
   assert.doesNotMatch(traceKernelTypes, /createBrowserRuntimeHost/u);
-  assert.match(judgeTypes, /createBrowserJudgeHost/u);
+  assert.doesNotMatch(judgeTypes, /createBrowserJudgeHost/u);
   assert.match(judgeTypes, /createJudge/u);
-  assert.match(judgeTypes, /BrowserJudgeExecuteRequest/u);
-  assert.match(judgeTypes, /disposeExecution/u);
-  assert.match(judgeTypes, /interactiveExecutionIdleTimeoutMs/u);
-  assert.match(judgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
-  assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
-  assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
+  assert.match(browserJudgeTypes, /BrowserJudgeExecuteRequest/u);
+  assert.match(browserJudgeTypes, /disposeExecution/u);
+  assert.match(browserJudgeTypes, /interactiveExecutionIdleTimeoutMs/u);
+  assert.match(browserJudgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
+  assert.doesNotMatch(browserJudgeTypes, /createBrowserRuntimeJudge/u);
+  assert.doesNotMatch(browserJudgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
 });
 
 test('published worker inventory exactly matches the runtime asset lock', async () => {
-  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-  const packlist = spawnSync(
-    npmCommand,
-    ['pack', '--dry-run', '--json', '--ignore-scripts'],
-    { cwd: ROOT, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }
-  );
-  assert.equal(packlist.status, 0, `${packlist.stdout}\n${packlist.stderr}`);
-  const packs = JSON.parse(packlist.stdout) as Array<{
-    files?: Array<{ path?: unknown }>;
-  }>;
-  assert.equal(packs.length, 1, 'npm pack should describe exactly one root package');
-  const packedWorkerPaths = (packs[0]?.files ?? [])
+  const packedWorkerPaths = (await packedPackage()).files
     .map((entry) => entry.path)
     .filter((entry): entry is string =>
       typeof entry === 'string' && entry.startsWith('workers/')
@@ -148,169 +191,121 @@ test('JavaScript project worker embeds only the generated Harness version', asyn
   );
 });
 
-test('built ESM surfaces execute through their owning authority', async () => {
-  const traceKernel = await import(
-    pathToFileURL(join(ROOT, 'dist/tracekernel.js')).href
-  );
-  const judge = await import(pathToFileURL(join(ROOT, 'dist/judge.js')).href);
-
-  assert.equal(typeof traceKernel.createBrowserWorkspace, 'function');
-  assert.equal(typeof traceKernel.createRuntimeWorkspace, 'function');
-  assert.equal(typeof traceKernel.makeTraceKernelHost, 'function');
-  assert.equal(typeof judge.createBrowserJudgeHost, 'function');
-  assert.equal(typeof judge.evaluateJudgePlan, 'function');
-
-  const workspace = await traceKernel.createRuntimeWorkspace({
-    files: [{ path: 'surface.txt', contents: 'simple\\n' }],
-  });
-  try {
-    const result = await workspace.runCommand('cat surface.txt');
-    assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, 'simple\\n');
-  } finally {
-    await workspace.destroy();
+test('server entry closures contain no browser execution or workspace implementation', async () => {
+  const reports = await inspectServerClosures(join(ROOT, 'dist'));
+  for (const { entry, modules, violations } of reports) {
+    console.log(`dist/${entry}: ${modules.length} modules, ${violations.length} violations`);
   }
+  assert.deepEqual(reports.flatMap(({ entry, violations }) =>
+    violations.map((violation) => `${entry}: ${violation}`)
+  ), []);
 });
 
-test('installed package resolves both module systems and rejects retired paths', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'tracecode-surface-'));
-  try {
-    const scope = join(fixture, 'node_modules', '@tracecode');
-    await mkdir(scope, { recursive: true });
-    await symlink(ROOT, join(scope, 'harness'), 'dir');
-    await writeFile(
-      join(fixture, 'package.json'),
-      JSON.stringify({ private: true, type: 'module' }),
-      'utf8'
-    );
+test('packed server entries bundle under workerd conditions without browser execution', async () => {
+  await packedPackage();
+  const { bytes, violations } = await bundleServerEntries(fixture);
+  console.log(`Packed workerd bundle: ${bytes} bytes`);
+  assert.deepEqual(violations, []);
+});
 
-    const esm = runNode(
-      fixture,
-      `
-        import * as tracekernel from '@tracecode/harness/tracekernel';
-        import * as judge from '@tracecode/harness/judge';
-        if (typeof tracekernel.createBrowserWorkspace !== 'function') throw new Error('missing TraceKernel browser workspace');
-        if (typeof tracekernel.createRuntimeWorkspace !== 'function') throw new Error('missing TraceKernel workspace');
-        if (typeof judge.createBrowserJudgeHost !== 'function') throw new Error('missing Judge host');
-      `,
-      true
-    );
-    assert.equal(esm.status, 0, `${esm.stdout}\n${esm.stderr}`);
-
-    const cjs = runNode(
-      fixture,
-      `
-        const tracekernel = require('@tracecode/harness/tracekernel');
-        const judge = require('@tracecode/harness/judge');
-        if (typeof tracekernel.createBrowserWorkspace !== 'function') throw new Error('missing TraceKernel browser workspace');
-        if (typeof judge.createBrowserJudgeHost !== 'function') throw new Error('missing Judge host');
-      `
-    );
-    assert.equal(cjs.status, 0, `${cjs.stdout}\n${cjs.stderr}`);
-
-    // Release operators and consumers read the runtime asset lock through the
-    // package, not by a path into node_modules.
-    const lock = runNode(
-      fixture,
-      `
-        const lock = require('@tracecode/harness/runtime-assets.lock.json');
-        if (lock.schema !== 'tracecode.runtime-assets-lock.v1') throw new Error('unexpected lock schema');
-        if (!Number.isSafeInteger(lock.stagedInventory?.files) || !Number.isSafeInteger(lock.stagedInventory?.bytes)) {
-          throw new Error('the lock must carry the staged inventory totals');
-        }
-      `
-    );
-    assert.equal(lock.status, 0, `${lock.stdout}\n${lock.stderr}`);
-
-    for (const retired of RETIRED_EXPORTS) {
-      const specifier =
-        retired === '.'
-          ? '@tracecode/harness'
-          : `@tracecode/harness/${retired.slice(2)}`;
-      const rejected = runNode(
-        fixture,
-        `import(${JSON.stringify(specifier)}).then(
-          () => process.exit(2),
-          (error) => {
-            if (error?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-              console.error(error);
-              process.exit(3);
-            }
-          }
-        )`,
-        true
-      );
-      assert.equal(
-        rejected.status,
-        0,
-        `${specifier} unexpectedly resolved:\n${rejected.stdout}\n${rejected.stderr}`
-      );
+test('the packed entries load in Node ESM and CommonJS', async () => {
+  await packedPackage();
+  const check = `
+    const entries = ${JSON.stringify(PUBLIC_CODE_EXPORTS)};
+    const moved = ${JSON.stringify(MOVED)};
+    const api = {};
+    for (const entry of entries) {
+      api[entry] = await load('@tracecode/harness/' + entry.slice(2));
     }
-  } finally {
-    await rm(fixture, { recursive: true, force: true });
+    for (const [entry, names] of Object.entries(moved)) {
+      const original = entry.startsWith('./judge') ? './judge' : './tracekernel';
+      for (const name of names) {
+        if (!(name in api[entry])) throw new Error(entry + ' missing ' + name);
+        if (name in api[original]) throw new Error(original + ' still exports ' + name);
+      }
+    }
+    if (typeof api['./judge'].evaluateJudgePlan !== 'function') throw new Error('missing Judge evaluator');
+    if (typeof api['./tracekernel'].makeTraceKernelHost !== 'function') throw new Error('missing kernel');
+    const workspace = await api['./tracekernel/workspace'].createRuntimeWorkspace({
+      files: [{ path: 'surface.txt', contents: 'simple' }],
+    });
+    try {
+      const result = await workspace.runCommand('cat surface.txt');
+      if (result.exitCode !== 0 || result.stdout !== 'simple') throw new Error(JSON.stringify(result));
+    } finally {
+      await workspace.destroy();
+    }
+    const lock = await readLock();
+    if (lock.schema !== 'tracecode.runtime-assets-lock.v1' ||
+        !Number.isSafeInteger(lock.stagedInventory?.files) ||
+        !Number.isSafeInteger(lock.stagedInventory?.bytes)) throw new Error('invalid packed asset lock');
+  `;
+  const esm = runNode(fixture, `
+    import { createRequire } from 'node:module';
+    const load = (specifier) => import(specifier);
+    const readLock = () => createRequire(import.meta.url)('@tracecode/harness/runtime-assets.lock.json');
+    ${check}
+  `, true);
+  assert.equal(esm.status, 0, `${esm.stdout}\n${esm.stderr}`);
+  const cjs = runNode(fixture, `
+    (async () => {
+      const load = require;
+      const readLock = () => require('@tracecode/harness/runtime-assets.lock.json');
+      ${check}
+    })().catch(error => { console.error(error); process.exitCode = 1; });
+  `);
+  assert.equal(cjs.status, 0, `${cjs.stdout}\n${cjs.stderr}`);
+
+  for (const retired of RETIRED_EXPORTS) {
+    const specifier = retired === '.' ? '@tracecode/harness' : `@tracecode/harness/${retired.slice(2)}`;
+    const rejected = runNode(fixture, `
+      try {
+        await import(${JSON.stringify(specifier)});
+        process.exitCode = 2;
+      } catch (error) {
+        if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error;
+      }
+    `, true);
+    assert.equal(rejected.status, 0, `${specifier}: ${rejected.stdout}\n${rejected.stderr}`);
   }
 });
 
-test('public TypeScript declarations are consumable without internal imports', async () => {
-  const fixture = await mkdtemp(join(tmpdir(), 'tracecode-types-'));
-  try {
-    const scope = join(fixture, 'node_modules', '@tracecode');
-    await mkdir(scope, { recursive: true });
-    await symlink(ROOT, join(scope, 'harness'), 'dir');
-    await writeFile(
-      join(fixture, 'consumer.ts'),
-      `
-        import {
-          createBrowserWorkspace,
-          createRuntimeWorkspace,
-          type CreateBrowserWorkspaceOptions,
-        } from '@tracecode/harness/tracekernel';
-        import {
-          DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS,
-          createBrowserJudgeHost,
-          type BrowserJudgeExecuteRequest,
-          type CreateBrowserJudgeOptions,
-        } from '@tracecode/harness/judge';
-
-        void createBrowserWorkspace;
-        void createRuntimeWorkspace;
-        void createBrowserJudgeHost;
-        void DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS;
-        const workspaceOptions: CreateBrowserWorkspaceOptions = {};
-        const judgeOptions = null as CreateBrowserJudgeOptions | null;
-        const executeRequest = null as BrowserJudgeExecuteRequest | null;
-        void workspaceOptions;
-        void judgeOptions;
-        void executeRequest;
-      `,
-      'utf8'
-    );
-    await writeFile(
-      join(fixture, 'tsconfig.json'),
-      JSON.stringify({
-        compilerOptions: {
-          target: 'ES2022',
-          lib: ['ES2022', 'DOM'],
-          module: 'ESNext',
-          moduleResolution: 'Bundler',
-          strict: true,
-          skipLibCheck: false,
-          noEmit: true,
-        },
-        include: ['consumer.ts'],
-      }),
-      'utf8'
-    );
-
-    const tsc = spawnSync(
-      resolve(ROOT, 'node_modules/.bin/tsc'),
-      ['-p', 'tsconfig.json'],
-      { cwd: fixture, encoding: 'utf8' }
-    );
-    assert.equal(tsc.status, 0, `${tsc.stdout}\n${tsc.stderr}`);
-  } finally {
-    await rm(fixture, { recursive: true, force: true });
-  }
+test('packed declarations resolve for all five entries in both module systems', async () => {
+  await packedPackage();
+  const imports = `
+    import { makeTraceKernelHost, type CreateRuntimeWorkspaceOptions } from '@tracecode/harness/tracekernel';
+    import { createBrowserWorkspace, type CreateBrowserWorkspaceOptions } from '@tracecode/harness/tracekernel/browser';
+    import { createRuntimeWorkspace } from '@tracecode/harness/tracekernel/workspace';
+    import { evaluateJudgePlan, type JudgeEvaluationPlan } from '@tracecode/harness/judge';
+    import { createBrowserJudgeHost, type BrowserJudgeExecuteRequest } from '@tracecode/harness/judge/browser';
+    const workspaceOptions: CreateRuntimeWorkspaceOptions = {};
+    const browserOptions: CreateBrowserWorkspaceOptions = {};
+    void [makeTraceKernelHost, createRuntimeWorkspace(workspaceOptions),
+      createBrowserWorkspace(browserOptions), evaluateJudgePlan, createBrowserJudgeHost];
+    void (null as JudgeEvaluationPlan<unknown, unknown> | BrowserJudgeExecuteRequest | null);
+    // @ts-expect-error Browser host moved to the browser entry
+    import type { BrowserJudgeExecuteRequest as RetiredJudgeRequest } from '@tracecode/harness/judge';
+    // @ts-expect-error Browser options moved to the browser entry
+    import type { CreateBrowserWorkspaceOptions as RetiredWorkspaceOptions } from '@tracecode/harness/tracekernel';
+  `;
+  await Promise.all([
+    writeFile(join(fixture, 'consumer.mts'), imports),
+    writeFile(join(fixture, 'consumer.cts'), imports),
+  ]);
+  await writeFile(join(fixture, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: {
+      target: 'ES2022',
+      lib: ['ES2022', 'DOM'],
+      module: 'NodeNext',
+      strict: true,
+      noEmit: true,
+    },
+    include: ['consumer.mts', 'consumer.cts'],
+  }));
+  const tsc = spawnSync(resolve(ROOT, 'node_modules/.bin/tsc'), ['-p', 'tsconfig.json'], {
+    cwd: fixture, encoding: 'utf8',
+  });
+  assert.equal(tsc.status, 0, `${tsc.stdout}\n${tsc.stderr}`);
 });
 
 test('root package remains the only publishable workspace', async () => {
