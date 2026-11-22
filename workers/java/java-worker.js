@@ -1527,18 +1527,50 @@ function buildJavaExpression(value, expectedType) {
 
 function buildDynamicInputHelperMethods() {
   return `
+  // A node that appears more than once in a case's input graph (a list cycle,
+  // a shared subtree, a node two parameters share) is written once with
+  // "__id__" and afterwards as {"__ref__": id}. These tables give every such
+  // occurrence the one object, and build each parsed JSON object once. They
+  // cover one case: run() clears them before it reads its first input.
+  private static java.util.HashMap<String, Object> preparedNodesById = new java.util.HashMap<>();
+  private static java.util.HashSet<String> preparedReferencedIds = new java.util.HashSet<>();
+  private static java.util.IdentityHashMap<Object, Object> preparedNodesBySource = new java.util.IdentityHashMap<>();
+
+  private static void beginPreparedInputCase() {
+    preparedNodesById = new java.util.HashMap<>();
+    preparedReferencedIds = new java.util.HashSet<>();
+    preparedNodesBySource = new java.util.IdentityHashMap<>();
+  }
+
+  private static Object parsePreparedJsonInput(String source) {
+    Object document = new __TracecodeJsonParser(source).parse();
+    collectPreparedReferences(document);
+    return document;
+  }
+
+  private static void collectPreparedReferences(Object value) {
+    if (value instanceof java.util.Map<?, ?>) {
+      java.util.Map<?, ?> fields = (java.util.Map<?, ?>) value;
+      Object target = fields.get("__ref__");
+      if (target instanceof String) preparedReferencedIds.add((String) target);
+      for (Object child : fields.values()) collectPreparedReferences(child);
+    } else if (value instanceof java.util.List<?>) {
+      for (Object child : (java.util.List<?>) value) collectPreparedReferences(child);
+    }
+  }
+
   private static Object readJsonInputProperty(String key, java.lang.reflect.Type targetType) {
     String source = System.getProperty(key);
     if (source == null) {
       throw new RuntimeException("Missing TraceCode prepared input " + key);
     }
-    return coerceJsonInput(new __TracecodeJsonParser(source).parse(), targetType);
+    return coerceJsonInput(parsePreparedJsonInput(source), targetType);
   }
 
   private static Object readJsonInput(String path, java.lang.reflect.Type targetType) {
     try {
       String source = java.nio.file.Files.readString(java.nio.file.Paths.get(path), java.nio.charset.StandardCharsets.UTF_8);
-      return coerceJsonInput(new __TracecodeJsonParser(source).parse(), targetType);
+      return coerceJsonInput(parsePreparedJsonInput(source), targetType);
     } catch (java.io.IOException error) {
       throw new RuntimeException("Unable to read TraceCode input " + path, error);
     }
@@ -1710,6 +1742,72 @@ function buildDynamicInputHelperMethods() {
   }
 
   private static Object materializePreparedJsonObject(
+      java.util.Map<?, ?> fields,
+      Class<?> targetType
+  ) {
+    Object reference = fields.get("__ref__");
+    if (reference instanceof String) {
+      Object node = preparedNodesById.get(reference);
+      if (node == null) {
+        throw new IllegalStateException(
+            "Prepared input reference " + reference + " does not name an earlier node in this case"
+        );
+      }
+      if (!targetType.isInstance(node)) {
+        throw new IllegalArgumentException(
+            "Prepared input reference " + reference + " is not a " + targetType.getName()
+        );
+      }
+      return node;
+    }
+    // Constructor arguments and the by-name field assignment can both reach
+    // the same JSON object; build it once so each subtree is not built again.
+    Object built = preparedNodesBySource.get(fields);
+    if (built != null && targetType.isInstance(built)) return built;
+    Object id = fields.get("__id__");
+    if (id instanceof String && preparedReferencedIds.contains(id)) {
+      // Something inside this node may point back to it, so it has to exist
+      // before its fields are built.
+      Object instance = allocatePreparedJsonObject(targetType);
+      recordPreparedNode(fields, instance);
+      try {
+        assignPreparedJsonFields(targetType, instance, fields);
+      } catch (ReflectiveOperationException error) {
+        rethrowBudgetAbort(error);
+        throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
+      }
+      return instance;
+    }
+    return recordPreparedNode(fields, constructPreparedJsonObject(fields, targetType));
+  }
+
+  private static Object recordPreparedNode(java.util.Map<?, ?> fields, Object instance) {
+    preparedNodesBySource.put(fields, instance);
+    Object id = fields.get("__id__");
+    if (id instanceof String) preparedNodesById.put((String) id, instance);
+    return instance;
+  }
+
+  private static Object allocatePreparedJsonObject(Class<?> targetType) {
+    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
+    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
+    for (java.lang.reflect.Constructor<?> constructor : declared) {
+      try {
+        Class<?>[] parameterTypes = constructor.getParameterTypes();
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = defaultJsonArgument(parameterTypes[index]);
+        }
+        constructor.setAccessible(true);
+        return constructor.newInstance(arguments);
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
+  }
+
+  private static Object constructPreparedJsonObject(
       java.util.Map<?, ?> fields,
       Class<?> targetType
   ) {
@@ -4611,6 +4709,7 @@ function buildExportsSource(source, functionName, executionStyle, input, options
 ${helperMethods}
 
   public static String run() {
+    beginPreparedInputCase();
     Object input = readJsonInputProperty(${JSON.stringify(preparedOpsInput.property)}, Object.class);
     return runPreparedOperations(${functionName}.class, input);
   }
@@ -4680,6 +4779,7 @@ ${lines.join('\n')}
   const usedLocalNames = new Set(['solution', ...invocationKeys]);
   const resultLocalName = uniqueJavaIdentifier('__tracecode_result', usedLocalNames);
   const materializedArgs = [];
+  let readsPreparedInput = false;
   for (let index = 0; index < invocationKeys.length; index += 1) {
     const key = invocationKeys[index];
     const parameter = parameters[index];
@@ -4698,6 +4798,7 @@ ${lines.join('\n')}
     if (dynamicInput && !expression) {
       throw new Error(`Unsupported dynamic Java input type: ${type}`);
     }
+    if (dynamicInput) readsPreparedInput = true;
     materializedArgs.push(`    ${type} ${key} = ${expression};`);
   }
   const invocationArgs = invocationKeys.join(', ');
@@ -4710,7 +4811,7 @@ ${helperMethods}
 
   public static String run() {
     Solution solution = new Solution();
-${materializedArgs.join('\n')}
+${readsPreparedInput ? '    beginPreparedInputCase();\n' : ''}${materializedArgs.join('\n')}
 ${invocationLine}
   }
 }
