@@ -270,6 +270,168 @@ class Solution {
   console.log('PASS: each prepared node is constructed once');
 }
 
+function testReferencedNodeGetsItsRealConstructorValues(): void {
+  // A node that its own input points back to is built before its links, but
+  // its constructor still receives the input's values, never invented ones.
+  const strictNode = `class ListNode {
+  final int initialValue;
+  int val;
+  ListNode next;
+  ListNode(int val) {
+    if (val == 0) throw new IllegalArgumentException("a node value of 0 is not allowed here");
+    this.val = val;
+    this.initialValue = val;
+  }
+}
+class Solution {
+  public String shape(ListNode head) {
+    return head.initialValue + ":" + head.val + ":" + (head.next == head);
+  }
+}`;
+  assert.deepEqual(
+    runPrepared(strictNode, 'shape', [[{ __id__: 'self-loop', val: 7, next: { __ref__: 'self-loop' } }]]),
+    ['"7:7:true"']
+  );
+  const recordingNode = `class ListNode {
+  final int initialValue;
+  int val;
+  ListNode next;
+  ListNode(int val) {
+    this.val = val;
+    this.initialValue = val;
+  }
+}
+class Solution {
+  public String shape(ListNode head) {
+    StringBuilder out = new StringBuilder();
+    ListNode node = head;
+    for (int index = 0; index < 4; index += 1, node = node.next) {
+      out.append(node.initialValue).append(index < 3 ? "," : "");
+    }
+    return out + ":" + (node == head.next);
+  }
+}`;
+  assert.deepEqual(runPrepared(recordingNode, 'shape', [[cycleToIndexOne]]), ['"3,2,0,-4:true"']);
+  console.log('PASS: list nodes, cyclic or not, are constructed with their own values');
+}
+
+function testSharedAcyclicNodeIsBuiltWithItsValues(): void {
+  const code = `class TreeNode {
+  final int initialValue;
+  int val;
+  TreeNode left;
+  TreeNode right;
+  TreeNode(int val) {
+    if (val == 0) throw new IllegalArgumentException("a node value of 0 is not allowed here");
+    this.val = val;
+    this.initialValue = val;
+  }
+}
+class Solution {
+  public String shape(TreeNode root) {
+    return (root.left == root.right) + ":" + root.left.initialValue + ":" + root.initialValue;
+  }
+}`;
+  const input = {
+    val: 1,
+    left: { __id__: 'shared', val: 5, left: null, right: null },
+    right: { __ref__: 'shared' },
+  };
+  assert.deepEqual(runPrepared(code, 'shape', [[input]]), ['"true:5:1"']);
+  console.log('PASS: a node two branches share is built once with its own values');
+}
+
+function testUnbuildableNodeReportsWhy(): void {
+  const code = `class ListNode {
+  int val;
+  ListNode next;
+  ListNode(String label, boolean strict) {
+    if (label == null) throw new IllegalArgumentException("label is required");
+  }
+}
+class Solution {
+  public int first(ListNode head) {
+    return head.val;
+  }
+}`;
+  const [output] = runPrepared(code, 'first', [[{ __id__: 'n0', val: 1, next: { __ref__: 'n0' } }]]);
+  assert.match(output ?? '', /^error:TraceCode could not construct prepared input ListNode/, String(output));
+  console.log('PASS: a node no constructor can build fails with a clear message');
+}
+
+function testObjectTypedReferencesResolve(): void {
+  const code = `class Holder {
+  int val;
+  Object link;
+  Object raw;
+  List<Object> items;
+  Map<String, Object> named;
+}
+class Solution {
+  public String shape(Holder holder) {
+    return (holder.link == holder) + ":" + (((List<?>) holder.raw).get(0) == holder) + ":" +
+        (holder.items.get(0) == holder) + ":" + (holder.named.get("me") == holder);
+  }
+}`;
+  const input = {
+    __id__: 'h', val: 1,
+    link: { __ref__: 'h' },
+    raw: [{ __ref__: 'h' }],
+    items: [{ __ref__: 'h' }],
+    named: { me: { __ref__: 'h' } },
+  };
+  assert.deepEqual(runPrepared(code, 'shape', [[input]]), ['"true:true:true:true"']);
+  console.log('PASS: references reached through Object-typed fields and containers resolve');
+}
+
+function testContainersAreBuiltOnce(): void {
+  const code = `class Box {
+  List<Integer> items;
+  List<Integer> original;
+  int[] values;
+  int[] originalValues;
+  Box(List<Integer> items, int[] values) {
+    this.items = items;
+    this.original = items;
+    this.values = values;
+    this.originalValues = values;
+  }
+}
+class Solution {
+  public String shape(Box box) {
+    return (box.items == box.original) + ":" + (box.values == box.originalValues) + ":" + box.items;
+  }
+}`;
+  assert.deepEqual(
+    runPrepared(code, 'shape', [[{ items: [1, 2, 3], values: [4, 5] }]]),
+    ['"true:true:[1, 2, 3]"']
+  );
+  console.log('PASS: a container a constructor received is not replaced by a second copy');
+}
+
+function testOpsClassReferencesAcrossOperations(): void {
+  const code = `${learnerListNode}
+class Keeper {
+  private final ListNode first;
+  private ListNode kept;
+  public Keeper(ListNode first) { this.first = first; }
+  public void keep(ListNode node) { this.kept = node; }
+  public boolean isFirst(ListNode node) { return node == first; }
+  public boolean isKept(ListNode node) { return node == kept && node.next == first; }
+}`;
+  const outputs = runPrepared(code, 'Keeper', [[{
+    operations: ['Keeper', 'keep', 'isFirst', 'isKept'],
+    arguments: [
+      [{ __id__: 'a', val: 1, next: null }],
+      [{ __id__: 'b', val: 2, next: { __ref__: 'a' } }],
+      [{ __ref__: 'a' }],
+      [{ __ref__: 'b' }],
+    ],
+  }]], 'ops-class');
+  assert.deepEqual(outputs, ['[null,null,true,true]']);
+  console.log('PASS: a later operation can refer to an object an earlier one received');
+}
+
 const tests = [
   testListCycleKeepsTheBackReference,
   testListBackReferenceIsTheSameNode,
@@ -279,6 +441,12 @@ const tests = [
   testReferencesDoNotLeakBetweenCases,
   testOpsClassArguments,
   testNodesAreBuiltOnce,
+  testReferencedNodeGetsItsRealConstructorValues,
+  testSharedAcyclicNodeIsBuiltWithItsValues,
+  testUnbuildableNodeReportsWhy,
+  testObjectTypedReferencesResolve,
+  testContainersAreBuiltOnce,
+  testOpsClassReferencesAcrossOperations,
 ];
 let failures = 0;
 for (const test of tests) {
