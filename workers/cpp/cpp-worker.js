@@ -1590,7 +1590,12 @@ function postFailure(id, error) {
     id,
     type: 'error',
     ...(activeRequestProtocolToken ? { protocolToken: activeRequestProtocolToken } : {}),
-    payload: { error: error instanceof Error ? error.message : String(error) },
+    payload: {
+      error: error instanceof Error ? error.message : String(error),
+      ...(error && typeof error.code === 'string' && error.name === 'CppTraceUnsupportedError'
+        ? { code: error.code }
+        : {}),
+    },
   });
 }
 
@@ -7930,6 +7935,51 @@ function buildCurrentLineInstrumentation(lineNumber) {
   return `tracecode::TraceHooks::setCurrentLine(${lineNumber});`;
 }
 
+/**
+ * Whether a condition declares a variable (`unsigned long n = f()`,
+ * `const auto& [a, b] = p`, `std::vector<int>::size_type i{0}`, `T* p = q`)
+ * rather than being an expression: a type of one or more words (with `::`,
+ * template arguments, `*`, `&`) followed by a name and `=` or `{`. An
+ * expression never has two names in a row before an `=`.
+ */
+function isCppDeclarationCondition(condition) {
+  const tokens = tokenizeCppForControlNormalization(String(condition || ''), { preprocessor: false })
+    .filter((token) => token.kind !== 'comment');
+  const isPunct = (index, text) => tokens[index]?.kind === 'punct' && tokens[index].text === text;
+  const startsInitializer = (index) => (isPunct(index, '=') && !isPunct(index + 1, '=')) || isPunct(index, '{');
+  let typeWords = 0;
+  let index = 0;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.kind === 'ident') {
+      if (typeWords > 0 && startsInitializer(index + 1)) return true;
+      typeWords += 1;
+      index += 1;
+    } else if (isPunct(index, '::')) {
+      index += 1;
+    } else if (typeWords > 0 && isPunct(index, '<')) {
+      let depth = 0;
+      let cursor = index;
+      for (; cursor < tokens.length; cursor += 1) {
+        if (isPunct(cursor, '<')) depth += 1;
+        else if (isPunct(cursor, '>') && --depth === 0) break;
+        else if (isPunct(cursor, ';') || isPunct(cursor, '{') || isPunct(cursor, '=')) return false;
+      }
+      if (cursor >= tokens.length) return false;
+      index = cursor + 1;
+    } else if (typeWords > 0 && (isPunct(index, '*') || isPunct(index, '&'))) {
+      index += 1;
+    } else if (typeWords > 0 && isPunct(index, '[')) {
+      let cursor = index;
+      while (cursor < tokens.length && !isPunct(cursor, ']')) cursor += 1;
+      return startsInitializer(cursor + 1);
+    } else {
+      return false;
+    }
+  }
+  return false;
+}
+
 function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(), aliases = new Map()) {
   if (line.includes('tracecode::with_trace_line')) {
     const wrapperPattern = /tracecode::with_trace_line\((\d+),\s*\[[^\]]*\]\(\)\s*\{\s*return\s+static_cast<bool>\(([\s\S]*?)\);\s*\}\)/;
@@ -7955,14 +8005,23 @@ function rewriteControlConditionLineScope(line, lineNumber, variables = new Map(
   if (keyword === 'for') {
     const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
     if (parts.length !== 3 || !parts[1].trim()) return line;
+    // `for (...; T x = f(); ...)` declares in its condition: not an expression.
+    if (isCppDeclarationCondition(parts[1])) return line;
     let condition = rewriteFieldContainerCountInstrumentation(parts[1].trim(), lineNumber);
     condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     rewrittenSource = `${parts[0]}; tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); }); ${parts[2]}`;
   } else {
-    let condition = rewriteFieldContainerCountInstrumentation(source.trim(), lineNumber);
+    // `if (init; cond)` (C++17): only the condition is an expression. A
+    // condition that declares a variable (`if (auto* node = next())`) is not
+    // an expression at all and is left unwrapped.
+    const parts = splitTopLevel(source, ';', { trackAngleBrackets: false });
+    const init = parts.length > 1 ? `${parts.slice(0, -1).join(';')}; ` : '';
+    const conditionSource = parts.at(-1).trim();
+    if (isCppDeclarationCondition(conditionSource)) return line;
+    let condition = rewriteFieldContainerCountInstrumentation(conditionSource, lineNumber);
     condition = rewriteIndexReadInstrumentation(condition, variables, aliases, lineNumber);
     if (!condition) return line;
-    rewrittenSource = `tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); })`;
+    rewrittenSource = `${init}tracecode::with_trace_line(${lineNumber}, [&]() { return static_cast<bool>(${condition}); })`;
   }
   return `${line.slice(0, openIndex + 1)}${rewrittenSource}${line.slice(closeIndex)}`;
 }
@@ -8001,8 +8060,16 @@ function rewriteRangeForIndexedReads(line, lineNumber, variables, aliases = new 
     if (variable && isVectorCppType(variable.type, aliases)) {
       const indexExpression = indexSource.trim();
       if (indexExpression) {
-        const rewritten = `${prefix}tracecode::indexed_nested_range_readable(${rangeName}, ${cppStringLiteral(rangeName)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}, ${lineNumber}, ${cppStringLiteral(bindingName)})${suffix}`;
-        return line.replace(stripped, rewritten);
+        // indexed_nested_range_readable only takes a traced vector of
+        // vectors. A row of any other element type (`vector<set<int>>`,
+        // `vector<string>`), or of a const container, is iterated as the
+        // element itself, so by-reference iteration still writes the element.
+        const elementType = String(vectorElementCppType(variable.type, aliases) || '').replace(/^std::/, '');
+        const readable = elementType.startsWith('vector<') && !/\bconst\b/.test(variable.type);
+        const range = readable
+          ? `tracecode::indexed_nested_range_readable(${rangeName}, ${cppStringLiteral(rangeName)}, ${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}, ${lineNumber}, ${cppStringLiteral(bindingName)})`
+          : `__tracecode_element(${rangeName}[${indexExpression}])`;
+        return line.replace(stripped, `${prefix}${range}${suffix}`);
       }
     }
   }
@@ -8991,7 +9058,12 @@ function rewriteNestedVectorMemberMethodIndexSources(line, name) {
       continue;
     }
 
-    const replacement = `${name}.with_index_source(${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}).${methodMatch[1]}(`;
+    const elementWithSource = `${name}.with_index_source(${indexExpression}, ${cppIndexSourceForExpression(indexExpression)})`;
+    // The element proxy forwards only some methods (push_back, insert, ...);
+    // erase, clear, pop_back, assign, emplace_back go to the element itself.
+    const replacement = CPP_ELEMENT_PROXY_FORWARDED_METHODS.has(methodMatch[1])
+      ? `${elementWithSource}.${methodMatch[1]}(`
+      : `__tracecode_element(${elementWithSource}).${methodMatch[1]}(`;
     rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(openIndex + 1)}`;
     cursor = nameIndex + replacement.length;
   }
@@ -9090,6 +9162,263 @@ function cppIndexSourceForExpression(expression) {
   return 'nullptr';
 }
 
+// Methods of the standard containers and std::string whose result is the
+// same on a copy as on the element: values computed from the contents only.
+// Not capacity (a copy does not keep it), not data/c_str/begin/end/find
+// (pointers or iterators into the copy), not front/back/at (references into
+// it). They count only for a standard element type: a learner type's own
+// `size()` may do anything.
+const CPP_VALUE_RETURNING_CONST_METHODS = new Set([
+  'size', 'length', 'empty', 'count', 'contains', 'substr', 'compare', 'starts_with', 'ends_with',
+]);
+const CPP_STANDARD_VALUE_TYPE = /^(?:std::)?(?:string|vector|deque|list|set|multiset|map|multimap|unordered_set|unordered_multiset|unordered_map|unordered_multimap|array)\s*(?:<|$)/;
+
+// `T& name =`, `const auto& name{`, `auto& [a, b](`: a declaration binding a
+// reference to what follows (as opposed to `x && f(` in an expression).
+const CPP_REFERENCE_BINDING_ASSIGNMENT = /&\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*=$/;
+const CPP_REFERENCE_DECLARATION_OPEN = /(?:^|[;{}(,])\s*(?:(?:const|volatile|static|constexpr)\s+)*[A-Za-z_][\w:]*(?:\s*<[^;{}()]*>)?\s*(?:const\s*)?&{1,2}\s*(?:[A-Za-z_]\w*|\[[^\]]*\])\s*[{(]$/;
+
+/**
+ * Whether the indexed access text[start, end) is only read. The read helpers
+ * (trace_index_read, trace_index_field_read) return a copy, so anything that
+ * could write through the access (assignment, ++/--, a reference binding, a
+ * range-for, a subscript, a call, a non-const method such as push_back or
+ * begin) must keep the learner's own expression.
+ */
+// Calls whose result aliases, moves or swaps their argument: an indexed
+// argument must be the element itself.
+const CPP_ALIASING_CALLEES = new Set([
+  'move', 'forward', 'swap', 'exchange', 'iter_swap', 'ref', 'tie', 'addressof', 'getline', 'as_const',
+]);
+
+// Whether the expression text[start, end) is written through, or may be, by
+// its immediate context.
+function cppExpressionContextMayWrite(text, start, end, { constMethodsSafe = false } = {}) {
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  if (/(?:\+\+|--)$/.test(before)) return true;
+  // A reference initialized by the expression (`T& x = e`, `const T& x{e}`,
+  // `auto& x(e)`, `auto& [p, q] = e`) must bind the element itself.
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
+  // A range-for range (`for (auto& c : names[i])`; the header may arrive
+  // without its `for (`), but not a ternary's `cond ? x : v[i]`.
+  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
+  const next = nextNonWhitespace(text, end);
+  const rest = text.slice(next.index, next.index + 3);
+  if (/^(?:\+\+|--|->)/.test(rest)) return true;
+  if (/^(?:[+\-*/%&|^]=|<<=|>>=)/.test(rest)) return true;
+  if (next.ch === '=' && text[next.index + 1] !== '=') return true;
+  if (next.ch === '[' || next.ch === '(') return true;
+  if (next.ch === '.') {
+    const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
+    return !(constMethodsSafe && method && CPP_VALUE_RETURNING_CONST_METHODS.has(method[1]));
+  }
+  return false;
+}
+
+/**
+ * Whether the indexed access text[start, end) is only read. The read helpers
+ * (trace_index_read, trace_index_field_read) return a copy, so anything that
+ * could write through the access must keep the learner's own expression: an
+ * assignment, ++/--, a reference binding, a range-for, a subscript, a call, a
+ * non-const method such as push_back or begin, an argument at a reference
+ * parameter of a learner function, or any of those applied to an enclosing
+ * parenthesized expression or call that contains the access
+ * (`(a[0]).clear()`, `std::get<0>(rows[i]).clear()`, `std::move(v[i])`).
+ * When unsure, it is a write.
+ */
+function cppIndexedAccessIsPureRead(text, start, end, elementType = '') {
+  if (cppIsReferenceCallArgument(text, start, end)) return false;
+  const constMethodsSafe = CPP_STANDARD_VALUE_TYPE.test(String(elementType || '').trim());
+  if (cppExpressionContextMayWrite(text, start, end, { constMethodsSafe })) return false;
+  let cursor = start - 1;
+  let depth = 0;
+  for (; cursor >= 0; cursor -= 1) {
+    const ch = text[cursor];
+    if (ch === ')' || ch === ']' || ch === '}') depth += 1;
+    else if (ch === '(' || ch === '[' || ch === '{') {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      // The braces or parentheses initialize a reference (`const int&
+      // first{a[0]}`, `auto& r((v[i]))`): the element itself.
+      if (ch !== '[' && CPP_REFERENCE_DECLARATION_OPEN.test(text.slice(0, cursor + 1))) return false;
+      // Inside a subscript or a braced list: an index or a value, read.
+      if (ch !== '(') return true;
+      const close = findMatchingParen(text, cursor);
+      if (close < 0) return false;
+      const beforeOpen = text.slice(0, cursor).replace(/\s+$/, '');
+      // A control header's parentheses end the expression.
+      if (/(?:^|[^\w])(?:if|while|for|switch|return|sizeof|decltype)$/.test(beforeOpen)) return true;
+      if (/[\w>]$/.test(beforeOpen)) {
+        // A call: its callee expression (`std::get<0>`, `obj.method`) runs
+        // back over names, `::`, `.`, `->` and template arguments.
+        let calleeStart = beforeOpen.length;
+        while (calleeStart > 0) {
+          const previous = beforeOpen[calleeStart - 1];
+          if (/[\w:.<>\s]/.test(previous) && !(previous === '>' && beforeOpen[calleeStart - 2] === '>')) calleeStart -= 1;
+          else if (previous === '>' && beforeOpen[calleeStart - 2] === '-') calleeStart -= 2;
+          else break;
+        }
+        const name = /([A-Za-z_]\w*)\s*(?:<[^<>()]*>)?$/.exec(beforeOpen.slice(-120))?.[1];
+        // The element helper's argument is the element itself.
+        if (name === '__tracecode_element') return false;
+        // An argument of the tracer's own wrappers (`trace_index_ref(counts,
+        // "counts", text[i] - base, ...)++`, `seen.with_index_source(nums[i],
+        // ...) = i`) is an index or key: a value, read.
+        const calleeText = beforeOpen.slice(calleeStart);
+        if (/\btracecode::/.test(calleeText) || /(?:^|_)with_index_source$/.test(name || '')) return true;
+        if (name && CPP_ALIASING_CALLEES.has(name)) return false;
+        if (cppExpressionContextMayWrite(text, calleeStart, close + 1)) return false;
+      } else if (cppExpressionContextMayWrite(text, cursor, close + 1)) {
+        return false;
+      }
+    } else if (ch === ';' && depth === 0) {
+      return true;
+    }
+  }
+  return true;
+}
+
+function cppMatchingOpenParen(text, closeIndex) {
+  let depth = 0;
+  for (let cursor = closeIndex; cursor >= 0; cursor -= 1) {
+    if (text[cursor] === ')') depth += 1;
+    else if (text[cursor] === '(' && --depth === 0) return cursor;
+  }
+  return -1;
+}
+
+// Argument positions, by callee name, of the learner's functions and lambdas
+// that take a reference (`T&`, `const T&`, `T&&`, `auto&&`). Set for the
+// duration of one instrumentCppSourceForTracing call.
+let activeCppReferenceParameterCallees = new Map();
+
+function collectCppReferenceParameterCallees(signatures) {
+  const callees = new Map();
+  const add = (name, positions) => {
+    if (!name || positions.size === 0) return;
+    const existing = callees.get(name) || new Set();
+    for (const position of positions) existing.add(position);
+    callees.set(name, existing);
+  };
+  for (const signature of signatures) {
+    const parameters = signature.parameters || [];
+    const positions = new Set();
+    parameters.forEach((parameter, index) => {
+      const type = String(parameter.type || '');
+      // Every reference parameter, const included: a copy would change the
+      // argument's identity (`&a == &b`), and copy a whole row per call.
+      if (type.includes('&')) positions.add(index);
+    });
+    add(signature.name, positions);
+    // A recursive lambda called through its own `self` parameter.
+    const first = parameters[0];
+    if (signature.lambda && first && /^auto\s*&{1,2}$/.test(String(first.type || '').trim())) add(first.name, positions);
+  }
+  return callees;
+}
+
+/**
+ * Whether text[start, end) is passed directly to a call of a learner function
+ * at a position that takes a reference: a copy would not bind, would be the
+ * one the callee changes, or would change the argument's identity.
+ */
+function cppIsReferenceCallArgument(text, start, end) {
+  if (activeCppReferenceParameterCallees.size === 0) return false;
+  // Grouping parentheses around the whole argument are transparent:
+  // `same((a[0]), a[0])`.
+  for (;;) {
+    const after = nextNonWhitespace(text, end);
+    if (after.ch !== ')') break;
+    const open = cppMatchingOpenParen(text, after.index);
+    if (open < 0 || !/^\s*$/.test(text.slice(open + 1, start))) break;
+    if (/[\w>\]]$/.test(text.slice(0, open).replace(/\s+$/, ''))) break;
+    start = open;
+    end = after.index + 1;
+  }
+  const next = nextNonWhitespace(text, end);
+  if (next.ch !== ')' && next.ch !== ',') return false;
+  let depth = 0;
+  let argumentIndex = 0;
+  for (let cursor = start - 1; cursor >= 0; cursor -= 1) {
+    const ch = text[cursor];
+    if (ch === ')' || ch === ']' || ch === '}') depth += 1;
+    else if (ch === '(' || ch === '[' || ch === '{') {
+      if (depth > 0) {
+        depth -= 1;
+        continue;
+      }
+      if (ch !== '(') return false;
+      if (!/^\s*$/.test(text.slice(cursor + 1, start).split(',').at(-1))) return false;
+      const callee = /([A-Za-z_]\w*)\s*$/.exec(text.slice(0, cursor))?.[1];
+      return Boolean(callee && activeCppReferenceParameterCallees.get(callee)?.has(argumentIndex));
+    } else if (ch === ',' && depth === 0) {
+      argumentIndex += 1;
+    } else if (ch === ';' && depth === 0) {
+      return false;
+    }
+  }
+  return false;
+}
+
+// Methods a traced vector's element proxy (tracecode::VectorElementRef)
+// forwards to the element, recording the access.
+const CPP_ELEMENT_PROXY_FORWARDED_METHODS = new Set([
+  'begin', 'end', 'contains', 'count', 'find', 'insert', 'push_back', 'size', 'empty', 'length', 'substr',
+]);
+
+/**
+ * Whether a non-read use of text[start, end) needs the element itself rather
+ * than whatever `name[i]` yields: for a traced vector that is an element proxy
+ * which cannot bind to `T&`, be iterated, or call a method it does not
+ * forward. `__tracecode_element(...)` returns the element reference for the
+ * proxy and is the identity otherwise.
+ */
+function cppIndexedAccessNeedsElement(text, start, end) {
+  const before = text.slice(0, start).replace(/\s+$/, '');
+  if (CPP_REFERENCE_BINDING_ASSIGNMENT.test(before) || CPP_REFERENCE_DECLARATION_OPEN.test(before)) return true;
+  if (/(?<!:):$/.test(before) && !/\?[^?:;]*:$/.test(before)) return true;
+  if (cppIsReferenceCallArgument(text, start, end)) return true;
+  const next = nextNonWhitespace(text, end);
+  if (next.ch !== '.') return false;
+  const method = text.slice(next.index).match(/^\.\s*([A-Za-z_]\w*)\s*\(/);
+  return Boolean(
+    method &&
+    !CPP_ELEMENT_PROXY_FORWARDED_METHODS.has(method[1]) &&
+    !CPP_VALUE_RETURNING_CONST_METHODS.has(method[1])
+  );
+}
+
+const CPP_ELEMENT_HELPER_SOURCE = [
+  '#line 1 "TraceCodeDriver.cpp"',
+  'template <typename __TcRef> struct __tracecode_is_element_ref : std::false_type {};',
+  'template <typename __TcT> struct __tracecode_is_element_ref<tracecode::VectorElementRef<__TcT>> : std::true_type {};',
+  'template <typename __TcElement> inline decltype(auto) __tracecode_element(__TcElement&& __tc_element) {',
+  '  if constexpr (__tracecode_is_element_ref<std::remove_cvref_t<__TcElement>>::value) return (__tc_element.get());',
+  '  else return std::forward<__TcElement>(__tc_element);',
+  '}',
+].join('\n');
+
+/**
+ * An indexed argument at a reference parameter: the element itself (through
+ * the element helper for a traced vector's proxy), its index evaluated once,
+ * with the read event the copying read helper would have recorded.
+ */
+function cppReferenceArgumentRead(name, indexExpression, indexSource, lineNumber) {
+  return '([&]() -> decltype(auto) { ' +
+    `auto&& __tc_ref_index = (${indexExpression}); ` +
+    `auto&& __tc_ref_element = __tracecode_element(${name}[__tc_ref_index]); ` +
+    `if (tracecode::trace_event_admissible(true, ${lineNumber})) { ` +
+    `tracecode::emit_serialized_value_event("read", ${lineNumber}, tracecode::target_json_key_with_index_source(${cppStringLiteral(name)}, tracecode::materialize_trace_index(__tc_ref_index), ${indexSource}), tracecode::to_json(__tc_ref_element)); ` +
+    '} return (__tc_ref_element); }())';
+}
+
+// An index expression that may change state or call code when evaluated.
+function cppExpressionMayHaveSideEffects(expression) {
+  return /\+\+|--|\(|(?<![=!<>])=(?!=)/.test(stripCppStringsAndComments(expression));
+}
+
 function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), lineNumber = 1) {
   if (
     line.includes('tracecode::trace_index_read') ||
@@ -9181,12 +9510,33 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         if (fieldMatch && !elementType?.replace(/^std::/, '').startsWith('vector<')) {
           const fieldName = fieldMatch[1];
           const fieldEnd = next.index + fieldMatch[0].length;
-          const replacement = `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
+          // A field's own type is not known here: no method counts as safe.
+          if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, fieldEnd)) {
+            cursor = fieldEnd;
+            continue;
+          }
+          // The helper takes the index and the field value; an index with side
+          // effects (`ps[i++].val`, `ps[find(x)].val`) is evaluated once.
+          const replacement = cppExpressionMayHaveSideEffects(indexExpression)
+            ? `([&]() -> decltype(auto) { auto&& __tc_field_index = (${indexExpression}); return tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, __tc_field_index, ${cppStringLiteral(fieldName)}, ${name}[__tc_field_index].${fieldName}, ${lineNumber}, ${indexSource}); }())`
+            : `tracecode::trace_index_field_read(${name}, ${cppStringLiteral(name)}, ${indexExpression}, ${cppStringLiteral(fieldName)}, ${name}[${indexExpression}].${fieldName}, ${lineNumber}, ${indexSource})`;
           rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(fieldEnd)}`;
           cursor = nameIndex + replacement.length;
           continue;
         }
         if (elementType?.replace(/^std::/, '').startsWith('vector<')) {
+          cursor = closeIndex + 1;
+          continue;
+        }
+        // `names[i].push_back(c)`, `sets[i].insert(x)`, `ps[i].begin()`: the
+        // call must reach the element, not a copy of it.
+        if (!cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1, elementType)) {
+          if (cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
+            const replacement = `__tracecode_element(${name}[${indexExpression}])`;
+            rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+            cursor = nameIndex + replacement.length;
+            continue;
+          }
           cursor = closeIndex + 1;
           continue;
         }
@@ -9204,8 +9554,18 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         }
         const afterNested = nextNonWhitespace(rewritten, secondCloseIndex + 1);
         const twoCharAfterNested = rewritten.slice(afterNested.index, afterNested.index + 2);
+        if (!previousIsAddressOf && cppIsReferenceCallArgument(rewritten, nameIndex, secondCloseIndex + 1)) {
+          // `same(g[0][0], g[0][0])`, `inc(grid[r][c])`: a traced row's
+          // proxy would hand the callee a temporary; pass the element.
+          const outer = rewritten.slice(bracketIndex + 1, closeIndex).trim();
+          const replacement = `__tracecode_element(${name}[${outer}])${rewritten.slice(secondBracketIndex, secondCloseIndex + 1)}`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(secondCloseIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         if (
           previousIsAddressOf ||
+          !cppIndexedAccessIsPureRead(rewritten, nameIndex, secondCloseIndex + 1) ||
           afterNested.ch === '[' ||
           afterNested.ch === '.' ||
           twoCharAfterNested === '->' ||
@@ -9237,8 +9597,29 @@ function rewriteIndexReadInstrumentation(line, variables, aliases = new Map(), l
         twoCharNext === '++' ||
         twoCharNext === '--' ||
         (/^[+\-*/%]?=$/.test(twoCharNext) && twoCharNext !== '==') ||
-        (next.ch === '=' && rewritten[next.index + 1] !== '=')
+        (next.ch === '=' && rewritten[next.index + 1] !== '=') ||
+        !cppIndexedAccessIsPureRead(rewritten, nameIndex, closeIndex + 1, vectorElementCppType(variables.get(name)?.type || '', aliases))
       ) {
+        if (
+          twoCharNext !== '->' &&
+          cppIsReferenceCallArgument(rewritten, nameIndex, closeIndex + 1) &&
+          !/\bvector\s*<\s*bool\s*>/.test(normalizeCppType(variables.get(name)?.type || '', aliases))
+        ) {
+          // `rowSum(grid[i])`, `same(a[0], a[0])` with reference parameters:
+          // the callee gets the element itself (identity kept, no row copy),
+          // and the read is recorded beside it.
+          const replacement = cppReferenceArgumentRead(name, indexExpression, indexSource, lineNumber);
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
+        if (twoCharNext !== '->' && cppIndexedAccessNeedsElement(rewritten, nameIndex, closeIndex + 1)) {
+          // `QQ& r = qs[i]`, `for (char& c : names[i])`, `bump(rows[i])`.
+          const replacement = `__tracecode_element(${name}[${indexExpression}])`;
+          rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(closeIndex + 1)}`;
+          cursor = nameIndex + replacement.length;
+          continue;
+        }
         cursor = closeIndex + 1;
         continue;
       }
@@ -9773,32 +10154,34 @@ function isAssociativeCppType(type, aliases = new Map()) {
   return isMapCppType(type, aliases) || isUnorderedMapCppType(type, aliases) || isSetLikeCppType(type, aliases);
 }
 
-function cppValueTypeTempInitialization(containerName, tempName, argumentSource) {
+/**
+ * The argument of push_back/insert, evaluated once and passed on with its
+ * own value category (`v.push_back(std::move(s))` still moves, with no extra
+ * construction). Its JSON is taken before the call, which may move from it.
+ * A braced list (`v.push_back({c, c++})`) is passed to the call unchanged:
+ * binding its elements first would change when they are initialized relative
+ * to later initializers. Its JSON is then read from the container after the
+ * call (the pushed element), or left empty for an associative insert.
+ */
+function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '', method = 'push_back') {
   const trimmedArgument = argumentSource.trim();
-  const initializer = trimmedArgument.startsWith('{') ? trimmedArgument : `(${trimmedArgument})`;
-  return `std::decay_t<decltype(${containerName})>::value_type ${tempName} = ${initializer};`;
-}
-
-function buildMutationArgumentCapture(containerName, tempName, argumentSource, indent = '') {
-  const trimmedArgument = argumentSource.trim();
+  const jsonName = `${tempName}_json`;
   if (trimmedArgument.startsWith('{') && trimmedArgument.endsWith('}')) {
-    const aggregateArgs = splitTopLevel(trimmedArgument.slice(1, -1), ',', { trackAngleBrackets: true })
-      .map((arg) => arg.trim())
-      .filter(Boolean);
-    if (aggregateArgs.length > 0 && aggregateArgs.every((arg) => !arg.startsWith('{'))) {
-      const valueNames = aggregateArgs.map((_, index) => `${tempName}_field_${index}`);
-      return {
-        initLines: [
-          ...aggregateArgs.map((arg, index) => `${indent}  auto ${valueNames[index]} = ${arg};`),
-          `${indent}  std::decay_t<decltype(${containerName})>::value_type ${tempName} = {${valueNames.join(', ')}};`,
-        ],
-        argsJsonExpression: `std::string("[") + tracecode::mutation_args_json(${valueNames.join(', ')}) + "]"`,
-      };
-    }
+    return {
+      initLines: [],
+      callArgument: trimmedArgument,
+      argsJsonExpression: method === 'push_back'
+        ? `(tracecode::tracing_enabled() ? tracecode::mutation_args_json(${containerName}.back()) : std::string())`
+        : 'tracecode::mutation_args_json()',
+    };
   }
   return {
-    initLines: [`${indent}  ${cppValueTypeTempInitialization(containerName, tempName, argumentSource)}`],
-    argsJsonExpression: `tracecode::mutation_args_json(${tempName})`,
+    initLines: [
+      `${indent}  auto&& ${tempName} = (${trimmedArgument});`,
+      `${indent}  const std::string ${jsonName} = tracecode::tracing_enabled() ? tracecode::mutation_args_json(${tempName}) : std::string();`,
+    ],
+    callArgument: `std::forward<decltype(${tempName})>(${tempName})`,
+    argsJsonExpression: jsonName,
   };
 }
 
@@ -9815,9 +10198,18 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
     const variable = variables?.get(name);
     if (variable && (isStdArrayCppType(variable.type, aliases) || shouldEmitPlainContainerMutation(variable, name, aliases, source))) {
       const args = splitTopLevelCommaList(argsSource).filter((arg) => arg.trim());
+      if (args.length !== 1) return line;
+      // The argument is evaluated once (`ar.fill(i++)` advances i once) and
+      // bound as fill's own `const value_type&` parameter would bind it: no
+      // construction, no move (`ar.fill(std::move(seed))` leaves seed intact).
+      const tempName = `__tc_fill_value_${lineNumber}_${name}`;
+      const fillArgument = args[0].trim().startsWith('{') ? args[0].trim() : `(${args[0].trim()})`;
       return [
-        line,
-        `${indent}tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${args.join(', ')}));`,
+        `${indent}{`,
+        `${indent}  const std::decay_t<decltype(${name})>::value_type& ${tempName} = ${fillArgument};`,
+        `${indent}  ${name}.fill(${tempName});`,
+        `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, "fill", ${lineNumber}, tracecode::mutation_args_json(${tempName}));`,
+        `${indent}}`,
       ].join('\n');
     }
   }
@@ -9855,13 +10247,13 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_member_mutation_arg_${lineNumber}_${name}`;
-        const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent);
+        const capture = buildMutationArgumentCapture(`this->${name}`, tempName, args[0], indent, method);
         const isAssociativeInsert = method === 'insert' && variable && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(this->${name}) - 1`;
         const rewritten = [
           `${indent}{`,
           ...capture.initLines,
-          `${indent}  this->${name}.${method}(${tempName});`,
+          `${indent}  this->${name}.${method}(${capture.callArgument});`,
           `${indent}  tracecode::emit_field_container_mutate_value("this", ${cppStringLiteral(name)}, this->${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isAssociativeInsert) {
@@ -9898,13 +10290,13 @@ function rewritePlainContainerMutationInstrumentation(line, lineNumber, variable
         : splitTopLevelCommaList(argsSource).map((arg) => arg.trim()).filter(Boolean);
       if ((method === 'push_back' || method === 'insert') && args.length === 1) {
         const tempName = `__tc_mutation_arg_${lineNumber}_${name}`;
-        const capture = buildMutationArgumentCapture(name, tempName, args[0], indent);
+        const capture = buildMutationArgumentCapture(name, tempName, args[0], indent, method);
         const isAssociativeInsert = variable && method === 'insert' && isAssociativeCppType(variable.type, aliases);
         const writeIndex = `tracecode::trace_container_raw_size(${name}) - 1`;
         const rewritten = [
           `${indent}{`,
           ...capture.initLines,
-          `${indent}  ${name}.${method}(${tempName});`,
+          `${indent}  ${name}.${method}(${capture.callArgument});`,
           `${indent}  tracecode::emit_container_mutate_value(${cppStringLiteral(name)}, ${name}, ${cppStringLiteral(method)}, ${lineNumber}, ${capture.argsJsonExpression});`,
         ];
         if (!isAssociativeInsert) {
@@ -10537,6 +10929,899 @@ function cppForHeaderDeclaredNames(strippedLine) {
   return names;
 }
 
+/**
+ * The tracer cannot instrument this program without changing what it
+ * computes. The Harness refuses to trace it (a provider-side refusal, never
+ * the learner's compile error) instead of running a different program.
+ */
+// The machine-readable marker of a program the Harness could not trace; the
+// client turns it into RuntimeProviderError({ code: 'trace-unavailable' }) and
+// Judge into the `trace-unavailable` diagnostic code.
+const CPP_TRACE_UNAVAILABLE_CODE = 'trace-unavailable';
+
+class CppTraceUnsupportedError extends Error {
+  constructor(message, details = {}) {
+    super(message);
+    this.name = 'CppTraceUnsupportedError';
+    this.code = CPP_TRACE_UNAVAILABLE_CODE;
+    if (details.compilerOutput) this.compilerOutput = details.compilerOutput;
+    // The untraced build was already compiled and compiles: no need to check
+    // it again.
+    if (details.untracedCompiles) this.untracedCompiles = true;
+  }
+}
+
+const CPP_COMPILE_FAILURE_STAGES = new Set(['compile', 'driver-compile', 'trace-driver-compile', 'driver-link']);
+
+function isCppCompileStageFailure(result) {
+  return Boolean(result) && result.success === false && CPP_COMPILE_FAILURE_STAGES.has(result.diagnosticStage);
+}
+
+/**
+ * A traced build failed to compile while the untraced build compiles: the
+ * generated instrumentation is at fault, never the learner. Refused with the
+ * compiler's output for diagnosis.
+ */
+function cppTracedCompileFailureRefusal(tracedResult) {
+  // Only built after the untraced build was compiled and compiled cleanly.
+  const compilerOutput = String(tracedResult?.error || '')
+    .split('\n')
+    .slice(0, 12)
+    .join('\n')
+    .slice(0, 1500);
+  return new CppTraceUnsupportedError(
+    'C++ tracing cannot instrument this program: its traced build did not compile, though the program ' +
+      'compiles without tracing (a Harness tracer defect, not an error in the program). Run it without tracing.' +
+      (compilerOutput ? ` Compiler output for the traced build: ${compilerOutput}` : ''),
+    { compilerOutput, untracedCompiles: true }
+  );
+}
+
+function isCppTraceUnsupportedError(error) {
+  return Boolean(error) && error.name === 'CppTraceUnsupportedError';
+}
+
+// Control-body normalization for tracing.
+//
+// The tracing rewriter below is line-oriented: it inserts statements
+// (setCurrentLine, post-line frames, write events) before and after source
+// lines and rewrites one-line control statements with regular expressions.
+// That is only sound when every control body it instruments is a braced
+// block. A braceless body breaks it two ways: a statement inserted between a
+// header and its braceless body becomes the body (the learner's statement then
+// runs unconditionally), and a one-line `if (c) a; else b;` is wrapped as
+// `{ a; else b; }` (a compile error blamed on the learner).
+//
+// So before instrumenting, braceless bodies get braces from a small tokenizer
+// that understands strings, character and raw literals, comments,
+// preprocessor lines and bracket nesting, and the lines around them are split
+// into "virtual lines" that keep their original line number. The rewriter then
+// only sees the shapes it already handles: K&R blocks (`if (c) {` ... `} else {`
+// ... `}`) and the single-line `if (c) { stmt; }`. Braces around a body never
+// change what C++ computes, except when the body is a user macro that expands
+// to several statements or an unmatched `if`; those programs are refused.
+
+const CPP_NORMALIZER_CONTROL_KEYWORDS = new Set(['if', 'for', 'while', 'do', 'switch', 'else']);
+const CPP_NORMALIZER_STATEMENT_KEYWORDS = new Set([
+  'if', 'for', 'while', 'do', 'switch', 'else', 'try', 'case', 'default',
+]);
+const CPP_NORMALIZER_VIRTUAL_BREAK = '\u0000';
+// A statement keyword cannot appear inside an expression statement unless a
+// macro put it there; such a statement's extent is unknown.
+const CPP_NORMALIZER_EXPRESSION_STOP_KEYWORDS = new Set([
+  'if', 'else', 'for', 'while', 'do', 'switch', 'try', 'catch', 'case', 'default', 'return', 'break', 'continue', 'goto',
+]);
+const CPP_NORMALIZER_PARSE_FAILURES = {
+  preprocessor: 'a preprocessor directive inside a control statement whose body has no braces',
+  attribute: 'an attributed statement as the body of a control statement',
+  'macro-header': 'a control statement whose body the tracer cannot delimit (a macro hides part of it)',
+};
+const CPP_TRACE_LOCATION_IDENTIFIERS = new Set([
+  '__func__', '__FUNCTION__', '__PRETTY_FUNCTION__', 'source_location',
+  '__builtin_FUNCTION', '__builtin_COLUMN', '__builtin_source_location',
+]);
+
+function tokenizeCppForControlNormalization(source, { preprocessor = true } = {}) {
+  const tokens = [];
+  const length = source.length;
+  let index = 0;
+  let line = 1;
+  let lineHasCode = false;
+  const countNewlines = (from, to) => {
+    for (let cursor = from; cursor < to; cursor += 1) {
+      if (source[cursor] === '\n') line += 1;
+    }
+  };
+  const push = (kind, start, end, startLine) => {
+    tokens.push({ kind, text: source.slice(start, end), start, end, line: startLine, endLine: line });
+  };
+  const skipQuoted = (quote, from) => {
+    let cursor = from + 1;
+    while (cursor < length) {
+      const ch = source[cursor];
+      if (ch === '\\') {
+        if (source[cursor + 1] === '\n') line += 1;
+        cursor += 2;
+        continue;
+      }
+      if (ch === quote) return cursor + 1;
+      if (ch === '\n') return cursor;
+      cursor += 1;
+    }
+    return length;
+  };
+  const skipUdlSuffix = (from) => {
+    let cursor = from;
+    while (cursor < length && /[\w$]/.test(source[cursor])) cursor += 1;
+    return cursor;
+  };
+
+  while (index < length) {
+    const ch = source[index];
+    if (ch === '\n') {
+      line += 1;
+      index += 1;
+      lineHasCode = false;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\f' || ch === '\v') {
+      index += 1;
+      continue;
+    }
+    if (ch === '\\' && source[index + 1] === '\n') {
+      index += 2;
+      line += 1;
+      continue;
+    }
+    const start = index;
+    const startLine = line;
+    if (ch === '/' && source[index + 1] === '/') {
+      while (index < length && source[index] !== '\n') index += 1;
+      push('comment', start, index, startLine);
+      continue;
+    }
+    if (ch === '/' && source[index + 1] === '*') {
+      const close = source.indexOf('*/', index + 2);
+      const end = close < 0 ? length : close + 2;
+      countNewlines(index, end);
+      index = end;
+      push('comment', start, end, startLine);
+      continue;
+    }
+    if (ch === '#' && preprocessor && !lineHasCode) {
+      while (index < length && source[index] !== '\n') {
+        if (source[index] === '\\' && source[index + 1] === '\n') {
+          index += 2;
+          line += 1;
+          continue;
+        }
+        if (source[index] === '\\' && source[index + 1] === '\r' && source[index + 2] === '\n') {
+          index += 3;
+          line += 1;
+          continue;
+        }
+        if (source[index] === '/' && source[index + 1] === '*') {
+          const close = source.indexOf('*/', index + 2);
+          const end = close < 0 ? length : close + 2;
+          countNewlines(index, end);
+          index = end;
+          continue;
+        }
+        if (source[index] === '/' && source[index + 1] === '/') {
+          while (index < length && source[index] !== '\n') index += 1;
+          break;
+        }
+        index += 1;
+      }
+      push('pp', start, index, startLine);
+      continue;
+    }
+    lineHasCode = true;
+    if (/[A-Za-z_$]/.test(ch) || ch.charCodeAt(0) > 127) {
+      let end = index + 1;
+      while (end < length && (/[\w$]/.test(source[end]) || source.charCodeAt(end) > 127)) end += 1;
+      const word = source.slice(index, end);
+      if (source[end] === '"' && /^(?:u8|u|U|L)?R$/.test(word)) {
+        const open = source.indexOf('(', end + 1);
+        const delimiter = open < 0 ? '' : source.slice(end + 1, open);
+        const close = open < 0 ? -1 : source.indexOf(`)${delimiter}"`, open + 1);
+        const literalEnd = close < 0 ? length : close + delimiter.length + 2;
+        countNewlines(index, literalEnd);
+        index = skipUdlSuffix(literalEnd);
+        push('literal', start, index, startLine);
+        continue;
+      }
+      if ((source[end] === '"' || source[end] === "'") && /^(?:u8|u|U|L)$/.test(word)) {
+        index = skipUdlSuffix(skipQuoted(source[end], end));
+        push('literal', start, index, startLine);
+        continue;
+      }
+      index = end;
+      push('ident', start, end, startLine);
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      index = skipUdlSuffix(skipQuoted(ch, index));
+      push('literal', start, index, startLine);
+      continue;
+    }
+    if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(source[index + 1] || ''))) {
+      let end = index + 1;
+      while (end < length) {
+        const next = source[end];
+        if (/[\w.]/.test(next)) {
+          end += 1;
+        } else if (next === "'" && /[0-9A-Za-z]/.test(source[end + 1] || '')) {
+          end += 1;
+        } else if ((next === '+' || next === '-') && /[eEpP]/.test(source[end - 1])) {
+          end += 1;
+        } else {
+          break;
+        }
+      }
+      index = end;
+      push('number', start, end, startLine);
+      continue;
+    }
+    if (ch === ':' && source[index + 1] === ':') {
+      index += 2;
+      push('punct', start, index, startLine);
+      continue;
+    }
+    index += 1;
+    push('punct', start, index, startLine);
+  }
+  return tokens;
+}
+
+function matchCppNormalizerBrackets(tokens) {
+  const match = new Array(tokens.length).fill(-1);
+  const stack = [];
+  const pairs = { ')': '(', ']': '[', '}': '{' };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== 'punct') continue;
+    if (token.text === '(' || token.text === '[' || token.text === '{') {
+      stack.push(index);
+    } else if (pairs[token.text]) {
+      const open = stack.pop();
+      if (open === undefined || tokens[open].text !== pairs[token.text]) return null;
+      match[open] = index;
+      match[index] = open;
+    }
+  }
+  return stack.length === 0 ? match : null;
+}
+
+const CPP_MACRO_JUMP_KEYWORDS = new Set(['return', 'break', 'continue', 'goto', 'case', 'default', 'try', 'catch']);
+
+/**
+ * The user's own macros (`#define` in the learner's source), with what their
+ * replacement contains at its top level (outside brackets). Library macros
+ * (assert, INT_MAX) are not visible here and are expressions by convention.
+ */
+function collectCppUserMacros(tokens) {
+  const macros = new Map();
+  for (const token of tokens) {
+    if (token.kind !== 'pp') continue;
+    // Read the directive as tokens, so a comment anywhere in it is
+    // whitespace (`#/**/define TWICE(x) x; x`, `#define F/**/(x)` is
+    // object-like), as the preprocessor reads it.
+    const directiveTokens = tokenizeCppForControlNormalization(token.text.slice(1), { preprocessor: false })
+      .filter((entry) => entry.kind !== 'comment');
+    if (directiveTokens[0]?.text !== 'define' || directiveTokens[1]?.kind !== 'ident') continue;
+    const define = [null, directiveTokens[1].text];
+    const functionLike = directiveTokens[2]?.text === '(' && directiveTokens[2].start === directiveTokens[1].end;
+    const params = new Set();
+    let replacementStart = 2;
+    if (functionLike) {
+      const close = directiveTokens.findIndex((entry, index) => index > 2 && entry.text === ')');
+      if (close < 0) {
+        const previous = macros.get(define[1]);
+        const definition = { functionLike, unknown: true };
+        macros.set(define[1], previous ? { definitions: [...(previous.definitions || [previous]), definition] } : definition);
+        continue;
+      }
+      for (const param of directiveTokens.slice(3, close)) if (param.kind === 'ident') params.add(param.text);
+      replacementStart = close + 1;
+    }
+    const replacementTokens = directiveTokens.slice(replacementStart);
+    const own = { unbalanced: false, splits: false, opensIf: false, hasElse: false, header: false, jump: false, paste: false };
+    let depth = 0;
+    for (const entry of replacementTokens) {
+      if (entry.kind === 'punct' && (entry.text === '(' || entry.text === '[' || entry.text === '{')) {
+        depth += 1;
+      } else if (entry.kind === 'punct' && (entry.text === ')' || entry.text === ']' || entry.text === '}')) {
+        depth -= 1;
+        if (depth < 0) own.unbalanced = true;
+      } else if (entry.kind === 'punct' && entry.text === '#') {
+        own.paste = true;
+      } else if (depth === 0 && entry.kind === 'punct' && entry.text === ';') {
+        own.splits = true;
+      } else if (depth === 0 && entry.kind === 'ident') {
+        if (entry.text === 'if') own.opensIf = true;
+        else if (entry.text === 'else') own.hasElse = true;
+        else if (/^(?:for|while|switch|do)$/.test(entry.text)) own.header = true;
+        else if (CPP_MACRO_JUMP_KEYWORDS.has(entry.text)) own.jump = true;
+      }
+    }
+    if (depth !== 0) own.unbalanced = true;
+    // `do { ... } while (0)`, exactly one, with nothing after it: one complete
+    // statement whatever is inside (`do {} while (0); do {} while (0)` is two).
+    const doWhileZero = !own.unbalanced && isCppSingleDoWhileZero(replacementTokens);
+    const references = new Set(
+      replacementTokens
+        .filter((entry) => entry.kind === 'ident' && !params.has(entry.text))
+        .map((entry) => entry.text)
+    );
+    // A name defined more than once (`#undef`, redefinition): every
+    // definition counts, since any of them may be the one in effect.
+    const definition = { functionLike, own, doWhileZero, references };
+    const previous = macros.get(define[1]);
+    macros.set(define[1], previous ? { definitions: [...(previous.definitions || [previous]), definition] } : definition);
+  }
+  return macros;
+}
+
+/**
+ * What a user macro can expand to, through every user macro it names
+ * (aliases, nested macros), conservatively: a cycle or an unparsable
+ * definition is `unknown`.
+ */
+function isCppSingleDoWhileZero(tokens) {
+  const isPunct = (index, text) => tokens[index]?.kind === 'punct' && tokens[index].text === text;
+  if (tokens[0]?.text !== 'do' || !isPunct(1, '{')) return false;
+  let depth = 0;
+  let close = -1;
+  for (let index = 1; index < tokens.length; index += 1) {
+    if (isPunct(index, '{')) depth += 1;
+    else if (isPunct(index, '}') && --depth === 0) {
+      close = index;
+      break;
+    }
+  }
+  return close > 0 &&
+    tokens[close + 1]?.text === 'while' &&
+    isPunct(close + 2, '(') &&
+    (tokens[close + 3]?.text === '0' || tokens[close + 3]?.text === 'false') &&
+    isPunct(close + 4, ')') &&
+    tokens.length === close + 5;
+}
+
+function cppUserMacroFeatures(macros, name, visiting = new Set()) {
+  const entry = macros.get(name);
+  const features = { unbalanced: false, splits: false, opensIf: false, hasElse: false, header: false, jump: false, paste: false, unknown: false };
+  if (!entry) return features;
+  if (visiting.has(name) || visiting.size > 32) return { ...features, unknown: true };
+  visiting.add(name);
+  for (const macro of entry.definitions || [entry]) {
+    if (macro.unknown) {
+      features.unknown = true;
+      continue;
+    }
+    if (macro.doWhileZero) continue;
+    for (const key of Object.keys(macro.own)) features[key] ||= macro.own[key];
+    for (const reference of macro.references) {
+      if (!macros.has(reference)) continue;
+      const nested = cppUserMacroFeatures(macros, reference, visiting);
+      for (const key of Object.keys(features)) features[key] ||= nested[key];
+    }
+  }
+  visiting.delete(name);
+  return features;
+}
+
+function isCppExpressionMacroFeatures(features) {
+  return !Object.values(features).some(Boolean);
+}
+
+function normalizeCppControlBodiesForTracing(source, { scriptWrapper = false } = {}) {
+  const identity = () => {
+    const lines = source.split(/\r?\n/);
+    return {
+      lines,
+      lineNumbers: lines.map((_line, index) => index + 1),
+      lastPiece: lines.map(() => true),
+    };
+  };
+  const refuseAtLine = (line, reason) => {
+    throw new CppTraceUnsupportedError(
+      `C++ tracing cannot instrument this program without changing its behavior (line ${line}: ${reason}). ` +
+        'Run it without tracing.'
+    );
+  };
+  const lineAtOffset = (offset) => source.slice(0, offset).split('\n').length;
+  if (source.includes(CPP_NORMALIZER_VIRTUAL_BREAK)) refuseAtLine(lineAtOffset(source.indexOf(CPP_NORMALIZER_VIRTUAL_BREAK)), 'a NUL character');
+  const tokens = tokenizeCppForControlNormalization(source);
+  const sig = tokens.filter((token) => token.kind !== 'comment');
+
+  // The instrumented source is emitted line by line, each line under its own
+  // #line directive. Constructs that span or depend on physical lines would
+  // change meaning:
+  // - a backslash-newline splices lines before comments and literals are
+  //   recognized (a `//` comment ending in `\` swallows the next line);
+  //   (in a directive too: the emitter puts a #line inside a continued
+  //   directive or a `//` comment that a backslash continues);
+  const ppTokens = tokens.filter((token) => token.kind === 'pp');
+  const splice = /\\\r?\n/.exec(source);
+  if (splice) refuseAtLine(lineAtOffset(splice.index), 'a backslash at the end of a line continues it onto the next line');
+  // - a literal spanning lines (a raw string) would get #line directives
+  //   inside it;
+  const multilineLiteral = tokens.find((token) => token.kind === 'literal' && token.line !== token.endLine);
+  if (multilineLiteral) refuseAtLine(multilineLiteral.line, 'a string literal that spans lines');
+  // - the learner's own #line directives are overridden by the emitter's
+  //   (changing __LINE__, __FILE__ and assert messages); the script wrapper's
+  //   first and last directives are the Harness's own;
+  const directiveName = (token) =>
+    /^#\s*([A-Za-z_]\w*|\d)/.exec(token.text.replace(/\/\*[\s\S]*?\*\//g, ' '))?.[1] || '';
+  const lineDirectives = ppTokens.filter((token) => {
+    const name = directiveName(token);
+    return name === 'line' || /^\d$/.test(name);
+  });
+  const harnessDirectives = scriptWrapper
+    ? new Set([lineDirectives[0], lineDirectives.at(-1)].filter(
+        (token) => token && new RegExp(`^#line \\d+ "${escapeRegExp(CPP_USER_SOURCE_FILE)}"$`).test(token.text)
+      ))
+    : new Set();
+  const userLineDirective = lineDirectives.find((token) => !harnessDirectives.has(token));
+  if (userLineDirective) refuseAtLine(userLineDirective.line, 'a #line directive');
+  // - instrumentation wraps conditions and calls in lambdas, so the current
+  //   function's name (and a source location's column) would change.
+  //   Macro bodies count: `#define FN __func__` observes the same lambda.
+  const functionNameToken = sig.find(
+    (token) => token.kind === 'ident' && CPP_TRACE_LOCATION_IDENTIFIERS.has(token.text)
+  ) || ppTokens.find((token) =>
+    tokenizeCppForControlNormalization(token.text.slice(1), { preprocessor: false })
+      .some((entry) => entry.kind === 'ident' && CPP_TRACE_LOCATION_IDENTIFIERS.has(entry.text))
+  );
+  if (functionNameToken) {
+    refuseAtLine(functionNameToken.line, 'a name of the enclosing function or source location (__func__, source_location)');
+  }
+
+  const match = matchCppNormalizerBrackets(sig);
+  // Unbalanced brackets: either the program does not compile, or a macro
+  // hides braces (`#define BEGIN {`) and the rewriter would count them wrong.
+  if (!match) refuseAtLine(1, 'brackets that do not balance in the source text');
+
+  const isPunct = (index, text) => sig[index]?.kind === 'punct' && sig[index].text === text;
+  const isWord = (index, text) => sig[index]?.kind === 'ident' && sig[index].text === text;
+  const refuse = (index, reason) => refuseAtLine(sig[index]?.line ?? 1, reason);
+
+  // A statement's extent: { end } (exclusive token index), or { error }.
+  const parseStatement = (start) => {
+    const token = sig[start];
+    if (!token) return { error: 'eof' };
+    if (token.kind === 'pp') return { error: 'preprocessor', at: start };
+    // `[[likely]] { ... }`, `[[fallthrough]];`: attributed statements are rare
+    // as control bodies; refuse rather than guess their extent.
+    if (isPunct(start, '[') && isPunct(start + 1, '[')) return { error: 'attribute' };
+    if (isPunct(start, '{')) return { end: match[start] + 1 };
+    if (isPunct(start, ';')) return { end: start + 1 };
+    if (token.kind === 'ident') {
+      switch (token.text) {
+        case 'if':
+          return parseIf(start);
+        case 'for':
+        case 'while':
+        case 'switch':
+          return parseLoop(start);
+        case 'do':
+          return parseDo(start);
+        case 'else':
+          return { error: 'stray-else' };
+        case 'try': {
+          if (!isPunct(start + 1, '{')) return { error: 'try' };
+          let cursor = match[start + 1] + 1;
+          let handlers = 0;
+          while (isWord(cursor, 'catch') && isPunct(cursor + 1, '(') && isPunct(match[cursor + 1] + 1, '{')) {
+            cursor = match[match[cursor + 1] + 1] + 1;
+            handlers += 1;
+          }
+          return handlers > 0 ? { end: cursor } : { error: 'try' };
+        }
+        case 'case': {
+          let cursor = start + 1;
+          while (sig[cursor] && !isPunct(cursor, ':')) {
+            if (isPunct(cursor, '(') || isPunct(cursor, '[') || isPunct(cursor, '{')) cursor = match[cursor];
+            else if (isPunct(cursor, ';') || isPunct(cursor, '}')) return { error: 'case' };
+            cursor += 1;
+          }
+          return sig[cursor] ? parseStatement(cursor + 1) : { error: 'case' };
+        }
+        case 'default':
+          if (isPunct(start + 1, ':')) return parseStatement(start + 2);
+          break;
+        default:
+          if (isPunct(start + 1, ':')) return parseStatement(start + 2);
+      }
+    }
+    let cursor = start;
+    while (cursor < sig.length) {
+      const entry = sig[cursor];
+      if (entry.kind === 'pp') return { error: 'preprocessor', at: cursor };
+      if (entry.kind === 'punct') {
+        if (entry.text === '(' || entry.text === '[' || entry.text === '{') {
+          cursor = match[cursor] + 1;
+          continue;
+        }
+        if (entry.text === ';') return { end: cursor + 1, simple: true };
+        if (entry.text === ')' || entry.text === ']' || entry.text === '}') return { error: 'unterminated' };
+      } else if (entry.kind === 'ident' && cursor > start && CPP_NORMALIZER_EXPRESSION_STOP_KEYWORDS.has(entry.text)) {
+        // Only a macro can put a statement keyword inside an expression
+        // statement (`REP(i, n) if (...)`); its extent is unknown.
+        return { error: 'macro-header' };
+      }
+      cursor += 1;
+    }
+    return { error: 'eof' };
+  };
+
+  const parseBody = (start) => {
+    const extent = parseStatement(start);
+    if (extent.error) return extent;
+    return {
+      start,
+      end: extent.end,
+      braced: isPunct(start, '{'),
+      simple: Boolean(extent.simple) || isPunct(start, ';'),
+    };
+  };
+
+  // `if`, after the keyword: optional `constexpr`, then `(...)`; or
+  // `consteval`/`!consteval` with a required block.
+  const parseIfHeader = (keywordIndex) => {
+    let cursor = keywordIndex + 1;
+    // `if constexpr` / `if consteval`: the rewriter's patterns expect `(`
+    // right after `if`, so these clauses are always given explicit braces.
+    const special = isWord(cursor, 'constexpr') || isPunct(cursor, '!') || isWord(cursor, 'consteval');
+    if (isWord(cursor, 'constexpr')) cursor += 1;
+    if (isPunct(cursor, '!')) cursor += 1;
+    if (isWord(cursor, 'consteval')) return isPunct(cursor + 1, '{') ? { headerEnd: cursor, special } : null;
+    if (!isPunct(cursor, '(')) return null;
+    return { headerEnd: match[cursor], special };
+  };
+
+  function parseIf(start) {
+    const header = parseIfHeader(start);
+    if (!header) return { error: 'header' };
+    const thenBody = parseBody(header.headerEnd + 1);
+    if (thenBody.error) return thenBody;
+    const clauses = [{ keywordIndex: start, headerEnd: header.headerEnd, body: thenBody, special: header.special }];
+    let cursor = thenBody.end;
+    while (isWord(cursor, 'else')) {
+      const elseIndex = cursor;
+      // `else if` on one line is a chain (`} else if (c) {`). An `if` on the
+      // next line is the else's braceless body: the rewriter instruments its
+      // line, so it gets braces like any other body.
+      if (isWord(cursor + 1, 'if') && sig[cursor + 1].line === sig[cursor].endLine) {
+        const elseIfHeader = parseIfHeader(cursor + 1);
+        if (!elseIfHeader) return { error: 'header' };
+        const body = parseBody(elseIfHeader.headerEnd + 1);
+        if (body.error) return body;
+        clauses.push({ elseIndex, keywordIndex: cursor + 1, headerEnd: elseIfHeader.headerEnd, body, special: elseIfHeader.special });
+        cursor = body.end;
+        continue;
+      }
+      const body = parseBody(cursor + 1);
+      if (body.error) return body;
+      clauses.push({ elseIndex, keywordIndex: elseIndex, headerEnd: elseIndex, body });
+      cursor = body.end;
+      break;
+    }
+    return { end: cursor, construct: { kind: 'if', start, end: cursor, clauses } };
+  }
+
+  function parseLoop(start) {
+    if (!isPunct(start + 1, '(')) return { error: 'header' };
+    const headerEnd = match[start + 1];
+    const body = parseBody(headerEnd + 1);
+    if (body.error) return body;
+    return {
+      end: body.end,
+      construct: { kind: sig[start].text, start, end: body.end, clauses: [{ keywordIndex: start, headerEnd, body }] },
+    };
+  }
+
+  function parseDo(start) {
+    const body = parseBody(start + 1);
+    if (body.error) return body;
+    const tail = body.end;
+    if (!isWord(tail, 'while') || !isPunct(tail + 1, '(') || !isPunct(match[tail + 1] + 1, ';')) {
+      return { error: 'do-tail' };
+    }
+    const end = match[tail + 1] + 2;
+    return {
+      end,
+      construct: { kind: 'do', start, end, tail, clauses: [{ keywordIndex: start, headerEnd: start, body }] },
+    };
+  }
+
+  const sameLineBefore = (index) => index > 0 && sig[index - 1].endLine === sig[index].line;
+  const sameLineAfter = (index) => index + 1 < sig.length && sig[index + 1].line === sig[index].endLine;
+  const bodyHasControl = (body) => {
+    for (let cursor = body.start; cursor < body.end; cursor += 1) {
+      if (sig[cursor].kind === 'ident' && CPP_NORMALIZER_STATEMENT_KEYWORDS.has(sig[cursor].text)) return true;
+    }
+    return false;
+  };
+
+  const insertions = [];
+  const removed = [];
+  const editedLines = new Set();
+  const wrappedBodies = [];
+  let sequence = 0;
+  // phase 0 closes (innermost construct first), phase 1 opens (outermost first).
+  const insert = (offset, line, text, phase, seq) => {
+    insertions.push({ offset, text, phase, seq });
+    editedLines.add(line);
+  };
+
+  const planConstruct = (construct) => {
+    const seq = sequence;
+    sequence += 1;
+    const first = sig[construct.start];
+    const last = sig[construct.end - 1];
+    const startsStatementLine =
+      construct.start > 0 &&
+      sig[construct.start - 1].kind === 'punct' &&
+      [';', '{', '}', ':'].includes(sig[construct.start - 1].text);
+    if (startsStatementLine && sameLineBefore(construct.start)) {
+      insert(first.start, first.line, CPP_NORMALIZER_VIRTUAL_BREAK, 1, seq);
+    }
+    // Whether a virtual line break will precede the next clause's `else`.
+    let breakBeforeNextClause = false;
+    construct.clauses.forEach((clause, clauseIndex) => {
+      const { body } = clause;
+      const header = sig[clause.headerEnd];
+      const clauseStart = clause.elseIndex ?? clause.keywordIndex;
+      const bodyLast = body.end - 1;
+      const startsLine =
+        !sameLineBefore(clauseStart) || (clauseIndex === 0 ? startsStatementLine : breakBeforeNextClause);
+      const endsLine = !sameLineAfter(bodyLast) || bodyLast === construct.end - 1;
+      breakBeforeNextClause = false;
+      if (
+        construct.kind !== 'do' &&
+        !clause.special &&
+        startsLine &&
+        endsLine &&
+        sig[clauseStart].line === sig[bodyLast].endLine &&
+        (body.braced ? !bodyHasControl(body) : body.simple)
+      ) {
+        // A clause alone on its line with a one-statement body:
+        // `if (c) stmt;`, `else stmt;`, `else if (c) stmt;`, `for (...)
+        // stmt;`, `while (c) stmt;` and their `{ stmt; }` forms. The
+        // rewriter already wraps these correctly (adding the braces itself),
+        // so their code is left as is and their traces do not change. A
+        // trailing line comment is still dropped: its patterns stop at it.
+        editedLines.add(sig[clauseStart].line);
+        if (!body.braced) wrappedBodies.push(body);
+        return;
+      }
+      if (!body.braced) {
+        insert(header.end, header.endLine, ' {', 1, seq);
+        if (sameLineBefore(body.start)) {
+          insert(sig[body.start].start, sig[body.start].line, CPP_NORMALIZER_VIRTUAL_BREAK, 1, seq);
+        }
+        wrappedBodies.push(body);
+        if (construct.kind === 'do') {
+          // `} while (c);` stays on one line: a line of its own starting
+          // `while (c);` would read as a second loop.
+          const prefix = sameLineBefore(construct.tail) ? CPP_NORMALIZER_VIRTUAL_BREAK : '';
+          insert(sig[construct.tail].start, sig[construct.tail].line, `${prefix}} `, 0, seq);
+          return;
+        }
+        // The closing brace gets a line of its own and a following `else`
+        // starts the next one (`}` / `else if (c) {`), the shape whose
+        // condition the rewriter attributes to the else's line.
+        insert(sig[bodyLast].end, sig[bodyLast].endLine, `${CPP_NORMALIZER_VIRTUAL_BREAK}}`, 0, seq);
+        const follower = construct.clauses[clauseIndex + 1]?.elseIndex;
+        if (follower !== undefined && sameLineBefore(follower)) {
+          insert(sig[follower].start, sig[follower].line, CPP_NORMALIZER_VIRTUAL_BREAK, 1, seq);
+          breakBeforeNextClause = true;
+        }
+        return;
+      }
+      const open = body.start;
+      const close = body.end - 1;
+      if (construct.kind === 'do' && sig[close].line !== sig[construct.tail].line) {
+        // `}` then `while (c);` on the next line: a line starting `while (c);`
+        // reads as a loop of its own to the rewriter, and instrumentation
+        // would land between the brace and the tail. The brace moves down.
+        removed.push(sig[close]);
+        editedLines.add(sig[close].line);
+        insert(sig[construct.tail].start, sig[construct.tail].line, '} ', 0, seq);
+      }
+      if (sig[open].line !== header.endLine) {
+        // Allman `{` on its own line: the rewriter would put post-line
+        // instrumentation between the header and the brace, where it
+        // becomes the body. The brace moves up to the header's line.
+        insert(header.end, header.endLine, ' {', 1, seq);
+        removed.push(sig[open]);
+        editedLines.add(sig[open].line);
+      }
+      if (sig[open].line === sig[close].line) splitBlocks.add(open);
+      if (close > open + 1 && sameLineAfter(open)) {
+        insert(sig[open].end, sig[open].line, CPP_NORMALIZER_VIRTUAL_BREAK, 1, seq);
+      }
+      if (close > open + 1 && sameLineBefore(close)) {
+        insert(sig[close].start, sig[close].line, CPP_NORMALIZER_VIRTUAL_BREAK, 0, seq);
+      }
+    });
+    if (sameLineAfter(construct.end - 1)) {
+      insert(last.end, last.endLine, CPP_NORMALIZER_VIRTUAL_BREAK, 0, seq);
+    }
+  };
+
+  const splitBlocks = new Set();
+  const consumed = new Set();
+  const stack = [];
+  for (let index = 0; index < sig.length; index += 1) {
+    const token = sig[index];
+    if (token.kind === 'punct') {
+      if (token.text === '(' || token.text === '[' || token.text === '{') stack.push(index);
+      else if (token.text === ')' || token.text === ']' || token.text === '}') stack.pop();
+      continue;
+    }
+    if (token.kind !== 'ident' || !CPP_NORMALIZER_CONTROL_KEYWORDS.has(token.text) || consumed.has(index)) continue;
+    const innermost = stack.at(-1);
+    // File scope, or inside parentheses: not a statement.
+    if (innermost === undefined || !isPunct(innermost, '{')) continue;
+    // A block that opens and closes on one line (a one-line function, lambda
+    // or braced body) is one rewriter line; leave what is inside it alone.
+    if (sig[innermost].line === sig[match[innermost]].line && !splitBlocks.has(innermost)) continue;
+    // An `else` not consumed by its `if` means that `if` was not parsed.
+    if (token.text === 'else') refuse(index, 'an else whose if statement could not be parsed');
+    if (token.text === 'switch') {
+      // A braceless switch body is rare; the rewriter would put a statement
+      // between the header and the body.
+      if (!isPunct(index + 1, '(') || !isPunct(match[index + 1] + 1, '{')) refuse(index, 'a switch whose body has no braces');
+      continue;
+    }
+    const parsed = token.text === 'if' ? parseIf(index) : token.text === 'do' ? parseDo(index) : parseLoop(index);
+    if (!parsed.construct) {
+      // Not certain what this statement is: refuse rather than guess.
+      refuse(parsed.at ?? index, CPP_NORMALIZER_PARSE_FAILURES[parsed.error] || `a ${token.text} statement the tracer could not parse`);
+    }
+    for (const clause of parsed.construct.clauses) {
+      if (clause.elseIndex !== undefined) consumed.add(clause.elseIndex);
+      consumed.add(clause.keywordIndex);
+    }
+    if (parsed.construct.tail !== undefined) consumed.add(parsed.construct.tail);
+    planConstruct(parsed.construct);
+  }
+
+  // User macros. A braceless body is given braces (here, or by the rewriter
+  // for a one-line clause), which changes a macro that expands to several
+  // statements or a branch; a loop or branch macro whose body starts on the
+  // next line gets a statement inserted before that body. The check is
+  // conservative: every user macro named in the body, in its arguments, or in
+  // any macro it expands to (aliases included) must be a plain expression.
+  const macros = collectCppUserMacros(tokens);
+  if (macros.size > 0) {
+    for (let index = 0; index < sig.length; index += 1) {
+      const token = sig[index];
+      if (token.kind !== 'ident' || !macros.has(token.text)) continue;
+      const hasArguments = isPunct(index + 1, '(');
+      const invocationEnd = hasArguments ? match[index + 1] : index;
+      const features = cppUserMacroFeatures(macros, token.text);
+      for (let argument = index + 1; argument <= invocationEnd; argument += 1) {
+        if (sig[argument].kind === 'ident' && macros.has(sig[argument].text)) {
+          const nested = cppUserMacroFeatures(macros, sig[argument].text);
+          for (const key of Object.keys(features)) features[key] ||= nested[key];
+        }
+      }
+      if (features.unbalanced || features.unknown) {
+        refuse(index, `the macro ${token.text} expands to unbalanced brackets or could not be read`);
+      }
+      // A macro that expands to `else` can attach to any surrounding `if`.
+      // One that opens an `if` is refused where it can capture something:
+      // as a braceless body (below) or when the statement continues on the
+      // next line (below); an `else` after it is refused by the parse.
+      if (features.hasElse) {
+        refuse(index, `the macro ${token.text} expands to an else`);
+      }
+      if (!isCppExpressionMacroFeatures(features) && wrappedBodies.some((body) => index >= body.start && index < body.end)) {
+        refuse(index, `the macro ${token.text} is not a single expression and is the body of a control statement without braces`);
+      }
+      const next = invocationEnd + 1;
+      if (
+        (features.header || features.opensIf || features.jump || features.splits) &&
+        sig[next] &&
+        sig[next].line > sig[invocationEnd].endLine &&
+        !isPunct(next, '{') &&
+        !isPunct(next, ';')
+      ) {
+        refuse(index, `the macro ${token.text} opens a statement that continues on the next line`);
+      }
+    }
+  }
+
+  // Block comments inside any block become whitespace: the rewriter counts
+  // braces line by line and does not read `/* } */` as a comment. Line
+  // comments on rewritten lines are dropped: its patterns do not read past
+  // them (`if (c) { a; } // note` would not be recognized).
+  const blockDepthAt = [];
+  {
+    let depth = 0;
+    for (const token of tokens) {
+      if (token.kind === 'comment') {
+        blockDepthAt.push(depth);
+        continue;
+      }
+      blockDepthAt.push(depth);
+      if (token.kind === 'punct' && token.text === '{') depth += 1;
+      else if (token.kind === 'punct' && token.text === '}') depth -= 1;
+    }
+  }
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== 'comment') continue;
+    if (
+      (token.text.startsWith('/*') && blockDepthAt[index] > 0) ||
+      (token.line === token.endLine && editedLines.has(token.line))
+    ) {
+      removed.push(token);
+    }
+  }
+  if (insertions.length === 0 && removed.length === 0) return identity();
+  removed.sort((left, right) => left.start - right.start);
+
+  insertions.sort((left, right) =>
+    left.offset - right.offset ||
+    left.phase - right.phase ||
+    (left.phase === 0 ? right.seq - left.seq : left.seq - right.seq)
+  );
+  const dropped = removed;
+  let text = '';
+  let cursor = 0;
+  let insertionIndex = 0;
+  let droppedIndex = 0;
+  while (cursor <= source.length) {
+    while (insertionIndex < insertions.length && insertions[insertionIndex].offset === cursor) {
+      text += insertions[insertionIndex].text;
+      insertionIndex += 1;
+    }
+    if (cursor === source.length) break;
+    if (droppedIndex < dropped.length && dropped[droppedIndex].start === cursor) {
+      // A comment is whitespace (keep its line breaks); a moved brace is gone.
+      const token = dropped[droppedIndex];
+      if (token.kind === 'comment') text += ` ${'\n'.repeat(token.endLine - token.line)}`;
+      cursor = token.end;
+      droppedIndex += 1;
+      continue;
+    }
+    text += source[cursor];
+    cursor += 1;
+  }
+
+  const sourceLines = source.split('\n');
+  const renderedLines = text.split('\n');
+  const lines = [];
+  const lineNumbers = [];
+  const lastPiece = [];
+  renderedLines.forEach((renderedLine, lineIndex) => {
+    const withoutCr = renderedLine.endsWith('\r') ? renderedLine.slice(0, -1) : renderedLine;
+    if (!withoutCr.includes(CPP_NORMALIZER_VIRTUAL_BREAK)) {
+      lines.push(withoutCr);
+      lineNumbers.push(lineIndex + 1);
+      lastPiece.push(true);
+      return;
+    }
+    const indent = /^[ \t]*/.exec(sourceLines[lineIndex] || '')[0];
+    const pieces = withoutCr
+      .split(CPP_NORMALIZER_VIRTUAL_BREAK)
+      .map((piece, pieceIndex) => (pieceIndex === 0 ? piece.trimEnd() : `${indent}${piece.trim()}`))
+      .filter((piece) => piece.trim());
+    if (pieces.length === 0) pieces.push('');
+    pieces.forEach((piece, pieceIndex) => {
+      lines.push(piece);
+      lineNumbers.push(lineIndex + 1);
+      lastPiece.push(pieceIndex === pieces.length - 1);
+    });
+  });
+  return { lines, lineNumbers, lastPiece };
+}
+
 function instrumentCppSourceForTracing(source, functionName, options = {}) {
   const aliases = collectCppTypeAliases(source);
   const traceMemberNames = collectTraceContainerMemberNames(source, aliases, options.traceMemberClassName || 'Solution');
@@ -10628,7 +11913,23 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       .filter((signature) => !signature.skipInstrumentation && signature.name && !signature.name.startsWith('<'))
       .map((signature) => signature.name)
   );
-  const lines = source.split(/\r?\n/);
+  activeCppReferenceParameterCallees = collectCppReferenceParameterCallees(signatures);
+  try {
+    const instrumented = instrumentCppLinesForTracing();
+    return instrumented.includes('__tracecode_element(')
+      ? `${CPP_ELEMENT_HELPER_SOURCE}\n${instrumented}`
+      : instrumented;
+  } finally {
+    activeCppReferenceParameterCallees = new Map();
+  }
+
+  function instrumentCppLinesForTracing() {
+  // Braceless control bodies get braces first, on virtual lines that keep the
+  // learner's line numbers (see normalizeCppControlBodiesForTracing).
+  const normalizedControl = normalizeCppControlBodiesForTracing(source, {
+    scriptWrapper: functionName === CPP_SCRIPT_FUNCTION_NAME,
+  });
+  const lines = normalizedControl.lines;
   const output = [];
   let nextSignatureIndex = 0;
   let pendingSignature = null;
@@ -10642,7 +11943,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
-    const lineNumber = index + 1;
+    const lineNumber = normalizedControl.lineNumbers[index];
     const activeFrame = frameStack.at(-1) || null;
     const activeSignature = activeFrame?.signature || null;
     const skipActiveInstrumentation = Boolean(activeSignature?.skipInstrumentation);
@@ -10656,7 +11957,14 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
       localClassDeclarationLine ||
       scriptWrapperClassScope
     );
-    if (!pendingSignature && nextSignatureIndex < signatures.length && lineNumber >= signatures[nextSignatureIndex].line) {
+    // A signature line split into virtual lines is adopted on its last piece,
+    // the one that holds the body's opening brace.
+    if (
+      !pendingSignature &&
+      nextSignatureIndex < signatures.length &&
+      lineNumber >= signatures[nextSignatureIndex].line &&
+      (lineNumber > signatures[nextSignatureIndex].line || normalizedControl.lastPiece[index])
+    ) {
       pendingSignature = signatures[nextSignatureIndex];
       nextSignatureIndex += 1;
     }
@@ -11087,6 +12395,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
   }
 
   return output.join('\n');
+  }
 }
 
 function buildDriverSource(userCode, functionName, inputs, options = {}) {
@@ -11503,7 +12812,10 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   if (options.tracing === true && traceMethodName) {
     try {
       sourceForDriver = instrumentCppSourceForTracing(userCode, traceMethodName, { traceMemberClassName: className });
-    } catch {
+    } catch (error) {
+      // Tracing refused (it would change the program): a provider failure for
+      // the client to report, never the learner's compile error.
+      if (isCppTraceUnsupportedError(error)) throw error;
       sourceForDriver = userCode;
     }
   }
@@ -15654,6 +16966,43 @@ async function handleInit(payload) {
   };
 }
 
+/**
+ * Compiles the untraced build of a program whose trace was refused or whose
+ * traced build failed to compile. Returns null when it compiles (the failure
+ * is the tracer's), otherwise the untraced compile failure: the learner's own
+ * error, in the learner's lines.
+ */
+async function compileUntracedProgram({ source, functionName, executionStyle, scriptRequest, inputBatch = [{}], timings = {} }) {
+  const driverStartedAt = now();
+  let untracedDriverSource;
+  try {
+    untracedDriverSource = executionStyle === 'ops-class'
+      ? buildPreparedOpsClassDriverSource(source, functionName, { executionStyle, tracing: false })
+      : scriptRequest
+      ? buildScriptDriverSource(source, { executionStyle, tracing: false })
+      // The traced request's own inputs: they choose the overload it binds.
+      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle, tracing: false });
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      diagnosticStage: 'compile',
+      consoleOutput: [],
+      timings: { ...timings, driverBuildMs: elapsedMs(driverStartedAt) },
+    };
+  }
+  const result = await compileAndRun(source, functionName, {}, {
+    executionStyle,
+    tracing: false,
+    preparedDriverSource: untracedDriverSource,
+    preparedScriptRequest: scriptRequest,
+    preparedInputMode: scriptRequest ? 'script' : 'named-batch',
+    prepareOnly: true,
+    timings: { ...timings, driverBuildMs: elapsedMs(driverStartedAt) },
+  });
+  return result?.success ? null : result;
+}
+
 async function handlePrepareRuntimeProgram(payload) {
   const startedAt = now();
   const mode = payload?.mode;
@@ -15688,26 +17037,36 @@ async function handlePrepareRuntimeProgram(payload) {
   }
 
   const driverStartedAt = now();
+  const buildPreparedDriver = (traceDriver) => executionStyle === 'ops-class'
+    ? buildPreparedOpsClassDriverSource(source, functionName, {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      })
+    : scriptRequest
+    ? buildScriptDriverSource(source, {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      })
+    : buildBatchDriverSource(source, functionName, [{}], {
+        executionStyle,
+        tracing: traceDriver,
+        traceOptions: payload?.traceOptions || {},
+      });
   let preparedDriverSource;
   try {
-    preparedDriverSource = executionStyle === 'ops-class'
-      ? buildPreparedOpsClassDriverSource(source, functionName, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
-      : scriptRequest
-      ? buildScriptDriverSource(source, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
-      : buildBatchDriverSource(source, functionName, [{}], {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        });
+    preparedDriverSource = buildPreparedDriver(tracing);
   } catch (error) {
+    if (isCppTraceUnsupportedError(error)) {
+      // Tracing refused (it would change the program, or the tracer is not
+      // certain what the program is). If the program does not compile at
+      // all, that is the learner's compile error and is reported as such;
+      // otherwise the refusal is a provider failure, never the learner's.
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest });
+      if (untracedCompile) return untracedCompile;
+      throw error;
+    }
     // The driver generator could not bind the learner's source (no matching
     // class or method, an unsupported signature): the learner's compile stage.
     return {
@@ -15735,6 +17094,14 @@ async function handlePrepareRuntimeProgram(payload) {
     },
   });
   if (!result?.success) {
+    if (tracing && isCppCompileStageFailure(result)) {
+      // Compile safety net: a traced build that does not compile is either
+      // the learner's error (the untraced build fails too: report that one)
+      // or the instrumentation's (refuse tracing; never the learner's).
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest });
+      if (untracedCompile) return untracedCompile;
+      throw cppTracedCompileFailureRefusal(result);
+    }
     return result;
   }
   if (!result.preparedArtifact?.programModule) {
@@ -16444,6 +17811,14 @@ async function handleExecuteTraceBatch(payload) {
       traceOptions: payload?.options || {},
     });
   } catch (error) {
+    // Tracing refused (it would change the program): a provider failure for
+    // the client to report, never the learner's compile error, unless the
+    // program does not compile at all.
+    if (isCppTraceUnsupportedError(error)) {
+      const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false, inputBatch });
+      if (!untracedCompile) throw error;
+      return failedBatchResult(untracedCompile.error);
+    }
     return failedBatchResult(error instanceof Error ? error.message : String(error));
   }
 
@@ -16456,6 +17831,18 @@ async function handleExecuteTraceBatch(payload) {
     batchTrace: true,
     inputBatch,
   });
+
+  if (!Array.isArray(result?.results) && isCppCompileStageFailure(result)) {
+    // Compile safety net (see handlePrepareRuntimeProgram).
+    const untracedCompile = await compileUntracedProgram({ source, functionName, executionStyle, scriptRequest: false, inputBatch });
+    if (!untracedCompile) throw cppTracedCompileFailureRefusal(result);
+    Object.assign(result, {
+      error: untracedCompile.error,
+      diagnosticStage: untracedCompile.diagnosticStage,
+      ...(untracedCompile.errorLine !== undefined ? { errorLine: untracedCompile.errorLine } : {}),
+      ...(untracedCompile.diagnostic !== undefined ? { diagnostic: untracedCompile.diagnostic } : {}),
+    });
+  }
 
   if (!Array.isArray(result?.results)) {
     const diagnostics = [
@@ -16539,12 +17926,31 @@ async function handleExecuteWithTracing(payload) {
     };
   }
 
+  const traceRequestShape = {
+    source,
+    functionName,
+    executionStyle: payload?.executionStyle || 'solution-method',
+    scriptRequest: payload?.executionStyle === 'function' && !functionName.trim(),
+    inputBatch: [payload?.inputs || {}],
+  };
   try {
-    const result = await compileAndRun(source, functionName, payload?.inputs || {}, {
+    let result = await compileAndRun(source, functionName, payload?.inputs || {}, {
       tracing: true,
       traceOptions: payload?.options || {},
       executionStyle: payload?.executionStyle || 'solution-method',
     });
+    if (isCppCompileStageFailure(result)) {
+      // Compile safety net (see handlePrepareRuntimeProgram).
+      const untracedCompile = await compileUntracedProgram(traceRequestShape);
+      if (!untracedCompile) throw cppTracedCompileFailureRefusal(result);
+      result = {
+        ...result,
+        error: untracedCompile.error,
+        diagnosticStage: untracedCompile.diagnosticStage,
+        ...(untracedCompile.errorLine !== undefined ? { errorLine: untracedCompile.errorLine } : {}),
+        ...(untracedCompile.diagnostic !== undefined ? { diagnostic: untracedCompile.diagnostic } : {}),
+      };
+    }
     if (result.trace) return result;
     const trace = finalizeRuntimeTrace([{ kind: 'exception', line: result.errorLine || 1, message: result.error || 'C++ tracing failed.' }]).trace;
     return {
@@ -16556,6 +17962,29 @@ async function handleExecuteWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
     };
   } catch (error) {
+    // Tracing refused (it would change the program): a provider failure for
+    // the client to report, never the learner's compile error, unless the
+    // program does not compile at all.
+    if (isCppTraceUnsupportedError(error)) {
+      if (error.untracedCompiles) throw error;
+      const untracedCompile = await compileUntracedProgram(traceRequestShape);
+      if (!untracedCompile) throw error;
+      // The program does not compile: the learner's own untraced compile
+      // error is the result, not the tracer's refusal.
+      const learnerTrace = finalizeRuntimeTrace([
+        { kind: 'exception', line: untracedCompile.errorLine || 1, message: untracedCompile.error || 'C++ compilation failed.' },
+      ]).trace;
+      return {
+        ...untracedCompile,
+        success: false,
+        output: null,
+        trace: learnerTrace,
+        executionTimeMs: 0,
+        consoleOutput: untracedCompile.consoleOutput || [],
+        lineEventCount: learnerTrace.lineEventCount,
+        traceStepCount: learnerTrace.traceStepCount,
+      };
+    }
     const trace = finalizeRuntimeTrace([
       { kind: 'exception', line: 1, message: error instanceof Error ? error.message : String(error) },
     ]).trace;
