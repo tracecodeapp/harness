@@ -20,11 +20,16 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   `judgeCaseExecutionOutcome` restores it. Outcomes from providers that do
   not report it are unchanged.
 - `JudgeDiagnostic.kind?: 'trace-truncated'` (optional, additive) marks the
-  warning the Judge adds for a trace budget. `judgeCaseExecutionOutcome`
-  restores `traceTruncated` only from that warning (completed, failed and
-  limit cases), so another warning that happens to use a limit code, such as
-  a custom adapter's `memory-limit` notice, is no longer read as a trace
-  budget.
+  warning the Judge adds for a trace budget: that diagnostic, and only that
+  one, now carries one extra property, `kind: 'trace-truncated'`.
+  `judgeCaseExecutionOutcome` restores `traceTruncated` from the marked
+  warning (completed, failed and limit cases), so another warning that
+  happens to use a limit code, such as a custom adapter's `memory-limit`
+  notice, is no longer read as a trace budget. Results saved by 0.20.2 carry
+  the warning unmarked; when no diagnostic is marked, an unmarked warning
+  whose code is a trace-recording budget (`trace-limit`, `trace-byte-limit`)
+  is still read as one. An unmarked `line-limit` or `single-line-limit` is
+  not, since a runaway guard uses those codes too.
 
 ### Fixed
 
