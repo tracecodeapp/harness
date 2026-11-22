@@ -9,7 +9,9 @@ import { isDeepStrictEqual } from 'node:util';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import type { JudgeAlgorithmLanguage, JudgeComparatorStrategy } from '../src/judge';
+import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
 import type { ParityProblem, TraceParityRunner } from './fixtures/browser-trace-parity-entry';
+import { targetedCases } from './fixtures/trace-parity-targeted-cases';
 import { runCommand } from './example-preview-process';
 
 const extensions = {
@@ -117,12 +119,15 @@ async function loadCatalog(languages: JudgeAlgorithmLanguage[], ids: string[]) {
           ...(customValidator ? { comparator: { ...comparison, customValidator } } : {}),
         })),
         // Desktop Practice Run trace budgets, independent of execution limits.
-        traceOptions: {
-          maxTraceSteps: 4000,
-          maxLineEvents: heavyRecursion ? 20000 : 12000,
-          maxSingleLineHits: heavyRecursion ? 4000 : 1000,
-          maxStoredEvents: 16000,
-        },
+        traceOptions: Object.fromEntries(Object.entries({
+          maxTraceSteps: 4_000,
+          maxLineEvents: heavyRecursion ? 20_000 : 12_000,
+          maxSingleLineHits: heavyRecursion ? 4_000 : 1_000,
+          maxStoredEvents: 16_000,
+        } as const).filter(([key]) => {
+          const controls = getLanguageRuntimeProfile(language).capabilities.tracing.controls;
+          return controls[key as keyof typeof controls];
+        })),
       });
     }
   }
@@ -153,12 +158,23 @@ async function main() {
     if (!Object.hasOwn(extensions, language)) throw new Error('Unknown language: ' + language);
     return language as JudgeAlgorithmLanguage;
   });
-  const fixtures = await loadCatalog(languages, csv(process.env.TRACECODE_PARITY_PROBLEMS));
+  const ids = csv(process.env.TRACECODE_PARITY_PROBLEMS);
+  const suite = process.env.TRACECODE_PARITY_SUITE ?? 'catalog';
+  if (suite !== 'catalog' && suite !== 'targeted' && suite !== 'direct') {
+    throw new Error('Unknown parity suite: ' + suite);
+  }
+  const fixtures = suite === 'catalog' ? await loadCatalog(languages, ids) :
+    targetedCases.filter(({ id, language }) =>
+      languages.includes(language) &&
+      (suite === 'direct' ? id === 'box-get' : id !== 'box-get') &&
+      (!ids.length || ids.includes(id)));
   if (!fixtures.length) throw new Error('No problems selected.');
+  const providers = [...new Set(fixtures.map(({ language }) => language))];
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-trace-parity-'));
   const report = {
     browser: 'chromium',
     browserVersion: '',
+    suite,
     complete: false,
     selected: fixtures.map(({ id, language }) => ({ id, language })),
     problems: [] as unknown[],
@@ -176,7 +192,7 @@ async function main() {
     await runCommand('corepack', [
       'pnpm', 'exec', 'tsx', '--tsconfig', 'tsconfig.base.json', 'src/cli.ts',
       'sync-assets', join(tempRoot, 'workers'), '--languages',
-      [...new Set(languages.map((language) => language === 'typescript' ? 'javascript' : language))].join(','),
+      [...new Set(providers.map((language) => language === 'typescript' ? 'javascript' : language))].join(','),
     ], process.cwd());
     await build({
       entryPoints: [resolve('tests/fixtures/browser-trace-parity-entry.ts')],
@@ -211,7 +227,7 @@ async function main() {
         const moduleUrl: string = '/trace-parity.mjs';
         const { createTraceParityRunner } = await import(moduleUrl);
         return createTraceParityRunner(providers);
-      }, languages),
+      }, providers),
     ]);
     for (const problem of fixtures) {
       const started = Date.now();
@@ -228,6 +244,7 @@ async function main() {
       const { id, language, functionName, executionStyle } = problem;
       report.problems.push({
         id, language, functionName, executionStyle, elapsedMs: Date.now() - started,
+        ...(suite === 'catalog' ? {} : { code: problem.code }),
         different, cases, ...result,
       });
       await saveReport();
