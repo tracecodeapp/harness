@@ -525,20 +525,20 @@ function inferPlainNodeType(value) {
   if (id.startsWith('list-') || id.startsWith('ListNode:')) return 'ListNode';
   if (id.startsWith('tree-') || id.startsWith('TreeNode:')) return 'TreeNode';
 
-  const hasValue = Object.prototype.hasOwnProperty.call(value, 'val')
-    || Object.prototype.hasOwnProperty.call(value, 'value');
-  const hasTreeLinks = Object.prototype.hasOwnProperty.call(value, 'left')
-    || Object.prototype.hasOwnProperty.call(value, 'right');
-  const hasListLinks = Object.prototype.hasOwnProperty.call(value, 'next')
-    || Object.prototype.hasOwnProperty.call(value, 'prev');
+  const hasValue = intrinsicHasOwn(value, 'val')
+    || intrinsicHasOwn(value, 'value');
+  const hasTreeLinks = intrinsicHasOwn(value, 'left')
+    || intrinsicHasOwn(value, 'right');
+  const hasListLinks = intrinsicHasOwn(value, 'next')
+    || intrinsicHasOwn(value, 'prev');
   if (hasValue && hasTreeLinks) return 'TreeNode';
   if (hasValue && hasListLinks) return 'ListNode';
   return null;
 }
 
 function hasNodeValueField(value) {
-  return Object.prototype.hasOwnProperty.call(value, 'val')
-    || Object.prototype.hasOwnProperty.call(value, 'value');
+  return intrinsicHasOwn(value, 'val')
+    || intrinsicHasOwn(value, 'value');
 }
 
 function forcedNodeTypeForValue(value, forcedNodeType) {
@@ -587,6 +587,25 @@ let activeSerializationBudget = null;
 // Output serialization keeps ordinary reads, as untraced runs do.
 let activeSerializationSafeReads = false;
 
+// Intrinsics captured when this runtime loads, before any learner code runs:
+// serializing a learner value never calls a method the learner can replace.
+// (A Proxy's traps still run; Proxies are a known limit.)
+const intrinsicReflectApply = Reflect.apply;
+const intrinsicGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const intrinsicGetPrototypeOf = Object.getPrototypeOf;
+const intrinsicObjectKeys = Object.keys;
+const intrinsicHasOwnProperty = Object.prototype.hasOwnProperty;
+const intrinsicArraySlice = Array.prototype.slice;
+const intrinsicSetValues = Set.prototype.values;
+const intrinsicMapEntries = Map.prototype.entries;
+const intrinsicSetIteratorNext = Object.getPrototypeOf(new Set().values()).next;
+const intrinsicMapIteratorNext = Object.getPrototypeOf(new Map().entries()).next;
+const intrinsicDataViewGetUint8 = typeof DataView === 'function' ? DataView.prototype.getUint8 : undefined;
+
+function intrinsicHasOwn(value, key) {
+  return intrinsicReflectApply(intrinsicHasOwnProperty, value, [key]);
+}
+
 function serializationField(value, key) {
   if (value === null || value === undefined) return undefined;
   if (!activeSerializationSafeReads) return value[key];
@@ -596,9 +615,9 @@ function serializationField(value, key) {
     depth < 64 && current !== null && (typeof current === 'object' || typeof current === 'function');
     depth += 1
   ) {
-    const descriptor = Object.getOwnPropertyDescriptor(current, key);
-    if (descriptor) return Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : undefined;
-    current = Object.getPrototypeOf(current);
+    const descriptor = intrinsicGetOwnPropertyDescriptor(current, key);
+    if (descriptor) return intrinsicReflectApply(intrinsicHasOwnProperty, descriptor, ['value']) ? descriptor.value : undefined;
+    current = intrinsicGetPrototypeOf(current);
   }
   return undefined;
 }
@@ -608,8 +627,23 @@ function truncationMarker(total, emitted) {
 }
 
 function limitedEntries(items, maxItems) {
+  if (activeSerializationSafeReads) {
+    // Learner arrays: own data elements only (an accessor element is shown,
+    // never called), and no method the learner can replace.
+    const emitted = Math.min(items.length, Number.isFinite(maxItems) ? Math.max(0, maxItems) : items.length);
+    const values = [];
+    for (let index = 0; index < emitted; index += 1) {
+      const descriptor = intrinsicGetOwnPropertyDescriptor(items, index);
+      values.push(
+        descriptor === undefined
+          ? undefined
+          : intrinsicReflectApply(intrinsicHasOwnProperty, descriptor, ['value']) ? descriptor.value : '<accessor>'
+      );
+    }
+    return { values, remaining: Math.max(0, items.length - maxItems) };
+  }
   return {
-    values: items.slice(0, maxItems),
+    values: intrinsicReflectApply(intrinsicArraySlice, items, [0, maxItems]),
     remaining: Math.max(0, items.length - maxItems),
   };
 }
@@ -629,20 +663,20 @@ function serializeIndexedValues(length, valueAt, depth, seen, nodeRefState) {
 
 function builtinCollectionSize(value, prototype) {
   try {
-    const getter = Object.getOwnPropertyDescriptor(prototype, 'size')?.get;
-    const size = typeof getter === 'function' ? getter.call(value) : undefined;
+    const getter = intrinsicGetOwnPropertyDescriptor(prototype, 'size')?.get;
+    const size = typeof getter === 'function' ? intrinsicReflectApply(getter, value, []) : undefined;
     return Number.isFinite(size) ? Math.max(0, Math.floor(size)) : undefined;
   } catch (_error) {
     return undefined;
   }
 }
 
-function limitedBuiltinIteratorValues(iterator, maxItems) {
+function limitedBuiltinIteratorValues(iterator, maxItems, iteratorNext) {
   const emitted = Number.isFinite(maxItems) ? Math.max(0, Math.floor(maxItems)) : Infinity;
   const values = [];
   let exhausted = false;
   while (values.length < emitted) {
-    const next = iterator.next();
+    const next = intrinsicReflectApply(iteratorNext, iterator, []);
     if (next.done) {
       exhausted = true;
       break;
@@ -650,7 +684,7 @@ function limitedBuiltinIteratorValues(iterator, maxItems) {
     values.push(next.value);
   }
   if (!exhausted && Number.isFinite(emitted)) {
-    const next = iterator.next();
+    const next = intrinsicReflectApply(iteratorNext, iterator, []);
     exhausted = Boolean(next.done);
   }
   return { values, exhausted };
@@ -659,12 +693,12 @@ function limitedBuiltinIteratorValues(iterator, maxItems) {
 function ownEnumerableDataEntries(value) {
   if (!value || typeof value !== 'object') return [];
   const entries = [];
-  for (const key of Object.keys(value)) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  for (const key of intrinsicObjectKeys(value)) {
+    const descriptor = intrinsicGetOwnPropertyDescriptor(value, key);
     if (!descriptor || descriptor.enumerable !== true) continue;
     entries.push([
       key,
-      Object.prototype.hasOwnProperty.call(descriptor, 'value') ? descriptor.value : '<accessor>',
+      intrinsicReflectApply(intrinsicHasOwnProperty, descriptor, ['value']) ? descriptor.value : '<accessor>',
     ]);
   }
   return entries;
@@ -712,7 +746,7 @@ function serializeValue(
     if (seen.has(value)) return '<cycle>';
     seen.add(value);
     if (value instanceof DataView) {
-      return serializeIndexedValues(value.byteLength, (index) => value.getUint8(index), depth, seen, nodeRefState);
+      return serializeIndexedValues(value.byteLength, (index) => intrinsicReflectApply(intrinsicDataViewGetUint8, value, [index]), depth, seen, nodeRefState);
     }
     return serializeIndexedValues(value.length, (index) => value[index], depth, seen, nodeRefState);
   }
@@ -727,7 +761,11 @@ function serializeValue(
     seen.add(value);
     let limited;
     try {
-      limited = limitedBuiltinIteratorValues(Set.prototype.values.call(value), activeSerializationLimits.maxItems);
+      limited = limitedBuiltinIteratorValues(
+        intrinsicReflectApply(intrinsicSetValues, value, []),
+        activeSerializationLimits.maxItems,
+        intrinsicSetIteratorNext
+      );
     } catch (_error) {
       return '<unserializable Set>';
     }
@@ -750,7 +788,11 @@ function serializeValue(
     seen.add(value);
     let limited;
     try {
-      limited = limitedBuiltinIteratorValues(Map.prototype.entries.call(value), activeSerializationLimits.maxItems);
+      limited = limitedBuiltinIteratorValues(
+        intrinsicReflectApply(intrinsicMapEntries, value, []),
+        activeSerializationLimits.maxItems,
+        intrinsicMapIteratorNext
+      );
     } catch (_error) {
       return '<unserializable Map>';
     }
@@ -806,7 +848,7 @@ function serializeValue(
               __id__: nodeId,
               val: serializeValue(serializationField(value, 'val') ?? serializationField(value, 'value') ?? null, depth + 1, seen, nodeRefState),
               next: serializeValue(serializationField(value, 'next') ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode),
-              ...(Object.prototype.hasOwnProperty.call(value, 'prev')
+              ...(intrinsicHasOwn(value, 'prev')
                 ? { prev: serializeValue(serializationField(value, 'prev') ?? null, depth + 1, seen, nodeRefState, 'ListNode', materializeExistingNode) }
                 : {}),
             };
