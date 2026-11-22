@@ -814,4 +814,29 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [[[1, 0]], [[], [30, 40, 50, 60]], [0, [7, 'a']], [9]] },
   },
+  // Names of the tracing form (temps, helpers) would collide with the
+  // instrumentation: such a program runs untraced, never with a changed
+  // result or a learner SyntaxError.
+  {
+    id: 'reserved-helper-name-runs-untraced',
+    code: lines(
+      'def _tracecode_read_index(*args):',
+      '    return "learner helper"',
+      'def solve():',
+      '    a = [[1, 2], [3, 4]]',
+      '    return [a[1][1], _tracecode_read_index()]',
+    ),
+    expected: { value: [4, 'learner helper'] },
+    traceUnavailable: true,
+  },
+  {
+    id: 'reserved-temp-name-runs-untraced',
+    code: lines(
+      'def solve():',
+      '    a = [[1, 2], [3, 4]]',
+      '    return [a[__tracecode_index_0][0] for __tracecode_index_0 in range(2)]',
+    ),
+    expected: { value: [1, 3] },
+    traceUnavailable: true,
+  },
 ];
