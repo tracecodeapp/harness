@@ -987,6 +987,30 @@ for (const accepted of ACCEPTED_MACROS) {
       body: '    array<int, 3> ar{};\n    k = max(ar[1], 5) + (ar[2]);',
       present: 'max(tracecode::trace_index_read(ar',
     },
+    // Round 4: range-for over an element of a vector whose elements are not
+    // vectors (blast-radius-analysis: `for (int nxt : graph[node])` with
+    // `vector<set<int>> graph`) iterates the element itself;
+    // indexed_nested_range_readable only takes a traced vector of vectors.
+    {
+      name: 'range-for over a vector<set<int>> element',
+      body: '    vector<set<int>> graph(3);\n    int u = 1;\n    for (int nxt : graph[u]) k += nxt;',
+      present: 'for (int nxt : __tracecode_element(graph[u]))',
+    },
+    {
+      name: 'range-for by reference over a vector<string> element',
+      body: "    vector<string> names(3, \"ab\");\n    int i = 0;\n    for (char& c : names[i]) c = 'z';",
+      present: 'for (char& c : __tracecode_element(names[i]))',
+    },
+    {
+      name: 'range-for over a row of a const vector-of-vectors parameter... is read as the element',
+      body: '    const vector<vector<int>>& g = vector<vector<int>>(2, vector<int>(2, 1));\n    for (int nb : g[1]) k += nb;',
+      absent: 'indexed_nested_range_readable(g',
+    },
+    {
+      name: 'range-for over a vector-of-vectors row stays traced',
+      body: '    vector<vector<int>> graph(3);\n    int u = 1;\n    for (int nb : graph[u]) k += nb;',
+      present: 'tracecode::indexed_nested_range_readable(graph, "graph", u',
+    },
     // Round 4, item 4: fill binds its argument by const reference.
     {
       name: 'fill with std::move binds by const reference, without a move',

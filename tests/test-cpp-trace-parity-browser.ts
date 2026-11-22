@@ -259,6 +259,24 @@ const COPY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // blast-radius-analysis: `for (int nxt : graph[node])` over a
+    // vector<set<int>> did not compile traced on origin/main.
+    name: 'range-for over elements of vectors of sets, unordered sets and strings',
+    body: [
+      '    vector<set<int>> graph(3);',
+      '    graph[1].insert(4);',
+      '    graph[1].insert(7);',
+      '    vector<unordered_set<string>> tags(2);',
+      '    tags[0].insert("abc");',
+      '    vector<string> names(2, "ab");',
+      '    int u = 1;',
+      '    for (int nxt : graph[u]) k += nxt;',
+      '    for (const auto& tag : tags[0]) k += (int)tag.size() * 10;',
+      "    for (char& c : names[0]) c = 'z';",
+      '    s = names[0];',
+    ].join('\n'),
+  },
+  {
     name: 'struct members of an element',
     body: [
       '    vector<QQ> qs(3);',
