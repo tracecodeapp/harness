@@ -584,6 +584,7 @@ async function main(): Promise<void> {
         if (!refusalText.test(reported)) problems.push(`traced Run was not refused: ${describeRun(traced)} ${reported.slice(0, 400)}`);
         if (/"origin":"program"/.test(reported)) problems.push(`the refusal was reported as the learner's failure: ${reported.slice(0, 400)}`);
         console.log(`${problems.length ? 'FAIL' : 'ok  '} ${program.id}: traced ${describeRun(traced)}${traced.error ? '' : ` ${reported.slice(0, 200)}`}`);
+        console.log(`       refusal ms: ${traced.compileMs ?? '?'}`);
         failures.push(...problems.map((problem) => `${program.id}: ${problem}`));
         continue;
       }
@@ -599,6 +600,9 @@ async function main(): Promise<void> {
         if (sample.traced.compileCode !== 'compile' || sample.traced.compileOutcome?.diagnosticStage !== 'compile') {
           problems.push(`traced Run is not the learner's compile failure: ${JSON.stringify({ code: sample.traced.compileCode, outcome: sample.traced.compileOutcome })}`);
         }
+        // Cost of the compile safety net on a learner compile error: the
+        // traced compile, then the untraced one, against the untraced alone.
+        console.log(`       compile ms: traced Run ${sample.traced.compileMs ?? '?'}, untraced ${sample.untraced.compileMs ?? '?'}`);
         console.log(`${problems.length ? 'FAIL' : 'ok  '} ${program.id}: traced ${describeRun(sample.traced).slice(0, 200)}`);
         failures.push(...problems.map((problem) => `${program.id}: ${problem}`));
         continue;

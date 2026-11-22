@@ -90,6 +90,8 @@ export interface ParityRun {
   readonly compileFailure?: unknown;
   /** The failed compile's first error diagnostic code. */
   readonly compileCode?: string;
+  /** The failed compile's wall time as Judge reports it (ms). */
+  readonly compileMs?: number;
   /** What judgeCompileExecutionOutcome returns, or the error it throws. */
   readonly compileOutcome?: { readonly kind?: string; readonly diagnosticStage?: string; readonly threw?: string; readonly code?: string; readonly reason?: string };
   readonly error?: string;
@@ -130,6 +132,14 @@ function tracedLines(trace: any): number[] | undefined {
 const errorCode = (diagnostics: any): string | undefined =>
   (Array.isArray(diagnostics) ? diagnostics : []).find((diagnostic: any) => diagnostic?.severity === 'error')?.code;
 
+function compileMs(compile: any): number | undefined {
+  const total = compile?.timings?.totalMs;
+  if (typeof total === 'number') return total;
+  return typeof compile?.startedAt === 'number' && typeof compile?.endedAt === 'number'
+    ? compile.endedAt - compile.startedAt
+    : undefined;
+}
+
 function compileOutcome(compile: any, trace: boolean): ParityRun['compileOutcome'] {
   try {
     const outcome: any = judgeCompileExecutionOutcome(compile, { language: 'cpp', trace } as never);
@@ -146,6 +156,7 @@ function observe(evaluation: any, trace: boolean): ParityRun {
       cases: [],
       compileFailure: JSON.parse(JSON.stringify(evaluation.compile?.failure ?? evaluation.compile ?? null)),
       compileCode: errorCode(evaluation.compile?.diagnostics),
+      ...(compileMs(evaluation.compile) !== undefined ? { compileMs: compileMs(evaluation.compile) } : {}),
       compileOutcome: compileOutcome(evaluation.compile, trace),
     };
   }
