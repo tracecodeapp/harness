@@ -9050,7 +9050,12 @@ function rewriteNestedVectorMemberMethodIndexSources(line, name) {
       continue;
     }
 
-    const replacement = `${name}.with_index_source(${indexExpression}, ${cppIndexSourceForExpression(indexExpression)}).${methodMatch[1]}(`;
+    const elementWithSource = `${name}.with_index_source(${indexExpression}, ${cppIndexSourceForExpression(indexExpression)})`;
+    // The element proxy forwards only some methods (push_back, insert, ...);
+    // erase, clear, pop_back, assign, emplace_back go to the element itself.
+    const replacement = CPP_ELEMENT_PROXY_FORWARDED_METHODS.has(methodMatch[1])
+      ? `${elementWithSource}.${methodMatch[1]}(`
+      : `__tracecode_element(${elementWithSource}).${methodMatch[1]}(`;
     rewritten = `${rewritten.slice(0, nameIndex)}${replacement}${rewritten.slice(openIndex + 1)}`;
     cursor = nameIndex + replacement.length;
   }

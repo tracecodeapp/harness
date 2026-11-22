@@ -149,15 +149,14 @@ const COMPILE_FORMS: ParityForm[] = [
     body: ['    vector<QQ> qs(3);', '    int i = 1;', '    QQ& qr = qs[i];', '    qr.val = 3 + b;', '    k = qs[1].val;'].join('\n'),
   },
   {
-    name: 'elements passed to lambdas taking non-const references',
+    name: 'elements passed to a lambda taking a non-const reference',
     body: [
       '    array<int, 3> ar{};',
-      '    vector<vector<int>> g(3, vector<int>(2, 1));',
+      '    vector<int> v(3, 2);',
       '    auto inc = [](int& x) { x += 4; };',
-      '    auto bump = [](vector<int>& row) { row[0] += 2; };',
       '    inc(ar[1]);',
-      '    bump(g[2]);',
-      '    k = ar[1] * 10 + g[2][0];',
+      '    inc(v[2]);',
+      '    k = ar[1] * 10 + v[2];',
     ].join('\n'),
   },
   {
@@ -208,9 +207,12 @@ const COPY_FORMS: ParityForm[] = [
       '    sets[i].insert(4);',
       '    sets[i].insert(9);',
       '    sets[i].erase(4);',
+      '    vector<vector<int>> rows(2, vector<int>(3, 1));',
+      '    rows[i].pop_back();',
+      '    rows[i].clear();',
       "    names[i].back() = 'q';",
       "    for (char& c : names[0]) c = 'z';",
-      '    k = (int)names[i].size() * 100 + (int)sets[i].size() * 10 + (sets[i].count(9) ? 1 : 0);',
+      '    k = (int)names[i].size() * 100 + (int)sets[i].size() * 10 + (sets[i].count(9) ? 1 : 0) + (int)rows[i].size() * 1000 + (int)rows[0].size() * 10000;',
       '    s = names[i] + names[0];',
     ].join('\n'),
   },
@@ -309,6 +311,19 @@ const REFUSED_PROGRAMS: Array<[string, string, string]> = [
       '    Node n1{1, &n2};',
       '    Node* head = &n1;',
       '    while (Node* p = head) { k += p->val; head = p->next; }',
+    ].join('\n'),
+  ],
+  // A container parameter of a learner function is itself traced
+  // (tracecode::Vector<int>&), so a plain element of a traced vector cannot
+  // bind to it; origin/main failed the same way and blamed the learner.
+  [
+    'traced-build-compile-error-element-to-traced-container-parameter',
+    '',
+    [
+      '    vector<vector<int>> g(3, vector<int>(2, 1));',
+      '    auto bump = [](vector<int>& row) { row[0] += 2; };',
+      '    bump(g[2]);',
+      '    k = g[2][0];',
     ].join('\n'),
   ],
   // Round 3, C, D, E.
