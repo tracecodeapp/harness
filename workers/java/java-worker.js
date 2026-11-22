@@ -1779,6 +1779,9 @@ function buildDynamicInputHelperMethods() {
       }
       try {
         current = current.getCause();
+      } catch (tracecode.user.TraceBudgetExceededError budgetExceeded) {
+        // getCause() is traced code: a trip inside it is the abort itself.
+        throw budgetExceeded;
       } catch (Throwable getCauseFailure) {
         // getCause() is the learner's to override. Once the budget has
         // tripped, one that throws is not a budget error; otherwise it
