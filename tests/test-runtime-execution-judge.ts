@@ -2948,14 +2948,27 @@ test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only
     message: `Trace recording stopped at the ${code} budget after execution completed.`,
     code,
   });
+  // A completed case keeps the budget 0.20.2 wrote, for every code its
+  // tracer could stop recording at, read by the exact message 0.20.2 used.
+  for (const code of ['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit']) {
+    assert.equal(truncatedBy(withWarnings(completed!, [legacy(code)])), code, `completed: ${code}`);
+  }
+  // 0.20.2 wrote that warning only on completed cases: an unmarked one on a
+  // limited case is not a trace budget.
+  assert.equal(truncatedBy(withWarnings(runaway!, [legacy('trace-byte-limit')])), undefined, 'limit: legacy');
+  // An adapter warning with a limit code but another message is not one either.
+  for (const judged of [completed!, runaway!]) {
+    assert.equal(
+      truncatedBy(withWarnings(judged, [{ message: 'Approaching trace limit', code: 'trace-limit' }])),
+      undefined
+    );
+    assert.equal(
+      truncatedBy(withWarnings(judged, [{ message: 'Close to the memory ceiling', code: 'memory-limit' }])),
+      undefined
+    );
+  }
+  // A marked warning wins over an unmarked one, on any case.
   for (const [label, judged] of [['completed', completed!], ['limit', runaway!]] as const) {
-    assert.equal(truncatedBy(withWarnings(judged, [legacy('trace-byte-limit')])), 'trace-byte-limit', label);
-    assert.equal(truncatedBy(withWarnings(judged, [legacy('trace-limit')])), 'trace-limit', label);
-    // Unmarked codes that are not trace-recording budgets stay unrelated.
-    for (const code of ['memory-limit', 'line-limit', 'single-line-limit', 'client-timeout']) {
-      assert.equal(truncatedBy(withWarnings(judged, [legacy(code)])), undefined, `${label}: ${code}`);
-    }
-    // A marked warning wins over an unmarked one.
     assert.equal(
       truncatedBy(withWarnings(judged, [
         legacy('trace-limit'),
