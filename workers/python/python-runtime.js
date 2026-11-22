@@ -5327,6 +5327,22 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
         self._tracecode_temp_counter = 0
         self._tracecode_class_stack = []
 
+    def visit_match_case(self, node):
+        # A pattern is not an expression: value patterns (case Status.OK:),
+        # class patterns and mapping keys must stay as written, so only the
+        # guard and the body are instrumented.
+        if node.guard is not None:
+            node.guard = self.visit(node.guard)
+        body = []
+        for statement in node.body:
+            visited = self.visit(statement)
+            if isinstance(visited, _builtins.list):
+                body.extend(visited)
+            elif visited is not None:
+                body.append(visited)
+        node.body = body or [ast.Pass()]
+        return node
+
     def visit_ClassDef(self, node):
         # Decorators, bases and keywords are evaluated outside the class
         # body, so private names there are not mangled with this class.
