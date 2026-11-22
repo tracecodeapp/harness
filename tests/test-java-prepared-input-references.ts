@@ -64,7 +64,12 @@ function runPrepared(
   functionName: string,
   cases: unknown[][],
   executionStyle = 'solution-method',
-  options: { readonly showErrorType?: boolean; readonly timeoutMs?: number } = {}
+  options: {
+    readonly showErrorType?: boolean;
+    readonly timeoutMs?: number;
+    /** Run each case inside a TraceHooks run with recording off or on (budget abort armed). */
+    readonly tracing?: 'off' | 'on';
+  } = {}
 ): string[] {
   const entries = worker.preparedDynamicInputEntriesForPayload(
     { code, functionName, executionStyle },
@@ -83,6 +88,7 @@ ${code}
 ${exportsSource}
 final class PreparedMain {
   static void runCase(int index) {
+    ${options.tracing ? `int token = TraceHooks.beginRun(100000, false, true, ${options.tracing === 'on'});` : ''}
     try {
       System.out.println("case" + index + ":" + Exports.run());
     } catch (Throwable error) {
@@ -92,7 +98,7 @@ final class PreparedMain {
         root = root.getCause();
       }
       System.out.println("case" + index + ":error:" + ${options.showErrorType ? '(error.getClass().getSimpleName() + ":") + ' : ''}root.getMessage());
-    }
+    }${options.tracing ? ' finally {\n      TraceHooks.endRun(token);\n    }' : ''}
   }
 
   public static void main(String[] args) {
@@ -563,6 +569,27 @@ class Keeper {
   console.log('PASS: a trace budget error in a receiver or argument constructor reaches the runner unchanged');
 }
 
+function testThrowingGetCauseKeepsOverloadFallback(): void {
+  // A learner exception whose getCause() throws. Untraced, the Harness never
+  // inspects it, so receiver construction falls back to the next overload as
+  // before; traced, a getCause() that throws is simply not a budget error.
+  const code = `class Weird extends RuntimeException {
+  @Override
+  public synchronized Throwable getCause() { throw new IllegalStateException("getCause is broken"); }
+}
+class Keeper {
+  private final String chosen;
+  public Keeper(int limit) { throw new Weird(); }
+  public Keeper(String label) { this.chosen = "string:" + label; }
+  public String chosen() { return chosen; }
+}`;
+  const input = [{ operations: ['Keeper', 'chosen'], arguments: [[1], []] }];
+  for (const tracing of ['off', 'on'] as const) {
+    assert.deepEqual(runPrepared(code, 'Keeper', [input], 'ops-class', { tracing }), ['[null,"string:1"]'], tracing);
+  }
+  console.log('PASS: a learner exception whose getCause() throws keeps the overload fallback, untraced and traced');
+}
+
 const tests = [
   testListCycleKeepsTheBackReference,
   testListBackReferenceIsTheSameNode,
@@ -584,6 +611,7 @@ const tests = [
   testCyclicCauseInInputConstructorDoesNotHang,
   testCyclicCauseInReceiverConstructorDoesNotHang,
   testBudgetTripInConstructorsReachesTheRunner,
+  testThrowingGetCauseKeepsOverloadFallback,
 ];
 let failures = 0;
 for (const test of tests) {
