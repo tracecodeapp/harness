@@ -160,7 +160,11 @@ async function run(
   { untraced = false, graceSeconds, prelude = '', epilogue = '', ...options }: Record<string, unknown>
 ): Promise<Outcome> {
   const runtime = await loadRuntime();
-  let { code } = runtime.generateTracingCode(deps, source, 'solve', { n: 1 }, 'function', {
+  // An untraced case takes its ceiling from the Submit defaults. These tests
+  // are about whether a stop can be swallowed, not how high that ceiling is:
+  // a small one trips it long before the case's deadline.
+  const caseDeps = untraced ? { ...deps, INTERVIEW_GUARD_DEFAULTS: GUARD_DEFAULTS } : deps;
+  let { code } = runtime.generateTracingCode(caseDeps, source, 'solve', { n: 1 }, 'function', {
     maxTraceSteps: 50_000,
     maxStoredEvents: 200_000,
     maxLineEvents: 100_000,
