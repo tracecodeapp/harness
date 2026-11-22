@@ -1164,4 +1164,30 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [3, 3, 2, ['x', 'y'], true, '__main__'] },
   },
+  // The snapshot cache spot-checks and patches only exact builtin scalars:
+  // an int subclass's __eq__ (also reflected) never runs.
+  {
+    id: 'snapshot-cache-never-compares-learner-scalars',
+    code: lines(
+      'class Num(int):',
+      '    eqs = 0',
+      '    def __eq__(self, other):',
+      '        Num.eqs += 1',
+      '        return int(self) == int(other)',
+      '    __hash__ = int.__hash__',
+      'def solve():',
+      '    values = [Num(1), 2, 3]',
+      '    plain = [4, 5, 6]',
+      '    total = 0',
+      '    for i in range(5):',
+      '        values[1] = i',
+      '        plain[0] = Num(i)',
+      '        total += i',
+      '    values[0] = Num(7)',
+      '    for i in range(3):',
+      '        total += i',
+      '    return [Num.eqs, total, values[1], int(plain[0])]',
+    ),
+    expected: { value: [0, 13, 4, 4] },
+  },
 ];

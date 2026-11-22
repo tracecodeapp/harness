@@ -3378,7 +3378,6 @@ _TC_JSON_ENCODER = json.JSONEncoder(ensure_ascii=False, separators=(',', ':'))
 # of any object passed to an untraced call. Any mismatch permanently disables
 # the cache for the run. Entries hold strong references, so a cached id cannot
 # be recycled by the allocator while the entry is alive.
-_TC_REP_SCALARS = (_builtins.int, _builtins.float, _builtins.str, _builtins.type(None))
 _TC_REP_CACHE_MAX = 2048
 _tc_rep_cache = {}
 _tc_rep_cache_enabled = True
@@ -3387,6 +3386,16 @@ _tc_rep_reuse_count = 0
 def _tc_rep_invalidate(obj):
     if _tc_rep_cache:
         _tc_rep_cache.pop(_tracecode_builtin_id(obj), None)
+
+def _tc_rep_is_plain_scalar(value):
+    # Exact builtin scalars only, by type identity: an int subclass could
+    # define __eq__, and == against it (also reflected) runs learner code.
+    value_type = _builtins.type(value)
+    return (
+        value_type is _builtins.int or value_type is _builtins.bool
+        or value_type is _builtins.float or value_type is _builtins.str
+        or value is None
+    )
 
 def _tc_rep_scalar_rep(value):
     if isinstance(value, _builtins.str):
@@ -3405,9 +3414,8 @@ def _tc_rep_patch_write(container, indices, value):
         return
     if (
         len(indices) == 1
-        and isinstance(indices[0], _builtins.int)
-        and not isinstance(indices[0], _builtins.bool)
-        and isinstance(value, _TC_REP_SCALARS + (_builtins.bool,))
+        and _builtins.type(indices[0]) is _builtins.int
+        and _tc_rep_is_plain_scalar(value)
         and entry[0] is container
         and entry[2] == len(container)
     ):
@@ -3434,8 +3442,10 @@ def _tc_serialize_local(value, node_refs):
     if entry is not None and entry[0] is value and entry[2] == len(value):
         rep = entry[3]
         fresh_first = _tc_rep_scalar_rep(value[0]) if entry[1] > 0 else None
+        # Both sides are plain builtin values here: the first element is an
+        # exact scalar and the cached representation was admitted plain.
         first_ok = entry[1] == 0 or (
-            isinstance(value[0], _TC_REP_SCALARS + (_builtins.bool,)) and rep[0] == fresh_first
+            _tc_rep_is_plain_scalar(value[0]) and rep[0] == fresh_first
         )
         _tc_rep_reuse_count += 1
         if first_ok and (_tc_rep_reuse_count & 63) != 0:
@@ -3453,8 +3463,10 @@ def _tc_serialize_local(value, node_refs):
     ):
         emitted = min(len(value), _MAX_SERIALIZED_ITEMS)
         flat = True
-        for item in rep[:emitted]:
-            if not isinstance(item, _TC_REP_SCALARS + (_builtins.bool,)):
+        # Admitted only when the list's own elements are exact scalars (so a
+        # later spot check never compares a learner value) and so are the reps.
+        for position in range(emitted):
+            if not (_tc_rep_is_plain_scalar(value[position]) and _tc_rep_is_plain_scalar(rep[position])):
                 flat = False
                 break
         if flat:
