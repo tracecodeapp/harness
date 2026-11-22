@@ -24,6 +24,8 @@
  * - TRACECODE_MATRIX_OBSERVE=1              report only; never fail
  * - TRACECODE_MATRIX_DEFAULT_LIMITS=1       probe the infinite loop with no
  *                                           configured limits (slow)
+ * - TRACECODE_MATRIX_BROWSER_CHANNEL=...    Playwright Chromium channel
+ *                                           (default: chromium on Linux)
  */
 
 import { createReadStream, existsSync, statSync } from 'node:fs';
@@ -131,6 +133,17 @@ const MODES = (csv('TRACECODE_MATRIX_MODES') ?? MATRIX_MODES) as MatrixMode[];
 const KINDS = csv('TRACECODE_MATRIX_KINDS') as MatrixFailureKind[] | undefined;
 const OBSERVE_ONLY = process.env.TRACECODE_MATRIX_OBSERVE === '1';
 const DEFAULT_LIMITS_PROBE = process.env.TRACECODE_MATRIX_DEFAULT_LIMITS === '1';
+/**
+ * The matrix runs in full Chromium, the build learners use, not Playwright's
+ * default headless shell. On Linux the headless shell does not turn a
+ * WebAssembly out-of-bounds access into a trap: the C++ memory-fault cell
+ * crashes its renderer with SIGSEGV (CI run 44969583648), while full Chromium
+ * and Google Chrome on the same runner report the learner's runtime error.
+ * Elsewhere (macOS) the headless shell traps correctly and is what a local
+ * checkout has installed, so it stays the default there.
+ */
+const BROWSER_CHANNEL = process.env.TRACECODE_MATRIX_BROWSER_CHANNEL ||
+  (process.platform === 'linux' ? 'chromium' : undefined);
 const FULL_RUN = !process.env.TRACECODE_MATRIX_LANGUAGES &&
   !process.env.TRACECODE_MATRIX_MODES &&
   !process.env.TRACECODE_MATRIX_KINDS;
@@ -522,7 +535,10 @@ async function main(): Promise<void> {
     await writeFile(join(tempRoot, 'index.html'), '<!doctype html><meta charset="utf-8">\n', 'utf8');
     server = await startServer(resolve(tempRoot));
 
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({
+      headless: true,
+      ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}),
+    });
     const results: MatrixCellResult[] = [];
     const languageFailures: MatrixLanguage[] = [];
     try {
@@ -532,8 +548,14 @@ async function main(): Promise<void> {
         page.on('pageerror', (error) => console.error(`[${language} pageerror] ${error.message}`));
         await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
         const startedAt = Date.now();
+        // A crashed page never settles a pending evaluate; without this the
+        // run waits until CI cancels it, with no word about the cause.
+        const crashed = new Promise<never>((_, reject) => {
+          page.once('crash', () => reject(new Error('the page crashed')));
+        });
+        crashed.catch(() => undefined);
         try {
-          const languageResults = (await page.evaluate(async (options) => {
+          const languageResults = (await Promise.race([crashed, page.evaluate(async (options) => {
             (globalThis as { __MATRIX_CELL_GUARD_MS__?: number }).__MATRIX_CELL_GUARD_MS__ = options.cellGuardMs;
             const moduleUrl: string = '/matrix.mjs';
             const module = await import(moduleUrl);
@@ -546,7 +568,7 @@ async function main(): Promise<void> {
             defaultLimitsProbe: DEFAULT_LIMITS_PROBE,
             batchCaseCount: Number(process.env.TRACECODE_MATRIX_BATCH_CASES ?? 2),
             cellGuardMs: Number(process.env.TRACECODE_MATRIX_CELL_GUARD_MS ?? 150_000),
-          })) as MatrixCellResult[];
+          })])) as MatrixCellResult[];
           console.log(`${language}: ${languageResults.length} cells in ${Math.round((Date.now() - startedAt) / 1000)}s`);
           results.push(...languageResults);
         } catch (error) {
