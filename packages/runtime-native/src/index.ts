@@ -26,6 +26,7 @@ import {
   liftCodeOutcome,
   liftTraceOutcome,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
@@ -877,8 +878,11 @@ class NativeJavaScriptWorkerHarness {
         this.pending.delete(id);
         clearTimeout(entry.timeoutId);
         if (message.type === 'error') {
-          const payload = message.payload as { error?: unknown } | undefined;
-          entry.reject(new Error(String(payload?.error ?? 'Worker error')));
+          const payload = message.payload as { error?: unknown; code?: unknown } | undefined;
+          const text = String(payload?.error ?? 'Worker error');
+          entry.reject(payload?.code === TRACE_UNAVAILABLE_CODE
+            ? new RuntimeProviderError(text, { code: TRACE_UNAVAILABLE_CODE })
+            : new Error(text));
           return;
         }
         entry.resolve(message.payload);

@@ -324,7 +324,7 @@ function learnerErrorLine(error: unknown): number | undefined {
   }
 }
 
-function fail(id: number, error: unknown, stage: 'compile' | 'control' = 'control'): void {
+function fail(id: number, error: unknown, stage: 'compile' | 'trace-compile' | 'control' = 'control'): void {
   const response = { id, ok: false, error: safeErrorText(error), stage };
   try {
     postMessage(response);
@@ -1953,13 +1953,9 @@ self.onmessage = (event: MessageEvent<unknown>) => {
         assertPreparedShape(request.source);
         const validationCompartment = new Compartment();
         let sanitizedLearnerSource: string;
-        let sanitizedTraceSource: string | undefined;
         try {
           assertAdmittedModules(request.source);
           sanitizedLearnerSource = sanitizeLearnerSource(request.source.code);
-          sanitizedTraceSource = request.source.mode === 'trace'
-            ? sanitizeLearnerSource(request.source.instrumentedCode!)
-            : undefined;
         } catch (error) {
           if (error instanceof SourceNormalizationInvariantError) throw error;
           fail(request.id, error, 'compile');
@@ -1981,18 +1977,25 @@ self.onmessage = (event: MessageEvent<unknown>) => {
             request.source,
             sanitizedLearnerSource
           );
-          validatedTraceLearnerFactorySource = sanitizedTraceSource === undefined
-            ? undefined
-            : compileLearnerFactory(
-                validationCompartment,
-                request.source,
-                sanitizedTraceSource,
-                true
-              );
         } catch (error) {
           if (!isLearnerEngineSyntaxError(error)) throw error;
           fail(request.id, error, 'compile');
           return;
+        }
+        // Only the learner's own source, above, says whether the program
+        // compiles. Whatever stops the instrumented source is the tracer's.
+        if (request.source.mode === 'trace') {
+          try {
+            validatedTraceLearnerFactorySource = compileLearnerFactory(
+              validationCompartment,
+              request.source,
+              sanitizeLearnerSource(request.source.instrumentedCode!),
+              true
+            );
+          } catch (error) {
+            fail(request.id, error, 'trace-compile');
+            return;
+          }
         }
         programs.set(request.programId, {
           mode: request.source.mode,

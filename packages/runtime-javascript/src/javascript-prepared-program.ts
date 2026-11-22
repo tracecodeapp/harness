@@ -9,6 +9,7 @@ import type {
   RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceCall,
 } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 
 interface LinkedAbortSignal {
   readonly signal: AbortSignal;
@@ -19,6 +20,16 @@ function abortError(message: string): Error {
   const error = new Error(message);
   error.name = 'AbortError';
   return error;
+}
+
+/** A case run on its own rejects when refused; in a batch it is an outcome. */
+function rejectIfRefused(result: ExecutionResult): ExecutionResult {
+  if (result.kind === 'failed' && result.providerFailure) {
+    throw new RuntimeProviderError(result.providerFailure.message, {
+      code: result.providerFailure.code,
+    });
+  }
+  return result;
 }
 
 function linkAbortSignals(
@@ -174,7 +185,7 @@ export function createJavaScriptPreparedProgram(
     }),
     executeIsolated: (call: RuntimePreparedTraceCall) =>
       run(call.signal, (signal) =>
-        operations.executeTrace!({ ...call, signal })
+        operations.executeTrace!({ ...call, signal }).then(rejectIfRefused)
       ),
     ...(operations.executeTraceBatch
       ? {

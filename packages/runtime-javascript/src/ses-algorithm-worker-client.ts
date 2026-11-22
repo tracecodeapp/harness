@@ -60,13 +60,19 @@ export interface SesAlgorithmPreparedProgram {
   readonly [SES_ALGORITHM_PREPARED_PROGRAM]: true;
 }
 
+/**
+ * `compile`: the learner's source does not compile. `trace-compile`: it does,
+ * and its instrumented source does not. `control`: anything else.
+ */
+type SesFailureStage = 'compile' | 'trace-compile' | 'control';
+
 type WorkerResponse =
   | { readonly id: number; readonly ok: true; readonly value: unknown }
   | {
       readonly id: number;
       readonly ok: false;
       readonly error: string;
-      readonly stage: 'compile' | 'control';
+      readonly stage: SesFailureStage;
     };
 
 interface PendingRequest {
@@ -615,7 +621,8 @@ function parseWorkerResponse(value: unknown): WorkerResponse | null {
   if (
     !hasOnlyKeys(value, ['id', 'ok', 'error'], ['stage']) ||
     typeof value.error !== 'string' ||
-    (value.stage !== undefined && value.stage !== 'compile' && value.stage !== 'control')
+    (value.stage !== undefined && value.stage !== 'compile' &&
+      value.stage !== 'trace-compile' && value.stage !== 'control')
   ) {
     return null;
   }
@@ -623,7 +630,7 @@ function parseWorkerResponse(value: unknown): WorkerResponse | null {
     id: value.id as number,
     ok: false,
     error: value.error,
-    stage: value.stage === 'compile' ? 'compile' : 'control',
+    stage: value.stage ?? 'control',
   };
 }
 
@@ -911,7 +918,7 @@ function abortError(message: string): Error {
 export class SesAlgorithmWorkerReportedError extends Error {
   constructor(
     message: string,
-    readonly stage: 'compile' | 'control'
+    readonly stage: SesFailureStage
   ) {
     super(message);
     this.name = 'SesAlgorithmWorkerReportedError';
@@ -1123,7 +1130,7 @@ class SesAlgorithmWorkerLane {
       }
     } catch (error) {
       const reusableCompileFailure = allowLearnerCompileFailure &&
-        error instanceof SesAlgorithmWorkerReportedError && error.stage === 'compile';
+        error instanceof SesAlgorithmWorkerReportedError && error.stage !== 'control';
       if (!reusableCompileFailure && !(error instanceof SesAlgorithmUnpostedRequestError)) {
         this.retire(error instanceof Error ? error : new Error(String(error)));
       }
