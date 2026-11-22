@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createEmptyRuntimeTrace,
+  isTraceUnavailableError,
+  RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
   type RuntimeProgramPreparationCall,
 } from '../packages/runtime-contracts/src/index';
 import {
@@ -53,6 +56,8 @@ function createFakeClient(options: {
   ) => Promise<JavaWorkerPreparedProgramResult>;
   codeFailure?: Error;
   traceFailure?: Error;
+  /** A per-case traced-run failure, chosen from the case's inputs. */
+  traceFailureFor?: (inputs: Record<string, unknown>) => Error | undefined;
   retireAfterCodeCalls?: ReadonlySet<number>;
   executeCode?: (
     programId: string,
@@ -186,6 +191,8 @@ function createFakeClient(options: {
     ) {
       state.traceCalls.push({ programId, inputs: call.inputs });
       if (options.traceFailure) throw options.traceFailure;
+      const caseFailure = options.traceFailureFor?.(call.inputs);
+      if (caseFailure) throw caseFailure;
       return {
         success: true,
         output: call.inputs.value,
@@ -912,6 +919,105 @@ function completedOutput(
   return result.output;
 }
 
+
+test('a Java traced batch refuses only the case the tracer cannot trace', async () => {
+  const refusal = new RuntimeProviderError(
+    'TraceCode could not trace this case. The case runs normally without tracing.',
+    { code: TRACE_UNAVAILABLE_CODE }
+  );
+  const fake = createFakeClient({
+    traceFailureFor: (inputs) => (inputs.value === 5 ? refusal : undefined),
+  });
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => fake.client,
+  });
+  const preparation = await provider.prepareProgram({
+    mode: 'trace',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  if (preparation.kind !== 'prepared' || preparation.program.mode !== 'trace') {
+    throw new Error('Expected a prepared Java trace program.');
+  }
+  const results = await preparation.program.executeBatchIsolated!({
+    inputBatch: [{ value: 3 }, { value: 5 }, { value: 8 }],
+    traceEnabledBatch: [false, true, false],
+  });
+  assert.deepEqual(results.map((result) => result.kind), ['completed', 'failed', 'completed']);
+  const refused = results[1]!;
+  assert.deepEqual(
+    refused.kind === 'failed' ? refused.providerFailure : undefined,
+    { code: 'trace-unavailable', message: refusal.message }
+  );
+  assert.equal(refused.trace.events.length, 0);
+  // The program keeps running cases: the next traced case is traced normally.
+  const next = await preparation.program.executeIsolated({ inputs: { value: 8 } });
+  assert.equal(next.kind, 'completed');
+  assert.equal(fake.state.terminateCalls, 0);
+  await preparation.program.dispose();
+  provider.dispose();
+});
+
+test('a Java trace the client cannot read back rejects that case as trace-unavailable without retiring the worker', async () => {
+  const replies: unknown[] = [
+    // An event that refers to a call stack the trace never recorded.
+    {
+      success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}',
+      events: ['trace:{"kind":"line","line":2,"callStackRef":29}'],
+    },
+    // The worker could not trace this case (tracing stopped while the Harness built its input).
+    {
+      success: false, traceUnavailable: true, diagnosticStage: 'runtime', executionTimeMs: 1, consoleOutput: [], events: [],
+      error: 'TraceCode could not trace this case: tracing stopped while the Harness was building its input. The case runs normally without tracing.',
+    },
+    { success: true, output: 2, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: [] },
+  ];
+  let terminations = 0;
+  const client = new JavaWorkerClient({
+    workerUrl: '/workers/java-worker.js',
+    debug: false,
+    workerFactory: () => {
+      const worker: BrowserWorkerLike = {
+        onmessage: null,
+        onerror: null,
+        terminate() { terminations += 1; },
+        postMessage(message) {
+          const request = message as { id: string; type: string; protocolToken: string };
+          const payload = request.type === 'execute-prepared-runtime-program'
+            ? replies.shift()
+            : { success: true, loadTimeMs: 0 };
+          queueMicrotask(() => worker.onmessage?.({ data: {
+            id: request.id, protocolToken: request.protocolToken, type: 'result', payload,
+          } } as MessageEvent));
+        },
+      };
+      queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+      return worker;
+    },
+  });
+  try {
+    for (const expected of [
+      /^TraceCode could not trace this case: the Java tracer produced an inconsistent trace\./,
+      /^TraceCode could not trace this case: tracing stopped while the Harness was building its input\./,
+    ]) {
+      await assert.rejects(
+        client.executePreparedWithTracing('prepared', { inputs: {} }),
+        (error: unknown) => {
+          assert.ok(isTraceUnavailableError(error), String(error));
+          assert.match((error as Error).message, expected);
+          assert.doesNotMatch((error as Error).message, /trace:|callStackRef/);
+          return true;
+        }
+      );
+    }
+    const traced = await client.executePreparedWithTracing('prepared', { inputs: {} });
+    assert.equal(traced.output, 2);
+    assert.equal(terminations, 0);
+  } finally {
+    client.terminate();
+  }
+});
 
 test('Java code and trace batches preserve guest limits and reserve transport time for JVM recovery', async () => {
   const guestLimits: number[] = [];
