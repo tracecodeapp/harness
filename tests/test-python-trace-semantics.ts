@@ -171,6 +171,46 @@ async function checkInstrumentationFallback(runtime: PythonRuntime, dir: string,
   if (!ok) failures.push('fallback-learner-compile-error');
 }
 
+// The snapshot serializer must still describe learner values (a serializer
+// that raised would leave snapshots empty while results still match): the
+// last snapshot of each local in snapshot-runs-no-learner-dunders.
+const snapshotEpilogue = `
+_tc_summary = json.loads(__tracecode_execution_result_json)
+_tc_last = {}
+for _tc_event in _tc_summary['runtimeTrace']['events']:
+    if _tc_event.get('kind') == 'snapshot':
+        _tc_last[_tc_event['target']['variable']] = _tc_event.get('value')
+print(json.dumps(_tc_last))
+`;
+
+async function checkSnapshotContent(runtime: PythonRuntime, dir: string, failures: string[]) {
+  const testCase = pythonTraceSemanticsCases.concat(pythonTraceSemanticsPositionCases)
+    .find(({ id }) => id === 'snapshot-runs-no-learner-dunders');
+  if (!testCase) throw new Error('snapshot-runs-no-learner-dunders case not found');
+  const payload = runtime.generateTracingCode(deps, testCase.code, 'solve', {}, 'function', { maxTraceSteps: 5000, maxLineEvents: 20000 });
+  const last = JSON.parse(await runPython(dir, 'snapshots.py', payload.code + snapshotEpilogue));
+  const placeholder = (type: string) => (value: unknown) =>
+    typeof value === 'object' && value !== null && (value as Record<string, unknown>).__type__ === type &&
+    typeof (value as Record<string, unknown>).__id__ === 'string';
+  const expected: Record<string, (value: unknown) => boolean> = {
+    a: (value) => JSON.stringify(value) === JSON.stringify({ __type__: 'Loud', __class__: 'Loud', __id__: 'ref-0', n: 1 }),
+    items: (value) => JSON.stringify(value) === JSON.stringify([{ __ref__: 'ref-0' }, 3]),
+    table: (value) => JSON.stringify(value) === JSON.stringify({ '<Loud ref-0>': 1, k: 2, "(1, 'x')": 3 }),
+    group: (value) => JSON.stringify(value) === JSON.stringify({ __type__: 'set', values: [{ __ref__: 'ref-0' }, { __ref__: 'ref-1' }] }),
+    counted: (value) => value === 5,
+    label: (value) => value === 'z',
+    frozen: placeholder('frozenset'),
+    view: placeholder('dict_keys'),
+    error: placeholder('ValueError'),
+    window: placeholder('slice'),
+    slotted: placeholder('Slotted'),
+  };
+  const wrong = Object.entries(expected).filter(([name, matches]) => !matches(last[name])).map(([name]) => name);
+  const ok = wrong.length === 0;
+  console.log(`${ok ? 'PASS' : 'FAIL'} snapshot-content: ${ok ? 'learner values described without learner code' : 'unexpected ' + wrong.map((name) => name + '=' + JSON.stringify(last[name])).join(', ')}`);
+  if (!ok) failures.push('snapshot-content');
+}
+
 async function main() {
   const runtime = await loadPythonRuntime();
   const only = new Set((process.env.TRACECODE_SEMANTICS_CASES ?? '').split(',').filter(Boolean));
@@ -210,7 +250,10 @@ async function main() {
       console.log(`${ok ? 'PASS' : 'FAIL'} ${testCase.id}: untraced ${JSON.stringify(oracle)} traced ${JSON.stringify(traced)}${fallbackNote}${callNote}`);
       if (!ok) failures.push(testCase.id);
     }
-    if (!only.size) await checkInstrumentationFallback(runtime, dir, failures);
+    if (!only.size) {
+      await checkInstrumentationFallback(runtime, dir, failures);
+      await checkSnapshotContent(runtime, dir, failures);
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

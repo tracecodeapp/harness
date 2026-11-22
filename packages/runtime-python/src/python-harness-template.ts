@@ -205,116 +205,284 @@ def _serialize_repr_fallback(obj, node_refs=None, truncate_string=True):
     node_id = _tracecode_ref_id(obj_ref, node_refs)
     return {"__type__": class_name, "__class__": class_name, "__id__": node_id}
 
-def _serialize_sequence(values, depth, node_refs):
-    values_list = _builtins.list(values)
-    emitted = min(len(values_list), _MAX_SERIALIZED_ITEMS)
-    result = [_serialize(x, depth + 1, node_refs) for x in values_list[:emitted]]
-    if emitted < len(values_list):
-        result.append(_truncation_marker(len(values_list), emitted))
+# The snapshot serializer runs while the learner's program is suspended, so
+# it must not run learner code: no learner __repr__/__str__/__iter__/__len__/
+# __lt__/__hash__/__eq__/__getattribute__ and no property. It only checks exact
+# types, reads containers through the builtin types' own C methods (also for
+# learner subclasses, whose overrides are bypassed), reads instance fields from
+# the instance __dict__ (fetched with object.__getattribute__ when the class's
+# __dict__ entry is the builtin descriptor), and never sorts learner values.
+import collections as _tc_ser_collections
+import enum as _tc_ser_enum
+
+class _TcSerProbe:
+    pass
+
+# The builtin descriptors that hold an instance __dict__: a class's getset
+# and a C type's member (modules). A learner class cannot make either one
+# for __dict__ (a __slots__ entry '__dict__' creates the getset).
+_TC_SER_DICT_DESCRIPTORS = (type(_TcSerProbe.__dict__['__dict__']), type(type(_tc_ser_enum).__dict__['__dict__']))
+_TC_SER_DEQUE = _tc_ser_collections.deque
+_TC_SER_ORDERED_DICT = _tc_ser_collections.OrderedDict
+_TC_SER_TYPE_GETATTR = type.__getattribute__
+_TC_SER_OBJECT_GETATTR = object.__getattribute__
+_TC_SER_REPR_SCALARS = (int, float, bool, type(None), bytes, bytearray, complex, range)
+_TC_SER_DICT_VIEWS = (type({}.keys()), type({}.values()), type({}.items()))
+_TC_SER_REPR_BUDGET = 256
+
+def _tc_ser_type_name(obj_type):
+    try:
+        name = _TC_SER_TYPE_GETATTR(obj_type, '__name__')
+    except Exception:
+        return 'object'
+    return name if type(name) is str else 'object'
+
+def _tc_ser_instance_dict(obj):
+    # The instance __dict__, or None. A class that defines its own __dict__
+    # (a property, a slot named __dict__) is refused: reading it runs code.
+    obj_type = type(obj)
+    try:
+        for klass in _TC_SER_TYPE_GETATTR(obj_type, '__mro__'):
+            namespace = _TC_SER_TYPE_GETATTR(klass, '__dict__')
+            if '__dict__' in namespace:
+                if type(namespace['__dict__']) not in _TC_SER_DICT_DESCRIPTORS:
+                    return None
+                fields = _TC_SER_OBJECT_GETATTR(obj, '__dict__')
+                return fields if type(fields) is dict else None
+    except Exception:
+        return None
+    return None
+
+def _tc_ser_safe_repr(value, budget):
+    # Python's repr for builtin values whose repr cannot reach learner code;
+    # None for anything else. budget is a one-element list shared by the walk.
+    budget[0] -= 1
+    if budget[0] < 0:
+        return None
+    value_type = type(value)
+    if value_type is str:
+        return str.__repr__(value)
+    if value_type in _TC_SER_REPR_SCALARS:
+        return repr(value)
+    if issubclass(value_type, str):
+        return str.__repr__(value)
+    if issubclass(value_type, int):
+        return int.__repr__(value)
+    if issubclass(value_type, float):
+        return float.__repr__(value)
+    if value_type is tuple:
+        parts = [_tc_ser_safe_repr(item, budget) for item in value]
+        if None in parts:
+            return None
+        return '(' + ', '.join(parts) + (',' if len(parts) == 1 else '') + ')'
+    if value_type is list:
+        parts = [_tc_ser_safe_repr(item, budget) for item in value]
+        return None if None in parts else '[' + ', '.join(parts) + ']'
+    if value_type is set or value_type is frozenset:
+        parts = [_tc_ser_safe_repr(item, budget) for item in value]
+        if None in parts:
+            return None
+        if value_type is set:
+            return '{' + ', '.join(parts) + '}' if parts else 'set()'
+        return 'frozenset({' + ', '.join(parts) + '})' if parts else 'frozenset()'
+    if value_type is dict:
+        parts = []
+        for key, item in dict.items(value):
+            key_repr = _tc_ser_safe_repr(key, budget)
+            item_repr = _tc_ser_safe_repr(item, budget)
+            if key_repr is None or item_repr is None:
+                return None
+            parts.append(key_repr + ': ' + item_repr)
+        return '{' + ', '.join(parts) + '}'
+    if value_type is slice:
+        parts = [_tc_ser_safe_repr(part, budget) for part in (value.start, value.stop, value.step)]
+        return None if None in parts else 'slice(' + ', '.join(parts) + ')'
+    if value_type in _TC_SER_DICT_VIEWS:
+        parts = [_tc_ser_safe_repr(item, budget) for item in value]
+        if None in parts:
+            return None
+        return _tc_ser_type_name(value_type) + '([' + ', '.join(parts) + '])'
+    if issubclass(value_type, BaseException) and _TC_SER_TYPE_GETATTR(value_type, '__module__') == 'builtins':
+        args = BaseException.args.__get__(value)
+        parts = [_tc_ser_safe_repr(arg, budget) for arg in args]
+        if None in parts:
+            return None
+        return _tc_ser_type_name(value_type) + '(' + ', '.join(parts) + ')'
+    return None
+
+def _tc_ser_key_text(key, node_refs):
+    # str(key) for keys whose text cannot run learner code; otherwise the
+    # type name and the key object's ref id.
+    key_type = type(key)
+    if key_type is str:
+        return key
+    if issubclass(key_type, str):
+        # str() of a str subclass (StrEnum included) is its value.
+        return str.__str__(key)
+    if issubclass(key_type, int) and key_type is not int and key_type is not bool:
+        # str() of an int subclass (IntEnum, IntFlag included) is its value.
+        return int.__repr__(key)
+    if issubclass(key_type, _tc_ser_enum.Enum):
+        fields = _tc_ser_instance_dict(key)
+        name = fields.get('_name_') if fields is not None else None
+        if type(name) is str:
+            return _tc_ser_type_name(key_type) + '.' + name
+    else:
+        text = _tc_ser_safe_repr(key, [_TC_SER_REPR_BUDGET])
+        if text is not None:
+            return text
+    return '<' + _tc_ser_type_name(key_type) + ' ' + _tracecode_ref_id(_builtins.id(key), node_refs) + '>'
+
+def _tc_ser_take(iterator, count):
+    taken = []
+    if count <= 0:
+        return taken
+    for item in iterator:
+        taken.append(item)
+        if len(taken) >= count:
+            break
+    return taken
+
+def _tc_ser_items(items, total, depth, node_refs):
+    emitted = min(total, _MAX_SERIALIZED_ITEMS)
+    result = [_serialize(x, depth + 1, node_refs) for x in items[:emitted]]
+    if emitted < total:
+        result.append(_truncation_marker(total, emitted))
     return result
+
+def _tc_ser_object_ref(obj, node_refs):
+    obj_ref = _builtins.id(obj)
+    if obj_ref in node_refs:
+        return obj_ref, {"__ref__": node_refs[obj_ref]}
+    return obj_ref, None
 
 def _serialize(obj, depth=0, node_refs=None):
     if node_refs is None:
         node_refs = {}
-    if isinstance(obj, (bool, int, type(None))):
+    obj_type = type(obj)
+    if obj_type is int or obj_type is bool or obj is None:
         return obj
-    elif isinstance(obj, str):
+    if obj_type is str:
         return _serialize_string(obj)
-    elif isinstance(obj, float):
-        if not math.isfinite(obj):
-            if math.isnan(obj):
+    if obj_type is float or issubclass(obj_type, float):
+        value = float.__float__(obj)
+        if not math.isfinite(value):
+            if math.isnan(value):
                 return "NaN"
-            return "Infinity" if obj > 0 else "-Infinity"
-        return obj
+            return "Infinity" if value > 0 else "-Infinity"
+        return value
+    if issubclass(obj_type, int):
+        return int.__int__(obj)
+    if issubclass(obj_type, str):
+        return _serialize_string(str.__str__(obj))
     if depth > _MAX_SERIALIZE_DEPTH:
         return "<max depth>"
-    elif isinstance(obj, (_builtins.list, _builtins.tuple)):
-        return _serialize_sequence(obj, depth, node_refs)
-    elif getattr(obj, '__class__', None) and getattr(obj.__class__, '__name__', '') == 'deque':
-        return _serialize_sequence(obj, depth, node_refs)
-    elif isinstance(obj, _builtins.dict):
-        items = _builtins.list(obj.items())
-        emitted = min(len(items), _MAX_SERIALIZED_ITEMS)
-        result = {_serialize_string(str(k)): _serialize(v, depth + 1, node_refs) for k, v in items[:emitted]}
-        if emitted < len(items):
+    if issubclass(obj_type, list):
+        total = list.__len__(obj)
+        return _tc_ser_items(list.__getitem__(obj, slice(0, min(total, _MAX_SERIALIZED_ITEMS))), total, depth, node_refs)
+    if issubclass(obj_type, tuple):
+        total = tuple.__len__(obj)
+        return _tc_ser_items(tuple.__getitem__(obj, slice(0, min(total, _MAX_SERIALIZED_ITEMS))), total, depth, node_refs)
+    if issubclass(obj_type, _TC_SER_DEQUE):
+        total = _TC_SER_DEQUE.__len__(obj)
+        values = _tc_ser_take(_TC_SER_DEQUE.__iter__(obj), min(total, _MAX_SERIALIZED_ITEMS))
+        return _tc_ser_items(values, total, depth, node_refs)
+    if issubclass(obj_type, dict):
+        base = _TC_SER_ORDERED_DICT if issubclass(obj_type, _TC_SER_ORDERED_DICT) else dict
+        total = dict.__len__(obj)
+        emitted = min(total, _MAX_SERIALIZED_ITEMS)
+        result = {}
+        for key, value in _tc_ser_take(iter(base.items(obj)), emitted):
+            result[_serialize_string(_tc_ser_key_text(key, node_refs))] = _serialize(value, depth + 1, node_refs)
+        if emitted < total:
             result["__truncated__"] = True
-            result["remaining"] = len(items) - emitted
+            result["remaining"] = total - emitted
         return result
-    elif isinstance(obj, set):
-        # Use try/except for sorting to handle heterogeneous sets
-        values = _builtins.list(obj)
-        emitted = min(len(values), _MAX_SERIALIZED_ITEMS)
+    if issubclass(obj_type, set):
+        total = set.__len__(obj)
+        emitted = min(total, _MAX_SERIALIZED_ITEMS)
+        serialized = [_serialize(x, depth + 1, node_refs) for x in _tc_ser_take(set.__iter__(obj), emitted)]
+        # Only serialized (builtin) values are compared, never learner values.
         try:
-            sorted_vals = sorted([_serialize(x, depth + 1, node_refs) for x in values[:emitted]])
+            sorted_vals = sorted(serialized)
         except TypeError:
-            sorted_vals = [_serialize(x, depth + 1, node_refs) for x in values[:emitted]]
+            sorted_vals = serialized
         result = {"__type__": "set", "values": sorted_vals}
-        if emitted < len(values):
+        if emitted < total:
             result["__truncated__"] = True
-            result["remaining"] = len(values) - emitted
+            result["remaining"] = total - emitted
         return result
-    elif isinstance(obj, TreeNode):
-        obj_ref = _builtins.id(obj)
-        if obj_ref in node_refs:
-            return {"__ref__": node_refs[obj_ref]}
+    if issubclass(obj_type, TreeNode) or issubclass(obj_type, ListNode):
+        obj_ref, ref = _tc_ser_object_ref(obj, node_refs)
+        if ref is not None:
+            return ref
+        fields = _tc_ser_instance_dict(obj) or {}
         node_id = _tracecode_ref_id(obj_ref, node_refs)
+        is_tree = issubclass(obj_type, TreeNode)
         result = {
-            "__type__": "TreeNode",
+            "__type__": "TreeNode" if is_tree else "ListNode",
             "__id__": node_id,
-            "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, node_refs),
+            "val": _serialize(fields['val'] if 'val' in fields else fields.get('value'), depth + 1, node_refs),
         }
-        if hasattr(obj, 'left'):
-            result["left"] = _serialize(obj.left, depth + 1, node_refs)
-        if hasattr(obj, 'right'):
-            result["right"] = _serialize(obj.right, depth + 1, node_refs)
+        if is_tree:
+            if 'left' in fields:
+                result["left"] = _serialize(fields['left'], depth + 1, node_refs)
+            if 'right' in fields:
+                result["right"] = _serialize(fields['right'], depth + 1, node_refs)
+        else:
+            result["next"] = _serialize(fields.get('next'), depth + 1, node_refs)
         return result
-    elif isinstance(obj, ListNode):
-        obj_ref = _builtins.id(obj)
-        if obj_ref in node_refs:
-            return {"__ref__": node_refs[obj_ref]}
-        node_id = _tracecode_ref_id(obj_ref, node_refs)
-        result = {
-            "__type__": "ListNode",
-            "__id__": node_id,
-            "val": _serialize(getattr(obj, 'val', getattr(obj, 'value', None)), depth + 1, node_refs),
-        }
-        result["next"] = _serialize(obj.next, depth + 1, node_refs)
-        return result
-    elif callable(obj):
+    if callable(obj):
         # Skip functions entirely - return sentinel
         return _SKIP_SENTINEL
-    elif hasattr(obj, '__dict__'):
-        obj_ref = _builtins.id(obj)
-        if obj_ref in node_refs:
-            return {"__ref__": node_refs[obj_ref]}
+    fields = _tc_ser_instance_dict(obj)
+    class_name = _tc_ser_type_name(obj_type)
+    if fields is not None:
+        obj_ref, ref = _tc_ser_object_ref(obj, node_refs)
+        if ref is not None:
+            return ref
         node_id = _tracecode_ref_id(obj_ref, node_refs)
-        class_name = getattr(getattr(obj, '__class__', None), '__name__', 'object')
         result = {
             "__type__": class_name,
             "__class__": class_name,
             "__id__": node_id,
         }
-        try:
-            raw_fields = getattr(obj, '__dict__', None)
-        except Exception:
-            raw_fields = None
-        if isinstance(raw_fields, _builtins.dict):
-            fields = []
-            for key, value in raw_fields.items():
-                key_str = _serialize_string(str(key))
-                if key_str.startswith('_'):
-                    continue
-                if callable(value):
-                    continue
-                fields.append((key_str, value))
-            for key_str, value in fields[:_MAX_OBJECT_FIELDS]:
-                result[key_str] = _serialize(value, depth + 1, node_refs)
-            if len(fields) > _MAX_OBJECT_FIELDS:
-                result["__truncated__"] = True
-                result["remaining"] = len(fields) - _MAX_OBJECT_FIELDS
+        kept = []
+        for key, value in dict.items(fields):
+            key_str = _serialize_string(_tc_ser_key_text(key, node_refs))
+            if key_str.startswith('_'):
+                continue
+            if callable(value):
+                continue
+            kept.append((key_str, value))
+        for key_str, value in kept[:_MAX_OBJECT_FIELDS]:
+            result[key_str] = _serialize(value, depth + 1, node_refs)
+        if len(kept) > _MAX_OBJECT_FIELDS:
+            result["__truncated__"] = True
+            result["remaining"] = len(kept) - _MAX_OBJECT_FIELDS
         return result
-    else:
-        return _serialize_repr_fallback(obj, node_refs)
+    try:
+        module = _TC_SER_TYPE_GETATTR(obj_type, '__module__')
+    except Exception:
+        module = None
+    if module == 'builtins':
+        # A builtin value shown by its repr when that repr is builtin-safe
+        # (bytes, range, frozenset, slice, dict views, builtin exceptions).
+        # One of those holding a learner value gets the placeholder below;
+        # iterators, generators and the like are skipped as before.
+        text = _tc_ser_safe_repr(obj, [_TC_SER_REPR_BUDGET])
+        if text is not None:
+            return _serialize_string(text)
+        if not (
+            obj_type is frozenset or obj_type is slice or obj_type in _TC_SER_DICT_VIEWS
+            or issubclass(obj_type, BaseException)
+        ):
+            return _SKIP_SENTINEL
+    obj_ref, ref = _tc_ser_object_ref(obj, node_refs)
+    if ref is not None:
+        return ref
+    node_id = _tracecode_ref_id(obj_ref, node_refs)
+    return {"__type__": class_name, "__class__": class_name, "__id__": node_id}
 
 def _serialize_output(obj, depth=0, node_refs=None):
     if node_refs is None:

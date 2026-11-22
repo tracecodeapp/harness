@@ -3072,9 +3072,17 @@ def _is_structural_constructor_frame(frame):
     if self_obj is None:
         return False
     try:
-        has_val_like = hasattr(self_obj, 'val') or hasattr(self_obj, 'value')
-        has_tree_links = hasattr(self_obj, 'left') or hasattr(self_obj, 'right')
-        has_list_links = hasattr(self_obj, 'next') or hasattr(self_obj, 'prev')
+        # Presence from the instance __dict__ and the class namespaces only:
+        # hasattr would run a property or the learner's __getattribute__.
+        names = _builtins.set()
+        fields = _tc_ser_instance_dict(self_obj)
+        if fields is not None:
+            names.update(key for key in fields if _builtins.type(key) is _builtins.str)
+        for klass in _builtins.type.__getattribute__(_builtins.type(self_obj), '__mro__'):
+            names.update(_builtins.type.__getattribute__(klass, '__dict__'))
+        has_val_like = 'val' in names or 'value' in names
+        has_tree_links = 'left' in names or 'right' in names
+        has_list_links = 'next' in names or 'prev' in names
         return has_val_like and (has_tree_links or has_list_links)
     except Exception:
         return False
@@ -3525,6 +3533,12 @@ def _snapshot_locals(frame, with_sources=False):
     except Exception:
         return ({}, {}) if with_sources else {}
 
+def _tc_isinstance(obj, cls):
+    # isinstance without its __class__ fallback: when the type check fails,
+    # isinstance reads obj.__class__, which runs a learner __getattribute__.
+    # Recording helpers classify learner values with this instead.
+    return _builtins.issubclass(_builtins.type(obj), cls)
+
 def __tracecode_record_access(frame, event):
     if _trace_limit_exceeded:
         return
@@ -3586,7 +3600,7 @@ def __tracecode_value_at_path(value, path):
         try:
             current = current[part]
         except Exception:
-            if isinstance(part, _builtins.str):
+            if _tc_isinstance(part, _builtins.str):
                 try:
                     current = getattr(current, part)
                     continue
@@ -4062,9 +4076,9 @@ def __tracecode_normalize_index_component(index):
                 return None
             normalized.append(component)
         return normalized
-    if isinstance(index, _builtins.int):
+    if _tc_isinstance(index, _builtins.int):
         return _builtins.int.__int__(index)
-    if isinstance(index, _builtins.str):
+    if _tc_isinstance(index, _builtins.str):
         return _builtins.str.__str__(index)
     return None
 
@@ -4081,17 +4095,33 @@ def __tracecode_normalize_indices(indices, max_depth=None):
         normalized.append(component)
     return normalized
 
+_TC_NAMED_CALLABLE_TYPES = (
+    _builtins.type(lambda: None),
+    _builtins.type(_builtins.len),
+)
+
 def __tracecode_serialize_call_arg(value):
+    # A callable's name is read only from function, builtin and class
+    # objects, through their own types: a learner callable instance's
+    # __getattr__/__getattribute__ must not run.
     if callable(value):
-        name = getattr(value, '__name__', None)
-        return name if isinstance(name, _builtins.str) and name else '<callable>'
+        value_type = _builtins.type(value)
+        name = None
+        try:
+            if value_type in _TC_NAMED_CALLABLE_TYPES:
+                name = _builtins.object.__getattribute__(value, '__name__')
+            elif _builtins.issubclass(value_type, _builtins.type):
+                name = _builtins.type.__getattribute__(value, '__name__')
+        except Exception:
+            name = None
+        return name if _builtins.type(name) is _builtins.str and name else '<callable>'
     return _serialize(value)
 
 def __tracecode_serialize_call_args(args, kwargs=None):
     serialized = [__tracecode_serialize_call_arg(arg) for arg in args]
     if isinstance(kwargs, _builtins.dict):
         for key, value in kwargs.items():
-            if isinstance(key, _builtins.str):
+            if _tc_isinstance(key, _builtins.str):
                 serialized.append(f'{key}={__tracecode_serialize_call_arg(value)}')
     return serialized
 
@@ -4205,7 +4235,7 @@ def __tracecode_make_iteration_access_event(var_name, kind, indices, binding_nam
 def __tracecode_record_destructured_iteration_accesses(frame, var_name, base_indices, value, binding_names, index_sources=None):
     if not isinstance(binding_names, _builtins.list) or len(binding_names) <= 1:
         return
-    if not isinstance(value, (_builtins.list, _builtins.tuple)) or not __tracecode_is_runtime_value(value):
+    if not _tc_isinstance(value, (_builtins.list, _builtins.tuple)) or not __tracecode_is_runtime_value(value):
         return
     normalized_base = list(base_indices)
     normalized_sources = list(index_sources) if isinstance(index_sources, _builtins.list) else [None for _ in normalized_base]
@@ -4235,16 +4265,16 @@ def __tracecode_is_runtime_value(value):
     return _builtins.type(value).__module__ in ('builtins', 'collections', '_collections', 'array')
 
 def __tracecode_is_indexable_sequence(value):
-    return isinstance(value, (list, tuple, _builtins.str)) or (
-        getattr(getattr(value, '__class__', None), '__name__', '') == 'deque'
+    return _tc_isinstance(value, (list, tuple, _builtins.str)) or (
+        _builtins.type.__getattribute__(_builtins.type(value), '__name__') == 'deque'
     )
 
 def __tracecode_is_mutable_container(value):
-    if _builtins.isinstance(value, (_builtins.list, _builtins.dict, _builtins.set, _builtins.bytearray)):
+    if _tc_isinstance(value, (_builtins.list, _builtins.dict, _builtins.set, _builtins.bytearray)):
         return True
-    value_class = _builtins.getattr(value, '__class__', None)
-    class_module = _builtins.getattr(value_class, '__module__', '')
-    class_name = _builtins.getattr(value_class, '__name__', '')
+    value_class = _builtins.type(value)
+    class_module = _builtins.type.__getattribute__(value_class, '__module__')
+    class_name = _builtins.type.__getattribute__(value_class, '__name__')
     return (
         (class_module in {'collections', '_collections'} and class_name == 'deque') or
         (class_module == 'array' and class_name == 'array')
@@ -4365,7 +4395,7 @@ def __tracecode_peek_value(container, indices):
                 raise _TracecodePeekRefused()
             current = current[index]
             continue
-        if _builtins.isinstance(current, _builtins.dict) and (
+        if _tc_isinstance(current, _builtins.dict) and (
             current_type is _builtins.dict or current_type.__module__ in ('collections', '_collections')
         ):
             if not __tracecode_peek_key(index) or not _builtins.dict.__contains__(current, index):
@@ -4477,7 +4507,7 @@ def _tracecode_read_path(var_name, container, indices, index_sources=None):
 
 def __tracecode_record_path_access(frame, var_name, container, normalized, index_sources, value, write):
     # Dict roots keep the flat indexed kinds; other two-step paths are cells.
-    if _builtins.isinstance(container, _builtins.dict):
+    if _tc_isinstance(container, _builtins.dict):
         kind = 'indexed-write' if write else 'indexed-read'
     elif _builtins.len(normalized) == 2:
         kind = 'cell-write' if write else 'cell-read'
@@ -4565,7 +4595,7 @@ def _tracecode_record_delete(var_name, container, indices, index_sources=None):
     normalized = __tracecode_normalize_indices(effective_indices)
     if normalized is not None:
         args = [_serialize(effective_indices[-1])] if len(effective_indices) > 0 else []
-        if isinstance(container, _builtins.dict):
+        if _tc_isinstance(container, _builtins.dict):
             __tracecode_record_access(
                 sys._getframe(1),
                 __tracecode_make_access_event(var_name, 'mutating-call', normalized, method_name='remove', index_sources=index_sources, args=args),
@@ -4625,9 +4655,9 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
     _tc_rep_invalidate(container)
     before_len = None
     try:
-        container_class_name = getattr(getattr(container, '__class__', None), '__name__', '')
+        container_class_name = _builtins.type.__getattribute__(_builtins.type(container), '__name__')
         if method_name in {'append', 'appendleft', 'extend', 'extendleft', 'insert'} and (
-            isinstance(container, _builtins.list) or container_class_name == 'deque'
+            _tc_isinstance(container, _builtins.list) or container_class_name == 'deque'
         ) and __tracecode_is_runtime_value(container):
             before_len = len(container)
     except Exception:
@@ -4637,7 +4667,7 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
         if (
             len(args) >= 1 and
             method_name in {'pop', 'remove', 'discard'} and
-            isinstance(container, (_builtins.dict, _builtins.set))
+            _tc_isinstance(container, (_builtins.dict, _builtins.set))
         ):
             normalized = __tracecode_normalize_indices([args[0]])
             if normalized is not None:
@@ -4682,7 +4712,7 @@ def _tracecode_mutating_call(var_name, container, method, method_name, index_sou
                         )
                 except Exception:
                     pass
-        elif method_name in {'sort', 'reverse'} and isinstance(container, _builtins.list):
+        elif method_name in {'sort', 'reverse'} and _tc_isinstance(container, _builtins.list):
             try:
                 budget = __tracecode_pending_access_budget(frame)
                 for index, value in enumerate(container):
@@ -4756,7 +4786,7 @@ def _tracecode_mutating_index_call(bound, /, *args, **kwargs):
                         )
                 except Exception:
                     pass
-        elif normalized is not None and method_name in {'sort', 'reverse'} and isinstance(target, _builtins.list):
+        elif normalized is not None and method_name in {'sort', 'reverse'} and _tc_isinstance(target, _builtins.list):
             try:
                 budget = __tracecode_pending_access_budget(frame)
                 for index, value in enumerate(target):
@@ -4778,7 +4808,7 @@ def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name
     invalid_nested_path = len(effective_indices) > 0 and normalized is None
     try:
         snapshot_budget = __tracecode_pending_access_budget(frame, reserve=2)
-        before_values = list(target[:snapshot_budget]) if isinstance(target, _builtins.list) and __tracecode_is_runtime_value(target) and snapshot_budget > 0 else None
+        before_values = list(target[:snapshot_budget]) if _tc_isinstance(target, _builtins.list) and __tracecode_is_runtime_value(target) and snapshot_budget > 0 else None
     except Exception:
         before_values = None
     if not invalid_nested_path:
@@ -4880,7 +4910,7 @@ def _tracecode_sum(sum_func, var_name, iterable, /, *args, **kwargs):
         return sum_func(iterable, *args, **kwargs)
     frame = sys._getframe(1)
     try:
-        if (__tracecode_is_indexable_sequence(iterable) or isinstance(iterable, range)) and __tracecode_is_runtime_value(iterable):
+        if (__tracecode_is_indexable_sequence(iterable) or _tc_isinstance(iterable, range)) and __tracecode_is_runtime_value(iterable):
             budget = __tracecode_pending_access_budget(frame, reserve=1)
             total_length = None
             try:
@@ -5160,21 +5190,21 @@ def _tracecode_range_bind(binding_name, iterable):
         yield value
 
 def _tracecode_for_target_binding_name(target):
-    if isinstance(target, ast.Name):
+    if _tc_isinstance(target, ast.Name):
         return target.id
-    if isinstance(target, (ast.Tuple, ast.List)):
+    if _tc_isinstance(target, (ast.Tuple, ast.List)):
         names = []
         for element in target.elts:
-            if not isinstance(element, ast.Name):
+            if not _tc_isinstance(element, ast.Name):
                 return None
             names.append(element.id)
         return ','.join(names) if names else None
     return None
 
 def _tracecode_scalar_target_names(target):
-    if isinstance(target, ast.Name):
+    if _tc_isinstance(target, ast.Name):
         return [target.id]
-    if isinstance(target, (ast.Tuple, ast.List)):
+    if _tc_isinstance(target, (ast.Tuple, ast.List)):
         names = []
         for element in target.elts:
             names.extend(_tracecode_scalar_target_names(element))
@@ -5182,7 +5212,7 @@ def _tracecode_scalar_target_names(target):
     return []
 
 def _tracecode_assignment_write_targets(target):
-    if isinstance(target, (ast.Tuple, ast.List)):
+    if _tc_isinstance(target, (ast.Tuple, ast.List)):
         write_targets = []
         for element in target.elts:
             write_targets.extend(_tracecode_assignment_write_targets(element))
@@ -5201,11 +5231,11 @@ def _tracecode_safe_exception_message(error):
     # when its __str__ is a builtin implementation and every argument is a
     # plain builtin value; otherwise the type name stands in for it.
     try:
-        if _builtins.isinstance(error, _builtins.type):
+        if _tc_isinstance(error, _builtins.type):
             return _builtins.type.__getattribute__(error, '__name__')
         error_type = _builtins.type(error)
         type_name = _builtins.type.__getattribute__(error_type, '__name__')
-        if not _builtins.isinstance(error, _builtins.BaseException):
+        if not _tc_isinstance(error, _builtins.BaseException):
             return type_name
         for klass in error_type.__mro__:
             if '__str__' in klass.__dict__:
@@ -5243,21 +5273,21 @@ def _tracecode_extract_named_subscript(node):
     indices = []
     current = node
     while len(indices) < _TRACE_MAX_PATH_DEPTH:
-        if isinstance(current, ast.Subscript):
+        if _tc_isinstance(current, ast.Subscript):
             indices.insert(0, current.slice)
             current = current.value
             continue
-        if isinstance(current, ast.Attribute):
+        if _tc_isinstance(current, ast.Attribute):
             indices.insert(0, ast.Constant(value=current.attr))
             current = current.value
             continue
         break
-    if not isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > _TRACE_MAX_PATH_DEPTH:
+    if not _tc_isinstance(current, ast.Name) or len(indices) == 0 or len(indices) > _TRACE_MAX_PATH_DEPTH:
         return None
     return current.id, indices
 
 def _tracecode_index_source_node(index):
-    if isinstance(index, ast.Name):
+    if _tc_isinstance(index, ast.Name):
         return ast.Constant(value=index.id)
     has_name = False
     for child in ast.walk(index):
@@ -5301,9 +5331,9 @@ def _tracecode_is_annotation_node(node):
     parent = getattr(current, '__trace_parent__', None)
     while parent is not None:
         if (
-            (isinstance(parent, ast.arg) and getattr(parent, 'annotation', None) is current) or
-            (isinstance(parent, ast.AnnAssign) and getattr(parent, 'annotation', None) is current) or
-            (isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(parent, 'returns', None) is current)
+            (_tc_isinstance(parent, ast.arg) and getattr(parent, 'annotation', None) is current) or
+            (_tc_isinstance(parent, ast.AnnAssign) and getattr(parent, 'annotation', None) is current) or
+            (_tc_isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)) and getattr(parent, 'returns', None) is current)
         ):
             return True
         current = parent
