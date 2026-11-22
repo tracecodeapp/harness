@@ -139,16 +139,30 @@ function failureOutcome(
 }
 
 /**
+ * Every limit 0.20.2 could attach to a completed traced case: the recording
+ * budgets, plus `recursion-limit`, which its JavaScript recorder kept when a
+ * program caught that guard and completed.
+ */
+const LEGACY_TRUNCATION_CODES: ReadonlySet<string> = new Set<ExecutionLimitReason>([
+  'trace-limit',
+  'trace-byte-limit',
+  'line-limit',
+  'single-line-limit',
+  'recursion-limit',
+]);
+
+/**
  * The exact warning 0.20.2's Judge wrote, without `kind`, and only on a
  * completed traced case: `Trace recording stopped at the <code> budget after
- * execution completed.` with that budget as its code. Results saved by 0.20.2
- * are still read by that shape, so a stored completed case keeps its budget,
- * including the line budgets (`line-limit`, `single-line-limit`) that could
- * stop recording while a finite program ran on. Any other unmarked warning,
- * and any unmarked warning on a failed or limited case, is not a trace budget.
+ * execution completed.` with one of the codes above. Results saved by 0.20.2
+ * are still read by that shape, so a stored completed case keeps its budget.
+ * Any other unmarked warning, and any unmarked warning on a failed or limited
+ * case, is not a trace budget.
  */
 function isLegacyTraceTruncationWarning(diagnostic: JudgeDiagnostic): boolean {
   return diagnostic.kind === undefined &&
+    diagnostic.code !== undefined &&
+    LEGACY_TRUNCATION_CODES.has(diagnostic.code) &&
     diagnostic.message ===
       `Trace recording stopped at the ${diagnostic.code} budget after execution completed.`;
 }
