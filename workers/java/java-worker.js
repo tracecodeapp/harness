@@ -1533,30 +1533,90 @@ function buildDynamicInputHelperMethods() {
   // occurrence the one object, and build each parsed JSON object once. They
   // cover one case: run() clears them before it reads its first input.
   private static java.util.HashMap<String, Object> preparedNodesById = new java.util.HashMap<>();
-  private static java.util.HashSet<String> preparedReferencedIds = new java.util.HashSet<>();
   private static java.util.IdentityHashMap<Object, Object> preparedNodesBySource = new java.util.IdentityHashMap<>();
+  private static java.util.IdentityHashMap<Object, java.util.HashMap<java.lang.reflect.Type, Object>> preparedValuesBySource =
+      new java.util.IdentityHashMap<>();
+  // From the scan of each input document: JSON objects whose own subtree
+  // refers back to them, and JSON values whose subtree holds any reference.
+  private static java.util.IdentityHashMap<Object, Boolean> preparedSelfReferenced = new java.util.IdentityHashMap<>();
+  private static java.util.IdentityHashMap<Object, Boolean> preparedHoldsReference = new java.util.IdentityHashMap<>();
 
   private static void beginPreparedInputCase() {
     preparedNodesById = new java.util.HashMap<>();
-    preparedReferencedIds = new java.util.HashSet<>();
     preparedNodesBySource = new java.util.IdentityHashMap<>();
+    preparedValuesBySource = new java.util.IdentityHashMap<>();
+    preparedSelfReferenced = new java.util.IdentityHashMap<>();
+    preparedHoldsReference = new java.util.IdentityHashMap<>();
   }
 
   private static Object parsePreparedJsonInput(String source) {
     Object document = new __TracecodeJsonParser(source).parse();
-    collectPreparedReferences(document);
+    scanPreparedReferences(document);
     return document;
   }
 
-  private static void collectPreparedReferences(Object value) {
+  /**
+   * Numbers the document's values in preorder and records, for each JSON
+   * object with an __id__, whether a reference to that id sits inside its
+   * own subtree (its preorder span). Only such an object has to exist before
+   * its links are built; every other object can be built whole.
+   */
+  private static void scanPreparedReferences(Object document) {
+    java.util.HashMap<String, java.util.ArrayList<Integer>> referencePositions = new java.util.HashMap<>();
+    java.util.ArrayList<Object> definitions = new java.util.ArrayList<>();
+    java.util.ArrayList<int[]> spans = new java.util.ArrayList<>();
+    int[] counter = new int[] { 0 };
+    scanPreparedValue(document, counter, referencePositions, definitions, spans);
+    for (int index = 0; index < definitions.size(); index += 1) {
+      Object definition = definitions.get(index);
+      int[] span = spans.get(index);
+      Object id = ((java.util.Map<?, ?>) definition).get("__id__");
+      java.util.ArrayList<Integer> positions = referencePositions.get(id);
+      if (positions == null) continue;
+      for (int position : positions) {
+        if (position > span[0] && position <= span[1]) {
+          preparedSelfReferenced.put(definition, Boolean.TRUE);
+          break;
+        }
+      }
+    }
+  }
+
+  private static boolean scanPreparedValue(
+      Object value,
+      int[] counter,
+      java.util.HashMap<String, java.util.ArrayList<Integer>> referencePositions,
+      java.util.ArrayList<Object> definitions,
+      java.util.ArrayList<int[]> spans
+  ) {
+    int position = counter[0]++;
+    boolean holdsReference = false;
+    java.util.Collection<?> children;
     if (value instanceof java.util.Map<?, ?>) {
       java.util.Map<?, ?> fields = (java.util.Map<?, ?>) value;
       Object target = fields.get("__ref__");
-      if (target instanceof String) preparedReferencedIds.add((String) target);
-      for (Object child : fields.values()) collectPreparedReferences(child);
+      if (target instanceof String) {
+        referencePositions.computeIfAbsent((String) target, key -> new java.util.ArrayList<>()).add(position);
+        holdsReference = true;
+      }
+      children = fields.values();
     } else if (value instanceof java.util.List<?>) {
-      for (Object child : (java.util.List<?>) value) collectPreparedReferences(child);
+      children = (java.util.List<?>) value;
+    } else {
+      return false;
     }
+    int[] span = null;
+    if (value instanceof java.util.Map<?, ?> && ((java.util.Map<?, ?>) value).get("__id__") instanceof String) {
+      span = new int[] { position, position };
+      definitions.add(value);
+      spans.add(span);
+    }
+    for (Object child : children) {
+      if (scanPreparedValue(child, counter, referencePositions, definitions, spans)) holdsReference = true;
+    }
+    if (span != null) span[1] = counter[0] - 1;
+    if (holdsReference) preparedHoldsReference.put(value, Boolean.TRUE);
+    return holdsReference;
   }
 
   private static Object readJsonInputProperty(String key, java.lang.reflect.Type targetType) {
@@ -1764,21 +1824,33 @@ function buildDynamicInputHelperMethods() {
     // the same JSON object; build it once so each subtree is not built again.
     Object built = preparedNodesBySource.get(fields);
     if (built != null && targetType.isInstance(built)) return built;
-    Object id = fields.get("__id__");
-    if (id instanceof String && preparedReferencedIds.contains(id)) {
-      // Something inside this node may point back to it, so it has to exist
-      // before its fields are built.
-      Object instance = allocatePreparedJsonObject(targetType);
-      recordPreparedNode(fields, instance);
-      try {
-        assignPreparedJsonFields(targetType, instance, fields);
-      } catch (ReflectiveOperationException error) {
-        rethrowBudgetAbort(error);
-        throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
-      }
-      return instance;
+    java.util.LinkedHashMap<String, Object> values = new java.util.LinkedHashMap<>();
+    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
+      String name = String.valueOf(entry.getKey());
+      if (!name.startsWith("__")) values.put(name, entry.getValue());
     }
-    return recordPreparedNode(fields, constructPreparedJsonObject(fields, targetType));
+    Object instance;
+    if (preparedSelfReferenced.containsKey(fields)) {
+      // Something inside this node points back to it, so it has to exist
+      // before the links that lead there are built. Construct it from the
+      // values that cannot lead back (scalars, and structures that hold no
+      // reference), register it, then assign the rest.
+      java.util.LinkedHashMap<String, Object> available = new java.util.LinkedHashMap<>();
+      for (java.util.Map.Entry<String, Object> entry : values.entrySet()) {
+        if (!preparedHoldsReference.containsKey(entry.getValue())) available.put(entry.getKey(), entry.getValue());
+      }
+      instance = instantiatePreparedJsonObject(targetType, available);
+    } else {
+      instance = instantiatePreparedJsonObject(targetType, values);
+    }
+    recordPreparedNode(fields, instance);
+    try {
+      assignPreparedJsonFields(targetType, instance, fields);
+    } catch (ReflectiveOperationException error) {
+      rethrowBudgetAbort(error);
+      throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName(), error);
+    }
+    return instance;
   }
 
   private static Object recordPreparedNode(java.util.Map<?, ?> fields, Object instance) {
@@ -1788,84 +1860,144 @@ function buildDynamicInputHelperMethods() {
     return instance;
   }
 
-  private static Object allocatePreparedJsonObject(Class<?> targetType) {
-    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
-    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
-    for (java.lang.reflect.Constructor<?> constructor : declared) {
-      try {
-        Class<?>[] parameterTypes = constructor.getParameterTypes();
-        Object[] arguments = new Object[parameterTypes.length];
-        for (int index = 0; index < parameterTypes.length; index += 1) {
-          arguments[index] = defaultJsonArgument(parameterTypes[index]);
-        }
-        constructor.setAccessible(true);
-        return constructor.newInstance(arguments);
-      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
-        rethrowBudgetAbort(candidateFailure);
-      }
-    }
-    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
+  private static boolean isPreparedScalarParameter(Class<?> type) {
+    return type.isPrimitive() || type == String.class || type == Character.class || type == Boolean.class ||
+        Number.class.isAssignableFrom(type);
   }
 
-  private static Object constructPreparedJsonObject(
-      java.util.Map<?, ?> fields,
-      Class<?> targetType
-  ) {
-    java.util.ArrayList<Object> materializedValues = new java.util.ArrayList<>();
-    for (java.util.Map.Entry<?, ?> entry : fields.entrySet()) {
-      if (!String.valueOf(entry.getKey()).startsWith("__")) {
-        materializedValues.add(entry.getValue());
-      }
+  private static boolean preparedScalarFits(Object value, Class<?> type) {
+    if (value instanceof Number) {
+      return type != boolean.class && type != char.class && type != Boolean.class && type != Character.class &&
+          type != String.class && (type.isPrimitive() || Number.class.isAssignableFrom(type));
     }
-    Object[] values = materializedValues.toArray();
-    for (java.lang.reflect.Constructor<?> constructor : targetType.getDeclaredConstructors()) {
-      if (constructor.getParameterCount() != values.length) continue;
+    if (value instanceof Boolean) return type == boolean.class || type == Boolean.class;
+    if (value instanceof String) {
+      return type == String.class ||
+          ((type == char.class || type == Character.class) && ((String) value).length() == 1);
+    }
+    return false;
+  }
+
+  private static Object newPreparedInstance(
+      java.lang.reflect.Constructor<?> constructor,
+      Object[] arguments
+  ) throws ReflectiveOperationException {
+    constructor.setAccessible(true);
+    return constructor.newInstance(arguments);
+  }
+
+  /**
+   * Constructs targetType from the given JSON field values, without assigning
+   * fields. Constructors are tried in this order: one whose parameter names
+   * all name given fields; one taking every given value in order; a no-arg
+   * one; one taking the leading scalar values whose types match exactly; and
+   * only then one called with type-default arguments.
+   */
+  private static Object instantiatePreparedJsonObject(
+      Class<?> targetType,
+      java.util.LinkedHashMap<String, Object> values
+  ) {
+    java.lang.reflect.Constructor<?>[] constructors = targetType.getDeclaredConstructors();
+    java.util.Arrays.sort(
+        constructors,
+        java.util.Comparator.comparingInt((java.lang.reflect.Constructor<?> constructor) -> constructor.getParameterCount()).reversed()
+    );
+    for (java.lang.reflect.Constructor<?> constructor : constructors) {
+      java.lang.reflect.Parameter[] parameters = constructor.getParameters();
+      if (parameters.length == 0) continue;
+      boolean named = true;
+      for (java.lang.reflect.Parameter parameter : parameters) {
+        if (!parameter.isNamePresent() || !values.containsKey(parameter.getName())) {
+          named = false;
+          break;
+        }
+      }
+      if (!named) continue;
       try {
         java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
-        Object[] arguments = new Object[values.length];
-        for (int index = 0; index < values.length; index += 1) {
-          arguments[index] = coerceJsonInput(values[index], parameterTypes[index]);
+        Object[] arguments = new Object[parameters.length];
+        for (int index = 0; index < parameters.length; index += 1) {
+          arguments[index] = coerceJsonInput(values.get(parameters[index].getName()), parameterTypes[index]);
         }
-        constructor.setAccessible(true);
-        Object instance = constructor.newInstance(arguments);
-        assignPreparedJsonFields(targetType, instance, fields);
-        return instance;
+        return newPreparedInstance(constructor, arguments);
       } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
       }
     }
-    try {
-      java.lang.reflect.Constructor<?> constructor = targetType.getDeclaredConstructor();
-      constructor.setAccessible(true);
-      Object instance = constructor.newInstance();
-      assignPreparedJsonFields(targetType, instance, fields);
-      return instance;
-    } catch (ReflectiveOperationException candidateFailure) {
-      rethrowBudgetAbort(candidateFailure);
+    Object[] ordered = values.values().toArray();
+    for (java.lang.reflect.Constructor<?> constructor : constructors) {
+      if (constructor.getParameterCount() != ordered.length || ordered.length == 0) continue;
+      try {
+        java.lang.reflect.Type[] parameterTypes = constructor.getGenericParameterTypes();
+        Object[] arguments = new Object[ordered.length];
+        for (int index = 0; index < ordered.length; index += 1) {
+          arguments[index] = coerceJsonInput(ordered[index], parameterTypes[index]);
+        }
+        return newPreparedInstance(constructor, arguments);
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
     }
-    // Learner types often declare a single convenience constructor (the classic
-    // TreeNode(int val)) and no no-arg constructor, so an interior node that
-    // serializes as {val,left,right} matches no constructor arity. Construct
-    // with type-default arguments and let the by-name field assignment below
-    // populate the real values.
-    java.lang.reflect.Constructor<?>[] declared = targetType.getDeclaredConstructors();
-    java.util.Arrays.sort(declared, java.util.Comparator.comparingInt(java.lang.reflect.Constructor::getParameterCount));
-    for (java.lang.reflect.Constructor<?> constructor : declared) {
+    for (java.lang.reflect.Constructor<?> constructor : constructors) {
+      if (constructor.getParameterCount() != 0) continue;
+      try {
+        return newPreparedInstance(constructor, new Object[0]);
+      } catch (ReflectiveOperationException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    // Learner types often declare one convenience constructor (the classic
+    // ListNode(int val)) that takes fewer values than the input has fields.
+    java.util.ArrayList<Object> leadingScalars = new java.util.ArrayList<>();
+    for (Object value : ordered) {
+      if (value instanceof java.util.Map<?, ?> || value instanceof java.util.List<?> || value == null) break;
+      leadingScalars.add(value);
+    }
+    for (java.lang.reflect.Constructor<?> constructor : constructors) {
+      Class<?>[] parameterTypes = constructor.getParameterTypes();
+      if (parameterTypes.length == 0 || parameterTypes.length > leadingScalars.size()) continue;
+      boolean fits = true;
+      for (int index = 0; index < parameterTypes.length; index += 1) {
+        if (!isPreparedScalarParameter(parameterTypes[index]) || !preparedScalarFits(leadingScalars.get(index), parameterTypes[index])) {
+          fits = false;
+          break;
+        }
+      }
+      if (!fits) continue;
+      try {
+        Object[] arguments = new Object[parameterTypes.length];
+        for (int index = 0; index < parameterTypes.length; index += 1) {
+          arguments[index] = coerceJsonInput(leadingScalars.get(index), parameterTypes[index]);
+        }
+        return newPreparedInstance(constructor, arguments);
+      } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
+        rethrowBudgetAbort(candidateFailure);
+      }
+    }
+    // No constructor takes the input's values. Call one with type-default
+    // arguments and let the by-name field assignment supply the values.
+    Throwable lastFailure = null;
+    for (int index = constructors.length - 1; index >= 0; index -= 1) {
+      java.lang.reflect.Constructor<?> constructor = constructors[index];
       try {
         Class<?>[] parameterTypes = constructor.getParameterTypes();
         Object[] arguments = new Object[parameterTypes.length];
-        for (int index = 0; index < parameterTypes.length; index += 1) {
-          arguments[index] = defaultJsonArgument(parameterTypes[index]);
+        for (int parameter = 0; parameter < parameterTypes.length; parameter += 1) {
+          arguments[parameter] = defaultJsonArgument(parameterTypes[parameter]);
         }
-        constructor.setAccessible(true);
-        Object instance = constructor.newInstance(arguments);
-        assignPreparedJsonFields(targetType, instance, fields);
-        return instance;
+        return newPreparedInstance(constructor, arguments);
       } catch (ReflectiveOperationException | IllegalArgumentException candidateFailure) {
         rethrowBudgetAbort(candidateFailure);
+        lastFailure = candidateFailure instanceof java.lang.reflect.InvocationTargetException && candidateFailure.getCause() != null
+            ? candidateFailure.getCause()
+            : candidateFailure;
       }
     }
-    throw new RuntimeException("Unable to materialize prepared Java input " + targetType.getName());
+    throw new RuntimeException(
+        "TraceCode could not construct prepared input " + targetType.getSimpleName() +
+            ": no constructor takes its values " + values.keySet() +
+            (lastFailure != null ? ", and a constructor called with default values threw: " + lastFailure : "")
+    );
   }
 
   private static Object preparedLinkedNodes(
@@ -1939,7 +2071,54 @@ function buildDynamicInputHelperMethods() {
   ) {
     if (value == null) return null;
     Class<?> rawType = preparedRawClass(targetType);
-    if (rawType == Object.class) return value;
+    if (rawType == Object.class) return resolvePreparedRawReferences(value);
+    // A constructor and the by-name field assignment can both reach the same
+    // JSON list or map; give both the one container, as the input has one.
+    boolean container = value instanceof java.util.List<?> ||
+        (value instanceof java.util.Map<?, ?> && java.util.Map.class.isAssignableFrom(rawType));
+    if (!container) return coerceJsonInputOnce(value, targetType, rawType);
+    java.util.HashMap<java.lang.reflect.Type, Object> built = preparedValuesBySource.get(value);
+    if (built != null && built.containsKey(targetType)) return built.get(targetType);
+    Object result = coerceJsonInputOnce(value, targetType, rawType);
+    preparedValuesBySource.computeIfAbsent(value, key -> new java.util.HashMap<>()).put(targetType, result);
+    return result;
+  }
+
+  /**
+   * An input declared Object keeps its JSON shape, but a reference inside it
+   * still names the node it refers to, and a JSON object there that defines
+   * an id can be referred to from elsewhere in the case.
+   */
+  @SuppressWarnings("unchecked")
+  private static Object resolvePreparedRawReferences(Object value) {
+    if (value instanceof java.util.Map<?, ?>) {
+      java.util.Map<Object, Object> fields = (java.util.Map<Object, Object>) value;
+      Object reference = fields.get("__ref__");
+      if (reference instanceof String && fields.size() == 1) {
+        Object node = preparedNodesById.get(reference);
+        return node != null ? node : value;
+      }
+      Object id = fields.get("__id__");
+      if (id instanceof String) preparedNodesById.putIfAbsent((String) id, value);
+      for (java.util.Map.Entry<Object, Object> entry : fields.entrySet()) {
+        entry.setValue(resolvePreparedRawReferences(entry.getValue()));
+      }
+      return value;
+    }
+    if (value instanceof java.util.List<?>) {
+      java.util.List<Object> items = (java.util.List<Object>) value;
+      for (int index = 0; index < items.size(); index += 1) {
+        items.set(index, resolvePreparedRawReferences(items.get(index)));
+      }
+    }
+    return value;
+  }
+
+  private static Object coerceJsonInputOnce(
+      Object value,
+      java.lang.reflect.Type targetType,
+      Class<?> rawType
+  ) {
     if (rawType.isArray()) {
       java.util.List<?> list = (java.util.List<?>) value;
       Class<?> componentType = rawType.getComponentType();
