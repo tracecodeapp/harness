@@ -703,6 +703,21 @@ function traceTruncationDiagnostic(
     : Object.freeze([]);
 }
 
+/** A traced run that ran untraced says so as a warning on the case. */
+function traceUnavailableDiagnostic(
+  runtime: string,
+  outcome: ExecutionResult
+): readonly JudgeDiagnostic[] {
+  return outcome.traceUnavailable
+    ? [Object.freeze({
+        severity: 'warning' as const,
+        message: outcome.traceUnavailable.message,
+        code: outcome.traceUnavailable.code,
+        source: runtime,
+      })]
+    : [];
+}
+
 interface MappedRuntimeOutcome {
   readonly output: JudgeRuntimeInvocationOutput;
   readonly process: TraceKernelRuntimeResult;
@@ -766,7 +781,10 @@ function mappedTraceOutcome(
       output: Object.freeze({
         value: outcome.output,
         trace: outcome.trace,
-        diagnostics: traceTruncationDiagnostic(runtime, outcome),
+        diagnostics: Object.freeze([
+          ...traceTruncationDiagnostic(runtime, outcome),
+          ...traceUnavailableDiagnostic(runtime, outcome),
+        ]),
         ...mappedTimings(outcome.timings),
       }),
       process: Object.freeze({
@@ -783,7 +801,7 @@ function mappedTraceOutcome(
     output: Object.freeze({
       failure: outcomeFailure(outcome, diagnostic),
       trace: outcome.trace,
-      diagnostics: Object.freeze([diagnostic]),
+      diagnostics: Object.freeze([diagnostic, ...traceUnavailableDiagnostic(runtime, outcome)]),
       ...mappedTimings(outcome.timings),
     }),
     process: Object.freeze({

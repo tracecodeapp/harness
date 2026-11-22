@@ -139,6 +139,17 @@ export interface CodeExecutionBatchResult {
 }
 
 /**
+ * A traced run that ran untraced: the runtime could not trace this program
+ * without changing what it computes. The outcome is the untraced program's,
+ * the trace is empty, and Judge reports this as a `trace-unavailable` warning
+ * diagnostic on the case.
+ */
+export interface TraceUnavailableNotice {
+  readonly code: 'trace-unavailable';
+  readonly message: string;
+}
+
+/**
  * Tracing execution outcome. Every variant carries the trace: a failed run
  * keeps its compile/exception trace, and a limit-stopped run keeps the
  * partial trace recorded before the limit tripped.
@@ -154,6 +165,7 @@ export type ExecutionResult =
       executionTimeMs: number;
       consoleOutput: string[];
       traceTruncated?: ExecutionLimitReason;
+      traceUnavailable?: TraceUnavailableNotice;
       timings?: RuntimeExecutionTimings;
     }
   | {
@@ -166,6 +178,7 @@ export type ExecutionResult =
       /** Required: a `failed` outcome always says which program stage failed. */
       diagnosticStage: ExecutionDiagnosticStage;
       diagnostic?: unknown;
+      traceUnavailable?: TraceUnavailableNotice;
       timings?: RuntimeExecutionTimings;
     }
   | {
@@ -176,6 +189,7 @@ export type ExecutionResult =
       executionTimeMs: number;
       consoleOutput: string[];
       diagnostic?: unknown;
+      traceUnavailable?: TraceUnavailableNotice;
       timings?: RuntimeExecutionTimings;
     };
 

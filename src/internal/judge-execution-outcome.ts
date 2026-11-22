@@ -10,7 +10,9 @@ import {
   isExecutionDiagnosticStage,
   isExecutionLimitReason,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
 } from '../../packages/runtime-contracts/src/index';
+import type { TraceUnavailableNotice } from '../../packages/runtime-contracts/src/runtime-execution';
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
 import type {
   JudgeCaseResult,
@@ -144,6 +146,15 @@ function traceTruncated(
   return warning ? { traceTruncated: warning.code as ExecutionLimitReason } : {};
 }
 
+function traceUnavailable(
+  result: JudgeProcessResult
+): { readonly traceUnavailable?: TraceUnavailableNotice } {
+  const warning = result.diagnostics.find((diagnostic) =>
+    diagnostic.severity === 'warning' && diagnostic.code === TRACE_UNAVAILABLE_CODE
+  );
+  return warning ? { traceUnavailable: { code: TRACE_UNAVAILABLE_CODE, message: warning.message } } : {};
+}
+
 /**
  * Converts a Judge case result into the execution outcome a learner sees,
  * totally: completed, the learner's failure (with its stage, message and line)
@@ -182,6 +193,7 @@ export function judgeCaseExecutionOutcome(
           executionTimeMs: durationMs(result),
           consoleOutput,
           ...traceTruncated(result),
+          ...traceUnavailable(result),
           ...timings,
         }
       : {
@@ -198,6 +210,7 @@ export function judgeCaseExecutionOutcome(
         trace: traceOf(result, options.language),
         executionTimeMs: durationMs(result),
         consoleOutput,
+        ...traceUnavailable(result),
         ...timings,
       }
     : { ...outcome, consoleOutput, ...timings };
