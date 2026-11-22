@@ -1772,11 +1772,31 @@ function buildDynamicInputHelperMethods() {
     // A learner exception's causes can form a cycle (A caused by B caused by
     // A); visit each exception once.
     java.util.IdentityHashMap<Throwable, Boolean> seen = new java.util.IdentityHashMap<>();
-    for (Throwable current = error; current != null && seen.put(current, Boolean.TRUE) == null; current = current.getCause()) {
+    Throwable current = error;
+    while (current != null && seen.put(current, Boolean.TRUE) == null) {
       if (current instanceof tracecode.user.TraceBudgetExceededError) {
         throw (tracecode.user.TraceBudgetExceededError) current;
       }
+      try {
+        current = current.getCause();
+      } catch (Throwable getCauseFailure) {
+        // getCause() is the learner's to override. Once the budget has
+        // tripped, one that throws is not a budget error; otherwise it
+        // propagates, in untraced and traced runs alike.
+        if (tracecode.user.TraceHooks.traceLimitExceeded()) return;
+        throw getCauseFailure;
+      }
     }
+  }
+
+  // For the catches around receiver construction and operation probes, which
+  // otherwise move on to the next overload without looking at the exception.
+  // TraceHooks sets traceLimitExceeded before it throws the budget error and
+  // clears it for each run. "Recording is on" would be the wrong test: the
+  // worker also starts a plain (Submit) program with recording on, but that
+  // program has no hooks, so it never trips.
+  private static void rethrowTrippedBudgetAbort(Throwable error) {
+    if (tracecode.user.TraceHooks.traceLimitExceeded()) rethrowBudgetAbort(error);
   }
 
   private static void assignPreparedJsonFields(
@@ -2291,7 +2311,7 @@ function buildDynamicInputHelperMethods() {
         // A trace budget that trips inside the constructor is not a
         // constructor that did not fit: let it reach the runner, which keeps
         // the steps recorded so far. Constructor selection is unchanged.
-        rethrowBudgetAbort(error);
+        rethrowTrippedBudgetAbort(error);
         lastFailure = error;
       }
     }
@@ -2317,7 +2337,7 @@ function buildDynamicInputHelperMethods() {
           return method;
         } catch (RuntimeException probeFailure) {
           // As for receivers: a trace budget trip reaches the runner.
-          rethrowBudgetAbort(probeFailure);
+          rethrowTrippedBudgetAbort(probeFailure);
         }
       }
     }
