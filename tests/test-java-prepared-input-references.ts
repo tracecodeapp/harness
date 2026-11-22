@@ -591,6 +591,28 @@ class Keeper {
   console.log('PASS: a trace budget error in a receiver or argument constructor reaches the runner unchanged');
 }
 
+function testBudgetTripInsideGetCauseReachesTheRunner(): void {
+  // The search for a budget error calls the learner's getCause(), which is
+  // traced: a trip inside it is the budget error, not a getCause() that threw.
+  const code = `class Weird extends RuntimeException {
+  @Override
+  public synchronized Throwable getCause() { ${tripBudget} return null; }
+}
+class ListNode {
+  int val;
+  ListNode next;
+  ListNode(int val) { throw new Weird(); }
+}
+class Solution {
+  public int first(ListNode head) { return head.val; }
+}`;
+  assert.deepEqual(
+    runPrepared(code, 'first', [[{ val: 1, next: null }]], 'solution-method', { showErrorType: true, runner: 'one-event' }),
+    ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
+  );
+  console.log('PASS: a trace budget error raised inside getCause() reaches the runner unchanged');
+}
+
 function testCyclicCauseAfterBudgetTripDoesNotHang(): void {
   // Only after a trip is a receiver failure's cause chain searched.
   const code = `class Keeper {
@@ -677,6 +699,7 @@ const tests = [
   testCyclicCauseInInputConstructorDoesNotHang,
   testCyclicCauseInReceiverConstructorDoesNotHang,
   testBudgetTripInConstructorsReachesTheRunner,
+  testBudgetTripInsideGetCauseReachesTheRunner,
   testCyclicCauseAfterBudgetTripDoesNotHang,
   testThrowingGetCauseKeepsReceiverFallback,
   testThrowingGetCauseKeepsArgumentFallback,
