@@ -73,6 +73,7 @@ interface FakeInput extends Record<string, unknown> {
     | 'runaway'
     | 'throw'
     | 'trace-truncated'
+    | 'trace-unavailable'
     | 'unstaged'
     | 'bogus-limit'
     | 'unknown-stage'
@@ -386,6 +387,14 @@ function fakeProvider(
               consoleOutput: consoleOutput(input),
               ...(input.mode === 'trace-truncated'
                 ? { traceTruncated: 'trace-limit' as const }
+                : {}),
+              ...(input.mode === 'trace-unavailable'
+                ? {
+                    traceUnavailable: {
+                      code: 'trace-unavailable' as const,
+                      message: 'JavaScript tracing could not instrument this program without changing its behavior; this run has no trace.',
+                    },
+                  }
                 : {}),
             };
           },
@@ -1501,6 +1510,53 @@ test('publishes tracing as an observation without changing comparison', async ()
   assert.equal(traced.cases[0]?.diagnostics[0]?.code, 'trace-limit');
   assert.equal(plainState.codeCalls.length, 1);
   assert.equal(tracedState.traceCalls.length, 1);
+});
+
+test('a traced run that ran untraced carries a trace-unavailable warning through Judge and back', async () => {
+  const state = makeState();
+  const message =
+    'JavaScript tracing could not instrument this program without changing its behavior; this run has no trace.';
+  const result = await evaluate(
+    state,
+    makePlan([{ id: 'untraced', input: { label: 'untraced', output: 7, mode: 'trace-unavailable' }, expected: 7 }]),
+    codeBinding({ trace: true })
+  );
+  const judged = result.cases[0]!;
+  assert.equal(judged.verdict.kind, 'passed');
+  assert.deepEqual(
+    judged.diagnostics.map(({ severity, code, message: text }) => ({ severity, code, message: text })),
+    [{ severity: 'warning', code: 'trace-unavailable', message }]
+  );
+  const outcome = judgeCaseExecutionOutcome(judged, { language: 'javascript', trace: true });
+  assert.equal(outcome.kind, 'completed');
+  assert.deepEqual(outcome.kind === 'completed' ? outcome.traceUnavailable : undefined, {
+    code: 'trace-unavailable',
+    message,
+  });
+
+  const lifted = liftTraceOutcome(
+    { success: true, output: 7, consoleOutput: [], traceUnavailable: { code: 'trace-unavailable', message } },
+    createEmptyRuntimeTrace('javascript', { runId: 'javascript:run' })
+  );
+  assert.deepEqual(lifted.kind === 'completed' ? lifted.traceUnavailable : undefined, { code: 'trace-unavailable', message });
+  const liftedFailure = liftTraceOutcome(
+    {
+      success: false,
+      error: 'boom',
+      diagnosticStage: 'runtime',
+      consoleOutput: [],
+      traceUnavailable: { code: 'trace-unavailable', message },
+    },
+    createEmptyRuntimeTrace('javascript', { runId: 'javascript:run' })
+  );
+  assert.equal(liftedFailure.kind === 'failed' ? liftedFailure.traceUnavailable?.code : undefined, 'trace-unavailable');
+  assert.throws(
+    () => liftTraceOutcome(
+      { success: true, output: 7, consoleOutput: [], traceUnavailable: { code: 'other', message } },
+      createEmptyRuntimeTrace('javascript', { runId: 'javascript:run' })
+    ),
+    (error: unknown) => isRuntimeProviderError(error) && /traceUnavailable/.test((error as Error).message)
+  );
 });
 
 test('a provider that hangs past its own deadline is stopped by the backstop and reported as the provider failure', async () => {

@@ -292,6 +292,16 @@ declare global { interface GhostGlobal { x: number } }
 function solve(): number {
   return 2;
 }`, expected: 2 },
+  // Snapshots and access records never run learner getters.
+  { id: 'R1-snapshot-getters', ...solve(`let reads = 0;
+  const node = { val: 1, get left() { reads++; return null; }, right: null };
+  const list = { val: 2, get next() { reads++; return null; } };
+  class Tagged { get __type__() { reads++; return "TreeNode"; } }
+  const tagged = new Tagged();
+  const a = [node];
+  let x = a[0].val;
+  x += 1;
+  return reads;`, 0) },
   // A learner binding that collides with a tracer name runs untraced, never as
   // the learner's compile error.
   { id: 'R1-helper-name-collision', code: 'const __traceReadIndex = 1;\nfunction solve() {\n  const a = [1];\n  return __traceReadIndex + a[0];\n}', expected: 2, fallbackRequired: true },

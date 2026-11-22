@@ -50,7 +50,8 @@ const TRACE_UNAVAILABLE = {
 };
 
 function fallbackProblem(shape: TraceShape): string | undefined {
-  if (!isDeepStrictEqual(shape.fallback, TRACE_UNAVAILABLE)) {
+  // Compared field by field: the worker's objects come from another realm.
+  if (shape.fallback?.code !== TRACE_UNAVAILABLE.code || shape.fallback?.message !== TRACE_UNAVAILABLE.message) {
     return `fallback marker ${JSON.stringify(shape.fallback)}`;
   }
   if (shape.events !== 0) return `fallback trace has ${shape.events} events (expected an empty trace)`;
@@ -224,6 +225,30 @@ async function main() {
         );
       } else {
         console.log(`PASS: ${language}/safety-net`);
+      }
+    }
+  }
+
+  // The compile safety net checks the assembled runner (helpers, recorder
+  // parameters and learner code together), not the instrumented source alone:
+  // with the reserved-name rule switched off, a learner name that collides
+  // with a helper still falls back instead of failing as a compile error.
+  if (selected.size === 0) {
+    const netSend = createWorkerHarness();
+    await netSend('init');
+    (netSend.context as Record<string, unknown>).findTracerReservedIdentifier = () => null;
+    for (const language of ['javascript', 'typescript'] as const) {
+      const program: TraceSemanticsCase = traceSemanticsCases.find(({ id }) => id === 'R1-helper-name-collision')!;
+      const shapes: TraceShape[] = [];
+      const traced = await run(netSend, program, language, true, shapes);
+      const problem = shapes[0] ? fallbackProblem(shapes[0]) : 'no result';
+      if (traced.kind !== 'result' || !traced.success || traced.output !== 2 || problem) {
+        failures.push(
+          `${language}/assembled-runner-net: a helper-name collision must fall back, got ` +
+            `${JSON.stringify(traced)} (${problem ?? 'marker ok'})`
+        );
+      } else {
+        console.log(`PASS: ${language}/assembled-runner-net`);
       }
     }
   }
