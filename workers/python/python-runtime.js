@@ -5672,6 +5672,10 @@ class __TracecodeAccessTransformer(ast.NodeTransformer):
 
     def _tracecode_wrap_comprehension_generators(self, generators):
         for generator in generators:
+            # The binding helpers iterate synchronously; an async
+            # comprehension's iterable must reach Python's async iteration.
+            if generator.is_async:
+                continue
             binding_name = _tracecode_for_target_binding_name(generator.target)
             if binding_name is None:
                 continue
