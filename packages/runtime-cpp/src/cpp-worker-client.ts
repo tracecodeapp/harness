@@ -39,6 +39,7 @@ import {
   liftCodeOutcome,
   liftTraceOutcome,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
@@ -1334,7 +1335,16 @@ export class CppWorkerClient {
     const program = this.initGateEffect(expectedLifecycleGeneration).pipe(
       Effect.andThen(this.withCppExecutionDeadline(sendEffect, timeoutMs, stage))
     );
-    return this.core.runClientEffect(program, signal);
+    return this.core.runClientEffect(program, signal).catch((error: unknown) => {
+      // The worker refused to trace this program (it would change what the
+      // program computes, or the traced build did not compile while the
+      // untraced one does): the provider's, marked so it is never mistaken
+      // for the learner's failure or another provider failure.
+      if (error instanceof WorkerReportedError && error.code === TRACE_UNAVAILABLE_CODE) {
+        throw new RuntimeProviderError(error.message, { cause: error, code: TRACE_UNAVAILABLE_CODE });
+      }
+      throw error;
+    });
   }
 
   /**

@@ -10,6 +10,7 @@ import {
   isExecutionDiagnosticStage,
   isExecutionLimitReason,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
 } from '../../packages/runtime-contracts/src/index';
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
 import type {
@@ -129,6 +130,10 @@ function failureOutcome(
       throw new RuntimeProviderError(failure.message, {
         cause: failure,
         ...(failure.reason === 'protocol' ? { reason: 'protocol' as const } : {}),
+        // The runtime could not trace this program; it runs untraced.
+        ...(errorDiagnostic(result)?.code === TRACE_UNAVAILABLE_CODE
+          ? { code: TRACE_UNAVAILABLE_CODE }
+          : {}),
       });
   }
 }

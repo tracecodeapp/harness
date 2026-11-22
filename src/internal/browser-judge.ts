@@ -19,7 +19,12 @@ import type {
 import type {
   BrowserRuntimeHost,
 } from '../../packages/runtime-browser/src/browser-runtime-host';
-import { isExecutionLimitReason, RuntimeProviderError } from '../../packages/runtime-contracts/src/execution-outcome';
+import {
+  isExecutionLimitReason,
+  isTraceUnavailableError,
+  RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
+} from '../../packages/runtime-contracts/src/execution-outcome';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -1202,6 +1207,15 @@ function executeProviderBatchUntilRunaway(
   });
 }
 
+/**
+ * The diagnostic code of a provider rejection: `trace-unavailable` when the
+ * runtime could not trace the program (it runs untraced), otherwise
+ * `runtime-provider-error`.
+ */
+function providerFailureCode(error: unknown): string {
+  return isTraceUnavailableError(error) ? TRACE_UNAVAILABLE_CODE : PROVIDER_ERROR_CODE;
+}
+
 /** A broken result protocol is reported as such; anything else as the provider failing. */
 function providerFailureReason(error: unknown): 'runtime-failure' | 'protocol' {
   return error instanceof Error &&
@@ -1268,7 +1282,7 @@ function executeProviderProcess(
         const mapped = providerFailure(
           options.runtime,
           error.message,
-          PROVIDER_ERROR_CODE,
+          providerFailureCode(error),
           providerFailureReason(error)
         );
         return options.runtimeControl.publish(
@@ -1307,7 +1321,7 @@ function executeInitializedProviderProcess(
               const mapped = providerFailure(
                 options.runtime,
                 error.message,
-                PROVIDER_ERROR_CODE,
+                providerFailureCode(error),
                 providerFailureReason(error)
               );
               return options.runtimeControl.publish(
@@ -1334,7 +1348,7 @@ function executeInitializedProviderProcess(
               const mapped = providerFailure(
           options.runtime,
           error.message,
-          PROVIDER_ERROR_CODE,
+          providerFailureCode(error),
           providerFailureReason(error)
         );
               return options.runtimeControl.publish(
@@ -1360,7 +1374,7 @@ function executeInitializedProviderProcess(
             const mapped = providerFailure(
           options.runtime,
           error.message,
-          PROVIDER_ERROR_CODE,
+          providerFailureCode(error),
           providerFailureReason(error)
         );
             return options.runtimeControl.publish(

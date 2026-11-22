@@ -125,8 +125,10 @@ export class ExecutionAbortedError extends Data.TaggedError('ExecutionAbortedErr
 export class WorkerReportedError extends Data.TaggedError('WorkerReportedError')<{
   readonly workerMessage: string;
   readonly errorLine?: number;
+  /** A machine-readable classification the worker attached (e.g. `trace-unavailable`). */
+  readonly code?: string;
 }> {
-  constructor(args: { readonly workerMessage: string; readonly errorLine?: number }) {
+  constructor(args: { readonly workerMessage: string; readonly errorLine?: number; readonly code?: string }) {
     super(args);
     this.message = args.workerMessage;
   }
