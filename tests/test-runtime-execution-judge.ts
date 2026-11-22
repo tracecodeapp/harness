@@ -28,6 +28,7 @@ import {
   liftCodeOutcome,
   liftTraceOutcome,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
 } from '../packages/runtime-contracts/src/execution-outcome';
 import { createEmptyRuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 import {
@@ -110,6 +111,8 @@ interface PreparedProviderState {
   failDisposal: boolean;
   onPrepareStart?: () => void;
   onStart?: (input: FakeInput) => void;
+  /** Labels whose traced run the runtime refuses as trace-unavailable. */
+  traceRefusedLabels?: ReadonlySet<string>;
 }
 
 function makeState(): FakeProviderState {
@@ -434,6 +437,12 @@ function preparedProvider(
   ): Promise<ExecutionResult> => {
     state.traceCalls.push(call);
     const input = call.inputs as FakeInput;
+    if (call.recordTrace !== false && state.traceRefusedLabels?.has(input.label)) {
+      throw new RuntimeProviderError(
+        'TraceCode could not trace this case. The case runs normally without tracing.',
+        { code: TRACE_UNAVAILABLE_CODE }
+      );
+    }
     state.onStart?.(input);
     state.active += 1;
     state.maxActive = Math.max(state.maxActive, state.active);
@@ -895,6 +904,81 @@ test('browser interactive execute prepares one trace-capable program and records
       continuation.timings?.phases.map((timing) => timing.phase),
       ['trace-continuation-execute']
     );
+    await judgeHost.disposeExecution(initial.executionId!);
+  } finally {
+    judgeHost.dispose();
+  }
+});
+
+test('a traced case the runtime cannot trace is refused on its own; the other cases and later tranches are unaffected', async () => {
+  const state = makePreparedState({ traceRefusedLabels: new Set(['refused']) });
+  const runtimeHost = browserHostFor(preparedProvider(state));
+  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  const refusalMessage = 'TraceCode could not trace this case. The case runs normally without tracing.';
+  const assertRefused = (result: JudgeCaseResult | undefined) => {
+    assert.ok(result);
+    assert.equal(result.caseId, 'refused');
+    assert.equal(result.status, 'runtime-error');
+    assert.deepEqual(result.verdict, { kind: 'not-evaluated', reason: 'case-did-not-complete' });
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'value'), false);
+    assert.deepEqual(result.failure, {
+      origin: 'provider',
+      reason: 'runtime-failure',
+      message: refusalMessage,
+    });
+    assert.deepEqual(
+      result.diagnostics.map(({ severity, code, source, message }) => ({ severity, code, source, message })),
+      [{ severity: 'error', code: 'trace-unavailable', source: 'javascript', message: refusalMessage }]
+    );
+    assert.throws(
+      () => judgeCaseExecutionOutcome(result, { language: 'javascript' }),
+      (error: unknown) =>
+        isRuntimeProviderError(error) &&
+        error.reason === 'runtime-failure' &&
+        (error as { code?: string }).code === TRACE_UNAVAILABLE_CODE
+    );
+  };
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'trace-unavailable-per-case',
+      language: 'javascript',
+      code: SOURCE,
+      functionName: 'solve',
+      trace: true,
+      cases: [
+        { id: 'first', input: { label: 'first' }, expected: 'first' },
+        { id: 'refused', input: { label: 'refused' }, expected: 'refused' },
+        { id: 'drain-a', input: { label: 'drain-a' }, expected: 'drain-a' },
+        { id: 'drain-b', input: { label: 'drain-b' }, expected: 'drain-b' },
+      ],
+    });
+    const initial = await judgeHost.execute({
+      bundle,
+      interactive: true,
+      tracing: { caseIds: ['refused'] },
+    });
+    assert.ok(initial.executionId, 'the execution is retained');
+    assert.equal(initial.evaluation.status, 'completed');
+    const byId = new Map(initial.evaluation.cases.map((result) => [result.caseId, result]));
+    assertRefused(byId.get('refused'));
+    for (const caseId of ['first', 'drain-a', 'drain-b']) {
+      const result = byId.get(caseId);
+      assert.equal(result?.status, 'completed', caseId);
+      assert.equal(result?.verdict.kind, 'passed', caseId);
+    }
+
+    const other = await judgeHost.execute({
+      executionId: initial.executionId!,
+      tracing: { caseIds: ['drain-a'] },
+    });
+    assert.equal(other.evaluation.cases[0]?.status, 'completed');
+    assert.equal((other.evaluation.cases[0]?.trace as RuntimeTrace).events.length, 1);
+
+    const again = await judgeHost.execute({
+      executionId: initial.executionId!,
+      tracing: { caseIds: ['refused'] },
+    });
+    assertRefused(again.evaluation.cases[0]);
     await judgeHost.disposeExecution(initial.executionId!);
   } finally {
     judgeHost.dispose();
