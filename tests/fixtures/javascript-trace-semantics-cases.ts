@@ -14,10 +14,10 @@ export interface TraceSemanticsCase {
   /** The untraced result; checked so a case cannot silently stop testing anything. */
   expected?: unknown;
   languages?: ReadonlyArray<'javascript' | 'typescript'>;
-  /** The tracer may refuse this program (a provider failure) instead of tracing it. */
-  refusalAllowed?: boolean;
-  /** The tracer must refuse this program. */
-  refusalRequired?: boolean;
+  /** The program may run untraced (empty trace, `trace-unavailable` warning). */
+  fallbackAllowed?: boolean;
+  /** The program must run untraced (empty trace, `trace-unavailable` warning). */
+  fallbackRequired?: boolean;
 }
 
 function solve(body: string, expected: unknown, extra: Partial<TraceSemanticsCase> = {}) {
@@ -247,6 +247,55 @@ export const traceSemanticsCases: readonly TraceSemanticsCase[] = [
   { id: 'X1-tagged-member', ...solve('const o = { k: 3, tag(strings) { return this.k; } }; const a = [o]; return o.tag`x` + a[0].tag`y`;', 6) },
   { id: 'X1-super-member', ...solve('class A { get v() { return [1]; } m() { return 2; } } class B extends A { run() { return super.v[0] + super.m(); } } return new B().run();', 3) },
   { id: 'X1-arguments-update', code: 'function solve() {\n  function f(x) { arguments[0]++; return x; }\n  return f(1);\n}', expected: 1 },
+
+  // Round 2 (PR #64 review).
+  // A getter earlier in a member path runs before a later index is evaluated.
+  { id: 'R1-getter-then-index', ...solve('let j = 0; const a = { get row() { j = 1; return [10, 20]; } }; return a.row[j];', 20) },
+  { id: 'R1-getter-then-index-writes', ...solve(`let j = 0;
+  const arr = [0, 0];
+  const a = { get row() { j = 1; return arr; } };
+  a.row[j] = 5;
+  j = 0; a.row[j] += 1;
+  j = 0; a.row[j]++;
+  return arr.join();`, '0,7') },
+  { id: 'R1-getter-then-index-call', ...solve(`let j = 0;
+  const rows = [[], []];
+  const a = { get rows() { j = 1; return rows; } };
+  a.rows[j].push(1);
+  return rows[1].length;`, 1) },
+  { id: 'R1-index-then-later-index', ...solve(`let calls = [];
+  const g = [[1, 2], [3, 4]];
+  const r = () => { calls.push("r"); return 1; };
+  const c = () => { calls.push("c"); return 0; };
+  g[r()][c()] += 10;
+  return calls.join() + g[1][0];`, 'r,c13') },
+  // A traced call must not end an optional chain.
+  { id: 'R1-optional-user-method-chain', ...solve('class C { m() { return { x: 1 }; } } const c = null; const d = new C(); return [c?.m().x ?? 7, d?.m().x ?? 8].join();', '7,1') },
+  // Classifying a receiver never runs a learner getter.
+  { id: 'R1-throwing-get-getter', ...solve(`class Q {
+    constructor() { this.items = []; }
+    push(x) { this.items.push(x); }
+    get get() { throw new Error("getter ran"); }
+    get set() { throw new Error("getter ran"); }
+  }
+  const q = new Q();
+  q.push(1);
+  const box = { q };
+  box.q.push(2);
+  return q.items.length;`, 2) },
+  // Ambient TypeScript declarations emit no code.
+  { id: 'R1-ambient-declarations', languages: ['typescript'], code: '', typescript: `declare const ghost = 1;
+declare let ghost2: number;
+declare function ghostFn(): void;
+declare namespace GhostNs { const v: number; }
+declare global { interface GhostGlobal { x: number } }
+function solve(): number {
+  return 2;
+}`, expected: 2 },
+  // A learner binding that collides with a tracer name runs untraced, never as
+  // the learner's compile error.
+  { id: 'R1-helper-name-collision', code: 'const __traceReadIndex = 1;\nfunction solve() {\n  const a = [1];\n  return __traceReadIndex + a[0];\n}', expected: 2, fallbackRequired: true },
+  { id: 'R1-recorder-name-collision', code: 'const __traceRecorder = 3;\nfunction solve() {\n  return __traceRecorder;\n}', expected: 3, fallbackRequired: true },
 
   // Destructuring assignment targets stay assignment targets.
   { id: 'D1-member-default', ...solve('const o = {}; const a = [0]; [o.x = 5, a[0] = 6] = []; return o.x + a[0];', 11) },
