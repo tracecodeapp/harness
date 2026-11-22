@@ -2920,3 +2920,49 @@ test('traceLimitReason is a trace-only field with one rule at every entry point'
   }, trace);
   assert.equal(stopped.traceTruncated, 'trace-byte-limit');
 });
+
+test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only that', async () => {
+  const state = makeState();
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([
+      { id: 'completed', input: { label: 'completed', output: 7, mode: 'trace-truncated' }, expected: 7 },
+      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
+    ]),
+    codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
+  );
+  const [completed, runaway] = result.cases;
+  const withWarnings = (judged: JudgeCaseResult, warnings: readonly Record<string, unknown>[]) => ({
+    ...judged,
+    diagnostics: Object.freeze([
+      ...judged.diagnostics.filter((d) => d.severity !== 'warning'),
+      ...warnings.map((warning) => Object.freeze({ severity: 'warning', source: 'python', ...warning })),
+    ]),
+  }) as JudgeCaseResult;
+  const truncatedBy = (judged: JudgeCaseResult) => {
+    const outcome = judgeCaseExecutionOutcome(judged, { language: 'javascript', trace: true });
+    return 'traceTruncated' in outcome ? outcome.traceTruncated : undefined;
+  };
+  // 0.20.2 wrote the warning without a kind.
+  const legacy = (code: string) => ({
+    message: `Trace recording stopped at the ${code} budget after execution completed.`,
+    code,
+  });
+  for (const [label, judged] of [['completed', completed!], ['limit', runaway!]] as const) {
+    assert.equal(truncatedBy(withWarnings(judged, [legacy('trace-byte-limit')])), 'trace-byte-limit', label);
+    assert.equal(truncatedBy(withWarnings(judged, [legacy('trace-limit')])), 'trace-limit', label);
+    // Unmarked codes that are not trace-recording budgets stay unrelated.
+    for (const code of ['memory-limit', 'line-limit', 'single-line-limit', 'client-timeout']) {
+      assert.equal(truncatedBy(withWarnings(judged, [legacy(code)])), undefined, `${label}: ${code}`);
+    }
+    // A marked warning wins over an unmarked one.
+    assert.equal(
+      truncatedBy(withWarnings(judged, [
+        legacy('trace-limit'),
+        { message: 'marked', code: 'single-line-limit', kind: 'trace-truncated' },
+      ])),
+      'single-line-limit',
+      label
+    );
+  }
+});

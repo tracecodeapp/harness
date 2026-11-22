@@ -138,19 +138,35 @@ function failureOutcome(
   }
 }
 
+/**
+ * Codes that only ever name a trace-recording budget. Results saved by 0.20.2
+ * carry the Judge's truncation warning without `kind`; for those, a warning
+ * with one of these codes is still read as the budget. Codes a runaway guard
+ * or a custom adapter could also use (line-limit, memory-limit, ...) are not.
+ */
+const LEGACY_TRACE_BUDGET_CODES: ReadonlySet<string> = new Set<ExecutionLimitReason>([
+  'trace-limit',
+  'trace-byte-limit',
+]);
+
 function traceTruncated(
   result: JudgeProcessResult
 ): { readonly traceTruncated?: ExecutionLimitReason } {
-  // Only the Judge's own truncation warning: another warning that happens to
-  // use a limit code (a custom adapter's memory-limit notice) is not a trace
-  // budget.
-  const warning = result.diagnostics.find((diagnostic) =>
-    diagnostic.kind === 'trace-truncated' &&
+  // The Judge's own (marked) truncation warning first: another warning that
+  // happens to use a limit code (a custom adapter's memory-limit notice) is
+  // not a trace budget.
+  const warnings = result.diagnostics.filter((diagnostic) =>
     diagnostic.severity === 'warning' &&
     diagnostic.code !== undefined &&
     isExecutionLimitReason(diagnostic.code)
   );
-  return warning ? { traceTruncated: warning.code as ExecutionLimitReason } : {};
+  const marked = warnings.find((diagnostic) => diagnostic.kind === 'trace-truncated');
+  if (marked) return { traceTruncated: marked.code as ExecutionLimitReason };
+  if (result.diagnostics.some((diagnostic) => diagnostic.kind === 'trace-truncated')) return {};
+  const legacy = warnings.find((diagnostic) =>
+    diagnostic.kind === undefined && LEGACY_TRACE_BUDGET_CODES.has(diagnostic.code!)
+  );
+  return legacy ? { traceTruncated: legacy.code as ExecutionLimitReason } : {};
 }
 
 /**
