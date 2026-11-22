@@ -216,6 +216,48 @@ const COPY_FORMS: ParityForm[] = [
       '    s = names[i] + names[0];',
     ].join('\n'),
   },
+  // Round 4: writes through parentheses and calls that contain the access,
+  // identity at const reference parameters, and arguments bound once
+  // without an extra move.
+  {
+    name: 'writes through a parenthesized element and through std::get',
+    body: [
+      '    vector<string> names(3, "ab");',
+      '    vector<tuple<vector<int>, int>> rows(2, make_tuple(vector<int>{1, 2}, 3));',
+      '    int i = 1;',
+      '    (names[0]).clear();',
+      '    std::get<0>(rows[i]).clear();',
+      '    string taken = std::move(names[1]);',
+      '    k = (int)names[0].size() * 100 + (int)std::get<0>(rows[i]).size() * 10 + (int)names[1].size();',
+      '    s = taken;',
+    ].join('\n'),
+  },
+  {
+    name: 'elements at const reference parameters keep their identity',
+    body: [
+      '    array<int, 3> ar{};',
+      '    vector<vector<int>> grid(3, vector<int>(3, 2));',
+      '    auto same = [](const int& p, const int& q) { return &p == &q; };',
+      '    auto rowSum = [](const vector<int>& row) { int total = 0; for (int value : row) total += value; return total; };',
+      '    k = same(ar[0], ar[0]) ? 1000 : 0;',
+      '    k += same(grid[0][1], grid[0][1]) ? 100 : 0;',
+      '    for (int r = 0; r < 3; r++) k += rowSum(grid[r]);',
+    ].join('\n'),
+  },
+  {
+    name: 'fill and push_back arguments bound once, without an extra move',
+    body: [
+      '    array<string, 3> ar{};',
+      '    string seed = "s";',
+      '    ar.fill(std::move(seed));',
+      '    vector<string> parts;',
+      '    string piece = "ab";',
+      '    parts.push_back(std::move(piece));',
+      '    parts.push_back(seed);',
+      '    s = seed + ar[1] + parts[0] + parts[1];',
+      '    k = (int)piece.size();',
+    ].join('\n'),
+  },
   {
     name: 'struct members of an element',
     body: [
@@ -336,6 +378,8 @@ const REFUSED_PROGRAMS: Array<[string, string, string]> = [
   ['if-macro-braceless-body', '', '    if (a < t) LOG_IF(b > t);'],
   ['if-macro-followed-by-else', '', '    LOG_IF(b > t); else k -= 1;'],
   ['else-macro', '#define OTHERWISE else', '    if (a < t) k = 1; OTHERWISE k = 2;'],
+  // Round 4, item 3.
+  ['multi-statement-macro-defined-with-a-comment', '#/**/define TWICE2(x) x; x', '    if (a < t) TWICE2(k++);'],
 ];
 
 function refusedProgram(prelude: string, body: string): string {

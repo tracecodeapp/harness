@@ -705,6 +705,12 @@ const REFUSED: Array<{ name: string; prelude: string; body: string }> = [
     prelude: '#define LOG_IF(c) if (c) k += 1000',
     body: '    LOG_IF(b > t); else k -= 1;',
   },
+  // Round 4, item 3: a comment after `#` does not hide a definition.
+  {
+    name: 'a multi-statement macro defined with a comment after #',
+    prelude: '#/**/define TWICE2(x) x; x',
+    body: '    if (a < t) TWICE2(k++);',
+  },
   {
     name: 'a macro that expands to else',
     prelude: '#define OTHERWISE else',
@@ -935,9 +941,57 @@ for (const accepted of ACCEPTED_MACROS) {
       absent: 'self, tracecode::',
     },
     {
-      name: 'an element passed by const reference stays traced',
+      // Round 4, item 2: a const reference parameter gets the element itself
+      // (identity kept, no copy), with the read recorded beside it.
+      name: 'an element passed by const reference is the element, with its read event',
       body: '    array<int, 3> ar{};\n    auto get = [](const int& x) { return x; };\n    k = get(ar[2]);',
-      present: 'get(tracecode::trace_index_read(ar',
+      present: 'get(([&]() -> decltype(auto) { auto&& __tc_ref_index = (2); auto&& __tc_ref_element = __tracecode_element(ar[__tc_ref_index]); if (tracecode::trace_event_admissible(true,',
+      absent: 'get(tracecode::trace_index_read',
+    },
+    {
+      name: 'the same element twice at const reference parameters keeps its identity',
+      body: '    array<int, 3> ar{};\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same(ar[0], ar[0]);',
+      absent: 'same(tracecode::trace_index_read',
+      present: 'return (__tc_ref_element); }()), ([&]() -> decltype(auto) {',
+    },
+    {
+      name: 'a row passed to a const vector reference in a loop is not copied',
+      body: '    vector<vector<int>> grid(3, vector<int>(3, 1));\n    auto rowSum = [](const vector<int>& row) { return row[0]; };\n    for (int r = 0; r < 3; r++) k += rowSum(grid[r]);',
+      absent: 'trace_index_read(grid',
+      present: '__tracecode_element(grid[__tc_ref_index])',
+    },
+    {
+      name: 'a nested element at a reference parameter is the element',
+      body: '    vector<vector<int>> g(2, vector<int>(2));\n    auto same = [](const int& p, const int& q) { return &p == &q; };\n    k = same(g[0][1], g[0][1]);',
+      present: 'same(__tracecode_element(g[0])[1], __tracecode_element(g[0])[1])',
+    },
+    // Round 4, item 1: parentheses are transparent; a call that contains the
+    // access is judged by its own context.
+    {
+      name: 'a parenthesized element written through',
+      body: '    vector<string> names(3, "ab");\n    (names[0]).clear();',
+      absent: 'trace_index_read(names',
+    },
+    {
+      name: 'std::get of an element written through',
+      body: '    vector<tuple<vector<int>, int>> rows(2);\n    int i = 1;\n    std::get<0>(rows[i]).clear();',
+      absent: 'trace_index_read(rows',
+    },
+    {
+      name: 'std::move of an element',
+      body: '    vector<string> names(3, "ab");\n    string taken = std::move(names[1]);',
+      absent: 'trace_index_read(names',
+    },
+    {
+      name: 'an element read inside a call stays traced',
+      body: '    array<int, 3> ar{};\n    k = max(ar[1], 5) + (ar[2]);',
+      present: 'max(tracecode::trace_index_read(ar',
+    },
+    // Round 4, item 4: fill binds its argument by const reference.
+    {
+      name: 'fill with std::move binds by const reference, without a move',
+      body: '    array<string, 3> ar{};\n    string seed = "s";\n    ar.fill(std::move(seed));',
+      present: 'const std::decay_t<decltype(ar)>::value_type& __tc_fill_value_',
     },
   ];
   for (const testCase of cases) {
@@ -967,6 +1021,75 @@ for (const accepted of ACCEPTED_MACROS) {
       ? []
       : ['an indexed read lost its read event'],
   });
+}
+
+// Round 4, items 5-7: the trace-execute path's compile safety net, with the
+// compiler stubbed (the worker's top-level functions are sandbox properties).
+{
+  const worker = sandbox as Record<string, any>;
+  const realCompileAndRun = worker.compileAndRun;
+  type Call = { tracing: boolean; prepareOnly: boolean; driver?: string };
+  const runWith = async (
+    payload: Record<string, unknown>,
+    stub: (call: Call, source: string, functionName: string, inputs: unknown, options: any) => unknown
+  ) => {
+    const calls: Call[] = [];
+    worker.compileAndRun = async (source: string, functionName: string, inputs: unknown, options: any = {}) => {
+      const call = { tracing: Boolean(options.tracing), prepareOnly: Boolean(options.prepareOnly), driver: options.preparedDriverSource };
+      calls.push(call);
+      return stub(call, source, functionName, inputs, options);
+    };
+    try {
+      return { result: await worker.handleExecuteWithTracing(payload), calls };
+    } catch (error) {
+      return { error: error as Error & { code?: string }, calls };
+    } finally {
+      worker.compileAndRun = realCompileAndRun;
+    }
+  };
+  const failures5: string[] = [];
+  // 5: a refused program that does not compile untraced returns the learner's
+  // compile error as its result, not the tracer's refusal.
+  const refusedInvalid = programFor({ name: 'r', prelude: '#define TWICE(x) x; x', body: '    if (a < t) TWICE(k++); else b += 1;', expect: [] }).source;
+  const learnerError = 'solution.cpp:13:28: error: expected expression';
+  const run5 = await runWith({ code: refusedInvalid, functionName: 'f', inputs: { a: 1, b: 2, t: 3 } }, (call, source, functionName, inputs, options) => {
+    // The traced build's driver is built (and refused) as compileAndRun builds it.
+    if (call.tracing) return worker.buildDriverSource(source, functionName, inputs, options);
+    return { success: false, error: learnerError, errorLine: 13, diagnosticStage: 'compile', consoleOutput: [] };
+  });
+  if (run5.error) failures5.push(`threw ${run5.error.name}: ${run5.error.message}`);
+  else if (run5.result.error !== learnerError || run5.result.diagnosticStage !== 'compile' || run5.result.errorLine !== 13) {
+    failures5.push(`result is ${JSON.stringify({ error: run5.result.error, stage: run5.result.diagnosticStage, line: run5.result.errorLine })}`);
+  }
+  results.push({ name: 'trace-execute: a refused program that does not compile reports the learner compile error', failures: failures5 });
+
+  // 6 and 7: a traced build that fails to compile while the untraced build
+  // compiles is refused after exactly one untraced compile, whose driver binds
+  // the same overload as the traced request.
+  const failures67: string[] = [];
+  const overloads = [
+    '#include <string>',
+    'using namespace std;',
+    'class Solution {',
+    'public:',
+    '  int solve(int a) { return a; }',
+    '  int solve(int a, int b) { return a + b; }',
+    '};',
+  ].join('\n');
+  const run67 = await runWith({ code: overloads, functionName: 'solve', inputs: { a: 1, b: 2 } }, (call) =>
+    call.tracing
+      ? { success: false, error: 'solution.cpp:9:1: error: generated code', diagnosticStage: 'compile', consoleOutput: [] }
+      : { success: true, preparedArtifact: {}, consoleOutput: [] }
+  );
+  const untracedCalls = run67.calls.filter((call) => !call.tracing);
+  if (!run67.error || run67.error.name !== 'CppTraceUnsupportedError' || run67.error.code !== 'trace-unavailable') {
+    failures67.push(`not refused as trace-unavailable: ${run67.error ? run67.error.message : JSON.stringify(run67.result).slice(0, 200)}`);
+  }
+  if (untracedCalls.length !== 1) failures67.push(`the untraced build was compiled ${untracedCalls.length} times`);
+  if (!/solve\(__tc_arg_0, __tc_arg_1\)/.test(untracedCalls[0]?.driver || '')) {
+    failures67.push('the untraced driver does not call the two-argument overload the request binds');
+  }
+  results.push({ name: 'trace-execute: compile safety net compiles the untraced build once, same overload', failures: failures67 });
 }
 
 const failed = results.filter((result) => result.failures.length > 0);

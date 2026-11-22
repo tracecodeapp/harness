@@ -14,6 +14,8 @@ const PRELUDE = [
   '#include <array>',
   '#include <set>',
   '#include <string>',
+  '#include <tuple>',
+  '#include <utility>',
   '#include <vector>',
   'using namespace std;',
   '#define BUMP(x) ((x) += 1)',
