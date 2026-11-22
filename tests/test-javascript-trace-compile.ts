@@ -445,6 +445,80 @@ function buildFunctionExecutionRunnerOriginal(`,
   return violations;
 }
 
+/** Which failures may move a host's later untraced programs off the SES pool. */
+async function checkPoolRoute(): Promise<string[]> {
+  const violations: string[] = [];
+  const code = 'function solve() { return 7 }';
+  const base = { code, functionName: 'solve', executionStyle: 'function' } as const;
+  const scenarios: ReadonlyArray<{
+    fault: RuntimeFault;
+    mode: 'code' | 'trace';
+    traceOptions?: Record<string, unknown>;
+    laterRoute: 'fast' | 'compatibility';
+  }> = [
+    { fault: { name: 'an unknown trace option' }, mode: 'trace', traceOptions: { notATraceControl: 1 }, laterRoute: 'fast' },
+    {
+      fault: { name: 'a traced execution that kills its worker', kills: (data, worker) => worker === 'ses' && data.type === 'execute-batch' && data.traceEnabledBatch?.[0] === true },
+      mode: 'trace',
+      laterRoute: 'fast',
+    },
+    {
+      fault: {
+        name: 'an error a live worker reports for one program',
+        edit: {
+          file: SES_WORKER,
+          from: 'const execute = compartment.evaluate(factorySource',
+          to: "if (source.code.includes('faulty')) throw new RangeError('injected program failure');\n  const execute = compartment.evaluate(factorySource",
+        },
+      },
+      mode: 'code',
+      laterRoute: 'fast',
+    },
+    {
+      fault: { name: 'control, a worker crash on an untraced preparation', kills: (data, worker) => worker === 'ses' && data.type === 'prepare' && data.source.code.includes('faulty') },
+      mode: 'code',
+      laterRoute: 'compatibility',
+    },
+  ];
+  for (const { fault, mode, traceOptions, laterRoute } of scenarios) {
+    runtimeFault = fault;
+    const client = new JavaScriptWorkerClient({
+      workerUrl: `/workers/javascript/${WORKER}`,
+      algorithmWorkerUrl: `/workers/javascript/${SES_WORKER}`,
+      algorithmExecution: 'ses-compartment-pool',
+      debug: false,
+    });
+    try {
+      const first = await client.prepareProgram({
+        ...base,
+        mode,
+        code: `${code} // faulty`.replace('return 7', 'const faulty = 7; return faulty'),
+        ...(traceOptions ? { traceOptions: traceOptions as any } : {}),
+      });
+      assert.equal(first.kind, 'prepared', JSON.stringify(first));
+      if (first.kind === 'prepared') {
+        const result = await first.program.executeIsolated({ inputs: {} });
+        assert.equal(result.kind === 'completed' && result.output, 7, JSON.stringify(result).slice(0, 300));
+        await first.program.dispose();
+      }
+      runtimeFault = undefined;
+      const later = await client.prepareProgram({ ...base, mode: 'code' });
+      assert.equal(later.kind, 'prepared');
+      if (later.kind === 'prepared') {
+        assert.equal(later.program.capabilities.profile, laterRoute, 'the route of a later untraced program');
+        await later.program.dispose();
+      }
+      console.log(`PASS: pool route, ${fault.name}`);
+    } catch (error) {
+      violations.push(`pool route, ${fault.name}: ${String(error).slice(0, 500)}`);
+    } finally {
+      runtimeFault = undefined;
+      client.terminate();
+    }
+  }
+  return violations;
+}
+
 function createHost(fault?: TraceBuildFault) {
   activeFault = fault;
   return createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
@@ -469,7 +543,7 @@ async function main(): Promise<void> {
   Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: TestWorker });
   const startedAt = Date.now();
   await checkDirectCallers();
-  const faultViolations = await checkRuntimeFaults();
+  const faultViolations = [...await checkRuntimeFaults(), ...await checkPoolRoute()];
   for (const violation of faultViolations) console.error(`FAIL: ${violation}`);
   console.log(`${faultViolations.length ? 'FAIL' : 'PASS'}: runtime faults, ${faultViolations.length} violations`);
   const routeChecks = await runUntracedRouteChecks(createHost);
