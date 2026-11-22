@@ -24,6 +24,7 @@ import { isRuntimeProviderError, isTraceUnavailableError } from '../packages/run
 import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
 import { allCasesPassPolicy, createAlgorithmJudgeBundle } from '../src/judge';
 import type { TraceCompileLanguage } from './fixtures/javascript-trace-compile-cases';
+import { runUntracedRouteChecks } from './fixtures/javascript-untraced-route';
 import {
   injectTraceBuildFault,
   runTraceCompileMatrix,
@@ -471,6 +472,11 @@ async function main(): Promise<void> {
   const faultViolations = await checkRuntimeFaults();
   for (const violation of faultViolations) console.error(`FAIL: ${violation}`);
   console.log(`${faultViolations.length ? 'FAIL' : 'PASS'}: runtime faults, ${faultViolations.length} violations`);
+  const routeChecks = await runUntracedRouteChecks(createHost);
+  for (const { name, compared, violations } of routeChecks) {
+    for (const violation of violations) console.error(`FAIL: ${name}: ${violation}`);
+    console.log(`${violations.length ? 'FAIL' : 'PASS'}: ${name} (${compared} compared, ${violations.length} violations)`);
+  }
   const result = await runTraceCompileMatrix({
     languages: list('LANGUAGES'),
     styles: list('STYLES'),
@@ -487,7 +493,8 @@ async function main(): Promise<void> {
       `${result.violations.length} violations (${Math.round((Date.now() - startedAt) / 1000)} s)`
   );
   if (!result.checked) throw new Error('No trace compile programs selected.');
-  process.exit(result.violations.length || faultViolations.length ? 1 : 0);
+  const routeViolations = routeChecks.some(({ violations }) => violations.length > 0);
+  process.exit(result.violations.length || faultViolations.length || routeViolations ? 1 : 0);
 }
 
 main().catch((error) => {
