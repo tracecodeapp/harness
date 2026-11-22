@@ -30,6 +30,7 @@ import type {
   RuntimeProjectCommandRequest,
 } from '@tracecode/runtime-contracts';
 import {
+  isTraceUnavailableError,
   javaTraceHooksEventsToRuntimeTrace,
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
@@ -99,36 +100,29 @@ interface WarmupResult {
   timings?: RuntimeExecutionTimings;
 }
 
-const JAVA_TRACE_UNAVAILABLE_MESSAGE =
-  'TraceCode could not trace this case: the Java tracer produced an inconsistent trace. ' +
-  'The case runs normally without tracing.';
+const JAVA_TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
 /**
- * The runtime trace of a traced Java case, or a trace-unavailable rejection
- * of that one case when the tracer's events cannot be read back (for
- * example, an event that refers to a call stack the trace never recorded).
+ * The runtime trace of a traced Java case. When the case recorded a trace
+ * that cannot be read back (for example, an event that refers to a call
+ * stack the trace never recorded), that one case is rejected as
+ * trace-unavailable; a case that recorded nothing is never refused.
  */
 function javaTraceOrRefusal(
-  result: JavaWorkerRawTraceResult,
-  options: Parameters<typeof javaTraceHooksEventsToRuntimeTrace>[2]
+  events: string[],
+  sourceText: string | undefined,
+  options: Parameters<typeof javaTraceHooksEventsToRuntimeTrace>[2],
+  recorded: boolean
 ): RuntimeTrace {
   try {
-    return javaTraceHooksEventsToRuntimeTrace(result.events, result.sourceText, options);
+    return javaTraceHooksEventsToRuntimeTrace(events, sourceText, options);
   } catch (error) {
+    if (!recorded) throw error;
     throw new RuntimeProviderError(JAVA_TRACE_UNAVAILABLE_MESSAGE, {
       cause: error,
       code: TRACE_UNAVAILABLE_CODE,
     });
   }
-}
-
-/** A case the worker reported it could not trace rejects as trace-unavailable. */
-function rejectJavaTraceUnavailable(result: JavaWorkerRawTraceResult): void {
-  if (result.traceUnavailable !== true) return;
-  throw new RuntimeProviderError(
-    result.error || 'TraceCode could not trace this case. The case runs normally without tracing.',
-    { code: TRACE_UNAVAILABLE_CODE }
-  );
 }
 
 export interface JavaWorkerRawTraceResult {
@@ -148,8 +142,8 @@ export interface JavaWorkerRawTraceResult {
   timings?: RuntimeExecutionTimings;
   retirementRecommended?: boolean;
   /**
-   * The worker could not trace this case (a trace failure while the Harness
-   * built the case's input or receiver); `error` says so in a plain sentence.
+   * Set by the direct trace batch on an entry whose recorded trace could not
+   * be read back: the runtime could not trace that case.
    */
   traceUnavailable?: boolean;
   runtimeIsolation?: unknown;
@@ -694,15 +688,14 @@ export class JavaWorkerClient {
     }
     // The worker and its process finished normally; a trace that cannot be
     // read back refuses this case only.
-    rejectJavaTraceUnavailable(result);
     return {
       ...result,
       trace: result.success
-        ? javaTraceOrRefusal(result, {
+        ? javaTraceOrRefusal(result.events, result.sourceText, {
             runId: 'java:run',
             file: JAVA_DEFAULT_FILE,
             maxPathDepth: traceOptions?.maxPathDepth,
-          })
+          }, true)
         : createEmptyRuntimeTrace('java', { runId: 'java:run', file: JAVA_DEFAULT_FILE }),
     };
   }
@@ -949,17 +942,16 @@ export class JavaWorkerClient {
       await kernelProcess.fail(error);
       throw error;
     }
-    // The worker and its process finished normally; a case the tracer could
-    // not trace refuses this case only.
-    rejectJavaTraceUnavailable(result);
+    // The worker and its process finished normally; a recorded trace that
+    // cannot be read back refuses this case only.
     return {
       ...result,
       trace: result.success
-        ? javaTraceOrRefusal(result, {
+        ? javaTraceOrRefusal(result.events, result.sourceText, {
             runId: 'java:run',
             file: JAVA_DEFAULT_FILE,
             maxPathDepth: traceOptions?.maxPathDepth,
-          })
+          }, call.recordTrace !== false)
         : createEmptyRuntimeTrace('java', {
             runId: 'java:run',
             file: JAVA_DEFAULT_FILE,
@@ -1042,25 +1034,45 @@ export class JavaWorkerClient {
       ) {
         this.core.closeSession();
       }
-      return result.results.map((entry) => {
+      return result.results.map((entry, index) => {
         const events = entry.trace.events;
+        const empty = createEmptyRuntimeTrace('java', {
+          runId: 'java:run',
+          file: JAVA_DEFAULT_FILE,
+        });
+        let trace = empty;
+        if (entry.success) {
+          try {
+            trace = javaTraceOrRefusal(
+              events,
+              entry.sourceText,
+              {
+                runId: 'java:run',
+                file: JAVA_DEFAULT_FILE,
+                maxPathDepth: traceOptions?.maxPathDepth,
+              },
+              traceEnabledBatch?.[index] !== false
+            );
+          } catch (error) {
+            if (!isTraceUnavailableError(error)) throw error;
+            // This entry's recorded trace cannot be read back: the runtime
+            // could not trace this case; the other entries keep theirs.
+            return {
+              ...entry,
+              events,
+              success: false,
+              traceUnavailable: true,
+              error: (error as Error).message,
+              diagnosticStage: 'runtime' as const,
+              trace: empty,
+              ...javaPreparedExecutionMetadata(entry),
+            };
+          }
+        }
         return {
           ...entry,
           events,
-          trace: entry.success
-            ? javaTraceHooksEventsToRuntimeTrace(
-                events,
-                entry.sourceText,
-                {
-                  runId: 'java:run',
-                  file: JAVA_DEFAULT_FILE,
-                  maxPathDepth: traceOptions?.maxPathDepth,
-                }
-              )
-            : createEmptyRuntimeTrace('java', {
-                runId: 'java:run',
-                file: JAVA_DEFAULT_FILE,
-              }),
+          trace,
           ...javaPreparedExecutionMetadata(entry),
         };
       });

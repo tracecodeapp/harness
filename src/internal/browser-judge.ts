@@ -1435,8 +1435,7 @@ function makeRuntimeJudgeProvider(
       binding,
     });
   const programs = new RuntimePreparedProgramRegistry(
-    providerOptions.provider,
-    providerOptions.runtime
+    providerOptions.provider
   );
   let nextLeaseId = 1;
   // Successful initialization is memoized; a failed one is retried by the

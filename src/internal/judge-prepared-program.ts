@@ -10,12 +10,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '../../packages/runtime-contracts/src/index';
-import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
-import {
-  isTraceUnavailableError,
-  RuntimeProviderError,
-  traceUnavailableOutcome,
-} from '../../packages/runtime-contracts/src/index';
+import { RuntimeProviderError } from '../../packages/runtime-contracts/src/index';
 import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 export function isPreparedExecutionProvider(
@@ -55,9 +50,7 @@ export class RuntimePreparedProgramRegistry {
   private readonly disposedPrograms = new WeakSet<object>();
 
   constructor(
-    private readonly provider: RuntimePreparedExecutionProvider,
-    /** The runtime's language id, for the empty trace of a refused case. */
-    private readonly language?: string
+    private readonly provider: RuntimePreparedExecutionProvider
   ) {}
 
   begin(evaluationId: string): void {
@@ -230,19 +223,7 @@ export class RuntimePreparedProgramRegistry {
             signal: call.signal,
             limits: call.limits,
           })
-        ).catch((error: unknown) => {
-          // A case the runtime could not trace is refused on its own; the
-          // batch's other cases keep their results.
-          if (isTraceUnavailableError(error)) {
-            return traceUnavailableOutcome(
-              error as Error,
-              // Runtime names are language ids; the refused case's empty
-              // trace is never published.
-              (this.language ?? 'javascript') as RuntimeTrace['language']
-            );
-          }
-          throw error;
-        })
+        )
       )
     );
   }
