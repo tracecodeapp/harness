@@ -1140,4 +1140,28 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: ['__tracecode_trace_unavailable__:again', [2, 2]] },
   },
+  // The program's module is a real module registered as __main__ for the
+  // run: pickle, copy, dataclasses, get_type_hints and __module__ lookups
+  // find the learner's classes.
+  {
+    id: 'main-module-lookups-find-learner-classes',
+    code: lines(
+      'import pickle, copy, dataclasses, typing, sys',
+      '@dataclasses.dataclass',
+      'class Point:',
+      '    x: int',
+      '    y: "int"',
+      'class Record:',
+      '    def __init__(self, value):',
+      '        self.value = value',
+      'def solve():',
+      '    record = Record(3)',
+      '    back = pickle.loads(pickle.dumps(record))',
+      '    deep = copy.deepcopy([record, Point(1, 2)])',
+      '    hints = typing.get_type_hints(Point)',
+      '    module = sys.modules[Record.__module__]',
+      '    return [back.value, deep[0].value, deep[1].y, sorted(hints), getattr(module, "Record", None) is Record, Record.__module__]',
+    ),
+    expected: { value: [3, 3, 2, ['x', 'y'], true, '__main__'] },
+  },
 ];

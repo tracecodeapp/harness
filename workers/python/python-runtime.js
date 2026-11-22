@@ -7331,13 +7331,22 @@ except Exception:
 
 # The learner's program runs in its own namespace, built from the runner's
 # public names and the helpers instrumented code calls, so a learner global
-# can never replace a runner helper (both prepared and direct runs).
+# can never replace a runner helper (both prepared and direct runs). On a
+# direct run the namespace is a real module registered as
+# sys.modules['__main__'] while the program runs, so pickle, copy, dataclasses
+# and typing find its classes there. A prepared traced run keeps a plain dict,
+# exactly like the prepared untraced (Submit) runners, so Run and Submit agree.
 ${`_tracecode_executor_namespace = globals()
-_tracecode_user_namespace = {
+${usesPreparedBindings
+  ? `_tracecode_user_module = None
+_tracecode_user_namespace = {}`
+  : `_tracecode_user_module = _builtins.type(sys)('__main__')
+_tracecode_user_namespace = _tracecode_user_module.__dict__`}
+_tracecode_user_namespace.update({
     _name: _value
     for _name, _value in _builtins.list(_tracecode_executor_namespace.items())
     if not _name.startswith('_')
-}
+})
 for _name in _internal_funcs:
     if _name in _tracecode_executor_namespace:
         _tracecode_user_namespace[_name] = _tracecode_executor_namespace[_name]
@@ -7371,6 +7380,8 @@ _tracecode_program_error_step = None
 # and leaves this False, so the host can still trust _result.
 _execution_aborted = False
 
+${usesPreparedBindings ? '' : `_tracecode_saved_main_module = sys.modules.get('__main__')
+sys.modules['__main__'] = _tracecode_user_module`}
 try:
 ${traceCaseSetupInTry}
 ${executionCode}
@@ -7442,6 +7453,11 @@ except (Exception, SystemExit) as e:
             'stdoutLineCount': len(_console_output),
             'accesses': __tracecode_flush_accesses(None)
         })
+${usesPreparedBindings ? '' : `finally:
+    if _tracecode_saved_main_module is None:
+        sys.modules.pop('__main__', None)
+    else:
+        sys.modules['__main__'] = _tracecode_saved_main_module`}
 
 if (not _trace_failed) and _result is None:
     _inplace = _resolve_inplace_result()
