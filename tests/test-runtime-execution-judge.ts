@@ -2860,3 +2860,33 @@ test('a traced case stopped or failed after its trace stopped recording keeps th
   // Untraced conversion is unchanged.
   assert.equal('traceTruncated' in judgeCaseExecutionOutcome(runaway!, { language: 'javascript' }), false);
 });
+
+test('only the Judge\'s own trace truncation warning restores traceTruncated', async () => {
+  const state = makeState();
+  const result = await evaluate(
+    state,
+    makePlan<unknown>([
+      { id: 'completed', input: { label: 'completed', output: 7, mode: 'trace-truncated' }, expected: 7 },
+      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
+    ]),
+    codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
+  );
+  const [completed, runaway] = result.cases;
+  // The Judge marks its own warning.
+  assert.equal(completed!.diagnostics.find((d) => d.severity === 'warning')?.kind, 'trace-truncated');
+  assert.equal(runaway!.diagnostics.find((d) => d.severity === 'warning')?.kind, 'trace-truncated');
+  // A custom adapter's unrelated warning that happens to use a limit code is
+  // not a trace budget.
+  const unrelated = Object.freeze({ severity: 'warning' as const, message: 'heap is getting large', code: 'memory-limit' });
+  for (const [label, judged] of [['completed', completed!], ['limit', runaway!]] as const) {
+    const custom = {
+      ...judged,
+      diagnostics: Object.freeze([
+        ...judged.diagnostics.filter((d) => d.severity !== 'warning'),
+        unrelated,
+      ]),
+    } as JudgeCaseResult;
+    const outcome = judgeCaseExecutionOutcome(custom, { language: 'javascript', trace: true });
+    assert.equal('traceTruncated' in outcome, false, `${label}: an unrelated warning is not a trace budget`);
+  }
+});

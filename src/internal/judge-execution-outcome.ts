@@ -141,7 +141,11 @@ function failureOutcome(
 function traceTruncated(
   result: JudgeProcessResult
 ): { readonly traceTruncated?: ExecutionLimitReason } {
+  // Only the Judge's own truncation warning: another warning that happens to
+  // use a limit code (a custom adapter's memory-limit notice) is not a trace
+  // budget.
   const warning = result.diagnostics.find((diagnostic) =>
+    diagnostic.kind === 'trace-truncated' &&
     diagnostic.severity === 'warning' &&
     diagnostic.code !== undefined &&
     isExecutionLimitReason(diagnostic.code)

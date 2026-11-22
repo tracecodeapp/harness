@@ -699,6 +699,7 @@ function traceTruncationDiagnostic(
   return outcome.traceTruncated
     ? Object.freeze([Object.freeze({
         severity: 'warning' as const,
+        kind: 'trace-truncated' as const,
         message: outcome.kind === 'completed'
           ? `Trace recording stopped at the ${outcome.traceTruncated} budget ` +
             'after execution completed.'
