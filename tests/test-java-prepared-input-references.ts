@@ -54,6 +54,15 @@ function loadJavaWorker(): JavaWorkerFunctions {
 
 const worker = loadJavaWorker();
 
+type RunnerState = 'submit' | 'companion' | 'recording' | 'one-event';
+
+const RUNNER_BEGIN_RUN: Record<RunnerState, string> = {
+  submit: 'TraceHooks.beginRun(1, false, true, true)',
+  companion: 'TraceHooks.beginRun(1, false, true, false)',
+  recording: 'TraceHooks.beginRun(100000, false, true, true)',
+  'one-event': 'TraceHooks.beginRun(1, false, true, true)',
+};
+
 /**
  * Runs Exports.run() once per entry of `cases` in one JVM, each case's
  * arguments given in parameter order. Returns each run's output, or the
@@ -67,8 +76,15 @@ function runPrepared(
   options: {
     readonly showErrorType?: boolean;
     readonly timeoutMs?: number;
-    /** Run each case inside a TraceHooks run with recording off or on (budget abort armed). */
-    readonly tracing?: 'off' | 'on';
+    /**
+     * Run each case inside the TraceHooks run TraceExecutionRunner starts:
+     * - submit: a plain program, which the worker still runs with recording
+     *   on and a budget of one event (a plain program has no hooks to spend it);
+     * - companion: a traced preparation's case run with recording off;
+     * - recording: a traced case with budget to spare;
+     * - one-event: a traced case whose second event trips the budget.
+     */
+    readonly runner?: RunnerState;
   } = {}
 ): string[] {
   const entries = worker.preparedDynamicInputEntriesForPayload(
@@ -88,7 +104,7 @@ ${code}
 ${exportsSource}
 final class PreparedMain {
   static void runCase(int index) {
-    ${options.tracing ? `int token = TraceHooks.beginRun(100000, false, true, ${options.tracing === 'on'});` : ''}
+    ${options.runner ? `int token = ${RUNNER_BEGIN_RUN[options.runner]};` : ''}
     try {
       System.out.println("case" + index + ":" + Exports.run());
     } catch (Throwable error) {
@@ -98,7 +114,7 @@ final class PreparedMain {
         root = root.getCause();
       }
       System.out.println("case" + index + ":error:" + ${options.showErrorType ? '(error.getClass().getSimpleName() + ":") + ' : ''}root.getMessage());
-    }${options.tracing ? ' finally {\n      TraceHooks.endRun(token);\n    }' : ''}
+    }${options.runner ? ' finally {\n      TraceHooks.endRun(token);\n    }' : ''}
   }
 
   public static void main(String[] args) {
@@ -540,54 +556,104 @@ function testCyclicCauseInReceiverConstructorDoesNotHang(): void {
   console.log('PASS: a receiver constructor throwing a cyclic cause chain fails promptly');
 }
 
+// Two events into a one-event run: the second trips the trace budget.
+const tripBudget = 'TraceHooks.emitLineAtLine(1); TraceHooks.emitLineAtLine(2);';
+// The same, with the budget error caught by the learner.
+const tripBudgetAndCatch = `try { ${tripBudget} } catch (RuntimeException caught) { }`;
+
 function testBudgetTripInConstructorsReachesTheRunner(): void {
   // The runner turns a trace budget error from run() into its trace-limit
   // result (steps kept, case completed). A constructor the Harness calls
   // while building a receiver or an operation's argument must let that
   // error through unchanged, not treat it as a constructor that did not fit.
   const receiver = `class Keeper {
-  public Keeper(int limit) { throw new tracecode.user.TraceBudgetExceededError(); }
+  public Keeper(int limit) { ${tripBudget} }
   public int get() { return 1; }
 }`;
-  assert.deepEqual(
-    runPrepared(receiver, 'Keeper', [[{ operations: ['Keeper', 'get'], arguments: [[1], []] }]], 'ops-class', { showErrorType: true }),
-    ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
-  );
   const argument = `class ListNode {
   int val;
   ListNode next;
-  ListNode(int val) { throw new tracecode.user.TraceBudgetExceededError(); }
+  ListNode(int val) { ${tripBudget} }
 }
 class Keeper {
   public Keeper() {}
   public int keep(ListNode node) { return 1; }
 }`;
-  assert.deepEqual(
-    runPrepared(argument, 'Keeper', [[{ operations: ['Keeper', 'keep'], arguments: [[], [{ val: 1, next: null }]] }]], 'ops-class', { showErrorType: true }),
-    ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
-  );
+  for (const [code, operations, args] of [
+    [receiver, ['Keeper', 'get'], [[1], []]],
+    [argument, ['Keeper', 'keep'], [[], [{ val: 1, next: null }]]],
+  ] as const) {
+    assert.deepEqual(
+      runPrepared(code, 'Keeper', [[{ operations, arguments: args }]], 'ops-class', { showErrorType: true, runner: 'one-event' }),
+      ['error:TraceBudgetExceededError:Trace event storage budget exceeded']
+    );
+  }
   console.log('PASS: a trace budget error in a receiver or argument constructor reaches the runner unchanged');
 }
 
-function testThrowingGetCauseKeepsOverloadFallback(): void {
-  // A learner exception whose getCause() throws. Untraced, the Harness never
-  // inspects it, so receiver construction falls back to the next overload as
-  // before; traced, a getCause() that throws is simply not a budget error.
-  const code = `class Weird extends RuntimeException {
+function testCyclicCauseAfterBudgetTripDoesNotHang(): void {
+  // Only after a trip is a receiver failure's cause chain searched.
+  const code = `class Keeper {
+  ${cyclicCause}
+  public Keeper(int limit) { ${tripBudgetAndCatch} throw cyclicFailure(); }
+  public int get() { return 1; }
+}`;
+  const [output] = runPrepared(code, 'Keeper', [[{ operations: ['Keeper', 'get'], arguments: [[1], []] }]], 'ops-class', { runner: 'one-event', timeoutMs: 20_000 });
+  assert.match(output ?? '', /^error:/, String(output));
+  console.log('PASS: a cyclic cause chain after a budget trip fails promptly');
+}
+
+// Reflection does not order overloads, so each program below fails whichever
+// overload is tried first and succeeds on the next one.
+const throwingGetCause = `class Weird extends RuntimeException {
   @Override
   public synchronized Throwable getCause() { throw new IllegalStateException("getCause is broken"); }
+}`;
+
+function assertFallbackInEveryRunnerState(program: (beforeThrow: string) => string, input: unknown): void {
+  for (const runner of ['submit', 'companion', 'recording', 'one-event'] as const) {
+    const code = program(runner === 'one-event' ? tripBudgetAndCatch : '');
+    assert.deepEqual(runPrepared(code, 'Keeper', [[input]], 'ops-class', { runner }), ['[null,"fallback"]'], runner);
+  }
+}
+
+function testThrowingGetCauseKeepsReceiverFallback(): void {
+  // Until the budget trips, the Harness never inspects the learner's
+  // exception; after a trip, a getCause() that throws is not a budget error.
+  assertFallbackInEveryRunnerState((beforeThrow) => `${throwingGetCause}
+class Keeper {
+  static int attempts;
+  private final String chosen;
+  static String attempt() {
+    if (attempts++ == 0) { ${beforeThrow} throw new Weird(); }
+    return "fallback";
+  }
+  public Keeper(int limit) { this.chosen = attempt(); }
+  public Keeper(String label) { this.chosen = attempt(); }
+  public String chosen() { return chosen; }
+}`, { operations: ['Keeper', 'chosen'], arguments: [[1], []] });
+  console.log('PASS: a throwing getCause() keeps the receiver overload fallback in every runner state');
+}
+
+function testThrowingGetCauseKeepsArgumentFallback(): void {
+  // Filling a set calls the learner's hashCode(), so its exception reaches
+  // the operation probe as it was thrown.
+  assertFallbackInEveryRunnerState((beforeThrow) => `${throwingGetCause}
+class Key {
+  static int attempts;
+  int val;
+  @Override
+  public int hashCode() {
+    if (attempts++ == 0) { ${beforeThrow} throw new Weird(); }
+    return 1;
+  }
 }
 class Keeper {
-  private final String chosen;
-  public Keeper(int limit) { throw new Weird(); }
-  public Keeper(String label) { this.chosen = "string:" + label; }
-  public String chosen() { return chosen; }
-}`;
-  const input = [{ operations: ['Keeper', 'chosen'], arguments: [[1], []] }];
-  for (const tracing of ['off', 'on'] as const) {
-    assert.deepEqual(runPrepared(code, 'Keeper', [input], 'ops-class', { tracing }), ['[null,"string:1"]'], tracing);
-  }
-  console.log('PASS: a learner exception whose getCause() throws keeps the overload fallback, untraced and traced');
+  public Keeper() {}
+  public String keep(Set<Key> keys) { return "fallback"; }
+  public String keep(HashSet<Key> keys) { return "fallback"; }
+}`, { operations: ['Keeper', 'keep'], arguments: [[], [[{ val: 1 }]]] });
+  console.log('PASS: a throwing getCause() keeps the argument overload fallback in every runner state');
 }
 
 const tests = [
@@ -611,7 +677,9 @@ const tests = [
   testCyclicCauseInInputConstructorDoesNotHang,
   testCyclicCauseInReceiverConstructorDoesNotHang,
   testBudgetTripInConstructorsReachesTheRunner,
-  testThrowingGetCauseKeepsOverloadFallback,
+  testCyclicCauseAfterBudgetTripDoesNotHang,
+  testThrowingGetCauseKeepsReceiverFallback,
+  testThrowingGetCauseKeepsArgumentFallback,
 ];
 let failures = 0;
 for (const test of tests) {

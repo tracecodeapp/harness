@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createEmptyRuntimeTrace,
+  isRuntimeProviderError,
   isTraceUnavailableError,
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
@@ -962,7 +963,6 @@ test('a Java trace the client cannot read back refuses only that recorded case, 
   const replies: unknown[] = [
     { success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
     { success: true, output: 2, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: unreadable },
-    { success: true, output: 9, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}' },
     { success: true, output: 3, executionTimeMs: 1, consoleOutput: [], sourceText: 'class Solution {}', events: [] },
   ];
   const batchReply = {
@@ -1012,16 +1012,6 @@ test('a Java trace the client cannot read back refuses only that recorded case, 
       client.executePreparedWithTracing('prepared', { inputs: {}, recordTrace: false }),
       (error: unknown) => !isTraceUnavailableError(error)
     );
-    // A success reply without an events array is a broken reply, not a case
-    // the runtime could not trace.
-    await assert.rejects(
-      client.executePreparedWithTracing('prepared', { inputs: {} }),
-      (error: unknown) => {
-        assert.ok(!isTraceUnavailableError(error), String(error));
-        assert.equal((error as { reason?: string }).reason, 'protocol');
-        return true;
-      }
-    );
     const traced = await client.executePreparedWithTracing('prepared', { inputs: {} });
     assert.equal(traced.output, 3);
     // The direct batch client refuses only the entry it cannot read back.
@@ -1037,6 +1027,74 @@ test('a Java trace the client cannot read back refuses only that recorded case, 
     assert.equal(terminations, 0);
   } finally {
     client.terminate();
+  }
+});
+
+test('a malformed Java trace reply is a provider protocol failure, never trace-unavailable', async (t) => {
+  const malformed = {
+    'missing events': {},
+    'null events': { events: null },
+    'string events': { events: 'trace:{}' },
+    'object events': { events: { length: 0 } },
+    'non-string event': { events: [{ kind: 'line', line: 1 }] },
+  };
+  const calls = {
+    'direct trace': (client: JavaWorkerClient) =>
+      client.executeWithTracing({ code: 'class Solution {}', functionName: 'f', inputs: {} }),
+    'prepared trace': (client: JavaWorkerClient) =>
+      client.executePreparedWithTracing('prepared', { inputs: {} }),
+    'prepared case that recorded nothing': (client: JavaWorkerClient) =>
+      client.executePreparedWithTracing('prepared', { inputs: {}, recordTrace: false }),
+    'direct batch': (client: JavaWorkerClient) =>
+      client.executePreparedTraceBatch('prepared', { inputBatch: [{}] }),
+    'direct batch without a trace object': (client: JavaWorkerClient) =>
+      client.executePreparedTraceBatch('missing-trace', { inputBatch: [{}] }),
+  };
+  for (const [shape, envelope] of Object.entries(malformed)) {
+    for (const [path, call] of Object.entries(calls)) {
+      await t.test(`${path}: ${shape}`, async () => {
+        const result = { success: true, output: 1, executionTimeMs: 1, consoleOutput: [], sourceText: '' };
+        const client = new JavaWorkerClient({
+          workerUrl: '/workers/java-worker.js',
+          debug: false,
+          workerFactory: () => {
+            const worker: BrowserWorkerLike = {
+              onmessage: null,
+              onerror: null,
+              terminate() {},
+              postMessage(message) {
+                const request = message as { id: string; type: string; protocolToken: string; payload?: { programId?: string } };
+                const payload = request.type === 'execute-prepared-runtime-program-batch'
+                  ? {
+                      success: true,
+                      results: [request.payload?.programId === 'missing-trace'
+                        ? result
+                        : { ...result, trace: { ...envelope } }],
+                    }
+                  : request.type === 'execute-with-tracing' || request.type === 'execute-prepared-runtime-program'
+                    ? { ...result, ...envelope }
+                    : { success: true, loadTimeMs: 0 };
+                queueMicrotask(() => worker.onmessage?.({ data: {
+                  id: request.id, protocolToken: request.protocolToken, type: 'result', payload,
+                } } as MessageEvent));
+              },
+            };
+            queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+            return worker;
+          },
+        });
+        try {
+          await assert.rejects(call(client), (error: unknown) => {
+            assert.ok(!isTraceUnavailableError(error), String(error));
+            assert.ok(isRuntimeProviderError(error), String(error));
+            assert.equal(error.reason, 'protocol');
+            return true;
+          });
+        } finally {
+          client.terminate();
+        }
+      });
+    }
   }
 });
 
