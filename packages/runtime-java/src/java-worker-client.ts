@@ -103,19 +103,35 @@ interface WarmupResult {
 const JAVA_TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
 /**
+ * The events of a successful traced reply. A reply without an array of event
+ * strings broke the worker protocol, whether or not the case recorded.
+ */
+function javaTraceEvents(events: unknown): string[] {
+  if (!Array.isArray(events) || !events.every((event) => typeof event === 'string')) {
+    throw new RuntimeProviderError(
+      'The Java worker returned a trace result without a valid events array.',
+      { reason: 'protocol' }
+    );
+  }
+  return events;
+}
+
+/**
  * The runtime trace of a traced Java case. When the case recorded a trace
  * that cannot be read back (for example, an event that refers to a call
  * stack the trace never recorded), that one case is rejected as
  * trace-unavailable; a case that recorded nothing is never refused.
  */
 function javaTraceOrRefusal(
-  events: string[],
+  events: unknown,
   sourceText: string | undefined,
   options: Parameters<typeof javaTraceHooksEventsToRuntimeTrace>[2],
   recorded: boolean
 ): RuntimeTrace {
+  // Outside the catch: a malformed reply is never an untraceable case.
+  const traceEvents = javaTraceEvents(events);
   try {
-    return javaTraceHooksEventsToRuntimeTrace(events, sourceText, options);
+    return javaTraceHooksEventsToRuntimeTrace(traceEvents, sourceText, options);
   } catch (error) {
     if (!recorded) throw error;
     throw new RuntimeProviderError(JAVA_TRACE_UNAVAILABLE_MESSAGE, {
@@ -1035,7 +1051,9 @@ export class JavaWorkerClient {
         this.core.closeSession();
       }
       return result.results.map((entry, index) => {
-        const events = entry.trace.events;
+        const events = entry.success
+          ? javaTraceEvents(entry.trace?.events)
+          : entry.trace.events;
         const empty = createEmptyRuntimeTrace('java', {
           runId: 'java:run',
           file: JAVA_DEFAULT_FILE,
