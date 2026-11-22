@@ -2950,8 +2950,14 @@ test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only
   });
   // A completed case keeps the budget 0.20.2 wrote, for every code its
   // tracer could stop recording at, read by the exact message 0.20.2 used.
-  for (const code of ['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit']) {
+  // recursion-limit is JavaScript's: a program could catch that guard and complete.
+  for (const code of ['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit', 'recursion-limit']) {
     assert.equal(truncatedBy(withWarnings(completed!, [legacy(code)])), code, `completed: ${code}`);
+  }
+  // 0.20.2 never completed a case with any other limit, so the same sentence
+  // around one of those codes is not its warning.
+  for (const code of ['memory-limit', 'client-timeout', 'serialization-limit']) {
+    assert.equal(truncatedBy(withWarnings(completed!, [legacy(code)])), undefined, `never written: ${code}`);
   }
   // 0.20.2 wrote that warning only on completed cases: an unmarked one on a
   // limited case is not a trace budget.
