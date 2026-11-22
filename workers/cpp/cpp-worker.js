@@ -8718,10 +8718,23 @@ function buildValueReturnInstrumentation(expression, lineNumber, signature, inde
     ? localCppType(signature.returnType)
     : 'auto';
   const trimmedExpression = expression.trim();
-  const ternary = returnStorageType !== 'auto' ? splitTopLevelTernaryExpression(trimmedExpression) : null;
+  // A function returning an lvalue reference (`int& at(int i)`, `const T&
+  // get()`) returns the referenced object: the returned value is bound by
+  // that reference type, through the element helper for a traced vector's
+  // element proxy, not copied into a local (whose reference would dangle).
+  const referenceReturnType = /[^&]&$/.test(String(signature.returnType || '').trim())
+    ? String(signature.returnType)
+      .replace(/\b(?:public|private|protected)\s*:\s*/g, '')
+      .replace(/\b(?:static|inline|constexpr|consteval|virtual|friend|explicit|extern)\b/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+    : null;
+  const ternary = returnStorageType !== 'auto' && !referenceReturnType ? splitTopLevelTernaryExpression(trimmedExpression) : null;
   const returnStorageIsPointer = /\*$/.test(returnStorageType.trim());
   const returnDeclaration =
-    ternary
+    referenceReturnType
+      ? `${referenceReturnType} __tc_return_${lineNumber} = __tracecode_element(${expression});`
+      : ternary
       ? returnStorageIsPointer
         ? `${returnStorageType} __tc_return_${lineNumber} = (${ternary.condition}) ? (${ternary.whenTrue}) : (${ternary.whenFalse});`
         : `${returnStorageType} __tc_return_${lineNumber} = (${ternary.condition}) ? ${returnStorageType}(${ternary.whenTrue}) : ${returnStorageType}(${ternary.whenFalse});`

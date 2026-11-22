@@ -336,6 +336,20 @@ const COPY_FORMS: ParityForm[] = [
     ].join('\n'),
   },
   {
+    // Round 6: a function returning a reference returns the element (its
+    // return was copied into a local whose reference dangled).
+    name: 'a lambda returning a reference to an element',
+    body: [
+      '    vector<int> v = {1, 2, 3};',
+      '    auto pick = [&](int i) -> int& {',
+      '      return v[i];',
+      '    };',
+      '    pick(1) = a + 4;',
+      '    pick(2) += b;',
+      '    k = v[1] * 10 + v[2];',
+    ].join('\n'),
+  },
+  {
     name: 'struct members of an element',
     body: [
       '    vector<QQ> qs(3);',

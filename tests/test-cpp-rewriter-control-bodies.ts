@@ -1107,6 +1107,11 @@ for (const accepted of ACCEPTED_MACROS) {
       body: '    vector<bool> flags(3, false);\n    auto p = flags[1];\n    bool q = flags[2];',
       present: 'auto p = flags[1];',
     },
+    {
+      name: 'a function returning a reference returns the element, not a local copy',
+      body: '    vector<int> v(3);\n    auto pick = [&](int i) -> int& {\n      return v[i];\n    };\n    pick(1) = a;',
+      present: 'int& __tc_return_',
+    },
     // Round 4, item 4: fill binds its argument by const reference.
     {
       name: 'fill with std::move binds by const reference, without a move',
