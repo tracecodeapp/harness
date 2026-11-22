@@ -3012,13 +3012,13 @@ _infinite_loop_line = -1
 # that Submit would accept.
 _untraced_max_line_events = max(10000, int(${
     usesPreparedBindings
-      ? `_tracecode_case_limits.get('maxLineEvents', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 400000)})`
-      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 400000)
+      ? `_tracecode_case_limits.get('maxLineEvents', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 4000000)})`
+      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxLineEvents ?? 4000000)
   }))
 _untraced_max_single_line_hits = max(1000, int(${
     usesPreparedBindings
-      ? `_tracecode_case_limits.get('maxSingleLineHits', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 150000)})`
-      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 150000)
+      ? `_tracecode_case_limits.get('maxSingleLineHits', ${Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 1500000)})`
+      : Number(deps.INTERVIEW_GUARD_DEFAULTS?.maxSingleLineHits ?? 1500000)
   }))
 _untraced_line_hits = {}
 
