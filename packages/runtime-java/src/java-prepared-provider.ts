@@ -15,7 +15,9 @@ import type {
 import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
+  isTraceUnavailableError,
   liftTraceOutcome,
+  traceUnavailableOutcome,
 } from '@tracecode/runtime-contracts';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
@@ -311,14 +313,21 @@ class JavaPreparedTraceProgramImpl
   ): Promise<readonly ExecutionResult[]> {
     const results: ExecutionResult[] = [];
     for (const [index, inputs] of call.inputBatch.entries()) {
-      results.push(await this.executeIsolated({
-        inputs,
-        ...(call.traceEnabledBatch === undefined
-          ? {}
-          : { recordTrace: call.traceEnabledBatch[index] }),
-        ...(call.signal ? { signal: call.signal } : {}),
-        ...(call.limits ? { limits: call.limits } : {}),
-      }));
+      try {
+        results.push(await this.executeIsolated({
+          inputs,
+          ...(call.traceEnabledBatch === undefined
+            ? {}
+            : { recordTrace: call.traceEnabledBatch[index] }),
+          ...(call.signal ? { signal: call.signal } : {}),
+          ...(call.limits ? { limits: call.limits } : {}),
+        }));
+      } catch (error) {
+        // A case the tracer could not trace is refused on its own; the
+        // batch's other cases run and keep their results.
+        if (!isTraceUnavailableError(error)) throw error;
+        results.push(traceUnavailableOutcome(error as Error, 'java'));
+      }
     }
     return results;
   }

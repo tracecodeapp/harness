@@ -167,6 +167,16 @@ export type ExecutionResult =
       diagnosticStage: ExecutionDiagnosticStage;
       diagnostic?: unknown;
       timings?: RuntimeExecutionTimings;
+      /**
+       * Set only on a case of a traced batch that the runtime could not trace
+       * (see `traceUnavailableOutcome`): the provider refused that one case
+       * instead of rejecting the whole batch. Judge reports it as the
+       * provider's `trace-unavailable` failure, never as the program's.
+       */
+      providerFailure?: {
+        readonly code: 'trace-unavailable';
+        readonly message: string;
+      };
     }
   | {
       kind: 'limit';

@@ -765,6 +765,11 @@ function mappedTraceOutcome(
   runtime: string,
   outcome: ExecutionResult
 ): MappedRuntimeOutcome {
+  if (outcome.kind === 'failed' && outcome.providerFailure) {
+    // The provider refused this one case (it could not trace it): the same
+    // provider failure a rejection publishes, for this case alone.
+    return providerFailure(runtime, outcome.providerFailure.message, outcome.providerFailure.code);
+  }
   const stdout = outputText(outcome.consoleOutput);
   if (outcome.kind === 'completed') {
     return Object.freeze({
@@ -1430,7 +1435,8 @@ function makeRuntimeJudgeProvider(
       binding,
     });
   const programs = new RuntimePreparedProgramRegistry(
-    providerOptions.provider
+    providerOptions.provider,
+    providerOptions.runtime
   );
   let nextLeaseId = 1;
   // Successful initialization is memoized; a failed one is retried by the
