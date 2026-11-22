@@ -2767,7 +2767,7 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
     _globals_dict[str(_tracecode_input_name)] = _tracecode_input_value
 `
     : Object.entries(inputs)
-        .map(([key, value]) => `${key} = ${deps.toPythonLiteral(value)}`)
+        .map(([key, value]) => `_globals_dict[${JSON.stringify(key)}] = ${deps.toPythonLiteral(value)}`)
         .join('\n');
 
   const escapedCode = userCode.replace(/\\/g, '\\\\').replace(/"""/g, '\\"\\"\\"');
@@ -7179,12 +7179,14 @@ pow = _builtins.pow
     }
   });
 
+  // Inputs live in the learner's namespace (_globals_dict), never in the
+  // runner's globals.
   const treeConversions = !usesPreparedBindings && treeInputKeys.length > 0
-    ? treeInputKeys.map(key => `${key} = _dict_to_tree(${key})`).join('\n')
+    ? treeInputKeys.map(key => `_globals_dict[${JSON.stringify(key)}] = _dict_to_tree(_globals_dict[${JSON.stringify(key)}])`).join('\n')
     : '';
   
   const listConversions = !usesPreparedBindings && listInputKeys.length > 0
-    ? listInputKeys.map(key => `${key} = _dict_to_list(${key})`).join('\n')
+    ? listInputKeys.map(key => `_globals_dict[${JSON.stringify(key)}] = _dict_to_list(_globals_dict[${JSON.stringify(key)}])`).join('\n')
     : '';
 
   const inplaceCandidates = ['nums1', 'nums', 'arr', 'array', 'matrix', 'board', 'grid']
@@ -7322,8 +7324,10 @@ try:
 except Exception:
     _TC_NATIVE = None
 
-${usesPreparedBindings
-  ? `_tracecode_executor_namespace = globals()
+# The learner's program runs in its own namespace, built from the runner's
+# public names and the helpers instrumented code calls, so a learner global
+# can never replace a runner helper (both prepared and direct runs).
+${`_tracecode_executor_namespace = globals()
 _tracecode_user_namespace = {
     _name: _value
     for _name, _value in _builtins.list(_tracecode_executor_namespace.items())
@@ -7337,9 +7341,8 @@ _tracecode_user_namespace['__name__'] = '__main__'
 _tracecode_user_namespace['print'] = _custom_print
 _tracecode_user_namespace['pow'] = _builtins.pow
 _tracecode_user_namespace['_builtins'] = _builtins
-_tracecode_user_namespace['__tracecode_tracing_enabled'] = __tracecode_tracing_enabled
-_globals_dict = _tracecode_user_namespace`
-  : ''}
+${usesPreparedBindings ? "_tracecode_user_namespace['__tracecode_tracing_enabled'] = __tracecode_tracing_enabled" : ''}
+_globals_dict = _tracecode_user_namespace`}
 
 _case_started_at = _tracecode_perf_counter()
 _case_deadline = (

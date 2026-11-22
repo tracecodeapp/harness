@@ -1073,4 +1073,30 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [1, 0, [0, 3]] },
   },
+  // The learner's program runs in its own namespace: a learner global never
+  // replaces a runner helper, whether tracing falls back (a reserved name)
+  // or not (names the runner also uses).
+  {
+    id: 'reserved-runner-helper-name-still-succeeds',
+    code: lines(
+      '_tracecode_check_deadline = None',
+      'def solve():',
+      '    return 7',
+    ),
+    expected: { value: 7 },
+    traceUnavailable: true,
+  },
+  {
+    id: 'learner-globals-never-replace-runner-names',
+    code: lines(
+      'json = None',
+      '_serialize_output = None',
+      '_result = "learner"',
+      '_trace_events = None',
+      '_console_output = None',
+      'def solve():',
+      '    return [json, _result, _trace_events]',
+    ),
+    expected: { value: [null, 'learner', null] },
+  },
 ];

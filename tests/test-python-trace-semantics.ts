@@ -68,18 +68,19 @@ async function runPython(dir: string, name: string, script: string): Promise<str
 }
 
 function oracleScript(code: string, functionName: string, inputs: Record<string, unknown>) {
-  return `import json
+  // A private alias: the learner's program may rebind json.
+  return `import json as _tc_oracle_json
 ${code}
 try:
-    _value = ${functionName}(**json.loads(${JSON.stringify(JSON.stringify(inputs))}))
-    print(json.dumps({'value': _value}))
+    _value = ${functionName}(**_tc_oracle_json.loads(${JSON.stringify(JSON.stringify(inputs))}))
+    print(_tc_oracle_json.dumps({'value': _value}))
 except Exception as error:
     # The untraced runner's wording when the exception cannot be formatted.
     try:
         _message = str(error)
     except BaseException:
         _message = 'Execution failed'
-    print(json.dumps({'error': [type(error).__name__, _message]}))
+    print(_tc_oracle_json.dumps({'error': [type(error).__name__, _message]}))
 `;
 }
 
