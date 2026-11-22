@@ -26,10 +26,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   warning (completed, failed and limit cases), so another warning that
   happens to use a limit code, such as a custom adapter's `memory-limit`
   notice, is no longer read as a trace budget. Results saved by 0.20.2 carry
-  the warning unmarked; when no diagnostic is marked, an unmarked warning
-  whose code is a trace-recording budget (`trace-limit`, `trace-byte-limit`)
-  is still read as one. An unmarked `line-limit` or `single-line-limit` is
-  not, since a runaway guard uses those codes too.
+  the warning unmarked: on a completed case with no marked diagnostic, an
+  unmarked warning with 0.20.2's exact message (`Trace recording stopped at
+  the <code> budget after execution completed.`) is still read as that budget,
+  for any code 0.20.2 used (`trace-limit`, `trace-byte-limit`, `line-limit`,
+  `single-line-limit`). Other unmarked warnings, and any unmarked warning on a
+  failed or limited case, are not.
 
 ### Fixed
 

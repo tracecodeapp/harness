@@ -139,18 +139,23 @@ function failureOutcome(
 }
 
 /**
- * Codes that only ever name a trace-recording budget. Results saved by 0.20.2
- * carry the Judge's truncation warning without `kind`; for those, a warning
- * with one of these codes is still read as the budget. Codes a runaway guard
- * or a custom adapter could also use (line-limit, memory-limit, ...) are not.
+ * The exact warning 0.20.2's Judge wrote, without `kind`, and only on a
+ * completed traced case: `Trace recording stopped at the <code> budget after
+ * execution completed.` with that budget as its code. Results saved by 0.20.2
+ * are still read by that shape, so a stored completed case keeps its budget,
+ * including the line budgets (`line-limit`, `single-line-limit`) that could
+ * stop recording while a finite program ran on. Any other unmarked warning,
+ * and any unmarked warning on a failed or limited case, is not a trace budget.
  */
-const LEGACY_TRACE_BUDGET_CODES: ReadonlySet<string> = new Set<ExecutionLimitReason>([
-  'trace-limit',
-  'trace-byte-limit',
-]);
+function isLegacyTraceTruncationWarning(diagnostic: JudgeDiagnostic): boolean {
+  return diagnostic.kind === undefined &&
+    diagnostic.message ===
+      `Trace recording stopped at the ${diagnostic.code} budget after execution completed.`;
+}
 
 function traceTruncated(
-  result: JudgeProcessResult
+  result: JudgeProcessResult,
+  completed: boolean
 ): { readonly traceTruncated?: ExecutionLimitReason } {
   // The Judge's own (marked) truncation warning first: another warning that
   // happens to use a limit code (a custom adapter's memory-limit notice) is
@@ -162,10 +167,10 @@ function traceTruncated(
   );
   const marked = warnings.find((diagnostic) => diagnostic.kind === 'trace-truncated');
   if (marked) return { traceTruncated: marked.code as ExecutionLimitReason };
-  if (result.diagnostics.some((diagnostic) => diagnostic.kind === 'trace-truncated')) return {};
-  const legacy = warnings.find((diagnostic) =>
-    diagnostic.kind === undefined && LEGACY_TRACE_BUDGET_CODES.has(diagnostic.code!)
-  );
+  if (!completed || result.diagnostics.some((diagnostic) => diagnostic.kind === 'trace-truncated')) {
+    return {};
+  }
+  const legacy = warnings.find(isLegacyTraceTruncationWarning);
   return legacy ? { traceTruncated: legacy.code as ExecutionLimitReason } : {};
 }
 
@@ -206,7 +211,7 @@ export function judgeCaseExecutionOutcome(
           trace: traceOf(result, options.language),
           executionTimeMs: durationMs(result),
           consoleOutput,
-          ...traceTruncated(result),
+          ...traceTruncated(result, true),
           ...timings,
         }
       : {
@@ -223,7 +228,7 @@ export function judgeCaseExecutionOutcome(
         trace: traceOf(result, options.language),
         executionTimeMs: durationMs(result),
         consoleOutput,
-        ...traceTruncated(result),
+        ...traceTruncated(result, false),
         ...timings,
       }
     : { ...outcome, consoleOutput, ...timings };
