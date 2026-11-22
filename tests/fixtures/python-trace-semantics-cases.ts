@@ -1045,4 +1045,32 @@ export const pythonTraceSemanticsPositionCases: readonly PythonTraceSemanticsCas
     ),
     expected: { value: [true, true, [1, 5]] },
   },
+  // Recording heap operations compares cells by identity, never with the
+  // learner's __eq__ (heapq itself only uses <).
+  {
+    id: 'heap-recording-never-calls-eq',
+    code: lines(
+      'import heapq',
+      'class Task:',
+      '    eq_calls = 0',
+      '    def __init__(self, priority):',
+      '        self.priority = priority',
+      '    def __lt__(self, other):',
+      '        return self.priority < other.priority',
+      '    def __eq__(self, other):',
+      '        Task.eq_calls += 1',
+      '        return self is other',
+      '    __hash__ = object.__hash__',
+      'def solve():',
+      '    heap = []',
+      '    for priority in [3, 1, 2]:',
+      '        heapq.heappush(heap, Task(priority))',
+      '    first = heapq.heappop(heap).priority',
+      '    heapq.heapreplace(heap, Task(0))',
+      '    grid = [[]]',
+      '    heapq.heappush(grid[0], Task(5))',
+      '    return [first, Task.eq_calls, sorted(task.priority for task in heap)]',
+    ),
+    expected: { value: [1, 0, [0, 3]] },
+  },
 ];

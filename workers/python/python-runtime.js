@@ -4840,16 +4840,19 @@ def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name
         if after_values is not None:
             path_prefix = list(normalized or [])
             source_prefix = [None for _ in path_prefix]
+            # Cells are compared by identity: a heap operation moves object
+            # references, and == would run the learner's __eq__ (also inside
+            # tuple entries such as (priority, node)).
             if method_name == 'heappush' and len(args) >= 1:
                 pushed_value = args[0]
                 pushed_index = None
                 for index, value in enumerate(after_values):
-                    if value == pushed_value and (index >= len(before_values) or before_values[index] != value):
+                    if value is pushed_value and (index >= len(before_values) or before_values[index] is not value):
                         pushed_index = index
                         break
                 if pushed_index is None:
                     for index, value in enumerate(after_values):
-                        if value == pushed_value:
+                        if value is pushed_value:
                             pushed_index = index
                             break
                 if pushed_index is not None:
@@ -4870,7 +4873,7 @@ def _tracecode_heapq_mutation(heapq_func, var_name, target, indices, method_name
             for index, value in enumerate(after_values):
                 if index >= budget:
                     break
-                if index >= len(before_values) or before_values[index] != value:
+                if index >= len(before_values) or before_values[index] is not value:
                     __tracecode_record_access(
                         frame,
                         __tracecode_make_access_event(
