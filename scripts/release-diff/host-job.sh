@@ -39,20 +39,34 @@ fi
 git rev-parse HEAD >"$OUT/target-head.txt"
 
 status=0
+# RD_PARALLEL=1 runs both versions of a language side by side (two browser processes, within
+# the host's four-workers-per-job rule), so both see the same host load.
+run_side() {
+  local lang=$1 side=$2 root label stop
+  if [ "$side" = base ]; then root="$BASE/package"; label="v$BASE_VERSION"; stop=0
+  else root="$ROOT"; label=target; stop=1; fi
+  echo "== $label $lang start $(date -u +%H:%M:%SZ)"
+  RD_HARNESS_ROOT="$root" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
+    RD_CATALOG="${RD_CATALOG:-all}" RD_LANGUAGES="$lang" RD_PROBLEMS="${RD_PROBLEMS:-}" \
+    RD_REPORT="$OUT/$label-$lang.json" \
+    corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-release-diff-catalog.ts \
+    >"$OUT/$label-$lang.log" 2>&1
+  local code=$?
+  echo "== $label $lang end $(date -u +%H:%M:%SZ) exit=$code fixtures=$(grep -cE '^\[' "$OUT/$label-$lang.log")"
+  grep -E 'runner-timeout|crashed|Error' "$OUT/$label-$lang.log" | head -5
+  return $code
+}
 IFS=, read -ra LANG_LIST <<<"$LANGS"
 for lang in "${LANG_LIST[@]}"; do
-  for side in base target; do
-    if [ "$side" = base ]; then root="$BASE/package"; label="v$BASE_VERSION"; stop=0
-    else root="$ROOT"; label=target; stop=1; fi
-    echo "== $label $lang $(date -u +%H:%M:%SZ)"
-    RD_HARNESS_ROOT="$root" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
-      RD_CATALOG="${RD_CATALOG:-all}" RD_LANGUAGES="$lang" RD_PROBLEMS="${RD_PROBLEMS:-}" \
-      RD_REPORT="$OUT/$label-$lang.json" \
-      corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-release-diff-catalog.ts \
-      >"$OUT/$label-$lang.log" 2>&1 || { echo "   exit $? (see $label-$lang.log)"; status=1; }
-    grep -cE '^\[' "$OUT/$label-$lang.log" | sed 's/^/   problems logged: /'
-    grep -E 'runner-timeout|crashed|Error' "$OUT/$label-$lang.log" | head -5
-  done
+  if [ "${RD_PARALLEL:-0}" = 1 ]; then
+    run_side "$lang" base & b=$!
+    run_side "$lang" target & t=$!
+    wait $b || status=1
+    wait $t || status=1
+  else
+    run_side "$lang" base || status=1
+    run_side "$lang" target || status=1
+  fi
 done
 echo "done $(date -u +%H:%M:%SZ)"
 exit $status
