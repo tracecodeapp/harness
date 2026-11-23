@@ -41,6 +41,24 @@ export type Drawing =
   | { status: 'truncated'; reason: Cut; trace: RuntimeTrace; attemptedEvents: number }
   | { status: 'refused'; reason: Refusal };
 
+/** @internal Terminal evidence for a producer that declares ends-same certification. */
+export type ObservationFinalState = {
+  /** Captured stdout with the same framing as the ordinary row. */
+  readonly console: string;
+} & (
+  | {
+      readonly status: 'completed';
+      /** Required to certify a drawable reply, even when no value was published. */
+      readonly value?: { readonly present: boolean; readonly value?: unknown };
+    }
+  | { readonly status: 'trapped' | 'timed-out' | 'compile-failed'; readonly value?: never }
+);
+
+/** @internal Final-state evidence is consumed at bind and never projected. */
+export type RuntimeObservationReply = Drawing & {
+  readonly finalState?: ObservationFinalState;
+};
+
 /** @internal The observer receives its own materialized input and cancellation. */
 export interface RuntimeObservationCall {
   readonly program: Readonly<
@@ -54,7 +72,7 @@ export interface RuntimeObservationCall {
 
 /** @internal Observation runs on a separate lease from ordinary execution. */
 export interface RuntimeObservationProvider {
-  observe(call: RuntimeObservationCall): Promise<Drawing>;
+  observe(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
 }
 
 /** A single non-tracing execution call (one case). */

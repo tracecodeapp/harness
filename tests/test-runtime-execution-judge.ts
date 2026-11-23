@@ -3007,7 +3007,7 @@ function controlled<T = void>() {
   return { promise, resolve };
 }
 
-type ObserverReply = import('../packages/runtime-contracts/src/runtime-calls').Drawing;
+type ObserverReply = import('../packages/runtime-contracts/src/runtime-calls').RuntimeObservationReply;
 type ObserverCall = import('../packages/runtime-contracts/src/runtime-calls').RuntimeObservationCall;
 
 function receiptFixture(options: {
@@ -3021,6 +3021,7 @@ function receiptFixture(options: {
   prepareObserver?: () => Promise<void>;
   workerAcks?: boolean;
   providerMarks?: boolean;
+  certification?: 'ends-same';
 } = {}) {
   const state = makePreparedState({
     failPreparation: options.compileFailure ?? false,
@@ -3147,6 +3148,7 @@ function receiptFixture(options: {
     runtimeVersion: 'receipt-fixture.v1',
     capabilities: {
       observationLease: 'separate' as const,
+      certification: options.certification,
       observationDeadlineMs: options.deadlineMs ?? 3000,
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
     },
@@ -3970,4 +3972,38 @@ test('a Judge host outside a Window ignores even a non-enumerable injection brid
   const result = await f.host.execute({ bundle: await receiptBundle(), tracing: { caseIds: ['A'] } });
   assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
   assert.equal(touched, false);
+});
+
+test('Judge scheduler certifies a registered producer before binding and caches the refusal', async (t) => {
+  const fixture = receiptFixture({
+    certification: 'ends-same',
+    async observe(call) {
+      const label = call.inputs.label;
+      return {
+        ...recordedDrawing(call),
+        finalState: {
+          status: 'completed',
+          value: { present: true, value: label === 'A' ? 'A' : 999 },
+          console: `stdout:${label}\n`,
+        },
+      };
+    },
+  });
+  t.after(() => fixture.host.dispose());
+  const response = await fixture.host.execute({
+    bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A', 'B'] },
+  });
+  const [drawnRow, refusedRow] = response.evaluation.cases;
+  assert.ok(response.executionId);
+  assert.equal(drawnRow?.attachment?.status, 'drawn');
+  const refused = refusedRow?.attachment;
+  assert.equal(refused?.status === 'refused' && refused.reason, 'uncertified-drawing');
+  assert.equal(refusedRow?.value, 'B');
+  assert.equal(refusedRow?.verdict.kind, 'passed');
+  const cached = await fixture.host.execute({
+    executionId: response.executionId, tracing: { caseIds: ['B'] },
+  });
+  assert.equal(cached.evaluation.cases[0]?.attachment, refused);
+  assert.deepEqual(fixture.ordinaryStarts, ['A', 'B', 'C']);
+  assert.equal(fixture.observerCalls.length, 2);
 });

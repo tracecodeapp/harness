@@ -588,6 +588,20 @@ function comparatorStrategy(
     : policy;
 }
 
+/** Compare two outputs using a case's equality settings. A custom validator
+ * checks whether an answer is valid, so it cannot attest that two runs agree.
+ */
+export function compareObservationValues(
+  policy: JudgeComparatorPolicy,
+  caseId: string,
+  observed: unknown,
+  ordinary: unknown
+): boolean | undefined {
+  const strategy = comparatorStrategy(policy, caseId);
+  if (strategy.customValidator) return undefined;
+  return compareJudgeValues(observed, ordinary, strategy.mode, strategy.floatTolerance ?? true);
+}
+
 export function createJudgeComparator<
   Input extends Record<string, unknown> = Record<string, unknown>,
 >(

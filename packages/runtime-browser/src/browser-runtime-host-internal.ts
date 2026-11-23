@@ -5,9 +5,9 @@ import type {
   TraceExecutionOptions,
 } from '@tracecode/runtime-contracts';
 import type {
-  Drawing,
   RuntimeObservationCall,
   RuntimeObservationProvider,
+  RuntimeObservationReply,
 } from '../../runtime-contracts/src/runtime-calls';
 import type { BrowserRuntimeProviderLease } from './runtime-provider-registry';
 import type { BrowserRuntimeHost } from './browser-runtime-host';
@@ -16,14 +16,14 @@ export type JudgeObservationProgram = RuntimeObservationCall['program'] & {
   readonly runtimeVersion: string;
 };
 
-type ObservationRefusal = Extract<Drawing, { status: 'refused' }>;
+type ObservationRefusal = Extract<RuntimeObservationReply, { status: 'refused' }>;
 
 export interface JudgeObservationLease extends RuntimeObservationProvider {
   /**
    * Each observe call gets fresh learner state. An abort must retire or reset
    * that state before the adapter admits a subsequent case on the lease.
    */
-  observe(call: RuntimeObservationCall): Promise<Drawing>;
+  observe(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
   dispose(): void | Promise<void>;
 }
 
@@ -56,6 +56,7 @@ export interface JudgeReceiptProvider {
   readonly runtimeVersion: string;
   readonly capabilities: {
     readonly observationLease: 'separate';
+    readonly certification?: 'ends-same';
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;

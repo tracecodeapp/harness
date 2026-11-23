@@ -573,3 +573,148 @@ test('trusted test worker acknowledges the injected phase on a separate journal 
     });
   }
 });
+
+test('ends-same gates binding on terminal outcome, value presence, and exact stdout', () => {
+  const stdout = processResult().stdout;
+  const state = { status: 'completed' as const, value: { present: true, value: 7 }, console: stdout };
+  const cases = [
+    [state, undefined],
+    [{ ...state, value: { present: true, value: 999 } }, 'uncertified-drawing'],
+    [{ ...state, console: 'ordinary\n' }, 'uncertified-drawing'],
+    [{ ...state, value: { present: false } }, 'uncertified-drawing'],
+    [undefined, 'uncertified-drawing'],
+    [{ status: 'compile-failed', console: stdout }, 'observer-prepare'],
+    [{ status: 'trapped', console: stdout }, 'observer-runtime'],
+    [{ status: 'timed-out', console: stdout }, 'observer-timeout'],
+  ] as const;
+
+  for (const [finalState, reason] of cases) {
+    for (const observeFirst of [true, false]) {
+      const journal: ReceiptJournalEvent[] = [];
+      const store = new VerdictReceiptStore(scope, bundle(['A']), (event) => journal.push(event), 'ends-same');
+      const attempt = store.beginObservation('A');
+      const publish = () => {
+        assert.equal(store.publishDrawing(attempt, a, {
+          ...drawn, finalState: finalState && { ...finalState, verdict: { kind: 'failed' } },
+          value: -500, stdout: 'forged', verdict: { kind: 'failed' },
+        }), true);
+      };
+      if (observeFirst) {
+        publish();
+        assert.equal(journal.length, 0);
+      }
+
+      const row = store.commitOrdinary(a, ordinary());
+      const receipt = store.seal({ status: 'completed' }, evaluatedAt);
+      if (!observeFirst) publish();
+      const projected = store.projectReceipt(['A']);
+      assert.equal(projected.verdict, receipt.verdict);
+      assert.equal(projected.passedCount, receipt.passedCount);
+      const { attachment, trace: legacyTrace, ...ordinaryFields } = projected.evaluation.cases[0]!;
+      assert.deepEqual(ordinaryFields, row);
+      assert.deepEqual(attachment, reason ? { ...a, status: 'refused', reason } : { ...a, ...drawn });
+      assert.equal(legacyTrace, attachment?.status === 'drawn' ? attachment.trace : undefined);
+      assert.deepEqual(journal.map(({ event }) => event), ['ordinary-write-attempt', 'ordinary-commit', 'attachment-bind']);
+    }
+  }
+});
+
+test('ends-same uses the row comparison override against the ordinary value', () => {
+  const manifest: JudgeAlgorithmBundle = {
+    ...bundle(['A']),
+    comparison: {
+      schema: 'tracecode.judge.comparator-policy.v1',
+      default: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+      cases: { A: { schema: 'tracecode.judge.comparator.v1', mode: 'unordered-array' } },
+    },
+  };
+  const store = new VerdictReceiptStore(scope, manifest, undefined, 'ends-same');
+  const attempt = store.beginObservation('A');
+  const evidence = [2, 1];
+  store.publishDrawing(attempt, a, {
+    ...drawn,
+    finalState: { status: 'completed', console: processResult().stdout, value: { present: true, value: evidence } },
+  });
+  evidence[0] = 999;
+  store.commitOrdinary(a, {
+    ...ordinary('A', [1, 2]),
+    verdict: { kind: 'failed', comparatorId: 'tracecode:case-policy:v1', comparison: { matched: false } },
+  });
+  store.seal({ status: 'completed' }, evaluatedAt);
+  const receipt = store.projectReceipt(['A']);
+  assert.equal(receipt.evaluation.cases[0]?.attachment?.status, 'drawn');
+  assert.equal(receipt.passedCount, 0);
+  assert.equal(receipt.evaluation.cases[0]?.verdict.kind, 'failed');
+});
+
+test('non-certifying producers ignore private terminal evidence', () => {
+  const store = owner();
+  const attempt = store.beginObservation('A');
+  store.publishDrawing(attempt, a, {
+    ...drawn, finalState: { status: 'trapped', console: 'different' },
+  });
+  store.commitOrdinary(a, ordinary());
+  store.seal({ status: 'completed' }, evaluatedAt);
+  assert.deepEqual(store.projectEvaluation(['A']).cases[0]?.attachment, { ...a, ...drawn });
+});
+
+test('ends-same does not treat two valid answers to a custom validator as equal', () => {
+  const source = bundle(['A']);
+  const manifest: JudgeAlgorithmBundle = {
+    ...source,
+    plan: { ...source.plan, cases: [{ id: 'A', input: { nums: [1, 4, 2, 3], target: 5 } }] },
+    comparison: {
+      schema: 'tracecode.judge.comparator-policy.v1',
+      default: { schema: 'tracecode.judge.comparator.v1', customValidator: 'two-sum-indices' },
+    },
+  };
+  const store = new VerdictReceiptStore(scope, manifest, undefined, 'ends-same');
+  store.commitOrdinary(a, ordinary('A', [0, 1]));
+  store.seal({ status: 'completed' }, evaluatedAt);
+  const attempt = store.beginObservation('A');
+  store.publishDrawing(attempt, a, {
+    ...drawn, finalState: {
+      status: 'completed', console: processResult().stdout, value: { present: true, value: [2, 3] },
+    },
+  });
+  assert.deepEqual(store.projectEvaluation(['A']).cases[0]?.attachment, {
+    ...a, status: 'refused', reason: 'uncertified-drawing',
+  });
+});
+
+test('ends-same distinguishes a recorder deadline from a traced execution timeout', () => {
+  for (const status of ['completed', 'timed-out'] as const) {
+    const store = new VerdictReceiptStore(scope, bundle(['A']), undefined, 'ends-same');
+    store.commitOrdinary(a, ordinary());
+    store.seal({ status: 'completed' }, evaluatedAt);
+    const attempt = store.beginObservation('A');
+    const truncated = { status: 'truncated', reason: 'observer-deadline', attemptedEvents: 2, trace } as const;
+    store.publishDrawing(attempt, a, {
+      ...truncated,
+      finalState: {
+        status, console: processResult().stdout,
+        ...(status === 'completed' ? { value: { present: true, value: 7 } } : {}),
+      },
+    });
+    assert.deepEqual(store.projectEvaluation(['A']).cases[0]?.attachment,
+      status === 'completed'
+        ? { ...a, ...truncated }
+        : { ...a, status: 'refused', reason: 'observer-timeout' });
+  }
+});
+
+test('ends-same distinguishes a published undefined from an absent result', () => {
+  for (const present of [true, false]) {
+    const store = new VerdictReceiptStore(scope, bundle(['A']), undefined, 'ends-same');
+    const row = { ...ordinary(), value: undefined };
+    store.commitOrdinary(a, row);
+    store.seal({ status: 'completed' }, evaluatedAt);
+    const attempt = store.beginObservation('A');
+    store.publishDrawing(attempt, a, {
+      ...drawn, finalState: { status: 'completed', console: row.stdout, value: { present } },
+    });
+    const projected = store.projectEvaluation(['A']).cases[0]!;
+    assert.ok(Object.hasOwn(projected, 'value'));
+    assert.equal(projected.attachment?.status, present ? 'drawn' : 'refused');
+  }
+});

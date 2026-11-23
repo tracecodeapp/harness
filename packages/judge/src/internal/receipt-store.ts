@@ -2,6 +2,9 @@ import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   type RuntimeTrace,
 } from '../../../runtime-contracts/src/runtime-trace';
+import type { ObservationFinalState } from '../../../runtime-contracts/src/runtime-calls';
+import { structuralJsonComparator } from '../comparison';
+import { compareObservationValues } from '../comparator-strategy';
 import { createAlgorithmJudgeReceipt } from '../algorithm-evaluate';
 import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../algorithm-model';
 import type { JudgeCaseResult, JudgeEvaluationResult } from '../model';
@@ -20,7 +23,7 @@ export type ObservationAttempt = Readonly<{
 
 interface AttemptState {
   readonly attempt: ObservationAttempt;
-  drawing?: Frozen<Drawing>;
+  candidate?: Frozen<{ drawing: Drawing; finalState?: ObservationFinalState }>;
 }
 
 export type ReceiptJournalEvent = Readonly<{
@@ -103,6 +106,26 @@ function readDrawing(message: unknown): Drawing {
   return refuse('observer-protocol');
 }
 
+function readFinalState(message: unknown): ObservationFinalState | undefined {
+  if (!isRecord(message)) return;
+  const finalState = message.finalState;
+  if (!isRecord(finalState)) return;
+  const { status, console, value } = finalState;
+  if (typeof console !== 'string') return;
+  switch (status) {
+    case 'compile-failed':
+    case 'trapped':
+    case 'timed-out':
+      return { status, console };
+    case 'completed':
+      if (!isRecord(value) || typeof value.present !== 'boolean') return;
+      return {
+        status, console,
+        value: value.present ? { present: true, value: value.value } : { present: false },
+      };
+  }
+}
+
 /**
  * Own the portable payload before freezing it. Copy data properties in order,
  * keeping sparse arrays, undefined fields, aliases and cycles. An iterative
@@ -159,6 +182,8 @@ const observationFields = new Set(['trace', 'attachment']);
 export class VerdictReceiptStore {
   readonly #context: ReceiptContext;
   readonly #planId: string;
+  readonly #certification?: 'ends-same';
+  readonly #comparison?: JudgeAlgorithmBundle['comparison'];
   readonly #bindings = new Map<string, Binding>();
   readonly #rows = new Map<string, Row>();
   // Canonical binding objects carry the scope and case. Attempt identity
@@ -174,6 +199,7 @@ export class VerdictReceiptStore {
     scope: ReceiptScope,
     bundle: JudgeAlgorithmBundle,
     testJournal?: (event: ReceiptJournalEvent) => void,
+    certification?: 'ends-same',
   ) {
     if (scope.workspaceDigest !== bundle.workspaceDigest) {
       throw new Error('Receipt scope does not match the bundle workspace.');
@@ -183,6 +209,8 @@ export class VerdictReceiptStore {
     this.#context = snapshot({ id, workspaceDigest, policy, facts });
     this.#planId = bundle.plan.id;
     this.#testJournal = testJournal;
+    this.#certification = certification;
+    this.#comparison = certification && bundle.comparison ? snapshot(bundle.comparison) : undefined;
     for (const { id: caseId } of bundle.plan.cases) {
       if (this.#bindings.has(caseId)) throw new Error(`Duplicate receipt case ${caseId}.`);
       this.#bindings.set(caseId, Object.freeze({ evaluationId, workspaceDigest, caseId, generation }));
@@ -231,8 +259,8 @@ export class VerdictReceiptStore {
     if (this.#receipt.evaluation.status === 'compile-failed') {
       this.#attempts.clear();
     } else {
-      for (const { attempt, drawing } of this.#attempts.values()) {
-        if (drawing) this.#bind(attempt.binding, drawing);
+      for (const { attempt, candidate } of this.#attempts.values()) {
+        if (candidate) this.#bind(attempt.binding, candidate.drawing, candidate.finalState);
       }
     }
     return this.#receipt;
@@ -282,26 +310,73 @@ export class VerdictReceiptStore {
 
   publishDrawing(attempt: ObservationAttempt, replyBinding: Binding, message: unknown): boolean {
     const entry = this.#attempts.get(attempt.binding);
-    if (this.#disposed || entry?.attempt !== attempt || entry.drawing
+    if (this.#disposed || entry?.attempt !== attempt || entry.candidate
       || !matches(attempt.binding, replyBinding)) {
       return false;
     }
 
+    let drawing: Frozen<Drawing>;
     try {
-      entry.drawing = snapshot(readDrawing(message));
+      drawing = snapshot(readDrawing(message));
     } catch {
-      entry.drawing = Object.freeze(refuse('observer-protocol'));
+      drawing = Object.freeze(refuse('observer-protocol'));
     }
-    if (this.#receipt) this.#bind(attempt.binding, entry.drawing);
+    let finalState: Frozen<ObservationFinalState> | undefined;
+    if (this.#certification) {
+      try {
+        finalState = snapshot(readFinalState(message));
+      } catch {
+        // Malformed evidence cannot certify a drawing or affect the grade.
+      }
+    }
+    entry.candidate = { drawing, finalState };
+    if (this.#receipt) this.#bind(attempt.binding, drawing, finalState);
     return true;
   }
 
-  #bind(binding: Binding, drawing: Frozen<Drawing>): Attachment {
+  #certify(
+    row: Row,
+    drawing: Frozen<Drawing>,
+    finalState?: Frozen<ObservationFinalState>
+  ): Frozen<Drawing> {
+    if (finalState?.status === 'compile-failed') return refuse('observer-prepare');
+    if (finalState?.status === 'trapped') return refuse('observer-runtime');
+    if (finalState?.status === 'timed-out') return refuse('observer-timeout');
+    if (drawing.status === 'refused') return drawing;
+    const result = finalState?.value;
+    if (row.status !== 'completed' || finalState?.console !== row.stdout ||
+      !result || result.present !== Object.hasOwn(row, 'value')) {
+      return refuse('uncertified-drawing');
+    }
+    if (!result.present) return drawing;
+
+    try {
+      const matched = this.#comparison &&
+        compareObservationValues(this.#comparison, row.caseId, result.value, row.value);
+      // A predicate or opaque comparator has no declared pairwise equality
+      // rule. Use structural equality and never rerun the verdict predicate.
+      const equal = matched ?? structuralJsonComparator.compare({
+        planId: this.#planId, caseId: row.caseId, input: undefined,
+        expected: row.value, actual: result.value,
+      }).matched;
+      return equal ? drawing : refuse('uncertified-drawing');
+    } catch {
+      return refuse('uncertified-drawing');
+    }
+  }
+
+  #bind(
+    binding: Binding,
+    drawing: Frozen<Drawing>,
+    finalState?: Frozen<ObservationFinalState>
+  ): Attachment {
     const row = this.#rows.get(binding.caseId);
     if (this.#receipt?.evaluation.status !== 'completed' || !row) {
       throw new Error('Cannot bind a drawing before ordinary receipt publication.');
     }
-    const observation = row.status === 'not-run' ? refuse('case-not-run') : drawing;
+    const observation = row.status === 'not-run'
+      ? refuse('case-not-run')
+      : this.#certification ? this.#certify(row, drawing, finalState) : drawing;
     const attachment = Object.freeze({ ...binding, ...observation });
     this.#attachments.set(binding, attachment);
     this.#attempts.delete(binding);
