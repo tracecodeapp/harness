@@ -53,6 +53,40 @@ function summarize(evaluation: any) {
   };
 }
 
+function submitPolicy(fixture: Fixture, main: boolean) {
+  // Deploy includes an already-computed passing complexity fact for the
+  // Binary Search requirement. Main judges the case-only policy at this
+  // boundary and evaluates complexity separately after the verdicts.
+  const factIds = !main && fixture.id === 'binary-search'
+    ? ['semantic-engine.complexity-requirement.0.satisfied'] : [];
+  const equalsTrue = (left: unknown) => ({ op: 'eq', left, right: { op: 'literal', value: true } });
+  return {
+    facts: factIds.map((id) => ({
+      id,
+      schema: 1,
+      value: true,
+      entrypoint: fixture.functionName,
+      producer: { id: 'semantic-engine', version: '3.0.0' },
+      verification: 'browser-asserted',
+      confidence: 1,
+    })),
+    policy: {
+      schema: 'tracecode.judge.verdict-policy.v1',
+      requires: factIds.map((id) => ({
+        id, schema: 1, producer: 'semantic-engine',
+        minimumVerification: 'browser-asserted', minimumConfidence: 1,
+      })),
+      passWhen: {
+        op: 'all',
+        conditions: [
+          equalsTrue({ op: 'ref', path: 'allCasesPassed' }),
+          ...factIds.map((id) => equalsTrue({ op: 'fact', id })),
+        ],
+      },
+    },
+  };
+}
+
 export function createSession(language: string, stopSubmit: boolean) {
   if (crossOriginIsolated) throw new Error('Practice requires a non-isolated document');
   const assetBaseUrl = '/workers';
@@ -91,7 +125,7 @@ export function createSession(language: string, stopSubmit: boolean) {
       ...(trace && { traceOptions }),
       ...(language === 'java' && { limits: { wallClockMs: 60_000 } }),
       cases: fixture.cases,
-      policy: allCasesPassPolicy(),
+      ...(trace ? { policy: allCasesPassPolicy() } : submitPolicy(fixture, stopSubmit)),
       comparison: fixture.comparison,
     });
   }
@@ -136,7 +170,7 @@ export function createSession(language: string, stopSubmit: boolean) {
         // These packages deliver the selected trace in the same browser Judge
         // response as all case verdicts. There is no earlier event subscription.
         return {
-          elapsedMs, builtMs, evaluation, firstTraceMs: firstTrace?.traceEvents ? elapsedMs : null,
+          elapsedMs, builtMs, evaluation, verdict: result.verdict, firstTraceMs: firstTrace?.traceEvents ? elapsedMs : null,
           executionId: Boolean(executionId), warm: await warm, timing: result.timings,
         };
       } catch (error) {

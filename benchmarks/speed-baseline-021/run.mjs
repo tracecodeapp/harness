@@ -363,6 +363,9 @@ try {
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
               sample.refusal = refusal(sample.initial);
               sample.invalid = outcome(sample.initial, fixture.cases.map((c) => c.id));
+              if (group.journey === 'submit' && !sample.invalid && sample.initial.verdict !== 'passed') {
+                sample.invalid = 'Unexpected Submit verdict: ' + JSON.stringify(sample.initial.verdict);
+              }
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }

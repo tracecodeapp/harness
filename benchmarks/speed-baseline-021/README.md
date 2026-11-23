@@ -9,8 +9,8 @@ case IDs, package provenance, execution metadata and timings.
 
 | App ref | Harness | Practice Run | Browser Submit | Lesson finish |
 | --- | --- | --- | --- | --- |
-| `083bf3f4a` | 0.17.1 | Interactive, all cases with trace for the selected case | Untraced | No last-step Run tests gate |
-| `d0debe20a` | 0.20.1 | Same successful path | Untraced, stop at first runaway except Python | Calls Practice Run when runtime is ready and proceeds on a pass |
+| `083bf3f4a` | 0.17.1 | Interactive, all cases with trace for the selected case | Untraced, with a complexity fact for Binary Search | No last-step Run tests gate |
+| `d0debe20a` | 0.20.1 | Same successful path | Untraced case-only policy, stop at first runaway except Python | Calls Practice Run when runtime is ready and proceeds on a pass |
 
 The browser Judge has no selected-step streaming endpoint on these releases. Its
 initial response contains both the verdicts and the selected trace. When the
