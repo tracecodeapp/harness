@@ -32,6 +32,34 @@ def canon(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 
 
+def without_node_ids(value):
+    """Canonical JSON with every node `__id__` (and any string equal to one) renumbered by
+    first appearance, so a change of id scheme alone does not read as a different value."""
+    ids = {}
+
+    def collect(v):
+        if isinstance(v, dict):
+            if isinstance(v.get('__id__'), str) and v['__id__'] not in ids:
+                ids[v['__id__']] = '#%d' % len(ids)
+            for k in sorted(v):
+                collect(v[k])
+        elif isinstance(v, list):
+            for x in v:
+                collect(x)
+
+    def rewrite(v):
+        if isinstance(v, dict):
+            return {k: rewrite(x) for k, x in v.items()}
+        if isinstance(v, list):
+            return [rewrite(x) for x in v]
+        if isinstance(v, str) and v in ids:
+            return ids[v]
+        return v
+
+    collect(value)
+    return canon(rewrite(value)) if ids else None
+
+
 def diag_codes(diagnostics):
     return sorted({d.get('code') for d in diagnostics or [] if d.get('severity') == 'error' and d.get('code')})
 
@@ -113,6 +141,7 @@ def case_record(case, legacy):
         'status': case.get('status'),
         'verdict': verdict.get('kind'),
         'value': canon(case.get('value')) if case.get('hasValue') else None,
+        'valueNoIds': without_node_ids(case.get('value')) if case.get('hasValue') else None,
         'origin': origin,
         'detail': detail,
         'message': (case.get('failure') or {}).get('message', '')[:300] or first_error(case.get('diagnostics'), case.get('stderr')),
@@ -193,6 +222,9 @@ PRIMARY = ['status', 'verdict', 'value', 'origin']
 
 def diff_fields(a, b):
     fields = [k for k in PRIMARY if a.get(k) != b.get(k)]
+    # Node ids renamed, structure and values equal: its own field, not a value difference.
+    if 'value' in fields and a.get('valueNoIds') is not None and a.get('valueNoIds') == b.get('valueNoIds'):
+        fields[fields.index('value')] = 'node-ids'
     # A finer failure label only counts when both sides fail with the same origin.
     if (not fields and a.get('origin') == b.get('origin') and a.get('origin') != 'none'
             and a.get('detail') is not None and a.get('detail') != b.get('detail')):
@@ -203,8 +235,8 @@ def diff_fields(a, b):
 def group_key(lang, mode, fields, a, b):
     sig = []
     for f in fields:
-        if f == 'value':
-            sig.append('value')
+        if f in ('value', 'node-ids'):
+            sig.append(f)
         else:
             sig.append(f'{f}:{a.get(f)}->{b.get(f)}')
     return f'{mode} | ' + '; '.join(sig)
