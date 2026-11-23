@@ -15,6 +15,10 @@ filter=${2:-}
 app_input=${3:-}
 mux_input=${4:-}
 canonical_tarball=${TRACECODE_STAGE1_CANONICAL_TARBALL:-}
+if [ -z "$canonical_tarball" ] && [ -n "$app_input" ]; then
+  staged_candidate="$(dirname "$app_input")/tracecode-harness-0.20.4.tgz"
+  if [ -f "$staged_candidate" ]; then canonical_tarball=$staged_candidate; fi
+fi
 case "$run_id" in
   *[!A-Za-z0-9._-]*|'') echo "Invalid run ID" >&2; exit 2 ;;
 esac
