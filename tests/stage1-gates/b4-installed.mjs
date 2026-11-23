@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 
@@ -48,11 +48,11 @@ try {
   };
   for (const asset of lock.components.javascript.files.filter(({ path }) => path.endsWith('/javascript-worker.js') ||
       path.endsWith('/javascript-ses-algorithm-worker.js'))) {
-    identity.workers[asset.path] = sha(await readFile(join(sandbox, asset.path)));
+    identity.workers[asset.path] = sha(await readFile(join(sandbox, 'workers', basename(asset.path))));
     assert.equal(identity.workers[asset.path], asset.sha256, asset.path);
   }
   assert.equal(Object.keys(identity.workers).length, 2);
-  const workerPath = join(sandbox, 'workers/javascript');
+  const workerPath = join(sandbox, 'workers');
   const source = await readFile(join(workerPath, 'javascript-worker.js'), 'utf8');
   const insertion = "          drawing = await executeWithTracing({ ...payload, observation: true });";
   assert.equal(source.split(insertion).length, 2, 'observer worker seam must exist once');

@@ -24,4 +24,10 @@ fi
 sha256sum --check "$artifact.sha256"
 read -r digest _ <"$artifact.sha256"
 printf 'candidate=%s\nartifact=%s\nsha256=%s\n' "$candidate" "$artifact" "$digest"
-node tests/stage1-gates/b4-installed.mjs "$artifact" "$digest"
+gate_status=0
+node tests/stage1-gates/b4-installed.mjs "$artifact" "$digest" || gate_status=$?
+browser_status=0
+corepack pnpm test:javascript-ses-provider-browser >b4-browser-suite.log 2>&1 || browser_status=$?
+tail -20 b4-browser-suite.log
+printf 'installed_gate=%s\nbrowser_suite=%s\n' "$gate_status" "$browser_status"
+((gate_status == 0 && browser_status == 0))

@@ -293,12 +293,20 @@ async function checkRuntimeFaults(): Promise<string[]> {
 
   const compilerImport: RuntimeFault = { name: 'compiler-import', compilerImportFails: true };
   for (const language of ['javascript', 'typescript'] as const) {
-    await check(`compiler import fails, ${language} Judge Run: provider fault`, compilerImport, async () => {
-      const text = JSON.stringify(await judgeRun(language));
+    await check(`compiler import fails, ${language} Judge Run: separate roles`, compilerImport, async () => {
+      const result = await judgeRun(language);
+      const text = JSON.stringify(result);
       assert.ok(!text.includes('"trace-unavailable"'), `refused: ${text}`);
       assert.ok(!text.includes('"stage":"compile"'), `blamed on the learner: ${text}`);
-      assert.ok(text.includes('"origin":"provider"'), `not a provider fault: ${text}`);
-      assert.ok(text.includes('injected compiler import failure'), `lost the cause: ${text}`);
+      if (language === 'typescript') {
+        assert.ok(text.includes('"origin":"provider"'), `not a provider fault: ${text}`);
+        assert.ok(text.includes('injected compiler import failure'), `lost the cause: ${text}`);
+      } else {
+        assert.equal(result.status, 'completed');
+        assert(result.cases.every((row: any) => row.verdict.kind === 'passed'));
+        assert.equal(result.cases[0].attachment?.status, 'refused');
+        assert.equal(result.cases[0].attachment?.reason, 'observer-prepare');
+      }
     });
     for (const route of ['disposable-worker', 'ses-compartment-pool'] as const) {
       await check(`compiler import fails, ${language} prepared trace on ${route}: provider fault`, compilerImport, () =>
@@ -337,28 +345,22 @@ async function checkRuntimeFaults(): Promise<string[]> {
     });
     await check(`control, printer fault, ${language} Judge Run: still refuses`, undefined, async () => {
       const [traced, ...untraced] = (await judgeRun(language, 'printer-emits-invalid-code')).cases;
-      assert.equal(traced.diagnostics[0]?.code, 'trace-unavailable', JSON.stringify(traced));
+      assert.equal(traced.verdict.kind, 'passed', JSON.stringify(traced));
+      assert.equal(traced.attachment?.status, 'refused', JSON.stringify(traced));
+      assert.equal(traced.attachment?.reason, 'observer-prepare', JSON.stringify(traced));
       assert.deepEqual(untraced.map((result: any) => result.verdict.kind), ['passed', 'passed']);
     });
   }
 
-  const passedTraced = async () => {
+  await check('observer worker loss preserves the ordinary result', {
+    name: 'observer-death',
+    kills: (data, worker) => worker === 'classic' && data.type === 'observe-execution',
+  }, async () => {
     const [traced] = (await judgeRun('javascript')).cases;
     assert.equal(traced?.verdict?.kind, 'passed', JSON.stringify(traced));
-    assert.ok(traced.trace.events.length > 0, 'passed with no trace');
-  };
-  await check('SES worker dies building the traced program: not refused, replayed', {
-    name: 'ses-death',
-    kills: (data, worker) => worker === 'ses' && data.type === 'prepare' && data.source.mode === 'trace',
-  }, passedTraced);
-  await check('SES runtime error building the traced program: not refused, replayed', {
-    name: 'ses-runtime-error',
-    edit: {
-      file: SES_WORKER,
-      from: 'const execute = compartment.evaluate(factorySource',
-      to: "if (tracing) throw new TypeError('injected SES runtime failure');\n  const execute = compartment.evaluate(factorySource",
-    },
-  }, passedTraced);
+    assert.equal(traced.attachment?.status, 'refused');
+    assert.equal(traced.attachment?.reason, 'observer-runtime');
+  });
   await check('an untraced build that fails only the first time: provider fault, not refused', {
     name: 'transient-untraced-build',
     edit: {
@@ -445,7 +447,7 @@ function buildFunctionExecutionRunnerOriginal(`,
   return violations;
 }
 
-/** Which failures may move a host's later untraced programs off the SES pool. */
+/** A failed request cannot change a later program's route or replay itself. */
 async function checkPoolRoute(): Promise<string[]> {
   const violations: string[] = [];
   const code = 'function solve() { return 7 }';
@@ -454,13 +456,13 @@ async function checkPoolRoute(): Promise<string[]> {
     fault: RuntimeFault;
     mode: 'code' | 'trace';
     traceOptions?: Record<string, unknown>;
-    laterRoute: 'fast' | 'compatibility';
+    failure?: RegExp;
   }> = [
-    { fault: { name: 'an unknown trace option' }, mode: 'trace', traceOptions: { notATraceControl: 1 }, laterRoute: 'fast' },
+    { fault: { name: 'an unknown trace option' }, mode: 'trace', traceOptions: { notATraceControl: 1 } },
     {
       fault: { name: 'a traced execution that kills its worker', kills: (data, worker) => worker === 'ses' && data.type === 'execute-batch' && data.traceEnabledBatch?.[0] === true },
       mode: 'trace',
-      laterRoute: 'fast',
+      failure: /injected worker death/,
     },
     {
       fault: {
@@ -472,15 +474,15 @@ async function checkPoolRoute(): Promise<string[]> {
         },
       },
       mode: 'code',
-      laterRoute: 'fast',
+      failure: /injected program failure/,
     },
     {
       fault: { name: 'control, a worker crash on an untraced preparation', kills: (data, worker) => worker === 'ses' && data.type === 'prepare' && data.source.code.includes('faulty') },
       mode: 'code',
-      laterRoute: 'compatibility',
+      failure: /injected worker death/,
     },
   ];
-  for (const { fault, mode, traceOptions, laterRoute } of scenarios) {
+  for (const { fault, mode, traceOptions, failure } of scenarios) {
     runtimeFault = fault;
     const client = new JavaScriptWorkerClient({
       workerUrl: `/workers/javascript/${WORKER}`,
@@ -489,23 +491,32 @@ async function checkPoolRoute(): Promise<string[]> {
       debug: false,
     });
     try {
-      const first = await client.prepareProgram({
-        ...base,
-        mode,
-        code: `${code} // faulty`.replace('return 7', 'const faulty = 7; return faulty'),
-        ...(traceOptions ? { traceOptions: traceOptions as any } : {}),
-      });
-      assert.equal(first.kind, 'prepared', JSON.stringify(first));
-      if (first.kind === 'prepared') {
-        const result = await first.program.executeIsolated({ inputs: {} });
-        assert.equal(result.kind === 'completed' && result.output, 7, JSON.stringify(result).slice(0, 300));
-        await first.program.dispose();
+      const first = async () => {
+        const prepared = await client.prepareProgram({
+          ...base,
+          mode,
+          code: `${code} // faulty`.replace('return 7', 'const faulty = 7; return faulty'),
+          ...(traceOptions ? { traceOptions: traceOptions as any } : {}),
+        });
+        assert.equal(prepared.kind, 'prepared', JSON.stringify(prepared));
+        try {
+          return await prepared.program.executeIsolated({ inputs: {} });
+        } finally {
+          await prepared.program.dispose();
+        }
+      };
+      if (failure) await assert.rejects(first, failure);
+      else {
+        const result = await first();
+        assert.equal(result.kind === 'completed' && result.output, 7);
       }
       runtimeFault = undefined;
       const later = await client.prepareProgram({ ...base, mode: 'code' });
       assert.equal(later.kind, 'prepared');
       if (later.kind === 'prepared') {
-        assert.equal(later.program.capabilities.profile, laterRoute, 'the route of a later untraced program');
+        assert.equal(later.program.capabilities.profile, 'fast', 'the route of a later untraced program');
+        const result = await later.program.executeIsolated({ inputs: {} });
+        assert.equal(result.kind === 'completed' && result.output, 7);
         await later.program.dispose();
       }
       console.log(`PASS: pool route, ${fault.name}`);

@@ -5,9 +5,8 @@
 // Judge host, and requires:
 // - untraced does not compile: every action reports exactly the untraced
 //   answer, with no trace and no marker;
-// - untraced compiles: a traced case either gives the untraced answer with a
-//   trace, or is refused as `trace-unavailable` (the provider's failure, never
-//   a compile verdict of its own);
+// - untraced compiles: a traced case gives the untraced answer and either a
+//   drawing or a typed refusal independent of the grade;
 // - the untraced cases of a Run always equal untraced Submit's.
 //
 // Shared by the Node test and the Chromium test.
@@ -54,8 +53,7 @@ export function injectTraceBuildFault(file: string, source: string, fault: Trace
   return injected;
 }
 
-// The app sends these budgets with every traced Run. The SES pool does not
-// take them, so the first such Run moves the host to disposable workers.
+// The app sends these observation budgets with its traced Run.
 const APP_TRACE_BUDGETS = {
   maxTraceSteps: 4_000,
   maxLineEvents: 12_000,
@@ -75,7 +73,9 @@ interface CaseObservation {
   answer: Record<string, unknown>;
   events: number;
   refused: boolean;
-  outcomeError?: { name: string; code?: string };
+  attachmentStatus?: string;
+  presentation?: string;
+  legacyRefusal: boolean;
 }
 
 interface EvaluationObservation {
@@ -129,15 +129,10 @@ function observe(evaluation: any, language: TraceCompileLanguage): EvaluationObs
       diagnostics: compile.diagnostics,
     }),
     cases: evaluation.cases.map((result: any) => {
-      const refused = Boolean(result.diagnostics?.some((entry: any) => entry.code === 'trace-unavailable'));
-      let outcomeError: CaseObservation['outcomeError'];
-      if (refused) {
-        try {
-          judgeCaseExecutionOutcome(result, { language, trace: true });
-        } catch (error) {
-          outcomeError = { name: (error as Error).name, code: (error as { code?: string }).code };
-        }
-      }
+      const refused = result.attachment?.status === 'refused';
+      const presentation = refused
+        ? judgeCaseExecutionOutcome(result, { language, trace: true }).kind
+        : undefined;
       return {
         id: result.caseId,
         answer: plain({
@@ -152,7 +147,9 @@ function observe(evaluation: any, language: TraceCompileLanguage): EvaluationObs
         }),
         events: result.trace?.events?.length ?? 0,
         refused,
-        ...(outcomeError ? { outcomeError } : {}),
+        attachmentStatus: result.attachment?.status,
+        presentation,
+        legacyRefusal: Boolean(result.diagnostics?.some((entry: any) => entry.code === 'trace-unavailable')),
       };
     }),
   };
@@ -249,32 +246,17 @@ function check(
       const notTheUntracedAnswer = `${where}: ${canonical(actual.answer).slice(0, 300)} != untraced ${canonical(truth.answer).slice(0, 300)}`;
       const truthPassed = (truth.answer.verdict as any)?.kind === 'passed';
 
+      if (!same) report(notTheUntracedAnswer);
+      if (actual.legacyRefusal) report(`${where}: emitted a legacy trace-unavailable diagnostic`);
       if (!tracedIds.includes(actual.id)) {
-        if (!same) report(notTheUntracedAnswer);
-        if (actual.events) report(`${where}: an untraced case has a trace`);
-      } else if ((truth.answer.failure as any)?.stage === 'compile') {
-        if (!same) report(notTheUntracedAnswer);
-        if (actual.events) report(`${where}: a compile error has a trace`);
-        if (actual.refused) report(`${where}: a compile error was marked trace-unavailable`);
+        if (actual.events || actual.attachmentStatus) report(`${where}: an unselected case has an attachment`);
       } else if (actual.refused) {
-        if (!testCase.traced) report(`${where}: refused, but this program must be traced`);
-        const { status, verdict, hasValue, failure, diagnostics } = actual.answer as any;
-        const expected = {
-          status: 'runtime-error',
-          verdict: { kind: 'not-evaluated', reason: 'case-did-not-complete' },
-          hasValue: false,
-          failure: { origin: 'provider', reason: 'runtime-failure', message: failure?.message },
-          diagnostics: [{ severity: 'error', code: 'trace-unavailable', source: language, message: failure?.message }],
-        };
-        if (canonical({ status, verdict, hasValue, failure, diagnostics }) !== canonical(expected) || !failure?.message) {
-          report(`${where}: malformed refusal ${canonical(actual.answer)}`);
-        }
+        if (truthPassed && !testCase.traced) report(`${where}: refused, but this program must be traced`);
         if (actual.events) report(`${where}: a refusal has a trace`);
-        if (actual.outcomeError?.name !== 'RuntimeProviderError' || actual.outcomeError.code !== 'trace-unavailable') {
-          report(`${where}: judgeCaseExecutionOutcome threw ${canonical(actual.outcomeError)}`);
+        if (actual.presentation !== 'trace-refused' && actual.presentation !== 'not-run') {
+          report(`${where}: incorrect refusal presentation ${actual.presentation}`);
         }
       } else {
-        if (!same) report(notTheUntracedAnswer);
         if (truthPassed && testCase.traced === 'refused') report(`${where}: should have been refused`);
         if (truthPassed && !actual.events) report(`${where}: passed traced with no trace`);
       }

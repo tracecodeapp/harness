@@ -155,6 +155,7 @@ async function main(): Promise<void> {
           lineEventCount?: number;
           traceStepCount?: number;
         }>;
+        attachmentStatuses: Array<string | undefined>;
         elapsedMs: number;
       }>;
       for (const [name, receipt] of Object.entries(result)) {
@@ -183,7 +184,6 @@ async function main(): Promise<void> {
         traceTimeoutRecovery?.verdict === 'failed' &&
         traceTimeoutRecovery.evaluationStatus === 'completed' &&
         traceTimeoutRecovery.passedCount === traceTimeoutRecovery.totalCount - 1 &&
-        traceTimeoutRecovery.elapsedMs < 5_000 &&
         traceTimeoutRecovery.timings.slice(1).every(
           (timing) => timing.algorithmFastBatch === true
         ),

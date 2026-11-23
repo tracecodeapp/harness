@@ -3067,16 +3067,20 @@ function stripJavaScriptModuleExports(sourceCode) {
     .replace(/(^|\n)[ \t]*export\s*\{[^}]*\};?[ \t]*(?=\n|$)/g, '$1');
 }
 
+function withoutExecutableHashbang(code) {
+  return code.replace(/^#![^\r\n]*/u, '');
+}
+
 async function prepareExecutableCode(sourceCode, language) {
   if (WORKER_ROLE !== 'coordinator') {
     ensureJavaScriptLibraries();
   }
   if (language === 'typescript') {
     await ensureTypeScriptCompiler();
-    return transpileTypeScript(sourceCode);
+    return withoutExecutableHashbang(transpileTypeScript(sourceCode));
   }
 
-  return stripJavaScriptModuleExports(sourceCode);
+  return withoutExecutableHashbang(stripJavaScriptModuleExports(sourceCode));
 }
 
 function addBindingNames(ts, nameNode, names) {
@@ -7021,6 +7025,7 @@ async function prepareExecutionRequest(payload) {
   if (language === 'typescript') {
     await loadTracerCompiler();
     ({ executableCode, sourceMap } = transpileTypeScript(code, true));
+    executableCode = withoutExecutableHashbang(executableCode);
   } else {
     executableCode = await prepareExecutableCode(code, language);
   }
@@ -7637,6 +7642,10 @@ async function processMessage(data) {
 
       case 'observe-execution': {
         if (WORKER_ROLE === 'coordinator') throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        postWorkerMessage({
+          type: 'observation-started',
+          payload: { requestId: id, attemptToken: payload.attemptToken },
+        });
         let drawing;
         try {
           drawing = await executeWithTracing({ ...payload, observation: true });

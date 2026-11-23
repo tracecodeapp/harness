@@ -31,6 +31,10 @@ export async function runFixture(fixture, fault) {
       this.prepares = new Map();
       this.inFlight = new Map();
       this.addEventListener('message', ({ data }) => {
+        if (data.type === 'observation-started') {
+          journal.push({ worker: this.generation, type: data.type, token: data.payload.attemptToken });
+          return;
+        }
         if (data.type === 'b4-injection-ack') {
           journal.push({ worker: this.generation, type: data.type, token: data.token, fault: data.fault });
           return;
@@ -121,6 +125,8 @@ export async function runFixture(fixture, fault) {
       journal.filter(({ type }) => type === 'prepare-execution').length === 1, journal);
     check('run-first', 'separate-observer-lease', observers.length === 1 &&
       ordinary.every(({ worker }) => worker !== observers[0].worker) &&
+      journal.some(({ type, worker, token }) =>
+        type === 'observation-started' && worker === observers[0].worker && token === observers[0].token) &&
       journal.some(({ type, token }) => type === 'reply' && token === observers[0].token), initialDispatch);
     if (!fault && executionId) {
       continuation = await host.execute({ executionId, tracing: { caseIds: ['B'] } });

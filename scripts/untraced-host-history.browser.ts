@@ -435,6 +435,7 @@ export async function history(
 ) {
   const currentState = current();
   const { language, programs } = currentState;
+  const receiptObserver = language === 'javascript' || language === 'typescript';
   const host = flavor === 'ios'
     ? currentState.iosHost ??= createHost(language)
     : currentState.host;
@@ -483,7 +484,16 @@ export async function history(
       try {
         if (kind === 'interactive') {
           const continuation = await host.execute({ executionId, tracing: { caseIds: caseIds.slice(1) } });
-          return { kind, initial: first, continuation: traceEvidence(continuation.evaluation), witnessed: true };
+          const drawing = traceEvidence(continuation.evaluation);
+          return {
+            kind, initial: first, continuation: drawing,
+            witnessed: !receiptObserver || (
+              continuation.executionId === executionId &&
+              first.cases[0]?.attachment !== undefined &&
+              drawing.cases.length === caseIds.length - 1 &&
+              drawing.cases.every((row) => row.attachment !== undefined || row.status === 'not-run')
+            ),
+          };
         }
       } finally {
         await host.disposeExecution(executionId);
@@ -536,9 +546,10 @@ export async function history(
       : kind === 'runaway' ? hasLimit(runawayLimits)
       : kind === 'all' ? result.cases.some((item) => (item.traceSteps ?? 0) > 0) || tracedCompileFailure ||
         (tracedFailure && (id === 'runtime-error' || id === 'recursive-limit'))
-      : kind === 'first-drawing' ? result.cases.some((item) => (item.traceSteps ?? 0) > 0)
+      : kind === 'first-drawing' ? result.cases.some((item) =>
+        (item.traceSteps ?? 0) > 0 && (!receiptObserver || item.hasReturnEvent === true))
       : result.cases.some((item) => item.status === 'completed');
-    return { kind, result, limitControl, cppSoftCutoff, witnessed };
+    return { kind, result, limitControl, cppSoftCutoff, witnessed, budgets: traced.execution.traceOptions };
   } catch (error) {
     return { kind, rejection: errorText(error), witnessed: false };
   }
@@ -603,10 +614,10 @@ type WorkerEnvelope = {
   id?: string | number;
   type?: string;
   ok?: boolean;
-  payload?: { phase?: string; stage?: string };
+  payload?: { phase?: string; stage?: string; requestId?: string };
 };
 
-const preparationCommands = new Set(['prepare-execution', 'prepare-program', 'prepare-runtime-program']);
+const preparationCommands = new Set(['prepare-execution', 'prepare-program', 'prepare-runtime-program', 'prepare-observation']);
 const executionCommands = new Set([
   'execute-with-tracing', 'execute-batch', 'execute-prepared-program',
   'execute-prepared-program-batch', 'execute-prepared-runtime-program',
@@ -687,6 +698,7 @@ export function measureIdleVerdict() {
 
 export async function abortTrial(shape: AbortShape, point: AbortPoint, firstRequest: boolean, faultProbe?: string) {
   const { language, host: warmHost } = current();
+  const receiptObserver = language === 'javascript' || language === 'typescript';
   const host = firstRequest ? createHost(language) : warmHost;
   const fault = faultProbe && language === 'cpp' ? cppTraceFaultProbes().find(({ id }) => id === faultProbe) : undefined;
   if (faultProbe && !fault) throw new Error(`No C++ fault probe ${faultProbe}`);
@@ -712,15 +724,16 @@ export async function abortTrial(shape: AbortShape, point: AbortPoint, firstRequ
 
   observeWorkerTransport();
   watchWorker = (worker, direction, envelope) => {
-    const { id, type } = envelope;
+    const { type } = envelope;
+    const id = envelope.id ?? envelope.payload?.requestId;
     if (id === undefined || trigger) return;
     if (direction === 'out' && type && !latch) {
-      if (point === 'prepare' && preparationCommands.has(type)) {
+      if (point === 'prepare' && (receiptObserver ? type === 'prepare-observation' : preparationCommands.has(type))) {
         latch = { worker, id, command: type };
         queueMicrotask(() => abortAndEvaluate(`posted ${type}`));
-      } else if (point !== 'prepare' && executionCommands.has(type)) {
+      } else if (point !== 'prepare' && (receiptObserver ? type === 'observe-execution' : executionCommands.has(type))) {
         latch = { worker, id, command: type };
-        if (point === 'execute') {
+        if (point === 'execute' && !receiptObserver) {
           // For providers without a case-start event, cancel the execution
           // RPC while it is outstanding. Only the wire boundary is observable.
           timer = setTimeout(() => abortAndEvaluate(`in-flight ${type}`), 0);
@@ -730,7 +743,8 @@ export async function abortTrial(shape: AbortShape, point: AbortPoint, firstRequ
     }
     if (direction !== 'in' || latch?.worker !== worker || latch.id !== id) return;
     if (point === 'execute' &&
-        ((type === 'batch-case-progress' && envelope.payload?.phase === 'started') ||
+        (type === 'observation-started' ||
+         (type === 'batch-case-progress' && envelope.payload?.phase === 'started') ||
          (type === 'runtime-progress' && envelope.payload?.stage === 'request-start'))) {
       abortAndEvaluate(`${type} start`);
     }

@@ -497,7 +497,11 @@ async function main() {
       if (requireFull && (language === 'javascript' || language === 'typescript')) {
         if (result.comparisons < 330) result.coverageGaps.push('baseline inventory requires at least 330 comparisons');
         for (const name of ['first-drawing', 'ios/first-drawing']) {
-          if (!result.histories[name]?.witnessed) result.coverageGaps.push(`missing required ${name} witness`);
+          const expectedSteps = name.startsWith('ios/') ? 1000 : 4000;
+          const history = result.histories[name];
+          if (!history?.witnessed || history.budgets?.maxTraceSteps !== expectedSteps) {
+            result.coverageGaps.push(`missing required ${name} witness at its recorded budget`);
+          }
         }
       }
       result.verdict = result.differences ? 'VIOLATED' : result.coverageGaps.length ? 'UNPROVEN' : 'PROVEN';
