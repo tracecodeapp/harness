@@ -2,6 +2,7 @@ import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
   isRuntimeProviderError,
+  judgeCaseExecutionOutcome,
 } from '../../src/judge';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 
@@ -29,10 +30,17 @@ export interface LostWorkerObservation {
   readonly outcome: readonly string[];
   readonly threw?: string;
   readonly typedCauses?: readonly string[];
+  readonly cases?: readonly {
+    readonly id: string;
+    readonly verdict: string;
+    readonly value?: unknown;
+    readonly conversion: string;
+  }[];
   /** Each case's (or the compile's) failure message, when it has one. */
   readonly messages?: readonly string[];
   /** Message types the injection answered by losing the worker. */
   readonly lostAfter: readonly string[];
+  readonly injectionAcks?: readonly string[];
   readonly elapsedMs: number;
 }
 
@@ -42,9 +50,12 @@ interface Program {
   readonly executionStyle: 'function' | 'solution-method';
 }
 
+type Boundary = 'dispatch' | 'before-start' | 'after-a-finish' | 'after-b-start' | 'result-decode';
 const injection = {
-  armed: false,
+  boundary: undefined as Boundary | undefined,
   lostAfter: [] as string[],
+  hits: [] as string[],
+  failureText: 'Execution did not complete',
 };
 
 /** Every case's input is `{ n: <number> }`. */
@@ -81,20 +92,58 @@ export function installWorkerLossInjection(): void {
   scope.__lostWorkerInstalled__ = true;
   const RealWorker = scope.Worker;
   scope.Worker = class LosableWorker extends RealWorker {
+    private pendingExecutions = new Map<unknown, string>();
+
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      this.addEventListener('message', (event: MessageEvent) => {
+        const { id, type, payload } = event.data ?? {};
+        const request = this.pendingExecutions.get(id);
+        if (!request || !injection.boundary) return;
+        if (type === 'batch-case-progress') {
+          const stage = payload?.index === 0 && payload.phase === 'finished' ? 'after-a-finish'
+            : payload?.index === 1 && payload.phase === 'started' ? 'after-b-start' : undefined;
+          if (injection.boundary === stage && !injection.hits.length) {
+            injection.hits.push(`${stage}:${id}`);
+            // The cut comes from the worker's message. Delivery to the
+            // provider and retention of the completed prefix are separate checks.
+            queueMicrotask(() => this.lose(request));
+          }
+          return;
+        }
+        if (injection.boundary === 'result-decode' && type === request && payload && typeof payload === 'object') {
+          this.pendingExecutions.delete(id);
+          if (injection.hits.length) return;
+          injection.hits.push(`result-decode:${id}`);
+          injection.lostAfter.push(request);
+          event.stopImmediatePropagation();
+          this.dispatchEvent(new MessageEvent('message', {
+            data: { ...event.data, payload: { ...payload, __traceEventTransport: null } },
+          }));
+        }
+      });
+    }
+
+    private lose(request: string) {
+      injection.lostAfter.push(request);
+      this.terminate();
+      this.dispatchEvent(new ErrorEvent('error', { message: injection.failureText }));
+    }
+
     override postMessage(message: unknown, ...rest: unknown[]): void {
+      const { id, type } = (message ?? {}) as { id?: unknown; type?: unknown };
+      const learnerRequest = typeof type === 'string' && /^execute/u.test(type) && carriesCaseInputs(message);
+      const boundary = injection.boundary;
+      if (boundary === 'before-start' && learnerRequest) {
+        injection.hits.push(`${boundary}:${id}`);
+        this.lose(type);
+        return;
+      }
+      if (boundary && learnerRequest) this.pendingExecutions.set(id, type);
       (RealWorker.prototype.postMessage as (...args: unknown[]) => void).call(this, message, ...rest);
-      const type = (message as { type?: unknown } | null)?.type;
-      if (
-        injection.armed &&
-        typeof type === 'string' &&
-        /^execute/u.test(type) &&
-        carriesCaseInputs(message)
-      ) {
-        injection.lostAfter.push(type);
-        this.terminate();
-        this.dispatchEvent(new ErrorEvent('error', {
-          message: `injected: worker lost after dispatch ${type}`,
-        }));
+      if (boundary === 'dispatch' && learnerRequest) {
+        injection.hits.push(`${boundary}:${id}`);
+        this.lose(type);
       }
     }
   } as typeof Worker;
@@ -176,10 +225,11 @@ async function evaluate(
   language: LostWorkerLanguage,
   program: Program,
   mode: LostWorkerMode,
-  limits?: { readonly wallClockMs: number }
-): Promise<{ outcome: string[]; threw?: string; messages?: string[]; typedCauses?: string[] }> {
+  limits?: { readonly wallClockMs: number },
+  boundaryBatch = false,
+): Promise<Pick<LostWorkerObservation, 'outcome' | 'threw' | 'messages' | 'typedCauses' | 'cases'>> {
   sequence += 1;
-  const caseCount = mode === 'code' || mode === 'trace' ? 1 : 2;
+  const caseCount = boundaryBatch ? 3 : mode === 'code' || mode === 'trace' ? 1 : 2;
   const bundle = await createAlgorithmJudgeBundle({
     id: `lost-worker-${language}-${mode}-${sequence}`,
     language,
@@ -188,7 +238,8 @@ async function evaluate(
     executionStyle: program.executionStyle,
     cases: Array.from({ length: caseCount }, (_, index) => ({
       id: `case-${index + 1}`,
-      input: { n: index + 1 },
+      input: { n: boundaryBatch ? (index + 1) * 11 : index + 1 },
+      ...(boundaryBatch ? { expected: (index + 1) * 11 + 1 } : {}),
     })),
     trace: mode === 'trace' || mode === 'trace-batch',
     ...(limits ? { limits } : {}),
@@ -196,7 +247,7 @@ async function evaluate(
   try {
     const receipt = await host.evaluateAlgorithm({
       bundle,
-      stopAtFirstRunaway: false,
+      stopAtFirstRunaway: boundaryBatch,
       signal: AbortSignal.timeout(110_000),
     });
     const { evaluation } = receipt;
@@ -215,6 +266,15 @@ async function evaluate(
       ),
       messages: evaluation.cases.map((testCase) => testCase.failure?.message?.slice(0, 300) ?? ''),
       typedCauses: evaluation.cases.map(({ failure }) => cause(failure)),
+      cases: evaluation.cases.map((row) => {
+        let conversion;
+        try {
+          conversion = judgeCaseExecutionOutcome(row, { language }).kind;
+        } catch (error) {
+          conversion = isRuntimeProviderError(error) ? `provider:${error.reason}` : 'unclassified';
+        }
+        return { id: row.caseId, verdict: row.verdict.kind, value: row.value, conversion };
+      }),
     };
   } catch (error) {
     const text = error instanceof Error
@@ -247,7 +307,8 @@ export async function runLostWorkerProbes(
     // dispatches learner code to.
     const host = createHost(options.assetBaseUrl, language);
     injection.lostAfter = [];
-    injection.armed = true;
+    injection.hits = [];
+    injection.boundary = 'dispatch';
     const startedAt = performance.now();
     try {
       const result = await evaluate(host, language, healthyProgram(language), mode);
@@ -257,10 +318,34 @@ export async function runLostWorkerProbes(
         probe: 'worker-lost-after-dispatch',
         ...result,
         lostAfter: [...injection.lostAfter],
+        injectionAcks: [...injection.hits],
         elapsedMs: Math.round(performance.now() - startedAt),
       });
     } finally {
-      injection.armed = false;
+      injection.boundary = undefined;
+      host.dispose();
+    }
+  }
+  // Startup loss is injected at the first learner command on every default
+  // route. Python's real stopping-batch progress also admits phase-specific
+  // cuts and its reply decoder has a transferable result envelope.
+  const boundaries: readonly Boundary[] = language === 'python'
+    ? ['before-start', 'after-a-finish', 'after-b-start', 'result-decode'] : ['before-start'];
+  if (options.modes.includes('code-batch')) for (const boundary of boundaries) {
+    const host = createHost(options.assetBaseUrl, language);
+    injection.lostAfter = [];
+    injection.hits = [];
+    injection.boundary = boundary;
+    const startedAt = performance.now();
+    try {
+      const result = await evaluate(host, language, healthyProgram(language), 'code-batch', undefined, true);
+      observations.push({
+        language, mode: 'code-batch', probe: boundary, ...result,
+        lostAfter: [...injection.lostAfter], injectionAcks: [...injection.hits],
+        elapsedMs: Math.round(performance.now() - startedAt),
+      });
+    } finally {
+      injection.boundary = undefined;
       host.dispose();
     }
   }

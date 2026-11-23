@@ -1,9 +1,11 @@
 #!/bin/bash
 # Build-host job for the cross-version release diff. Run from the checkout root through
 # harness-artifacts/tools/ar-harness.sh, e.g.
-#   ar-harness.sh <wt> rd-dry bash scripts/release-diff/host-job.sh
-# Environment (all optional): RD_LANGUAGES (default all six, cheapest first), RD_PROBLEMS,
-# RD_CATALOG (default all), RD_BASE_VERSION (default 0.17.1).
+#   ar-harness.sh <wt> rd-release env RD_PACK_RECEIPT=/path/to/pack RD_APP_DATA_SHA=<sha> \
+#     RD_MANIFEST=/path/to/reviewed-manifest.json RD_PINS=/path/to/review-decisions.json \
+#     bash scripts/release-diff/host-job.sh
+# Optional selection: RD_LANGUAGES (default all six), RD_PROBLEMS, RD_CATALOG.
+# RD_STOP_POLICY selects the same Submit option on both sides.
 # Qualification requires RD_PACK_RECEIPT, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS.
 # RD_RERUN_FILE: lines "<language> <id>,<id>" rerun only those problems (with RD_OUT=rerun-out).
 # RD_NOSTOP_SIDE=1 (rerun mode): also run the target without stopAtFirstRunaway (target-nostop).
@@ -13,7 +15,7 @@ set -uo pipefail
 ROOT=$(pwd)
 OUT="$ROOT/${RD_OUT:-release-diff-out}"
 CORPUS=${RD_CORPUS:-/root/ci/parity-app-data}
-BASE_VERSION=${RD_BASE_VERSION:-0.17.1}
+BASE_VERSION=0.17.1
 LANGS=${RD_LANGUAGES:-javascript,typescript,cpp,java,csharp,python}
 mkdir -p "$OUT"
 if [[ -z "${RD_PACK_RECEIPT:-}" || -z "${RD_APP_DATA_SHA:-}" ||
@@ -21,8 +23,12 @@ if [[ -z "${RD_PACK_RECEIPT:-}" || -z "${RD_APP_DATA_SHA:-}" ||
   echo "release-diff/preflight: set RD_PACK_RECEIPT, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS"
   exit 2
 fi
-candidate=$(mktemp -d)
-trap 'rm -rf "$candidate"' EXIT
+python3 scripts/release-diff/check-corpus.py "$CORPUS" "$RD_APP_DATA_SHA" "$RD_MANIFEST" |
+  tee "$OUT/app-data.log" || exit 18
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+candidate="$scratch/candidate"
+mkdir "$candidate"
 digest=$(cat "$RD_PACK_RECEIPT/qualified.sha256") || exit 16
 file=$(node -p 'require(process.argv[1]).file' "$(realpath "$RD_PACK_RECEIPT/pack.json")") || exit 16
 [[ "$file" =~ ^[a-zA-Z0-9.-]+[.]tgz$ ]] || exit 16
@@ -38,24 +44,25 @@ cp "$RD_PACK_RECEIPT/pack.json" "$OUT/candidate-pack.json"
 
 # The baseline is the published package production installs, unpacked with its own
 # production dependencies. npm verifies the registry integrity hash on download.
-BASE="$ROOT/.release-diff/harness-$BASE_VERSION"
-if [ ! -f "$BASE/.installed" ]; then
-  rm -rf "$BASE" && mkdir -p "$BASE" && cd "$BASE" || exit 10
-  npm pack "@tracecode/harness@$BASE_VERSION" --silent >pack.log 2>&1 || { cat pack.log; exit 11; }
-  tar xzf "tracecode-harness-$BASE_VERSION.tgz" || exit 12
-  # Its devDependencies name unpublished workspace packages, which npm resolves even with
-  # --omit=dev; drop them from the unpacked manifest (dist/ and workers/ are untouched).
-  cd package && node -e "const f=require(\"fs\");const p=JSON.parse(f.readFileSync(\"package.json\"));delete p.devDependencies;f.writeFileSync(\"package.json\",JSON.stringify(p,null,2))" || exit 14
-  npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install.log" 2>&1 \
-    || { tail -30 "$OUT/base-install.log"; exit 13; }
-  [ -f node_modules/@tracecode/tracecc/package.json ] && [ -d node_modules/effect ] || { echo "baseline deps missing"; exit 15; }
-  touch "$BASE/.installed"
-  cd "$ROOT"
-fi
+BASE="$scratch/harness-$BASE_VERSION"
+mkdir "$BASE" && cd "$BASE" || exit 10
+npm pack "@tracecode/harness@$BASE_VERSION" --ignore-scripts --silent >pack.log 2>&1 ||
+  { cat pack.log; exit 11; }
+tar xzf "tracecode-harness-$BASE_VERSION.tgz" || exit 12
+# Legacy npm resolves its unpublished devDependencies even with --omit=dev.
+# Keep the downloaded tarball intact and omit those entries in the install metadata.
+cd package && node -e "const f=require(\"fs\");const p=JSON.parse(f.readFileSync(\"package.json\"));delete p.devDependencies;f.writeFileSync(\"package.json\",JSON.stringify(p,null,2))" || exit 14
+npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install.log" 2>&1 ||
+  { tail -30 "$OUT/base-install.log"; exit 13; }
+[ -f node_modules/@tracecode/tracecc/package.json ] && [ -d node_modules/effect ] ||
+  { echo "baseline deps missing"; exit 15; }
+cd "$ROOT" || exit 10
 sha256sum "$BASE/tracecode-harness-$BASE_VERSION.tgz" >"$OUT/base-package.sha256"
 (cd "$BASE/package" && npm ls --omit=dev --depth=0 >"$OUT/base-deps.txt" 2>&1)
 
 git rev-parse HEAD >"$OUT/test-harness-head.txt"
+export RD_APP_DATA_SHA
+
 
 status=0
 # RD_PARALLEL=1 runs both versions of a language side by side (two browser processes, within

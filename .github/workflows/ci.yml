@@ -102,17 +102,27 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
       # The Judge browser bundles resolve @tracecode/tracekernel to its dist.
-      - name: Build TraceKernel for browser test bundles
-        run: pnpm build:tracekernel
+      - name: Prepare browser Judge fixtures
+        id: prepare-matrix
+        run: pnpm build:tracekernel && pnpm materialize:csharp-role-assets
       - name: Test the public browser Judge boundary
         run: pnpm test:judge:browser
       - name: Test learner-failure classification across languages and run modes
+        if: "!cancelled() && steps.prepare-matrix.outcome == 'success'"
         env:
           TRACECODE_MATRIX_BROWSER_CHANNEL: chromium
           TRACECODE_MATRIX_REPORT: ${{ runner.temp }}/learner-failure-matrix.json
-        run: pnpm test:learner-failure-matrix
+        run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-learner-failure-matrix.ts
+      - name: Test provider failure boundaries
+        if: "!cancelled() && steps.prepare-matrix.outcome == 'success'"
+        env:
+          TRACECODE_LOST_WORKER_BROWSER_CHANNEL: chromium
+          TRACECODE_LOST_WORKER_REPORT: ${{ runner.temp }}/lost-worker-boundaries.json
+        run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-lost-worker-provider-origin-browser.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: learner-failure-matrix-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/learner-failure-matrix.json
+          path: |
+            ${{ runner.temp }}/learner-failure-matrix.json
+            ${{ runner.temp }}/lost-worker-boundaries.json

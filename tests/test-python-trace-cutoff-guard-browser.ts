@@ -118,7 +118,11 @@ async function main(): Promise<void> {
         console.log(JSON.stringify(sample.cases[0]));
         assert.equal(sample.error, undefined, `${sample.program}: ${sample.error}`);
         assert.equal(sample.status, 'completed', sample.program);
-        assert.equal(sample.cases.length, 3, sample.program);
+        assert.deepEqual(sample.cases.map(({ caseId, id }) => caseId ?? id), ['1', '2', '3'], sample.program);
+        assert.ok(sample.cases[0].learnerPrefix, `${sample.program}: selected prefix reaches the search loop`);
+        for (const unselected of sample.cases.slice(1)) {
+          assert.equal(unselected.traceEvents, 0, `${sample.program}: unselected case has no trace`);
+        }
       }
 
       // The loop that never ends: the worker's guard reports a runaway limit.
@@ -142,25 +146,33 @@ async function main(): Promise<void> {
       const [traced, ...others] = finishes.cases;
       assert.equal(traced.status, 'completed');
       assert.equal(traced.verdict?.kind, 'passed');
+      assert.equal(traced.value, 4);
       assert.ok(
         traced.diagnostics?.some((diagnostic: any) =>
           diagnostic.severity === 'warning' && diagnostic.code === 'trace-byte-limit'),
         `the trace reports its byte budget: ${JSON.stringify(traced.diagnostics)}`
       );
       assert.ok(traced.traceEvents > 0, 'the recorded trace prefix is kept');
-      for (const testCase of others) assert.equal(testCase.status, 'completed');
+      for (const testCase of others) {
+        assert.equal(testCase.status, 'completed');
+        assert.equal(testCase.value, -1);
+      }
 
       // The long program: it completes, its trace truncated.
       const [long, ...afterLong] = runsLong.cases;
       assert.equal(long.status, 'completed', JSON.stringify(long.failure));
       assert.equal(long.verdict?.kind, 'passed');
+      assert.equal(long.value, 4);
       assert.ok(
         long.diagnostics?.some((diagnostic: any) =>
           diagnostic.severity === 'warning' &&
           ['trace-byte-limit', 'trace-limit', 'single-line-limit', 'line-limit'].includes(diagnostic.code)),
         `the trace reports its budget: ${JSON.stringify(long.diagnostics)}`
       );
-      for (const testCase of afterLong) assert.equal(testCase.status, 'completed');
+      for (const testCase of afterLong) {
+        assert.equal(testCase.status, 'completed');
+        assert.equal(testCase.value, -1);
+      }
       for (const { program } of samples) ledger.checked(program);
     } finally {
       await browser.close();

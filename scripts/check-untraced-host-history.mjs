@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -440,6 +441,12 @@ async function benchmark(url, language, warm) {
 }
 
 async function main() {
+  const commit = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (commit.status !== 0) throw new Error('Could not determine Harness source commit');
+  report.harnessHead = commit.stdout.trim();
+  report.runnerSha256 = createHash('sha256')
+    .update(await readFile('scripts/check-untraced-host-history.mjs'))
+    .update(await readFile('scripts/untraced-host-history.browser.ts')).digest('hex');
   const root = await mkdtemp(join(tmpdir(), 'tracecode-host-history-'));
   let server;
   let browser;

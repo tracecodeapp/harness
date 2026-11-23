@@ -71,7 +71,10 @@ let sequence = 0;
 function summarize(evaluation: any) {
   return (evaluation?.cases ?? []).map((testCase: any) => {
     const { trace, ...rest } = testCase;
-    return JSON.parse(JSON.stringify({ ...rest, traceEvents: trace?.events?.length ?? 0 }));
+    const learnerPrefix = trace?.events?.some(({ kind, line }: { kind: string; line?: number }) =>
+      kind === 'line' && line === 6
+    ) ?? false;
+    return JSON.parse(JSON.stringify({ ...rest, traceEvents: trace?.events?.length ?? 0, learnerPrefix }));
   });
 }
 

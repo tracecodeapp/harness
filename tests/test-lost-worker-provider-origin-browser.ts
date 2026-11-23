@@ -115,6 +115,28 @@ function lostWorkerProblem(observation: LostWorkerObservation): string | undefin
     : `G3/lost-worker/typed-cause: expected provider:runtime-failure, got ${JSON.stringify(causes)}`;
 }
 
+const boundaryProbes = ['before-start', 'after-a-finish', 'after-b-start', 'result-decode'];
+
+function boundaryProblem(observation: LostWorkerObservation): string | undefined {
+  const { probe, typedCauses, cases } = observation;
+  const label = `G3/${observation.language}/${probe}`;
+  if (!observation.injectionAcks?.some((ack) => ack.startsWith(probe + ':'))) {
+    return `${label}/missing-producer-ack`;
+  }
+  const hasPrefix = probe === 'after-a-finish' || probe === 'after-b-start';
+  const expected = probe === 'result-decode' ? 'provider:protocol' : 'provider:runtime-failure';
+  const causes = (typedCauses ?? []).slice(hasPrefix ? 1 : 0);
+  if (hasPrefix && (cases?.[0]?.id !== 'case-1' || cases[0].value !== 12 ||
+      cases[0].verdict !== 'passed' || cases[0].conversion !== 'completed')) {
+    return `${label}/lost-completed-prefix: ${JSON.stringify(cases)}`;
+  }
+  if (!causes.length || causes.some((cause) => cause !== expected) ||
+      cases?.slice(hasPrefix ? 1 : 0).some(({ conversion, verdict }) =>
+        conversion !== expected || verdict === 'passed')) {
+    return `${label}/typed-cause: expected ${expected}, observed ${JSON.stringify(typedCauses)}`;
+  }
+}
+
 /** A program that failed on its own stays the program's, or its limit's. */
 function learnerProblem(observation: LostWorkerObservation): string | undefined {
   if (observation.threw !== undefined) return `threw: ${observation.threw}`;
@@ -159,6 +181,7 @@ async function main(): Promise<void> {
       ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}),
     });
     const problems: string[] = [];
+    const report: LostWorkerObservation[] = [];
     let controlHits = 0;
     try {
       for (const language of LANGUAGES) {
@@ -181,10 +204,16 @@ async function main(): Promise<void> {
             modes: MODES,
             learner: LEARNER,
           })])) as LostWorkerObservation[];
+          report.push(...observations);
+          if (process.env.TRACECODE_LOST_WORKER_REPORT) {
+            await writeFile(process.env.TRACECODE_LOST_WORKER_REPORT, JSON.stringify(report, null, 2) + '\n');
+          }
           for (const observation of observations) {
             const problem = observation.probe === 'worker-lost-after-dispatch'
               ? lostWorkerProblem(observation)
-              : learnerProblem(observation);
+              : boundaryProbes.includes(observation.probe)
+                ? boundaryProblem(observation)
+                : learnerProblem(observation);
             if (!problem && controlHits === 0 && observation.probe === 'worker-lost-after-dispatch') {
               const [first, ...rest] = observation.typedCauses!;
               assert.equal(first, 'provider:runtime-failure');
