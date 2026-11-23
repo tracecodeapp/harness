@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { scoreThresholds } from './score-thresholds.mjs';
 
 const [archive, raw, primary] = process.argv.slice(2);
 const languages = ['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'];
@@ -129,12 +130,7 @@ for (const scope of ['desktop', 'phone', 'spot']) {
     const history = Object.fromEntries(versions.map(version => [version, stats(archived.get(cell + '/' + version))]));
     const requiredHistory = warmCsharp || cell.endsWith('/lessonContinue') ? [history['0.20.1']] : Object.values(history);
     assert.ok(requiredHistory.every(row => row.n >= (cell.startsWith('java/') || scope === 'phone' ? 12 : 20)), cell);
-    const thresholds = {
-      median: (scope === 'spot' ? 1.05 : 1) * Math.min(...requiredHistory.map(row => row.median)),
-      p90: 1.10 * Math.min(...requiredHistory.map(row => row.p90)),
-    };
-    if (cell === 'java/1/binary-search/warm/verdicts')
-      Object.assign(thresholds, { median: 830.4, p90: 944.1 });
+    const thresholds = scoreThresholds(scope, requiredHistory);
     for (const policy of policyFor(scope, cell)) {
       const result = stats(observed.values.get(cell + '/' + policy));
       const cache = primary === 'java'

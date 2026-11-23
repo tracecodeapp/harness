@@ -11,6 +11,7 @@ import {
   resolveBrowserRuntimeAssets,
   TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
 } from 'tracecode-harness-under-test/tracekernel';
+import { javaWorkerPhaseTimings } from './java-candidate-witness.mjs';
 
 type Case = {
   id: string;
@@ -111,15 +112,11 @@ function measureJavaRequests() {
         if (!request || (data.type !== request.type && data.type !== 'error')) return;
         pending.delete(data.id);
         request.received = performance.now();
-        request.timings = data.payload?.timings;
-        const resultRunnerProcessCount = data.payload?.results?.[0]?.timings?.runnerProcessCount;
-        if (resultRunnerProcessCount !== undefined) {
-          request.timings = { ...request.timings, runnerProcessCount: resultRunnerProcessCount };
-        }
+        request.timings = javaWorkerPhaseTimings(data.payload);
         request.tier = data.payload?.results?.[0]?.algorithmIsolationProfile?.tier;
       });
       this.postMessage = (message, options?) => {
-        if (message.id && /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program-batch)$/.test(message.type)) {
+        if (message.id && /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program|execute-prepared-runtime-program-batch)$/.test(message.type)) {
           const payload = message.payload;
           if (message.type === 'prepare-runtime-program') {
             role = payload?.observerOnly ? 'observer' : payload?.mode === 'code' ? 'ordinary' : 'legacy-trace';

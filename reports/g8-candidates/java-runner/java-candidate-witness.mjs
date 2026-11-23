@@ -1,5 +1,15 @@
 const WITNESS_ERROR = 'Java role, batch or worker-reuse witness differs';
 
+export function javaWorkerPhaseTimings(payload) {
+  const envelopeTimings = payload?.timings;
+  const { runnerProcessCount: _envelopeRunnerProcessCount, ...timings } = envelopeTimings ?? {};
+  const resultRunnerProcessCount = payload?.results?.[0]?.timings?.runnerProcessCount;
+  if (resultRunnerProcessCount !== undefined) {
+    return { ...timings, runnerProcessCount: resultRunnerProcessCount };
+  }
+  return envelopeTimings === undefined ? undefined : timings;
+}
+
 function workers(phases, role) {
   return new Set(phases.filter((phase) => phase.role === role).map((phase) => phase.worker));
 }
@@ -35,24 +45,29 @@ export function javaCandidateOutcome(result, role, caseCount, caseId) {
   const batches = phases.filter(({ type }) => type === 'execute-prepared-runtime-program-batch');
   const expectedOrdinary = role === 'click' ? 0 : 1;
   const expectedObserver = role === 'submit' ? 0 : 1;
+  const ordinaryPrepares = phases.filter(({ type, role: phaseRole }) =>
+    type === 'prepare-runtime-program' && phaseRole === 'ordinary');
+  const ordinarySingles = phases.filter(({ type, role: phaseRole }) =>
+    type === 'execute-prepared-runtime-program' && phaseRole === 'ordinary');
   const ordinary = batches.filter((phase) => phase.role === 'ordinary');
   const observer = batches.filter((phase) => phase.role === 'observer');
   const ordinaryWorkers = workers(phases, 'ordinary');
   const observerWorkers = workers(phases, 'observer');
-  const ordinaryRestores = phases.filter(({ type, role: phaseRole }) =>
-    type === 'restore-prepared-runtime-program' && phaseRole === 'ordinary');
+  const nonObserverRestores = phases.filter(({ type, role: phaseRole }) =>
+    type === 'restore-prepared-runtime-program' && phaseRole !== 'observer');
 
   const ordinaryValid = expectedOrdinary === 0
-    ? ordinary.length === 0 && ordinaryWorkers.size === 0
+    ? ordinary.length === 0 && ordinaryPrepares.length === 0 && ordinaryWorkers.size === 0
     : ordinary.length === 1 && isSingleWorker(ordinaryWorkers) &&
-      isStoppingBatch(ordinary[0], caseCount) && ordinaryRestores.length === 0;
+      ordinaryPrepares.length === 1 && isStoppingBatch(ordinary[0], caseCount);
   const observerValid = expectedObserver === 0
     ? observer.length === 0 && observerWorkers.size === 0
     : observer.length === 1 && isSingleWorker(observerWorkers) && observer[0].cases === 1;
   const workersDistinct = !ordinaryWorkers.size || !observerWorkers.size ||
     [...ordinaryWorkers].every((worker) => !observerWorkers.has(worker));
 
-  if (!ordinaryValid || !observerValid || !workersDistinct ||
+  if (!ordinaryValid || ordinarySingles.length !== 0 || nonObserverRestores.length !== 0 ||
+      !observerValid || !workersDistinct ||
       batches.length !== expectedOrdinary + expectedObserver) return WITNESS_ERROR;
   if (role === 'click' && phases.some(({ type }) => type === 'prepare-runtime-program')) {
     return 'Java click prepared another artifact';

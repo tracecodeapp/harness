@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
+import {
+  javaCandidateCacheReceipt,
+  javaCandidateOutcome,
+  javaWorkerPhaseTimings,
+} from './java-candidate-witness.mjs';
 
 function random(seed) {
   let state = seed >>> 0;
@@ -111,4 +115,58 @@ test('cache receipt records both candidate prepare roles without treating missin
     ordinary: [{ role: 'ordinary', worker: 1, compileCacheHit: true, artifactCacheHit: false }],
     observer: [{ role: 'observer', worker: 2, compileCacheHit: false, artifactCacheHit: undefined }],
   });
+});
+
+test('seeded control rejects a second ordinary prepare', () => {
+  const next = random(212026);
+  for (let i = 0; i < 32; i++) {
+    const caseCount = 2 + Math.floor(next() * 30);
+    const run = runResult(i + 1, i + 101, caseCount);
+    run.java.phases.unshift({
+      worker: i + 1,
+      role: 'ordinary',
+      type: 'prepare-runtime-program',
+      timings: { compileCacheHit: true, artifactCacheHit: true },
+    });
+    assert.equal(javaCandidateOutcome(run, 'run', caseCount, 'selected'),
+      'Java role, batch or worker-reuse witness differs');
+
+    const submit = runResult(i + 1, i + 101, caseCount);
+    submit.java.phases = submit.java.phases.filter(({ role }) => role !== 'observer');
+    submit.java.phases.unshift({ worker: i + 1, role: 'ordinary', type: 'prepare-runtime-program' });
+    assert.equal(javaCandidateOutcome(submit, 'submit', caseCount),
+      'Java role, batch or worker-reuse witness differs');
+
+    const click = runResult(i + 1, i + 101, caseCount);
+    click.java.phases = click.java.phases.filter(({ role, type }) =>
+      role !== 'ordinary' && type !== 'prepare-runtime-program');
+    click.java.phases.unshift({ worker: i + 1, role: 'ordinary', type: 'prepare-runtime-program' });
+    assert.equal(javaCandidateOutcome(click, 'click', 1, 'selected'),
+      'Java role, batch or worker-reuse witness differs');
+  }
+});
+
+test('seeded control rejects ordinary singles and non-observer restores', () => {
+  const next = random(212026);
+  for (let i = 0; i < 32; i++) {
+    const caseCount = 2 + Math.floor(next() * 30);
+    const result = runResult(i + 1, i + 101, caseCount);
+    result.java.phases.push(i % 2 === 0
+      ? { worker: i + 1, role: 'ordinary', type: 'execute-prepared-runtime-program' }
+      : { worker: 10_000 + i, type: 'restore-prepared-runtime-program' });
+    assert.equal(javaCandidateOutcome(result, 'run', caseCount, 'selected'),
+      'Java role, batch or worker-reuse witness differs');
+  }
+});
+
+test('seeded control takes runner count only from the first result timings', () => {
+  const next = random(212026);
+  for (let i = 0; i < 32; i++) {
+    const envelopeCount = 1 + Math.floor(next() * 5);
+    const timings = javaWorkerPhaseTimings({
+      timings: { runnerProcessCount: envelopeCount, compileCacheHit: true },
+      results: [{ timings: { compileCacheHit: true } }],
+    });
+    assert.deepEqual(timings, { compileCacheHit: true });
+  }
 });
