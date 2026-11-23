@@ -550,8 +550,8 @@ test('G4 proves dispatched C was skipped from the same command’s authoritative
   }
 });
 
-test('G5 requires correlated initial starts and a bound observer or cache hit to prove JS/TS continuation started no ordinary work', () => {
-  for (const language of ['javascript', 'typescript']) {
+test('G5 requires correlated initial starts and a bound observer or cache hit to prove no ordinary continuation work', () => {
+  for (const language of ['javascript', 'typescript', 'java']) {
     const spec = fixture(language, 'stdout');
     const parent = observedReceipt(spec);
     parent.transcript = parent.transcript.filter(({ kind }) => !kind.startsWith('ordinary-'));
@@ -576,6 +576,9 @@ test('G5 requires correlated initial starts and a bound observer or cache hit to
       sample.transcript.push(...(route === 'continue-B' ? [reply, bind] : [hit]), {
         ...binding, kind: 'schedule', phase: 'public-resolve', request: route, sequence: 24,
       });
+      if (language === 'java' && route === 'continue-B') {
+        sample.transcript.unshift({ request: route, kind: 'dispatch', mode: 'trace', observationOnly: true });
+      }
       requireDetected(spec, route, sample, 'ordinary-start-count', (mutant) => {
         addCertifiedStarts(mutant, route);
         return 1;
@@ -588,10 +591,94 @@ test('G5 requires correlated initial starts and a bound observer or cache hit to
       unwitnessedDispatch.transcript.push({ request: route, kind: 'dispatch', generation: 8, type: 'execute-code', rows: ['B'] });
       assert(ledgerFor(spec, route, unwitnessedDispatch).missing.includes(id));
       const wrongAttempt = structuredClone(sample);
-      wrongAttempt.transcript[0].attemptToken = 'foreign-attempt';
+      wrongAttempt.transcript.find((event) =>
+        event.kind === 'observer-reply' || event.phase === 'observation-cache-hit').attemptToken = 'foreign-attempt';
       assert(ledgerFor(spec, route, wrongAttempt).missing.includes(id));
     }
   }
+});
+
+test('Java starts require the command token and admission ID, and nested observations require the attempt token', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const originalWorker = globalThis.Worker;
+  globalThis.Worker = class FixtureWorker {
+    addEventListener(_, listener) { this.listener = listener; }
+    postMessage() {}
+    reply(data, isTrusted = true) { this.listener({ data, isTrusted }); }
+  };
+  const spec = fixture('java', 'stdout');
+  const decoded = { drawing: { status: 'truncated', reason: 'byte-budget', attemptedEvents: 1,
+    trace: { schemaVersion: 'runtime-trace-2026-04-28', events: [] } }, javaEvents: [] };
+  const journal = installJournal(spec, { decodeJavaObservation: () => decoded });
+  try {
+    journal.track('run-first');
+    const worker = new Worker('java-worker.js');
+    const batch = 'execute-prepared-runtime-program-batch';
+    worker.postMessage({
+      id: 'ordinary', type: batch, protocolToken: 'ordinary-token',
+      payload: { inputBatch: spec.cases.map(({ input }) => input), admissionId: 3 },
+    });
+    const start = { id: 'ordinary', type: 'runtime-progress', protocolToken: 'ordinary-token',
+      payload: { stage: 'ordinary-case-started', detail: { caseIndex: 0, admissionId: 3 } } };
+    worker.reply(start, false);
+    worker.reply({ ...start, protocolToken: 'stale' });
+    worker.reply({ ...start, payload: { ...start.payload, detail: { caseIndex: 0, admissionId: 7 } } });
+    worker.reply(start);
+    worker.reply({ id: 'ordinary', type: batch, protocolToken: 'ordinary-token', payload: { results: [] } });
+    worker.reply(start);
+    assert.deepEqual(journal.since(0).filter(({ kind }) => kind === 'ordinary-start').map(({ caseId }) => caseId), ['A']);
+    assert.equal(journal.since(0).find(({ kind }) => kind === 'ordinary-dispatch')?.reportsStarts, true);
+    const observe = { id: 'observer', type: batch, protocolToken: 'worker-token',
+      payload: { inputBatch: [spec.cases[0].input], attemptToken: 'observer-attempt' } };
+    const reply = (attemptToken, protocolToken) => ({
+      id: observe.id, type: batch, protocolToken, payload: { results: [{ observation: { attemptToken } }] },
+    });
+    worker.postMessage(observe);
+    worker.reply(reply('observer-attempt', 'worker-token'), false);
+    worker.reply(reply('observer-attempt', 'stale'));
+    worker.reply(reply('stale', 'worker-token'));
+    assert.equal(journal.since(0).filter(({ kind }) => kind === 'observer-reply').length, 0);
+    worker.postMessage(observe);
+    worker.reply(reply('observer-attempt', 'worker-token'));
+    const witnesses = journal.since(0).filter(({ kind }) => kind === 'observer-reply');
+    assert.equal(witnesses.length, 1);
+    assert.deepEqual(witnesses[0].drawing, decoded.drawing);
+    assert.equal(witnesses[0].attemptToken, 'observer-attempt');
+    assert.equal(journal.since(0).filter(({ kind }) => kind === 'ordinary-dispatch').length, 1);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+  }
+});
+
+test('Java step-cap proof uses the bound recorder reply and the raw worker prefix', () => {
+  const spec = fixture('java', 'step-cap');
+  const frames = [
+    { kind: 'line', file: 'solution.java', line: 2 },
+    { kind: 'line', file: 'solution.java', line: 3 },
+  ];
+  const bindReply = (sample, token, javaEvents) => {
+    const { trace, reason, attemptedEvents } = sample.result.evaluation.cases[0].attachment;
+    const reply = sample.transcript.find(({ kind }) => kind === 'observer-reply');
+    reply.attemptToken = token;
+    reply.javaEvents = javaEvents;
+    reply.drawing = reason ? { status: 'truncated', trace, reason, attemptedEvents } : { status: 'drawn', trace };
+    sample.transcript.find(({ phase }) => phase === 'attachment-bind').attemptToken = token;
+  };
+  const sample = observedReceipt(spec, { status: 'truncated', reason: 'step-budget', events: frames.slice(0, 1), attemptedEvents: 2 });
+  bindReply(sample, 'short', ['first']);
+  const reference = observedReceipt(spec, { route: 'run-first:reference', events: frames });
+  reference.result.evaluation.cases[0].attachment.evaluationId = 'reference-evaluation';
+  reference.transcript.find(({ phase }) => phase === 'attachment-bind').evaluationId = 'reference-evaluation';
+  bindReply(reference, 'long', ['first', 'second']);
+  sample.prefixReference = { evaluation: reference.result.evaluation };
+  sample.transcript.push(...reference.transcript.filter(({ kind, phase }) => kind === 'observer-reply' || phase === 'attachment-bind'));
+  requireDetected(spec, 'run-first', sample, 'A/real-prefix', (mutant) => {
+    mutant.transcript.find(({ attemptToken, kind }) => attemptToken === 'short' && kind === 'observer-reply').javaEvents[0] = 'foreign';
+    return 1;
+  });
+  sample.transcript.find(({ kind }) => kind === 'observer-reply').attemptToken = 'foreign-attempt';
+  assert(ledgerFor(spec, 'run-first', sample).missing.includes('G5/java/step-cap/run-first/A/real-prefix'));
 });
 
 test('G4 checks the pinned mux portable request and reserves the stored receipt for step 8', () => {

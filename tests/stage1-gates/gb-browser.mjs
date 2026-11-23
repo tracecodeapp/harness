@@ -7,6 +7,8 @@ import {
 } from '@tracecode/harness/judge';
 import { installJournal } from './gb-transport.mjs';
 import { installJudgeBridge, schedulerInjection } from './gb-probe.mjs';
+import { restoreTransferredTraceEvents } from '../../packages/runtime-browser/src/trace-event-transport.ts';
+import { javaTraceHooksEventsToRuntimeTrace } from '../../packages/runtime-contracts/src/trace-adapters/java.ts';
 
 export { builtInProjectEvaluators, createAlgorithmJudgeBundle, createBrowserJudgeHost };
 export { resolveBuiltInTraceCCRuntimeManifest } from '@tracecode/harness/tracekernel';
@@ -63,8 +65,29 @@ async function observeLongerPrefix(fixture, host, route, rows) {
   }
 }
 
+function decodeJavaObservation(payload, maxPathDepth) {
+  try {
+    const { results: [entry] } = restoreTransferredTraceEvents(payload);
+    const { cut, attemptedEvents, reason } = entry.observation;
+    if (entry.success === false) return { drawing: { status: 'refused', reason } };
+    const javaEvents = entry.trace?.events;
+    if (entry.success !== true || !Array.isArray(javaEvents) ||
+        !javaEvents.every((event) => typeof event === 'string')) return { drawing: null };
+    const trace = javaTraceHooksEventsToRuntimeTrace(javaEvents, entry.sourceText,
+      { runId: 'java:run', file: 'solution.java', maxPathDepth });
+    return {
+      javaEvents,
+      drawing: cut === undefined
+        ? { status: 'drawn', trace }
+        : { status: 'truncated', trace, reason: cut, attemptedEvents },
+    };
+  } catch {
+    return { drawing: null };
+  }
+}
+
 export async function runFixture(fixture, options, onReceipt) {
-  const journal = installJournal(fixture);
+  const journal = installJournal(fixture, { decodeJavaObservation });
   const faultFixture = fixture.name === 'transport';
   const bridge = installJudgeBridge(fixture, journal);
   const schedulerFault = schedulerInjection(fixture.name);

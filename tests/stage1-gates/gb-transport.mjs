@@ -25,7 +25,7 @@ function recorderEvents(payload) {
 // The browser page owns this transport. The installed Judge and worker files
 // remain untouched. A real worker runs each released row. The transport holds
 // the terminal batch response, leaving the production client to handle loss.
-export function installJournal(fixture) {
+export function installJournal(fixture, { decodeJavaObservation } = {}) {
   const NativeWorker = globalThis.Worker;
   const nativeSetTimeout = globalThis.setTimeout;
   const nativeClearTimeout = globalThis.clearTimeout;
@@ -101,15 +101,18 @@ export function installJournal(fixture) {
       const matches = inputs.map((input) => fixture.cases.filter((row) => matchesInput(row, input)));
       const rows = inPlanOrder ? fixture.cases.map(({ id }) => id) : matches.map(([row]) => row?.id);
       const proofRows = inPlanOrder ? rows : matches.map((found) => found.length === 1 ? found[0].id : undefined);
-      this.#trackJudgeWorker(message, payload, proofRows);
+      const javaObserver = fixture.language === 'java' && message.type === 'execute-prepared-runtime-program-batch' &&
+        typeof payload.attemptToken === 'string' && payload.attemptToken.length > 0;
+      this.#trackJudgeWorker(message, payload, proofRows, javaObserver);
       if (request && rows.length && rows.every(Boolean) && /^execute/u.test(message.type)) {
-        const mode = payload.mode ?? message.type;
+        const mode = javaObserver ? 'trace' : payload.mode ?? message.type;
         const wire = { request, rows, mode, message, index: 0 };
         this.#wire.set(message.id, wire);
         record('dispatch', {
           generation: this.#generation, request, rows, mode, type: message.type,
           tier: payload.artifact?.isolationProfile?.tier, progressRequested: payload.reportCaseProgress === true,
           tracingEnabled: payload.tracingEnabled, traceEnabledBatch: payload.traceEnabledBatch,
+          ...(javaObserver ? { observationOnly: true } : {}),
         });
         const pythonBatch = fixture.language === 'python' && message.type === 'execute-prepared-program-batch' &&
           mode === 'code' && payload.artifact?.isolationProfile?.tier === 'algorithm-fast';
@@ -126,18 +129,34 @@ export function installJournal(fixture) {
       super.postMessage(message, ...transfer);
     }
 
-    #trackJudgeWorker(message, payload, rows) {
+    #trackJudgeWorker(message, payload, rows, javaObserver) {
       const cpp = fixture.language === 'cpp';
+      const java = fixture.language === 'java';
       const js = ['javascript', 'typescript'].includes(fixture.language);
       if (!request) return;
       const correlated = { request, generation: this.#generation, commandId: message.id };
       const token = typeof message.protocolToken === 'string' && message.protocolToken ? message.protocolToken : undefined;
-      const track = ({ ordinary, attemptToken, terminal, ses }) => {
+      const track = ({ ordinary, attemptToken, terminal, ses, admissionId,
+        reportsStarts = payload.reportCaseProgress === true }) => {
         if (ordinary) record('ordinary-dispatch', {
-          ...correlated, rows, reportsStarts: !!token && payload.reportCaseProgress === true,
+          ...correlated, rows, reportsStarts: !!token && reportsStarts,
         });
-        if (token) this.#judgeWire.set(message.id, { correlated, rows, ordinary, token, attemptToken, terminal, ses, cpp });
+        if (token) this.#judgeWire.set(message.id, {
+          correlated, rows, ordinary, token, attemptToken, terminal, ses, cpp, java, admissionId,
+          maxPathDepth: payload.observationOptions?.maxPathDepth,
+        });
       };
+      if (java) {
+        if (!/^execute/u.test(message.type)) return;
+        const prepared = message.type === 'execute-prepared-runtime-program-batch';
+        const admissionId = Number.isSafeInteger(payload.admissionId) ? payload.admissionId : undefined;
+        track({
+          ordinary: !javaObserver, attemptToken: javaObserver ? payload.attemptToken : undefined,
+          terminal: prepared ? message.type : undefined, admissionId,
+          reportsStarts: prepared && admissionId !== undefined,
+        });
+        return;
+      }
       if (cpp) {
         const single = message.type === 'execute-prepared-runtime-program';
         if (!single && message.type !== 'execute-prepared-runtime-program-batch') return;
@@ -183,11 +202,12 @@ export function installJournal(fixture) {
       const sesTerminal = wire.ses && type === undefined && protocolToken === undefined &&
         typeof event.data.ok === 'boolean';
       if (protocolToken !== wire.token && !sesTerminal) return;
-      if (wire.ordinary && type === 'batch-case-progress' && payload?.phase === 'started') {
+      if (wire.ordinary && !wire.java && type === 'batch-case-progress' && payload?.phase === 'started') {
         record('ordinary-start', { ...wire.correlated, caseId: wire.rows[payload.index], index: payload.index });
       }
       if (wire.ordinary && type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
-        const index = payload.detail?.caseIndex;
+        const { caseIndex: index, admissionId } = payload.detail ?? {};
+        if (wire.java && (wire.admissionId === undefined || wire.admissionId !== admissionId)) return;
         record('ordinary-start', { ...wire.correlated, caseId: wire.rows[index], index });
         if (wire.cpp && fixture.gate === 'G4') record('worker-started', {
           ...wire.correlated, caseId: wire.rows[index], index, mode: 'code',
@@ -206,6 +226,17 @@ export function installJournal(fixture) {
           ...(protocolToken === wire.token && Array.isArray(startedCaseIndices)
             ? { startedCaseIndices: [...startedCaseIndices] } : {}),
         });
+      }
+      if (wire.java && !wire.ordinary) {
+        if (completed && wire.rows.length === 1 && Array.isArray(payload?.results) &&
+            payload.results.length === 1 && payload.results[0]?.observation?.attemptToken === wire.attemptToken &&
+            decodeJavaObservation) {
+          record('observer-reply', {
+            ...wire.correlated, caseId: wire.rows[0], attemptToken: wire.attemptToken,
+            ...decodeJavaObservation(payload, wire.maxPathDepth),
+          });
+        }
+        return;
       }
       if (wire.cpp && payload?.observation?.attemptToken !== wire.attemptToken) return;
       if (!wire.ordinary && completed && (wire.cpp || wire.attemptToken === undefined || payload?.attemptToken === wire.attemptToken)) {

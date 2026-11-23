@@ -220,7 +220,7 @@ function sharedPreparationAck(fixture, prior, binding, bind) {
   if (acks.length === 1) return acks[0];
 }
 
-function checkJsContinuation(fixture, route, sample, published, wire, assert) {
+function checkCorrelatedContinuation(fixture, route, sample, published, wire, assert) {
   const prior = sample.retainedEvidence ?? [];
   const initial = prior.filter(({ request }) => request === 'run-first');
   const initialOrdinary = completeOrdinaryStarts(initial);
@@ -261,10 +261,26 @@ function checkJsContinuation(fixture, route, sample, published, wire, assert) {
   const { complete, starts, dispatch } = completeOrdinaryStarts(wire);
   // Outbound dispatches are recorded before any worker progress. A command
   // with no start ACK still prevents a zero-start proof.
-  const hasDispatch = dispatch.length > 0 || wire.some(({ kind }) => kind === 'dispatch');
+  const hasDispatch = dispatch.length > 0 || wire.some(({ kind, observationOnly }) =>
+    kind === 'dispatch' && !(fixture.language === 'java' && observationOnly === true));
   if (hasDispatch && !starts.length && !complete) return;
   assert('ordinary-start-count', starts.length === 0 && !hasDispatch,
     { expectedStarts: [], starts, dispatch, observerReply: replies[0], cacheHit: hits[0], preparationAck });
+}
+
+function javaBoundObserverReplies(attachment, evidence, route) {
+  if (!attachment.modern) return [];
+  const { caseId } = attachment.binding;
+  const binds = evidence.filter((event) => event.kind === 'schedule' && event.phase === 'attachment-bind' &&
+    event.caseId === caseId && typeof event.attemptToken === 'string' && scopeMatches(event, attachment.binding));
+  if (binds.length !== 1) return [];
+  const [bind] = binds;
+  if (bind.request !== route && !evidence.some((event) =>
+    event.kind === 'schedule' && event.phase === 'observation-cache-hit' && event.request === route &&
+    event.caseId === caseId && event.attemptToken === bind.attemptToken &&
+    event.sequence > bind.sequence && scopeMatches(event, attachment.binding))) return [];
+  return evidence.filter((event) => event.kind === 'observer-reply' && event.request === bind.request &&
+    event.caseId === caseId && event.attemptToken === bind.attemptToken && event.sequence < bind.sequence);
 }
 
 function checkObservation(fixture, route, sample, rows, published, assert) {
@@ -286,11 +302,12 @@ function checkObservation(fixture, route, sample, rows, published, assert) {
     selected.some(({ id }) => id === caseId));
   const wrongStart = starts.some((event) => !expectedStarts.includes(event.caseId)) ||
     new Set(starts.map(({ caseId }) => caseId)).size !== starts.length;
-  const startCoverage = dispatch.length > 0 && dispatch.every(({ reportsStarts }) => reportsStarts === true);
+  const startCoverage = fixture.language === 'java' ? completeOrdinaryStarts(wire).complete
+    : dispatch.length > 0 && dispatch.every(({ reportsStarts }) => reportsStarts === true);
   const observableContinuation = fixture.language === 'python' ||
     (fixture.language === 'cpp' && (observerReply || prior.some(({ kind }) => kind === 'observer-reply')));
-  if (continuation(route) && ['javascript', 'typescript'].includes(fixture.language)) {
-    checkJsContinuation(fixture, route, sample, published, wire, assert);
+  if (continuation(route) && ['javascript', 'typescript', 'java'].includes(fixture.language)) {
+    checkCorrelatedContinuation(fixture, route, sample, published, wire, assert);
   } else if (wrongStart || startCoverage || (continuation(route) &&
       (dispatch.length > 0 || (observableContinuation && (observerReply || cacheHit))))) {
     assert('ordinary-start-count', !wrongStart && (!continuation(route) || dispatch.length === 0) &&
@@ -499,7 +516,9 @@ function check(fixture, route, sample, assert) {
         kind === 'schedule' && phase === 'observation-cache-hit' && caseId === label &&
         typeof attemptToken === 'string');
       const evidence = cacheHit ? [...(sample.retainedEvidence ?? []), ...currentEvidence] : currentEvidence;
-      const replies = evidence.filter(({ kind, caseId }) => kind === 'observer-reply' && caseId === label);
+      const java = fixture.language === 'java';
+      const replies = java ? javaBoundObserverReplies(attachment, evidence, route)
+        : evidence.filter(({ kind, caseId }) => kind === 'observer-reply' && caseId === label);
       const recorder = replies.length === 1 && bound && checkRecorder(fixture, attachment, replies[0]);
       const injection = schedulerInjection(fixture.name);
       const faultAcks = currentEvidence.filter(({ kind, phase }) => kind === 'schedule' && phase === 'injection-ack');
@@ -522,14 +541,21 @@ function check(fixture, route, sample, assert) {
         assert(`${label}/attachment-status`, bound && attachment.status === 'truncated' &&
           attachment.cause === reason, attachment);
         const referenceRow = sample.prefixReference?.evaluation?.cases?.find(({ caseId }) => caseId === label);
-        const referenceReplies = wire.filter(({ kind, request, caseId }) =>
-          kind === 'observer-reply' && request === `${route}:reference` && caseId === label);
+        const reference = rawAttachment(referenceRow);
+        const referenceRoute = `${route}:reference`;
+        const referenceReplies = java ? javaBoundObserverReplies(reference, wire, referenceRoute)
+          : wire.filter(({ kind, request, caseId }) =>
+            kind === 'observer-reply' && request === referenceRoute && caseId === label);
         if (step && replies.length && referenceReplies.length) {
-          const reference = rawAttachment(referenceRow);
           const actual = attachment.events?.map(eventProjection);
           const longer = reference.events?.map(eventProjection);
+          const rawPrefix = replies[0].javaEvents;
+          const rawReference = referenceReplies[0].javaEvents;
+          const rawPrefixMatches = !java || (Array.isArray(rawPrefix) && Array.isArray(rawReference) &&
+            rawPrefix.length > 0 && rawReference.length > rawPrefix.length &&
+            isDeepStrictEqual(rawPrefix, rawReference.slice(0, rawPrefix.length)));
           assert(`${label}/real-prefix`, recorder && attachment.status === 'truncated' &&
-            attachment.cause === reason && referenceReplies.length === 1 &&
+            attachment.cause === reason && referenceReplies.length === 1 && rawPrefixMatches &&
             reference.modern && validBinding(reference, referenceRow, {
               retainedWorkspaceDigest: sample.prefixReference?.bundleDigest,
             }) && checkRecorder(fixture, reference, referenceReplies[0]) &&
