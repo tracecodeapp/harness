@@ -111,11 +111,13 @@ function measureJavaRequests() {
         if (!request || (data.type !== request.type && data.type !== 'error')) return;
         pending.delete(data.id);
         request.received = performance.now();
-        request.timings = data.payload?.timings;
+        const timings = data.payload?.timings;
         const runner = data.payload?.results?.[0]?.timings;
-        if (runner?.runnerReused === true) {
-          request.timings = { ...request.timings, runnerReused: true };
-        }
+        request.timings = runner?.runnerProcessCount === undefined ? timings : {
+          ...timings,
+          runnerProcessCount: runner.runnerProcessCount,
+          ...(runner.runnerReused === true && { runnerReused: true }),
+        };
         request.tier = data.payload?.results?.[0]?.algorithmIsolationProfile?.tier;
       });
       this.postMessage = (message, options?) => {
