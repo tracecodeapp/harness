@@ -14,6 +14,7 @@ import {
 } from '../../packages/runtime-contracts/src/index';
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
 import type {
+  Cut,
   JudgeCaseResult,
   JudgeCompileResult,
   JudgeDiagnostic,
@@ -36,8 +37,15 @@ export interface JudgeNotRunOutcome {
   readonly consoleOutput: string[];
 }
 
+/** The ordinary case is available on the row, but its observation refused. */
+export interface JudgeTraceRefusedOutcome {
+  readonly kind: 'trace-refused';
+}
+
+const TRACE_REFUSED: JudgeTraceRefusedOutcome = Object.freeze({ kind: 'trace-refused' });
+
 export interface JudgeExecutionOutcomeOptions {
-  /** Language of the evaluated submission (labels empty traces). */
+  /** Language of the evaluated submission (labels compile traces). */
   readonly language: Language;
 }
 
@@ -72,11 +80,6 @@ function errorDiagnostic(
   result: JudgeProcessResult
 ): JudgeDiagnostic | undefined {
   return result.diagnostics.find((diagnostic) => diagnostic.severity === 'error');
-}
-
-function traceOf(result: JudgeProcessResult & { readonly trace?: unknown }, language: Language): RuntimeTrace {
-  return (result.trace as RuntimeTrace | undefined) ??
-    createEmptyRuntimeTrace(language, { runId: `${language}:run` });
 }
 
 type FailureOutcome =
@@ -167,7 +170,7 @@ function isLegacyTraceTruncationWarning(diagnostic: JudgeDiagnostic): boolean {
       `Trace recording stopped at the ${diagnostic.code} budget after execution completed.`;
 }
 
-function traceTruncated(
+function legacyTraceTruncated(
   result: JudgeProcessResult,
   completed: boolean
 ): { readonly traceTruncated?: ExecutionLimitReason } {
@@ -188,6 +191,18 @@ function traceTruncated(
   return legacy ? { traceTruncated: legacy.code as ExecutionLimitReason } : {};
 }
 
+// The traced-outcome reader predates attachments and uses execution limit
+// codes for presentation. The attachment still carries the exact observer cut.
+const legacyCutCode: Readonly<Record<Cut, ExecutionLimitReason>> = {
+  'step-budget': 'trace-limit',
+  'line-budget': 'line-limit',
+  'single-line-budget': 'single-line-limit',
+  'stored-event-budget': 'trace-limit',
+  'byte-budget': 'trace-byte-limit',
+  'observer-deadline': 'client-timeout',
+  'depth-budget': 'recursion-limit',
+};
+
 /**
  * Converts a Judge case result into the execution outcome a learner sees,
  * totally: completed, the learner's failure (with its stage, message and line)
@@ -197,7 +212,7 @@ function traceTruncated(
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace: true }
-): ExecutionResult | JudgeNotRunOutcome;
+): ExecutionResult | JudgeNotRunOutcome | JudgeTraceRefusedOutcome;
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace?: false }
@@ -205,7 +220,7 @@ export function judgeCaseExecutionOutcome(
 export function judgeCaseExecutionOutcome(
   result: JudgeCaseResult,
   options: JudgeExecutionOutcomeOptions & { readonly trace?: boolean }
-): CodeExecutionResult | ExecutionResult | JudgeNotRunOutcome {
+): CodeExecutionResult | ExecutionResult | JudgeNotRunOutcome | JudgeTraceRefusedOutcome {
   const consoleOutput = consoleLines(result.stdout);
   if (result.status === 'not-run') {
     return {
@@ -217,35 +232,28 @@ export function judgeCaseExecutionOutcome(
     };
   }
   const timings = executionTimings(result.timings);
-  if (result.status === 'completed') {
-    return options.trace
-      ? {
-          kind: 'completed',
-          output: result.value,
-          trace: traceOf(result, options.language),
-          executionTimeMs: durationMs(result),
-          consoleOutput,
-          ...traceTruncated(result, true),
-          ...timings,
-        }
-      : {
-          kind: 'completed',
-          output: result.value,
-          consoleOutput,
-          ...timings,
-        };
-  }
-  const outcome = failureOutcome(result.failure, result);
-  return options.trace
-    ? {
-        ...outcome,
-        trace: traceOf(result, options.language),
-        executionTimeMs: durationMs(result),
-        consoleOutput,
-        ...traceTruncated(result, false),
-        ...timings,
-      }
-    : { ...outcome, consoleOutput, ...timings };
+  const outcome = result.status === 'completed'
+    ? { kind: 'completed' as const, output: result.value }
+    : failureOutcome(result.failure, result);
+  if (!options.trace) return { ...outcome, consoleOutput, ...timings };
+
+  const { attachment } = result;
+  if (attachment?.status === 'refused') return TRACE_REFUSED;
+  // RuntimeTrace predates immutable attachments. The compatibility outcome
+  // shares the same frozen trace when the row has an attachment.
+  const trace = (attachment ? attachment.trace : result.trace) as RuntimeTrace | undefined;
+  if (!trace) return TRACE_REFUSED;
+  const truncation = attachment
+    ? attachment.status === 'truncated' ? { traceTruncated: legacyCutCode[attachment.reason] } : {}
+    : legacyTraceTruncated(result, result.status === 'completed');
+  return {
+    ...outcome,
+    trace,
+    executionTimeMs: durationMs(result),
+    consoleOutput,
+    ...truncation,
+    ...timings,
+  };
 }
 
 /**

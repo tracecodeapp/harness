@@ -24,6 +24,7 @@ export {
   judgeCompileExecutionOutcome,
   type JudgeExecutionOutcomeOptions,
   type JudgeNotRunOutcome,
+  type JudgeTraceRefusedOutcome,
 } from './internal/judge-execution-outcome';
 export {
   isRuntimeProviderError,

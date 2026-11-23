@@ -158,8 +158,10 @@ export class VerdictReceiptStore {
   readonly #planId: string;
   readonly #bindings = new Map<string, Binding>();
   readonly #rows = new Map<string, Row>();
-  readonly #attempts = new Map<string, AttemptState>();
-  readonly #attachments = new Map<string, Attachment>();
+  // Canonical binding objects carry the scope and case. Attempt identity
+  // additionally fences old callbacks when the same binding is retried.
+  readonly #attempts = new Map<Binding, AttemptState>();
+  readonly #attachments = new Map<Binding, Attachment>();
   readonly #testJournal?: (event: ReceiptJournalEvent) => void;
   #receipt?: VerdictReceipt;
   #nextAttempt = 0;
@@ -259,22 +261,24 @@ export class VerdictReceiptStore {
     if (this.#rows.get(caseId)?.status === 'not-run') {
       throw new Error('Cannot observe a case that was not run.');
     }
-    if (this.#attempts.has(caseId) || this.#attachments.has(caseId)) {
+    if (this.#attempts.has(binding) || this.#attachments.has(binding)) {
       throw new Error('Observation already started for this case.');
     }
-    const token = JSON.stringify([binding.evaluationId, binding.generation, ++this.#nextAttempt]);
+    const token = JSON.stringify([
+      binding.evaluationId, binding.workspaceDigest, binding.caseId, binding.generation, ++this.#nextAttempt,
+    ]);
     const attempt = Object.freeze({ binding, token });
-    this.#attempts.set(caseId, { attempt });
+    this.#attempts.set(binding, { attempt });
     return attempt;
   }
 
   cancelObservation(attempt: ObservationAttempt): void {
-    const entry = this.#attempts.get(attempt.binding.caseId);
-    if (entry?.attempt === attempt) this.#attempts.delete(attempt.binding.caseId);
+    const entry = this.#attempts.get(attempt.binding);
+    if (entry?.attempt === attempt) this.#attempts.delete(attempt.binding);
   }
 
   publishDrawing(attempt: ObservationAttempt, replyBinding: Binding, message: unknown): boolean {
-    const entry = this.#attempts.get(attempt.binding.caseId);
+    const entry = this.#attempts.get(attempt.binding);
     if (this.#disposed || entry?.attempt !== attempt || entry.drawing
       || !matches(attempt.binding, replyBinding)) {
       return false;
@@ -296,8 +300,8 @@ export class VerdictReceiptStore {
     }
     const observation = row.status === 'not-run' ? refuse('case-not-run') : drawing;
     const attachment = Object.freeze({ ...binding, ...observation });
-    this.#attachments.set(binding.caseId, attachment);
-    this.#attempts.delete(binding.caseId);
+    this.#attachments.set(binding, attachment);
+    this.#attempts.delete(binding);
     this.#record('attachment-bind', binding);
     return attachment;
   }
@@ -319,8 +323,8 @@ export class VerdictReceiptStore {
     if (!selected.size && !caseIds) return evaluation;
     const cases = rows.map((row): JudgeCaseResult => {
       if (!selected.has(row.caseId)) return row;
-      const attachment = this.#attachments.get(row.caseId)
-        ?? this.#bind(this.#binding(row.caseId), refuse('observer-protocol'));
+      const binding = this.#binding(row.caseId);
+      const attachment = this.#attachments.get(binding) ?? this.#bind(binding, refuse('observer-protocol'));
       return attachment.status === 'refused'
         ? Object.freeze({ ...row, attachment })
         : Object.freeze({ ...row, attachment, trace: attachment.trace });
