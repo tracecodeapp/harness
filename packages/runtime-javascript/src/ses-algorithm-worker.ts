@@ -2,7 +2,6 @@ import { parse, type Comment, type Node } from 'acorn';
 import {
   isAdmittedJavaScriptModule,
   isJavaScriptRuntimeSelectorAllowed,
-  SES_CONSOLE_COMPATIBILITY_REQUIRED,
 } from './javascript-runtime-policy';
 
 const WORKER_MODE = 'ses' as const;
@@ -60,75 +59,17 @@ interface WorkerRequest {
 }
 
 
+declare const __TRACECODE_CONSOLE_CAPTURE_SOURCE__: string;
+declare const __TRACECODE_SERIALIZATION_SOURCE__: string;
+declare const __TRACECODE_INPUT_DRIVER_SOURCE__: string;
+declare const __TRACECODE_CUSTOM_MATERIALIZER_SOURCE__: string;
+
 const CONSOLE_BOOTSTRAP_SOURCE = `(() => {
+  ${__TRACECODE_CONSOLE_CAPTURE_SOURCE__}
   const output = [];
   const stringify = JSON.stringify;
-  const mathMin = Math.min;
-  const mathMax = Math.max;
-  const truncationMarker = '…[truncated]';
-  const truncate = (text, limit) => {
-    if (text.length <= limit) return text;
-    if (limit <= truncationMarker.length) return truncationMarker.slice(0, limit);
-    return text.slice(0, limit - truncationMarker.length) + truncationMarker;
-  };
-  const format = (value) => {
-    if (typeof value === 'string') {
-      return truncate(value, 4096);
-    }
-    if (value === null || value === undefined ||
-        typeof value === 'number' || typeof value === 'boolean') {
-      return truncate(String(value), 4096);
-    }
-    try {
-      const encoded = stringify(value);
-      return typeof encoded === 'string' ? truncate(encoded, 4096) : '';
-    } catch {
-      try { return truncate(String(value), 4096); } catch { return '[Unprintable]'; }
-    }
-  };
-  let totalCharacters = 0;
-  let stopped = false;
-  let budgetExceeded = false;
-  const capture = (...values) => {
-    if (stopped) return;
-    if (output.length >= 99) {
-      output.push(truncationMarker);
-      stopped = true;
-      budgetExceeded = true;
-      return;
-    }
-    const argumentLimit = mathMin(values.length, 40);
-    let line = '';
-    for (let index = 0; index < argumentLimit; index += 1) {
-      const rendered = format(values[index]);
-      if (rendered.endsWith(truncationMarker)) budgetExceeded = true;
-      line = truncate(line + (index === 0 ? '' : ' ') + rendered, 8192);
-      if (line.endsWith(truncationMarker)) {
-        budgetExceeded = true;
-        break;
-      }
-    }
-    if (values.length > argumentLimit && !line.endsWith(truncationMarker)) {
-      budgetExceeded = true;
-      line = truncate(line + ' … ' + (values.length - argumentLimit) + ' more', 8192);
-    }
-    const remaining = 65536 - totalCharacters;
-    if (line.length > remaining) {
-      line = truncate(line, mathMax(0, remaining));
-      stopped = true;
-      budgetExceeded = true;
-    }
-    output.push(line);
-    totalCharacters += line.length;
-  };
-  globalThis.console = Object.freeze({
-    log: capture,
-    info: capture,
-    warn: capture,
-    error: capture,
-    debug: capture,
-  });
-  return () => stringify({ lines: output, budgetExceeded });
+  globalThis.console = createConsoleProxy(output);
+  return () => stringify(output);
 })()`;
 const RUNTIME_BOOTSTRAP_SOURCE = `(() => {
   class ListNode {
@@ -441,304 +382,9 @@ const DRIVER_SOURCE = `(() => {
   const hasOwn = Function.call.bind(Object.prototype.hasOwnProperty);
   const objectEntries = Object.entries;
   const objectKeys = Object.keys;
-  const objectGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
   const objectIs = Object.is;
-  const toText = String;
-  const isPlainRecord = (value) => value !== null && typeof value === 'object' &&
-    !arrayIsArray(value) && Object.prototype.toString.call(value) === '[object Object]';
-  const collectReferenceTargets = (value, byId, seen) => {
-    if (value === null || typeof value !== 'object' || seen.has(value)) return;
-    seen.add(value);
-    if (arrayIsArray(value)) {
-      for (const item of value) collectReferenceTargets(item, byId, seen);
-      return;
-    }
-    if (!isPlainRecord(value)) return;
-    if (typeof value.__id__ === 'string' && value.__id__.length > 0 && !byId.has(value.__id__)) {
-      byId.set(value.__id__, value);
-    }
-    for (const child of Object.values(value)) collectReferenceTargets(child, byId, seen);
-  };
-  const resolveReferenceGraph = (value, byId, resolved) => {
-    if (value === null || typeof value !== 'object') return value;
-    if (resolved.has(value)) return resolved.get(value);
-    if (arrayIsArray(value)) {
-      const out = [];
-      resolved.set(value, out);
-      for (const item of value) out.push(resolveReferenceGraph(item, byId, resolved));
-      return out;
-    }
-    if (!isPlainRecord(value)) return value;
-    const keys = objectKeys(value);
-    if (keys.length === 1 && typeof value.__ref__ === 'string') {
-      const target = byId.get(value.__ref__);
-      return target ? resolveReferenceGraph(target, byId, resolved) : null;
-    }
-    const out = {};
-    resolved.set(value, out);
-    for (const [key, child] of objectEntries(value)) {
-      out[key] = resolveReferenceGraph(child, byId, resolved);
-    }
-    return out;
-  };
-  const normalizeInput = (input) => {
-    if (!isPlainRecord(input)) return {};
-    const byId = new Map();
-    collectReferenceTargets(input, byId, new WeakSet());
-    return resolveReferenceGraph(input, byId, new WeakMap());
-  };
-  const nodeValue = (value) => value.val ?? value.value ?? null;
-  // Node shapes shared with Python and the typed languages: a value is a tree
-  // (list) node when it is marked as one (__type__, or a tree-/list- __id__),
-  // or when it has a value and a child (next) key. Inside a tree or list input
-  // every linked object with a value is a node, and a link it does not list is
-  // null.
-  const hasNodeValue = (value) => hasOwn(value, 'val') || hasOwn(value, 'value');
-  const isLinkedNode = (value, typeName) =>
-    isPlainRecord(value) &&
-    (value.__type__ === undefined || value.__type__ === typeName) &&
-    hasNodeValue(value);
-  const hasNodeIdPrefix = (value, prefixes) => {
-    const id = typeof value.__id__ === 'string' ? value.__id__ : '';
-    return prefixes.some((prefix) => id.startsWith(prefix));
-  };
-  const isTreeShaped = (value) =>
-    isLinkedNode(value, 'TreeNode') &&
-    (value.__type__ === 'TreeNode' || hasNodeIdPrefix(value, ['tree-', 'TreeNode:']) ||
-      hasOwn(value, 'left') || hasOwn(value, 'right'));
-  const isListShaped = (value) =>
-    isLinkedNode(value, 'ListNode') &&
-    (value.__type__ === 'ListNode' || hasNodeIdPrefix(value, ['list-', 'ListNode:']) ||
-      hasOwn(value, 'next'));
-  const materializeTree = (value, materialized = new WeakMap(), depth = 0, linked = true) => {
-    if (value === null || value === undefined) return value;
-    if (depth > 512) throw new Error('Input materializer exceeded maximum depth (512)');
-    if (arrayIsArray(value)) {
-      if (value.length === 0 || value[0] === null || value[0] === undefined) return null;
-      const makeNode = (item) => ({ val: item, value: item, left: null, right: null });
-      const root = makeNode(value[0]);
-      const queue = [root];
-      let queueIndex = 0;
-      let index = 1;
-      while (queueIndex < queue.length && index < value.length) {
-        const node = queue[queueIndex++];
-        const left = value[index++];
-        if (left !== null && left !== undefined) {
-          node.left = makeNode(left);
-          queue.push(node.left);
-        }
-        if (index >= value.length) break;
-        const right = value[index++];
-        if (right !== null && right !== undefined) {
-          node.right = makeNode(right);
-          queue.push(node.right);
-        }
-      }
-      return root;
-    }
-    if (!isPlainRecord(value)) return value;
-    const looksLikeTree = value.__type__ === 'TreeNode' ||
-      (value.constructor && value.constructor.name === 'TreeNode') ||
-      (linked && isLinkedNode(value, 'TreeNode'));
-    if (!looksLikeTree) return value;
-    const cached = materialized.get(value);
-    if (cached) return cached;
-    const item = nodeValue(value);
-    const node = { val: item, value: item, left: null, right: null };
-    materialized.set(value, node);
-    node.left = materializeTree(value.left ?? null, materialized, depth + 1);
-    node.right = materializeTree(value.right ?? null, materialized, depth + 1);
-    for (const [key, child] of objectEntries(value)) {
-      if (!['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'].includes(key)) {
-        // Other fields are not links: only a marked node becomes one there.
-        node[key] = materializeTree(child, materialized, depth + 1, false);
-      }
-    }
-    return node;
-  };
-  const materializeList = (value, materialized = new WeakMap(), depth = 0, linked = true) => {
-    if (value === null || value === undefined) return value;
-    if (depth > 512) throw new Error('Input materializer exceeded maximum depth (512)');
-    if (arrayIsArray(value)) {
-      if (value.length === 0) return null;
-      const head = { val: value[0], value: value[0], next: null };
-      let tail = head;
-      for (let index = 1; index < value.length; index += 1) {
-        tail.next = { val: value[index], value: value[index], next: null };
-        tail = tail.next;
-      }
-      return head;
-    }
-    if (!isPlainRecord(value)) return value;
-    const looksLikeList = value.__type__ === 'ListNode' ||
-      (value.constructor && value.constructor.name === 'ListNode') ||
-      (linked && isLinkedNode(value, 'ListNode'));
-    if (!looksLikeList) return value;
-    const cached = materialized.get(value);
-    if (cached) return cached;
-    const item = nodeValue(value);
-    const node = { val: item, value: item, next: null };
-    materialized.set(value, node);
-    node.next = materializeList(value.next ?? null, materialized, depth + 1);
-    if (hasOwn(value, 'prev')) node.prev = materializeList(value.prev ?? null, materialized, depth + 1);
-    for (const [key, child] of objectEntries(value)) {
-      if (!['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev'].includes(key)) {
-        node[key] = materializeList(child, materialized, depth + 1, false);
-      }
-    }
-    return node;
-  };
-  const resolveConstructor = (typeName) => {
-    const registry = globalThis.__tracecodeConstructors;
-    return registry && hasOwn(registry, typeName) ? registry[typeName] : undefined;
-  };
-  const materializeCustom = (value, targetTypeName, seen = new WeakMap()) => {
-    if (value === null || typeof value !== 'object') return value;
-    const cached = seen.get(value);
-    if (cached) return cached;
-    if (arrayIsArray(value)) {
-      const out = [];
-      seen.set(value, out);
-      for (const item of value) out.push(materializeCustom(item, undefined, seen));
-      return out;
-    }
-    if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode') return value;
-    const typeName = typeof targetTypeName === 'string'
-      ? targetTypeName
-      : (typeof value.__type__ === 'string'
-          ? value.__type__
-          : (typeof value.__class__ === 'string' ? value.__class__ : null));
-    const trustedTypeName = typeof targetTypeName === 'string';
-    if (!typeName) {
-      seen.set(value, value);
-      for (const [key, child] of objectEntries(value)) {
-        if (key === '__type__' || key === '__class__' || key === '__id__') continue;
-        value[key] = materializeCustom(child, undefined, seen);
-      }
-      return value;
-    }
-    const fields = {};
-    seen.set(value, fields);
-    if (typeof value.__type__ === 'string') fields.__type__ = value.__type__;
-    if (typeof value.__class__ === 'string') fields.__class__ = value.__class__;
-    for (const [key, child] of objectEntries(value)) {
-      if (key === '__type__' || key === '__class__' || key === '__id__') continue;
-      fields[key] = materializeCustom(child, undefined, seen);
-    }
-    if (!trustedTypeName) return fields;
-    const constructor = resolveConstructor(typeName);
-    if (typeof constructor !== 'function') return fields;
-    const args = objectValuesWithoutMetadata(fields);
-    let instance;
-    try { instance = new constructor(...args); }
-    catch { instance = Object.create(constructor.prototype); }
-    Object.assign(instance, fields);
-    seen.set(value, instance);
-    return instance;
-  };
-  const objectValuesWithoutMetadata = (value) => objectKeys(value)
-    .filter((key) => key !== '__type__' && key !== '__class__')
-    .map((key) => value[key]);
-  const materialize = (value, kind, depth = 0) => {
-    if (depth > 512) throw new Error('Input materializer exceeded maximum depth (512)');
-    if (!kind) return materializeCustom(value);
-    if (kind === 'tree') return materializeTree(value);
-    if (kind === 'list') return materializeList(value);
-    if (kind.kind === 'custom') return materializeCustom(value, kind.typeName);
-    if (kind.kind === 'array') {
-      return arrayIsArray(value)
-        ? value.map((item) => materialize(item, kind.element, depth + 1))
-        : value;
-    }
-    if (kind.kind === 'record' && isPlainRecord(value)) {
-      const out = {};
-      for (const [key, child] of objectEntries(value)) {
-        out[key] = materialize(child, kind.value, depth + 1);
-      }
-      return out;
-    }
-    if (kind.kind === 'map') {
-      const entries = arrayIsArray(value) ? value : (isPlainRecord(value) ? objectEntries(value) : null);
-      return entries
-        ? new Map(entries.map(([key, child]) => [key, materialize(child, kind.value, depth + 1)]))
-        : value;
-    }
-    return materializeCustom(value);
-  };
-  const inferFallbackMaterializers = (input) => {
-    const out = {};
-    const listNames = new Set(['head', 'l1', 'l2', 'list1', 'list2', 'node']);
-    for (const [name, value] of objectEntries(input)) {
-      if (isTreeShaped(value)) {
-        out[name] = 'tree';
-        continue;
-      }
-      if (isListShaped(value)) {
-        out[name] = 'list';
-        continue;
-      }
-      // An array whose non-null elements are all tree (list) nodes holds
-      // trees (lists), e.g. merge k sorted lists.
-      if (arrayIsArray(value)) {
-        const present = value.filter((item) => item !== null && item !== undefined);
-        if (present.length > 0 && present.every(isTreeShaped)) {
-          out[name] = { kind: 'array', element: 'tree' };
-          continue;
-        }
-        if (present.length > 0 && present.every(isListShaped)) {
-          out[name] = { kind: 'array', element: 'list' };
-          continue;
-        }
-      }
-      if (!arrayIsArray(value)) continue;
-      const lowerName = toText(name).toLowerCase();
-      if (lowerName === 'root' || lowerName.endsWith('root') || lowerName.includes('tree')) {
-        out[name] = 'tree';
-      } else if (lowerName.endsWith('head') || listNames.has(lowerName)) {
-        out[name] = 'list';
-      }
-    }
-    return out;
-  };
-  const explicitNodeType = (value) => {
-    const constructorName = value && value.constructor && value.constructor.name;
-    if (constructorName === 'TreeNode' || value.__type__ === 'TreeNode') return 'TreeNode';
-    if (constructorName === 'ListNode' || value.__type__ === 'ListNode') return 'ListNode';
-    return null;
-  };
-  const inferredPlainNodeType = (value) => {
-    if (value.__type__ === 'TreeNode' || value.__type__ === 'ListNode') return null;
-    const id = typeof value.__id__ === 'string' ? value.__id__ : '';
-    if (id.startsWith('tree-') || id.startsWith('TreeNode:')) return 'TreeNode';
-    if (id.startsWith('list-') || id.startsWith('ListNode:')) return 'ListNode';
-    const hasValue = hasOwn(value, 'val') || hasOwn(value, 'value');
-    if (hasValue && (hasOwn(value, 'left') || hasOwn(value, 'right'))) return 'TreeNode';
-    if (hasValue && (hasOwn(value, 'next') || hasOwn(value, 'prev'))) return 'ListNode';
-    return null;
-  };
-  const forcedNodeTypeForValue = (value, forcedNodeType) => {
-    if (!forcedNodeType || !value || typeof value !== 'object' || arrayIsArray(value)) return null;
-    return hasOwn(value, 'val') || hasOwn(value, 'value') ? forcedNodeType : null;
-  };
-  const customClassName = (value) => {
-    const name = value && value.constructor && value.constructor.name;
-    return typeof name === 'string' && !['', 'Object', 'Array', 'Map', 'Set', 'TreeNode', 'ListNode'].includes(name)
-      ? name
-      : null;
-  };
-  const ownEnumerableDataEntries = (value) => {
-    if (!value || typeof value !== 'object') return [];
-    const entries = [];
-    for (const key of objectKeys(value)) {
-      const descriptor = objectGetOwnPropertyDescriptor(value, key);
-      if (!descriptor || descriptor.enumerable !== true) continue;
-      entries.push([
-        key,
-        hasOwn(descriptor, 'value') ? descriptor.value : '<accessor>',
-      ]);
-    }
-    return entries;
-  };
+  ${__TRACECODE_INPUT_DRIVER_SOURCE__}
+  ${__TRACECODE_SERIALIZATION_SOURCE__}
   const encodeOutputTransport = (value, depth = 0) => {
     if (depth > 192) throw new Error('SES output transport exceeded maximum depth.');
     if (value === null) return ['null'];
@@ -768,150 +414,20 @@ const DRIVER_SOURCE = `(() => {
     }
     throw new Error('SES output serializer produced an unsupported transport value.');
   };
-  const serialize = (value, depth = 0, seen = new WeakSet(), state = {
-    ids: new WeakMap(), nextId: 1,
-  }, forcedNodeType = null) => {
-    if (depth > 48) return '<max depth>';
-    if (value === null || value === undefined) return value;
-    if (typeof value === 'number') {
-      if (Number.isNaN(value)) return 'NaN';
-      if (value === Infinity) return 'Infinity';
-      if (value === -Infinity) return '-Infinity';
-      return value;
-    }
-    if (typeof value === 'bigint') {
-      const number = Number(value);
-      return Number.isSafeInteger(number) ? number : toText(value);
-    }
-    if (typeof value === 'symbol') return toText(value);
-    if (typeof value === 'function') return '<function>';
-    if (typeof value !== 'object') return value;
-    if (arrayIsArray(value)) {
-      if (seen.has(value)) return '<cycle>';
-      seen.add(value);
-      return value.map((item) => serialize(item, depth + 1, seen, state));
-    }
-    if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
-      if (seen.has(value)) return '<cycle>';
-      seen.add(value);
-      if (value instanceof DataView) {
-        return Array.from({ length: value.byteLength }, (_, index) =>
-          serialize(value.getUint8(index), depth + 1, seen, state));
-      }
-      return Array.from({ length: value.length }, (_, index) =>
-        serialize(value[index], depth + 1, seen, state));
-    }
-    if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
-      if (seen.has(value)) return '<cycle>';
-      seen.add(value);
-      const bytes = new Uint8Array(value);
-      return Array.from({ length: bytes.byteLength }, (_, index) =>
-        serialize(bytes[index], depth + 1, seen, state));
-    }
-    if (value instanceof Set) {
-      if (seen.has(value)) return '<cycle>';
-      seen.add(value);
-      return { __type__: 'set', values: Array.from(value, (item) => serialize(item, depth + 1, seen, state)) };
-    }
-    if (value instanceof Map) {
-      if (seen.has(value)) return '<cycle>';
-      seen.add(value);
-      return { __type__: 'map', entries: Array.from(value, ([key, child]) => [
-        serialize(key, depth + 1, seen, state),
-        serialize(child, depth + 1, seen, state),
-      ]) };
-    }
-    const explicitType = explicitNodeType(value);
-    const nodeType = explicitType ??
-      forcedNodeTypeForValue(value, forcedNodeType) ??
-      inferredPlainNodeType(value);
-    if (nodeType) {
-      const existingId = state.ids.get(value);
-      if (existingId) return { __ref__: existingId };
-      const id = typeof value.__id__ === 'string' && value.__id__.length > 0
-        ? value.__id__
-        : (explicitType ? 'ref-' : nodeType + ':') + state.nextId++;
-      state.ids.set(value, id);
-      seen.add(value);
-      const out = nodeType === 'TreeNode'
-        ? {
-            __type__: 'TreeNode', __id__: id,
-            val: serialize(nodeValue(value), depth + 1, seen, state),
-            left: serialize(value.left ?? null, depth + 1, seen, state, 'TreeNode'),
-            right: serialize(value.right ?? null, depth + 1, seen, state, 'TreeNode'),
-          }
-        : {
-            __type__: 'ListNode', __id__: id,
-            val: serialize(nodeValue(value), depth + 1, seen, state),
-            next: serialize(value.next ?? null, depth + 1, seen, state, 'ListNode'),
-            ...(hasOwn(value, 'prev')
-              ? { prev: serialize(value.prev ?? null, depth + 1, seen, state, 'ListNode') }
-              : {}),
-          };
-      const skipped = nodeType === 'TreeNode'
-        ? new Set(['__id__', '__type__', '__class__', 'val', 'value', 'left', 'right'])
-        : new Set(['__id__', '__type__', '__class__', 'val', 'value', 'next', 'prev']);
-      for (const [key, child] of ownEnumerableDataEntries(value)) {
-        if (!skipped.has(key)) out[key] = serialize(child, depth + 1, seen, state);
-      }
-      seen.delete(value);
-      return out;
-    }
-    const existingNodeId = (hasOwn(value, 'val') || hasOwn(value, 'value'))
-      ? state.ids.get(value)
-      : undefined;
-    if (existingNodeId) return { __ref__: existingNodeId };
-    const className = customClassName(value);
-    if (className) {
-      const existingId = state.ids.get(value);
-      if (existingId) return { __ref__: existingId };
-      const id = 'ref-' + state.nextId++;
-      state.ids.set(value, id);
-      if (seen.has(value)) return { __ref__: id };
-      seen.add(value);
-      const out = { __type__: className, __class__: className, __id__: id };
-      for (const [key, child] of ownEnumerableDataEntries(value)) {
-        out[key] = serialize(child, depth + 1, seen, state);
-      }
-      seen.delete(value);
-      return out;
-    }
-    if (seen.has(value)) return '<cycle>';
-    seen.add(value);
-    const out = {};
-    for (const [key, child] of ownEnumerableDataEntries(value)) {
-      out[key] = serialize(child, depth + 1, seen, state);
-    }
-    return out;
-  };
   return async (inputJson, inputArgumentsJson, materializersJson, targetName, executionStyle) => {
-    const input = normalizeInput(parse(inputJson));
-      const inputArguments = parse(inputArgumentsJson);
-      const materializers = {
-        ...inferFallbackMaterializers(input),
-        ...parse(materializersJson),
-      };
+      const materializers = parse(materializersJson);
+      const input = applyInputMaterializers(normalizeInputs(parse(inputJson)), materializers);
+      const __tracecodeConstructorRegistry = globalThis.__tracecodeConstructors;
+      ${__TRACECODE_CUSTOM_MATERIALIZER_SOURCE__}
       const target = globalThis.__tracecodeTarget;
       const args = [];
-      const inputKeys = objectKeys(input);
-      const matchedArguments = inputArguments.filter((argument) => hasOwn(input, argument.key));
-      const orderedArguments = matchedArguments.length === 0
-        ? inputKeys.map((key) => ({ key, rest: false }))
-        : [
-            ...matchedArguments,
-            ...inputKeys
-              .filter((key) => !matchedArguments.some((argument) => argument.key === key))
-              .map((key) => ({ key, rest: false })),
-          ];
+      const orderedArguments = orderInputArgumentsByParameterDescriptors(
+        parse(inputArgumentsJson), input, objectKeys(input)
+      );
       for (const argument of orderedArguments) {
-        const value = materialize(input[argument.key], materializers[argument.key]);
-        if (argument.rest) {
-          if (value === null || value === undefined) continue;
-          if (arrayIsArray(value)) args.push(...value);
-          else args.push(value);
-        } else {
-          args.push(value);
-        }
+        const value = __tracecodeMaterializeTypedInput(input[argument.key], materializers[argument.key]);
+        if (argument.rest) args.push(...__tracecodeRestArgs(value));
+        else args.push(value);
       }
       let output;
       if (executionStyle === 'function') {
@@ -932,8 +448,7 @@ const DRIVER_SOURCE = `(() => {
           output = await method.call(solver, ...args);
         }
       } else if (executionStyle === 'ops-class') {
-        const operations = input.operations ?? input.ops;
-        const operationArguments = input.arguments ?? input.args;
+        const { operations, argumentsList: operationArguments } = getOpsClassInputs(input);
         if (!arrayIsArray(operations) || !arrayIsArray(operationArguments)) {
           throw new Error('ops-class execution requires inputs.operations and inputs.arguments (or ops/args)');
         }
@@ -947,7 +462,7 @@ const DRIVER_SOURCE = `(() => {
           let callArgs = operationArguments[index];
           if (callArgs === null || callArgs === undefined) callArgs = [];
           if (!arrayIsArray(callArgs)) callArgs = [callArgs];
-          callArgs = callArgs.map((argument) => materialize(argument, null));
+          callArgs = callArgs.map((argument) => __tracecodeMaterializeTypedInput(argument, null));
           if (index === 0) {
             instance = new target(...callArgs);
             output.push(null);
@@ -965,7 +480,7 @@ const DRIVER_SOURCE = `(() => {
       }
       return stringify({
         success: true,
-        output: encodeOutputTransport(output === undefined ? null : serialize(output)),
+        output: encodeOutputTransport(output === undefined ? null : serializeOutputValue(output)),
       });
   };
 })()`;
@@ -1604,45 +1119,16 @@ async function executeCase(
   if (typeof takeConsole !== 'function') {
     throw new Error('SES compartment returned an invalid console snapshot function.');
   }
-  const snapshotConsole = (): { lines: string[]; budgetExceeded: boolean } => {
+  const snapshotConsole = (): string[] => {
     const serialized = takeConsole();
     if (typeof serialized !== 'string') {
       throw new Error('SES console snapshot was not serialized.');
     }
-    const parsed = JSON.parse(serialized) as unknown;
-    if (!parsed || typeof parsed !== 'object' ||
-        !Array.isArray((parsed as { lines?: unknown }).lines) ||
-        (parsed as { lines: unknown[] }).lines.some((line) => typeof line !== 'string') ||
-        typeof (parsed as { budgetExceeded?: unknown }).budgetExceeded !== 'boolean') {
+    const lines: unknown = JSON.parse(serialized);
+    if (!Array.isArray(lines) || lines.some((line) => typeof line !== 'string')) {
       throw new Error('SES console snapshot had an invalid shape.');
     }
-    return parsed as { lines: string[]; budgetExceeded: boolean };
-  };
-  const consoleResult = (elapsedMs: number):
-    | { lines: string[]; compatibilityRequired: false }
-    | { compatibilityRequired: true; result: unknown } => {
-    const snapshot = snapshotConsole();
-    if (!snapshot.budgetExceeded) {
-      return { lines: snapshot.lines, compatibilityRequired: false };
-    }
-    return {
-      compatibilityRequired: true,
-      result: {
-        kind: 'failed',
-        error: SES_CONSOLE_COMPATIBILITY_REQUIRED,
-        diagnosticStage: 'runtime',
-        consoleOutput: snapshot.lines,
-        ...(program.mode === 'trace'
-          ? { trace: emptyTrace(), executionTimeMs: elapsedMs }
-          : {}),
-        timings: {
-          totalMs: elapsedMs,
-          runMs: elapsedMs,
-          artifactCacheHit: true,
-          algorithmFastBatch: true,
-        },
-      },
-    };
+    return lines;
   };
   const emptyTrace = () => ({
     schemaVersion: 'runtime-trace-2026-04-28',
@@ -1684,8 +1170,6 @@ async function executeCase(
     // the instrumentation, not the learner's file. Report no line rather than
     // a wrong one; plain runs execute the learner's source and keep theirs.
     const errorLine = tracedErrorLine ?? (tracing ? undefined : learnerErrorLine(error));
-    const console = consoleResult(elapsedMs);
-    if (console.compatibilityRequired) return console.result;
     const traceLimitExceeded = Boolean(
       error && typeof error === 'object' &&
       (error as { readonly __traceLimitExceeded?: unknown }).__traceLimitExceeded === true
@@ -1708,7 +1192,7 @@ async function executeCase(
       error: safeErrorText(error),
       ...(errorLine !== undefined ? { errorLine } : {}),
       diagnosticStage: 'runtime',
-      consoleOutput: console.lines,
+      consoleOutput: snapshotConsole(),
       timings: {
         totalMs: elapsedMs,
         runMs: elapsedMs,
@@ -1778,9 +1262,7 @@ async function executeCase(
     errorLine?: number;
   };
   const elapsedMs = performance.now() - startedAt;
-  const console = consoleResult(elapsedMs);
-  if (console.compatibilityRequired) return console.result;
-  const consoleOutput = console.lines;
+  const consoleOutput = snapshotConsole();
   if (!result.success) {
     const errorLine = Number.isSafeInteger(result.errorLine) && result.errorLine! > 0
       ? result.errorLine

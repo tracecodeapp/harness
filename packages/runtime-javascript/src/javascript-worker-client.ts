@@ -16,10 +16,13 @@ import * as Effect from 'effect/Effect';
 import type {
   CodeExecutionBatchResult,
   CodeExecutionResult,
+  Drawing,
   ExecutionResult,
   RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimeExecutionTimings,
+  RuntimeObservationCall,
+  RuntimeObservationProvider,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedProgram,
@@ -62,6 +65,62 @@ import type {
 
 type SesAlgorithmWorkerModule =
   typeof import('./ses-algorithm-worker-client');
+
+interface OrdinaryArtifact {
+  readonly generation: number;
+  readonly language: JavaScriptWorkerLanguage;
+  readonly code: string;
+  readonly functionName: string | null;
+  readonly executionStyle: JavaScriptExecutionStyle;
+  readonly preparedExecution: unknown;
+}
+
+type ObservationOptions = RuntimeObservationCall['traceOptions'];
+type ObservationArtifact = RuntimeObservationProvider & { dispose(): void };
+
+const OBSERVATION_REFUSALS = new Set([
+  'recorder-unavailable', 'unsupported-program', 'unsupported-option',
+  'observer-prepare', 'observer-encode', 'observer-runtime', 'observer-protocol',
+  'observer-timeout', 'uncertified-drawing',
+]);
+const OBSERVATION_CUTS = new Set([
+  'step-budget', 'line-budget', 'single-line-budget', 'stored-event-budget',
+  'byte-budget', 'observer-deadline', 'depth-budget',
+]);
+
+function certifyObservation(
+  reply: unknown,
+  attemptToken: string,
+  language: JavaScriptWorkerLanguage,
+): Drawing {
+  const protocol: Drawing = { status: 'refused', reason: 'observer-protocol' };
+  const envelope = reply as { attemptToken?: unknown; drawing?: unknown } | null;
+  if (envelope?.attemptToken !== attemptToken) return protocol;
+  const drawing = envelope.drawing as Drawing | null;
+  if (drawing?.status === 'refused') {
+    return OBSERVATION_REFUSALS.has(drawing.reason)
+      ? { status: 'refused', reason: drawing.reason }
+      : protocol;
+  }
+  if (drawing?.status !== 'drawn' && drawing?.status !== 'truncated') return protocol;
+  const trace = drawing.trace;
+  if (trace?.schemaVersion !== 'runtime-trace-2026-04-28' || trace.language !== language ||
+      typeof trace.runId !== 'string' || !Array.isArray(trace.events) ||
+      trace.traceStepCount !== trace.events.length ||
+      trace.lineEventCount !== trace.events.filter((event) => event?.kind === 'line').length ||
+      Array.from(trace.events).some((event) => !event || event.runId !== trace.runId ||
+        typeof event.kind !== 'string')) return protocol;
+  if (drawing.status === 'truncated') {
+    const { reason, attemptedEvents } = drawing;
+    if (!OBSERVATION_CUTS.has(reason) || !Number.isSafeInteger(attemptedEvents) ||
+        attemptedEvents <= trace.events.length ||
+        (trace.events.length === 0 && reason !== 'byte-budget')) return protocol;
+    return { status: 'truncated', reason, trace, attemptedEvents };
+  }
+  return trace.events.length > 0
+    ? { status: 'drawn', trace }
+    : { status: 'refused', reason: 'uncertified-drawing' };
+}
 
 export type JavaScriptExecutionStyle = 'function' | 'solution-method' | 'ops-class';
 export type JavaScriptWorkerLanguage = 'javascript' | 'typescript';
@@ -209,24 +268,8 @@ function preparationErrorLine(error: unknown): number | undefined {
 }
 
 /** The refusal of a case, worded as the worker words it. */
-const TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
 /** Traced results whose console the disposable worker found over the pool's budget. */
-const sesConsoleBudgetExceededResults = new WeakSet<object>();
-
-/**
- * Whether to ask the pool if a traced case run off it would have needed its
- * console compatibility fallback: a refused case, or one that completed or
- * failed in the learner's code with a console over the pool's own budget, as
- * the worker measured it call by call. A case that a limit stopped is never
- * asked: a second run would cost a runaway one more clock.
- */
-function mayNeedSesConsoleFallback(result: ExecutionResult): boolean {
-  if (result.kind === 'failed' && result.providerFailure) return true;
-  if (result.kind === 'limit') return false;
-  return sesConsoleBudgetExceededResults.has(result);
-}
-
 /** A failure the worker reports as the runtime's own stays the provider's. */
 function reportedRuntimeFault(error: unknown): RuntimeProviderError | undefined {
   return error instanceof WorkerReportedError && error.code === 'runtime-provider-error'
@@ -352,6 +395,7 @@ export class JavaScriptWorkerClient {
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
+  private readonly ordinaryArtifacts = new WeakMap<RuntimePreparedProgram, OrdinaryArtifact>();
   private readonly leasedExecutionWorkers =
     new Set<JavaScriptWorkerConnection>();
   private generation = 1;
@@ -359,63 +403,11 @@ export class JavaScriptWorkerClient {
   private readonly debug: boolean;
   private sesAlgorithmPool: SesAlgorithmWorkerPool | null;
   private sesAlgorithmModule: SesAlgorithmWorkerModule | null = null;
-  private sesAlgorithmDisabled = false;
-
-  /**
-   * Only a fault of the pool changes a later program's route: a worker that
-   * crashed, hung or broke the protocol, or could not start. An error a live
-   * worker reported, or a TypeError refusing one request, is that program's.
-   */
-  private disableSesAlgorithmPoolForFault(error: unknown, generation: number): void {
-    this.assertActive(generation);
-    const reported = this.sesAlgorithmModule?.SesAlgorithmWorkerReportedError;
-    if (error instanceof TypeError || (reported && error instanceof reported)) return;
-    this.disableSesAlgorithmPool();
-  }
-
-  /**
-   * Runs these cases untraced on the pool only to learn whether untraced
-   * Submit would take them to compatibility workers. Their results are not used.
-   */
-  private async needsSesCompatibility(
-    pool: SesAlgorithmWorkerPool,
-    program: SesAlgorithmPreparedProgram,
-    programTraces: boolean,
-    inputBatch: readonly Record<string, unknown>[],
-    call: { readonly signal?: AbortSignal; readonly limits?: RuntimePreparedTraceBatchCall['limits'] },
-    generation: number
-  ): Promise<boolean> {
-    try {
-      if (programTraces) {
-        await pool.executeTraceBatch(program, inputBatch, inputBatch.map(() => false), call.limits, call.signal);
-      } else {
-        await pool.executeBatch(program, inputBatch, call.limits, call.signal);
-      }
-      return false;
-    } catch (error) {
-      if (error instanceof Error && (error.name === 'AbortError' || call.signal?.aborted)) throw error;
-      const module = this.sesAlgorithmModule;
-      if (!(module && error instanceof module.SesAlgorithmCompatibilityRequiredError) &&
-          !(error instanceof Error && error.name === 'SesAlgorithmCompatibilityRequiredError')) {
-        // As untraced Submit does on a failure of the pool.
-        this.disableSesAlgorithmPoolForFault(error, generation);
-      }
-      return true;
-    }
-  }
-
-  private disableSesAlgorithmPool(): void {
-    this.sesAlgorithmDisabled = true;
-    this.sesAlgorithmPool?.terminate();
-    this.sesAlgorithmPool = null;
-  }
-
   private async ensureSesAlgorithmPool(): Promise<SesAlgorithmWorkerPool | null> {
-    if (this.sesAlgorithmDisabled ||
-        this.options.algorithmExecution !== 'ses-compartment-pool') return null;
+    if (this.options.algorithmExecution !== 'ses-compartment-pool') return null;
     if (this.sesAlgorithmPool) return this.sesAlgorithmPool;
     const module = await import('./ses-algorithm-worker-client');
-    if (this.sesAlgorithmDisabled) return null;
+    if (this.sesAlgorithmPool) return this.sesAlgorithmPool;
     this.sesAlgorithmModule = module;
     this.sesAlgorithmPool = new module.SesAlgorithmWorkerPool({
       workerUrl: this.options.algorithmWorkerUrl!,
@@ -621,7 +613,7 @@ export class JavaScriptWorkerClient {
    */
   private dispatchPreparedExecutionEffect<T>(
     worker: JavaScriptWorkerConnection,
-    operation: 'execute-code' | 'execute-with-tracing',
+    operation: 'execute-code' | 'execute-with-tracing' | 'observe-execution',
     payload: Record<string, unknown>
   ): Effect.Effect<T, Error> {
     return Effect.gen(this, function* () {
@@ -838,13 +830,12 @@ export class JavaScriptWorkerClient {
 
     const promise = (async () => {
       const useSesAlgorithm =
-        this.options.algorithmExecution === 'ses-compartment-pool' &&
-        !this.sesAlgorithmDisabled;
+        this.options.algorithmExecution === 'ses-compartment-pool';
       const executionReadyPromise = useSesAlgorithm
         ? (async () => {
             await this.options.algorithmWorkerPreflight?.();
             const pool = await this.ensureSesAlgorithmPool();
-            if (!pool) throw new Error('SES algorithm pool was disabled during initialization.');
+            if (!pool) throw new Error('SES algorithm pool is required by this profile.');
             await pool.init();
           })()
         : this.ensureStandbyExecutionWorker(generation);
@@ -870,15 +861,7 @@ export class JavaScriptWorkerClient {
             : undefined,
           INIT_TIMEOUT_MS
         );
-        try {
-          await executionReadyPromise;
-        } catch (error) {
-          if (!useSesAlgorithm) throw error;
-          this.assertActive(generation);
-          this.disableSesAlgorithmPool();
-          await this.options.runtimeAssetPreflight?.();
-          await this.ensureStandbyExecutionWorker(generation);
-        }
+        await executionReadyPromise;
         this.assertActive(generation);
         return result;
       } catch (error) {
@@ -1004,422 +987,158 @@ export class JavaScriptWorkerClient {
         }
         return preparedExecution;
       };
-      let sesProgram: SesAlgorithmPreparedProgram | undefined;
-      let sesProgramTraces = false;
-      // Where a trace preparation's traced cases run when it has an SES
-      // program. Its untraced cases always take untraced Submit's route.
-      let sesTracedCases: 'pool' | 'disposable' | 'refused' = 'refused';
       const sesModule = this.sesAlgorithmModule;
-      if (
-        this.sesAlgorithmPool &&
-        sesModule &&
-        preparation.functionName
-      ) {
-        const prepared = sesCompatiblePreparedExecution(preparedExecution);
-        // The route never depends on the tracer: a traced Run takes the one
-        // untraced Submit takes, so both get the same answer on whether the
-        // program compiles.
-        if (
-          prepared &&
-          sesModule.isSesAlgorithmSourceEligible(preparation.code) &&
-          sesModule.isSesAlgorithmSourceEligible(prepared.executableCode)
-        ) {
-          const requiredModules = sesModule.detectSesAlgorithmRequiredModules(
-            prepared.executableCode
-          );
-          if (requiredModules) {
-            const untracedSource: SesAlgorithmPreparedSource = {
-              mode: 'code',
-              language,
-              code: prepared.executableCode,
-              functionName: preparation.functionName,
-              executionStyle: preparation.executionStyle,
-              requiredModules,
-              inputArguments: prepared.inputArguments,
-              materializers: prepared.materializers,
-            };
-            const tracedSource: SesAlgorithmPreparedSource | undefined =
-              preparation.mode === 'trace' &&
-              typeof prepared.instrumentedCode === 'string' &&
-              prepared.traceLineBounds !== undefined
-                ? {
-                    ...untracedSource,
-                    mode: 'trace',
-                    instrumentedCode: prepared.instrumentedCode,
-                    traceLineBounds: prepared.traceLineBounds,
-                    ...(preparation.traceOptions ? { traceOptions: preparation.traceOptions } : {}),
-                  }
-                : undefined;
-            try {
-              if (untracedSource.requiredModules.length > 0) {
-                await this.options.runtimeAssetPreflight?.();
-              }
-              const pool = this.sesAlgorithmPool;
-              if (tracedSource) {
-                try {
-                  sesProgram = await pool.prepare(tracedSource, call.signal);
-                  sesProgramTraces = true;
-                  sesTracedCases = 'pool';
-                } catch (error) {
-                  if (call.signal?.aborted) throw error;
-                  const stage = error instanceof sesModule.SesAlgorithmWorkerReportedError
-                    ? error.stage
-                    : undefined;
-                  if (stage === 'compile') throw error;
-                  if (stage === 'trace-compile') {
-                    // A later replay on disposable workers refuses it as well.
-                    preparedExecution = { ...prepared, instrumentedCode: null };
-                  } else {
-                    // An option the pool does not take, or any other failure of
-                    // the traced half alone: only traced cases leave the pool.
-                    sesTracedCases = 'disposable';
-                  }
-                }
-              }
-              if (!sesProgram) {
-                sesProgram = await pool.prepare(untracedSource, call.signal);
-              }
-            } catch (error) {
-              if (error instanceof Error &&
-                  (error.name === 'AbortError' || call.signal?.aborted)) {
-                throw error;
-              }
-              if (error instanceof sesModule.SesAlgorithmWorkerReportedError &&
-                  error.stage === 'compile') {
-                throw error;
-              }
-              this.disableSesAlgorithmPoolForFault(error, generation);
-            }
+      const pool = this.sesAlgorithmPool;
+      const prepared = sesCompatiblePreparedExecution(preparedExecution);
+      const requiredModules = sesModule && pool && prepared && preparation.functionName &&
+        sesModule.isSesAlgorithmSourceEligible(preparation.code) &&
+        sesModule.isSesAlgorithmSourceEligible(prepared.executableCode)
+        ? sesModule.detectSesAlgorithmRequiredModules(prepared.executableCode)
+        : null;
+      let sesProgram: SesAlgorithmPreparedProgram | undefined;
+      let sesTraceProgram: SesAlgorithmPreparedProgram | undefined;
+      if (pool && prepared && preparation.functionName && requiredModules) {
+        if (requiredModules.length > 0) await this.options.runtimeAssetPreflight?.();
+        const ordinarySource: SesAlgorithmPreparedSource = {
+          mode: 'code',
+          language,
+          code: prepared.executableCode,
+          functionName: preparation.functionName,
+          executionStyle: preparation.executionStyle,
+          requiredModules,
+          inputArguments: prepared.inputArguments,
+          materializers: prepared.materializers,
+        };
+        // Legacy direct trace callers still receive a traced result. The receipt
+        // path prepares in code mode and observes from a separate lease.
+        if (preparation.mode === 'trace' &&
+            prepared.instrumentedCode && prepared.traceLineBounds &&
+            sesModule?.supportsSesTraceOptions(preparation.traceOptions)) {
+          try {
+            sesTraceProgram = await pool.prepare({
+              ...ordinarySource,
+              mode: 'trace',
+              instrumentedCode: prepared.instrumentedCode,
+              traceLineBounds: prepared.traceLineBounds,
+              traceOptions: preparation.traceOptions,
+            }, call.signal);
+          } catch (error) {
+            if (!(error instanceof sesModule.SesAlgorithmWorkerReportedError) ||
+                error.stage !== 'trace-compile') throw error;
+            preparedExecution = { ...prepared, instrumentedCode: null };
           }
         }
+        if (!sesTraceProgram) sesProgram = await pool.prepare(ordinarySource, call.signal);
       }
-      if (!sesProgram) {
-        await this.options.runtimeAssetPreflight?.();
-      }
-      const programSesPool = sesProgram ? this.sesAlgorithmPool : null;
-      let programSesEligible = Boolean(sesProgram && programSesPool);
+      if (!sesProgram && !sesTraceProgram) await this.options.runtimeAssetPreflight?.();
 
-      const executeSesBatchOrFallback = async (
-        batchCall: RuntimePreparedCodeBatchCall
-      ): Promise<readonly CodeExecutionResult[]> => {
-        if (!sesProgram || !programSesPool || !programSesEligible ||
-            this.sesAlgorithmPool !== programSesPool) {
-          programSesEligible = false;
-          return this.executePreparedCodeBatch(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
+      const executeCodeBatch = async (batchCall: RuntimePreparedCodeBatchCall) => {
+        const runDisposable = (inputBatch: RuntimePreparedCodeBatchCall['inputBatch']) =>
+          this.executePreparedCodeBatch(
+            language, preparation, requirePreparedExecution(), { ...batchCall, inputBatch }, generation
           );
-        }
-        if (!batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
-          return this.executePreparedCodeBatch(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
-          );
-        }
-        try {
-          if (sesProgramTraces) {
-            return await programSesPool.executeTraceBatch(
-              sesProgram,
-              batchCall.inputBatch,
-              batchCall.inputBatch.map(() => false),
-              batchCall.limits,
-              batchCall.signal
-            );
-          }
-          return await programSesPool.executeBatch(
-            sesProgram,
-            batchCall.inputBatch,
-            batchCall.limits,
-            batchCall.signal
-          );
-        } catch (error) {
-          if (error instanceof Error &&
-              (error.name === 'AbortError' || batchCall.signal?.aborted)) {
-            throw error;
-          }
-          if ((sesModule &&
-                error instanceof sesModule.SesAlgorithmCompatibilityRequiredError) ||
-              (error instanceof Error &&
-                error.name === 'SesAlgorithmCompatibilityRequiredError')) {
-            programSesEligible = false;
-            await this.options.runtimeAssetPreflight?.();
-            await this.ensureStandbyExecutionWorker(generation);
-            return this.executePreparedCodeBatch(
-              language,
-              preparation,
-              requirePreparedExecution(),
-              batchCall,
-              generation
-            );
-          }
-          // Infrastructure failure invalidates the retained pool. Replay the
-          // entire batch on the prepared disposable path so one evaluation
-          // still has one correctness result per case and no partial SES work
-          // is ever surfaced.
-          programSesEligible = false;
-          this.disableSesAlgorithmPoolForFault(error, generation);
-          await this.options.runtimeAssetPreflight?.();
-          await this.ensureStandbyExecutionWorker(generation);
-          return this.executePreparedCodeBatch(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
-          );
-        }
+        if (!pool || !sesProgram) return runDisposable(batchCall.inputBatch);
+        const usesSes = batchCall.inputBatch.map(isSesAlgorithmInputEligible);
+        const eligible = batchCall.inputBatch.filter((_, index) => usesSes[index]);
+        const runSes = () => pool.executeBatch(sesProgram, eligible, batchCall.limits, batchCall.signal);
+        if (eligible.length === usesSes.length) return runSes();
+        if (eligible.length === 0) return runDisposable(batchCall.inputBatch);
+        const [pooled, disposable] = await Promise.all([
+          runSes(),
+          runDisposable(batchCall.inputBatch.filter((_, index) => !usesSes[index])),
+        ]);
+        let pooledIndex = 0;
+        let disposableIndex = 0;
+        return usesSes.map((eligible) => eligible ? pooled[pooledIndex++]! : disposable[disposableIndex++]!);
       };
 
-      // When the pool does not trace them, untraced cases still run exactly as
-      // untraced Submit's do, and traced cases are refused or run disposable.
-      const executeTracedCasesOffPool = async (
-        batchCall: RuntimePreparedTraceBatchCall
-      ): Promise<readonly ExecutionResult[]> => {
-        const traced = batchCall.inputBatch.map(
-          (_, index) => batchCall.traceEnabledBatch?.[index] ?? true
-        );
-        const untracedInputs = batchCall.inputBatch.filter((_, index) => !traced[index]);
-        let untraced = untracedInputs.length > 0
-          ? await executeSesBatchOrFallback({ ...batchCall, inputBatch: untracedInputs })
-          : [];
-        let tracedResults: readonly ExecutionResult[] | undefined;
-        if (sesTracedCases !== 'refused' && untracedInputs.length < traced.length) {
-          await this.options.runtimeAssetPreflight?.();
-          await this.ensureStandbyExecutionWorker(generation);
-          tracedResults = await this.executePreparedTraceBatchInternal(
-            language,
-            // While the program is on SES, that route says whether it compiles.
-            { ...preparation, untracedCompiles: programSesEligible },
-            requirePreparedExecution(),
-            {
-              inputBatch: batchCall.inputBatch.filter((_, index) => traced[index]),
-              signal: batchCall.signal,
-              limits: batchCall.limits,
-            },
-            generation
+      const executeTraceBatch = async (batchCall: RuntimePreparedTraceBatchCall): Promise<readonly ExecutionResult[]> => {
+        if (pool && sesTraceProgram && batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
+          return pool.executeTraceBatch(
+            sesTraceProgram, batchCall.inputBatch, batchCall.traceEnabledBatch, batchCall.limits, batchCall.signal
           );
         }
-        // Untraced Submit runs a whole batch on compatibility workers when one
-        // case outgrows the pool's console, and keeps the program there. A
-        // traced case off the pool cannot show that, so a case that may have
-        // is run once untraced on the pool to find out.
-        if (tracedResults && programSesEligible && sesProgram && programSesPool) {
-          const tracedInputs = batchCall.inputBatch.filter((_, index) => traced[index]);
-          const asked = tracedInputs.filter((_, index) => mayNeedSesConsoleFallback(tracedResults![index]!));
-          if (asked.length > 0 && await this.needsSesCompatibility(
-            programSesPool,
-            sesProgram,
-            sesProgramTraces,
-            asked,
-            batchCall,
-            generation
-          )) {
-            programSesEligible = false;
-            // Then every case of this batch takes the compatibility route, as
-            // in untraced Submit; a refusal there is the untraced answer.
-            untraced = untracedInputs.length > 0
-              ? await executeSesBatchOrFallback({ ...batchCall, inputBatch: untracedInputs })
-              : [];
-            const refusedInputs = tracedInputs.filter((_, index) => {
-              const result = tracedResults![index]!;
-              return result.kind === 'failed' && result.providerFailure !== undefined;
-            });
-            if (refusedInputs.length > 0) {
-              const rerun = await this.executePreparedTraceBatchInternal(
-                language,
-                preparation,
-                requirePreparedExecution(),
-                { inputBatch: refusedInputs, signal: batchCall.signal, limits: batchCall.limits },
-                generation
-              );
-              let nextRerun = 0;
-              tracedResults = tracedResults.map((result) =>
-                result.kind === 'failed' && result.providerFailure ? rerun[nextRerun++]! : result
-              );
-            }
-          }
+        if (!sesProgram || batchCall.traceEnabledBatch === undefined ||
+            !batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
+          return this.executePreparedTraceBatchInternal(
+            language, { ...preparation, untracedCompiles: Boolean(sesProgram) },
+            requirePreparedExecution(), batchCall, generation
+          );
         }
-        let next = 0;
-        let nextTraced = 0;
-        return traced.map((isTraced): ExecutionResult => {
-          if (isTraced) {
-            return tracedResults?.[nextTraced++] ??
-              traceUnavailableOutcome(new Error(TRACE_UNAVAILABLE_MESSAGE), language);
-          }
-          const result = untraced[next++]!;
+        const selected = batchCall.traceEnabledBatch;
+        if (selected.length !== batchCall.inputBatch.length ||
+            Array.from(selected).some((enabled) => typeof enabled !== 'boolean')) {
+          throw new TypeError('JavaScript trace selection must contain one boolean per batch case.');
+        }
+        const ordinaryInputs = batchCall.inputBatch.filter((_, index) => !selected[index]);
+        const observerInputs = batchCall.inputBatch.filter((_, index) => selected[index]);
+        const [ordinary, traced] = await Promise.all([
+          executeCodeBatch({ ...batchCall, inputBatch: ordinaryInputs }),
+          this.executePreparedTraceBatchInternal(
+            language, { ...preparation, untracedCompiles: true }, requirePreparedExecution(),
+            { ...batchCall, inputBatch: observerInputs, traceEnabledBatch: undefined }, generation
+          ),
+        ]);
+        let ordinaryIndex = 0;
+        let traceIndex = 0;
+        return selected.map((enabled): ExecutionResult => {
+          if (enabled) return traced[traceIndex++]!;
+          const result = ordinary[ordinaryIndex++]!;
           return {
             ...result,
-            trace: createEmptyRuntimeTrace(language, { runId: `${language}:run` }),
+            trace: createEmptyRuntimeTrace(language),
             executionTimeMs: result.timings?.totalMs ?? 0,
           };
         });
       };
 
-      const executeSesTraceBatchOrFallback = async (
-        batchCall: RuntimePreparedTraceBatchCall
-      ): Promise<readonly ExecutionResult[]> => {
-        if (!sesProgram || !programSesPool || !programSesEligible ||
-            this.sesAlgorithmPool !== programSesPool) {
-          programSesEligible = false;
-          return this.executePreparedTraceBatchInternal(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
-          );
-        }
-        if (!batchCall.inputBatch.every(isSesAlgorithmInputEligible)) {
-          return this.executePreparedTraceBatchInternal(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
-          );
-        }
-        if (sesTracedCases !== 'pool') return executeTracedCasesOffPool(batchCall);
-        try {
-          return await programSesPool.executeTraceBatch(
-            sesProgram,
-            batchCall.inputBatch,
-            batchCall.traceEnabledBatch,
-            batchCall.limits,
-            batchCall.signal
-          );
-        } catch (error) {
-          if (error instanceof Error &&
-              (error.name === 'AbortError' || batchCall.signal?.aborted)) {
-            throw error;
-          }
-          if (!(
-            (sesModule &&
-              error instanceof sesModule.SesAlgorithmCompatibilityRequiredError) ||
-            (error instanceof Error &&
-              error.name === 'SesAlgorithmCompatibilityRequiredError')
-          )) {
-            // A traced execution's failure is its own: this program's traced
-            // cases leave the pool. A broken pool shows on the untraced cases.
-            sesTracedCases = 'disposable';
-            return executeTracedCasesOffPool(batchCall);
-          }
-          programSesEligible = false;
-          await this.options.runtimeAssetPreflight?.();
-          await this.ensureStandbyExecutionWorker(generation);
-          return this.executePreparedTraceBatchInternal(
-            language,
-            preparation,
-            requirePreparedExecution(),
-            batchCall,
-            generation
-          );
-        }
-      };
-
       let program: RuntimePreparedProgram;
       program = createJavaScriptPreparedProgram({
         mode: preparation.mode,
-        profile:
-          sesProgram && programSesPool
-            ? 'fast'
-            : 'compatibility',
-        executeCode:
-          preparation.mode === 'code'
-            ? sesProgram && programSesPool
-              ? async (caseCall) => {
-                  const results = await executeSesBatchOrFallback({
-                    inputBatch: [caseCall.inputs],
-                    signal: caseCall.signal,
-                    limits: caseCall.limits,
-                  });
-                  const result = results[0];
-                  if (!result) {
-                    throw new Error('SES code execution returned no result.');
-                  }
-                  return result;
-                }
-              : (caseCall) => this.executePreparedCode(
-                  language,
-                  preparation,
-                  requirePreparedExecution(),
-                  caseCall,
-                  generation
-                )
-            : undefined,
-        executeCodeBatch:
-          preparation.mode === 'code'
-            ? sesProgram && programSesPool
-              ? executeSesBatchOrFallback
-              : (batchCall) =>
-                  this.executePreparedCodeBatch(
-                    language,
-                    preparation,
-                    requirePreparedExecution(),
-                    batchCall,
-                    generation
-                  )
-            : undefined,
-        executeTrace:
-          preparation.mode === 'trace'
-            ? sesProgram && programSesPool
-              ? async (caseCall) => {
-                  const results = await executeSesTraceBatchOrFallback({
-                    inputBatch: [caseCall.inputs],
-                    traceEnabledBatch: [caseCall.recordTrace ?? true],
-                    signal: caseCall.signal,
-                    limits: caseCall.limits,
-                  });
-                  const result = results[0];
-                  if (!result) {
-                    throw new Error('SES trace execution returned no result.');
-                  }
-                  return result;
-                }
-              : (caseCall) =>
-                  this.executePreparedTrace(
-                    language,
-                    preparation,
-                    requirePreparedExecution(),
-                    caseCall,
-                    generation,
-                    caseCall.recordTrace ?? true
-                  )
-            : undefined,
-        executeTraceBatch:
-          preparation.mode === 'trace'
-            ? sesProgram && programSesPool
-              ? executeSesTraceBatchOrFallback
-              : (batchCall) =>
-                  this.executePreparedTraceBatchInternal(
-                    language,
-                    preparation,
-                    requirePreparedExecution(),
-                    batchCall,
-                    generation
-                  )
-            : undefined,
+        profile: sesProgram || sesTraceProgram ? 'fast' : 'compatibility',
+        executeCode: preparation.mode === 'code'
+          ? async (caseCall) => {
+              if (!sesProgram || !isSesAlgorithmInputEligible(caseCall.inputs)) {
+                return this.executePreparedCode(
+                  language, preparation, requirePreparedExecution(), caseCall, generation
+                );
+              }
+              const results = await executeCodeBatch({ ...caseCall, inputBatch: [caseCall.inputs] });
+              return results[0]!;
+            }
+          : undefined,
+        executeCodeBatch: preparation.mode === 'code' ? executeCodeBatch : undefined,
+        executeTrace: preparation.mode === 'trace'
+          ? async (caseCall) => {
+              if (!sesProgram && !sesTraceProgram) {
+                return this.executePreparedTrace(
+                  language, preparation, requirePreparedExecution(), caseCall, generation,
+                  caseCall.recordTrace ?? true
+                );
+              }
+              const results = await executeTraceBatch({
+                ...caseCall, inputBatch: [caseCall.inputs], traceEnabledBatch: [caseCall.recordTrace ?? true],
+              });
+              return results[0]!;
+            }
+          : undefined,
+        executeTraceBatch: preparation.mode === 'trace' ? executeTraceBatch : undefined,
         dispose: async () => {
           preparedExecution = undefined;
+          this.ordinaryArtifacts.delete(program);
           this.preparedPrograms.delete(program);
-          if (sesProgram && programSesPool && this.sesAlgorithmPool === programSesPool) {
-            try {
-              await programSesPool.disposeProgram(sesProgram);
-            } catch {
-              // A lane disposal failure already retires that lane. Cleanup is
-              // best-effort and must not replace a completed correctness batch.
-            }
-            sesProgram = undefined;
-          }
+          if (sesProgram) await pool?.disposeProgram(sesProgram).catch(() => undefined);
+          if (sesTraceProgram) await pool?.disposeProgram(sesTraceProgram).catch(() => undefined);
         },
       });
       this.assertActive(generation);
       this.preparedPrograms.add(program);
+      if (program.mode === 'code') {
+        this.ordinaryArtifacts.set(program, {
+          generation, language, code: preparation.code, functionName: preparation.functionName,
+          executionStyle: preparation.executionStyle, preparedExecution: requirePreparedExecution(),
+        });
+      }
       const totalMs = performanceNow() - startedAt;
       return {
         kind: 'prepared',
@@ -1465,6 +1184,75 @@ export class JavaScriptWorkerClient {
         timings: { totalMs: performanceNow() - startedAt },
       };
     }
+  }
+
+  /** Derive one observer artifact from a prepared ordinary program's trusted bytes. */
+  async prepareObservation(
+    ordinary: RuntimePreparedProgram,
+    traceOptions: ObservationOptions,
+    signal?: AbortSignal,
+  ): Promise<ObservationArtifact> {
+    const artifact = this.ordinaryArtifacts.get(ordinary);
+    if (!artifact) throw new Error('Missing JavaScript ordinary artifact for observation.');
+    const { generation, language, ...payload } = artifact;
+    this.assertActive(generation);
+    let preparedExecution: unknown;
+    try {
+      await this.options.typescriptCompilerPreflight?.();
+      const coordinator = this.getCoordinator(generation);
+      preparedExecution = await coordinator.core.runClientEffect(
+        coordinator.sendMessageEffect('prepare-observation', { ...payload, options: traceOptions }, null),
+        signal,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+    const lifetime = new AbortController();
+    return {
+      dispose: () => {
+        preparedExecution = undefined;
+        lifetime.abort();
+      },
+      observe: async (call) => {
+        const signal = call.signal ? AbortSignal.any([lifetime.signal, call.signal]) : lifetime.signal;
+        signal.throwIfAborted();
+        if (!preparedExecution) return { status: 'refused', reason: 'observer-prepare' };
+        this.assertActive(generation);
+        const worker = this.createExecutionWorker();
+        this.leasedExecutionWorkers.add(worker);
+        const terminate = () => worker.terminate();
+        signal.addEventListener('abort', terminate, { once: true });
+        try {
+          await worker.prewarm(this.executionRuntimeAssetsPayload());
+          signal.throwIfAborted();
+          const result = await this.runExecution(
+            worker,
+            this.dispatchPreparedExecutionEffect<unknown>(worker, 'observe-execution', {
+              ...payload,
+              language,
+              preparedExecution,
+              options: traceOptions,
+              inputs: call.inputs,
+              attemptToken: call.attemptToken,
+            }),
+            TRACING_TIMEOUT_MS,
+            signal,
+          );
+          signal.throwIfAborted();
+          return certifyObservation(result, call.attemptToken, language);
+        } catch (error) {
+          signal.throwIfAborted();
+          return {
+            status: 'refused',
+            reason: isExecutionTimeoutError(error) ? 'observer-timeout' : 'observer-runtime',
+          };
+        } finally {
+          signal.removeEventListener('abort', terminate);
+          this.leasedExecutionWorkers.delete(worker);
+          worker.terminate();
+        }
+      },
+    };
   }
 
   private async executePreparedCode(
@@ -1606,16 +1394,12 @@ export class JavaScriptWorkerClient {
         wallClockMs,
         call.signal
       );
-      const lifted = liftTraceOutcome(
+      return liftTraceOutcome(
         result,
         result.trace ??
           createEmptyRuntimeTrace(language, { runId: `${language}:run` }),
         'JavaScript tracing failed'
       );
-      if ((result as { readonly sesConsoleBudgetExceeded?: unknown }).sesConsoleBudgetExceeded === true) {
-        sesConsoleBudgetExceededResults.add(lifted);
-      }
-      return lifted;
     } catch (error) {
       if (isTraceUnavailableError(error)) {
         return traceUnavailableOutcome(error as Error, language);

@@ -87,6 +87,7 @@ class VmJavaScriptWorker {
 
     const context = vm.createContext({
       console,
+      TextEncoder,
       self: this.workerSelf,
       performance: { now: () => performance.now() },
       setTimeout,
@@ -152,6 +153,61 @@ class VmJavaScriptWorker {
       )
     );
   }
+}
+
+for (const language of ['javascript', 'typescript'] as const) {
+  test(`${language} observations reuse trusted preparation on separate case workers`, async () => {
+    resetVmWorkers();
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/workers/javascript/javascript-worker.js',
+      workerFactory: (url) => new VmJavaScriptWorker(url),
+      replenishStandbyAfterUse: false,
+    });
+    const code = language === 'typescript'
+      ? 'interface Marker {}\nfunction solve(n: number): number {\n  console.log("case", n);\n  return n + 1;\n}'
+      : 'function solve(n) {\n  console.log("case", n);\n  return n + 1;\n}';
+    const descriptor = { code, functionName: 'solve' };
+    try {
+      const prepared = await client.prepareProgram({ mode: 'code', ...descriptor }, language);
+      assert(prepared.kind === 'prepared' && prepared.program.mode === 'code');
+      const ordinary = await prepared.program.executeIsolated({ inputs: { n: 4 } });
+      assert.equal(ordinary.kind, 'completed');
+      if (ordinary.kind === 'completed') assert.equal(ordinary.output, 5);
+      assert.deepEqual([...ordinary.consoleOutput], ['case 4']);
+
+      const full = await client.prepareObservation(prepared.program, undefined);
+      const options = { maxTraceBytes: 1 };
+      const tiny = await client.prepareObservation(prepared.program, options);
+      try {
+        const observed = await full.observe({
+          program: descriptor, inputs: { n: 7 }, attemptToken: 'full',
+        });
+        assert.equal(observed.status, 'drawn');
+        if (observed.status === 'drawn') {
+          const stdoutLine = language === 'typescript' ? 3 : 2;
+          assert(observed.trace.events.some((event) => event.kind === 'stdout' && event.line === stdoutLine));
+        }
+        const capped = await tiny.observe({
+          program: descriptor, inputs: { n: 4 }, traceOptions: options, attemptToken: 'tiny',
+        });
+        assert.equal(capped.status, 'truncated');
+        if (capped.status === 'truncated') {
+          assert.equal(capped.reason, 'byte-budget');
+          assert.equal(capped.trace.events.length, 0);
+          assert(capped.attemptedEvents > 0);
+        }
+        const workerTypes = VmJavaScriptWorker.instances.map((worker) => worker.postedTypes);
+        assert.equal(workerTypes.flat().filter((type) => type === 'prepare-execution').length, 1);
+        assert.equal(workerTypes.filter((types) => types.includes('observe-execution')).length, 2);
+        assert(!workerTypes.some((types) => types.includes('observe-execution') && types.includes('execute-code')));
+      } finally {
+        full.dispose();
+        tiny.dispose();
+      }
+    } finally {
+      client.terminate();
+    }
+  });
 }
 
 function resetVmWorkers(): void {
@@ -834,6 +890,7 @@ async function exerciseResetDuringQueuedExecution(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  resetVmWorkers();
   const originalWorker = globalThis.Worker;
   Object.defineProperty(globalThis, 'Worker', {
     configurable: true,

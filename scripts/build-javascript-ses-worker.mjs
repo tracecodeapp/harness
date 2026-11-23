@@ -58,6 +58,20 @@ await build({
   target: ['es2022'],
   outfile: resolve(root, 'workers/javascript/javascript-ses-algorithm-worker.js'),
   define: {
+    __TRACECODE_CONSOLE_CAPTURE_SOURCE__: JSON.stringify(
+      sliceBetween('function createConsoleProxy', 'function isLikelyTreeNodeValue')
+    ),
+    __TRACECODE_SERIALIZATION_SOURCE__: JSON.stringify(serializationSource),
+    __TRACECODE_INPUT_DRIVER_SOURCE__: JSON.stringify([
+      sliceBetween('function isPlainObjectRecord', 'function detectMaterializerKind'),
+      sliceBetween('function applyInputMaterializers', 'function collectParameterDescriptors'),
+      sliceBetween('function orderInputArgumentsByParameterDescriptors', 'async function resolveInputParameterDescriptors'),
+      sliceBetween('function getOpsClassInputs', 'function preparedExecutionFromPayload'),
+    ].join('\n\n')),
+    __TRACECODE_CUSTOM_MATERIALIZER_SOURCE__: JSON.stringify(
+      sliceBetween('const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `', '`;\n\nfunction collectTrustedConstructorNames')
+        .slice('const CUSTOM_OBJECT_MATERIALIZER_SOURCE = `'.length)
+    ),
     __TRACECODE_TRACE_RUNTIME_SUPPORT_SOURCE__: JSON.stringify(
       traceRuntimeSupportSource
     ),

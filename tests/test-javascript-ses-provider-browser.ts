@@ -247,10 +247,10 @@ async function main(): Promise<void> {
       );
       assertCondition(
         result.consoleCapSes?.stdout[0] === result.consoleCapLegacy?.stdout[0] &&
-        !result.consoleCapSes?.stdout[0]?.includes('…[truncated]') &&
-        !result.consoleCapLegacy?.stdout[0]?.includes('…[truncated]') &&
-        result.consoleCapLegacy?.stdout[0]?.includes('line-104') &&
-        result.consoleCapSes?.timings[0]?.algorithmFastBatch !== true,
+        result.consoleCapSes?.stdout[0]?.includes('…[truncated]') &&
+        !result.consoleCapLegacy?.stdout[0]?.includes('line-104') &&
+        result.consoleCapSes?.timings.every((timing) => timing.algorithmFastBatch === true) &&
+        result.consoleCapLegacy?.timings[0]?.algorithmFastBatch !== true,
         `console isolation policy mismatch: ${JSON.stringify({
           ses: result.consoleCapSes?.stdout,
           legacy: result.consoleCapLegacy?.stdout,
@@ -263,9 +263,9 @@ async function main(): Promise<void> {
           stdout === result.consoleCapLegacy?.stdout[0]
         ) &&
         result.traceConsoleCap.timings.every(
-          (timing) => timing.algorithmFastBatch !== true
+          (timing) => timing.algorithmFastBatch === true
         ),
-        `trace console budget must fall back without failing: ${JSON.stringify(
+        `trace console cap must retain the prepared profile: ${JSON.stringify(
           result.traceConsoleCap
         )}`
       );
@@ -420,19 +420,12 @@ async function main(): Promise<void> {
       );
       const sesUnavailable = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
-        return entry.runJavaScriptSesUnavailableFallback(`${origin}/workers`);
-      }, { origin: server.origin }) as Record<string, {
-        verdict: string;
-        passedCount: number;
-        totalCount: number;
-        evaluationStatus: string;
-      }>;
-      for (const [name, receipt] of Object.entries(sesUnavailable)) {
+        return entry.runJavaScriptSesUnavailableFailure(`${origin}/workers`);
+      }, { origin: server.origin }) as Record<string, string | undefined>;
+      for (const [name, failure] of Object.entries(sesUnavailable)) {
         assertCondition(
-          receipt.verdict === 'passed' &&
-          receipt.evaluationStatus === 'completed' &&
-          receipt.passedCount === receipt.totalCount,
-          `sesUnavailable.${name} failed: ${JSON.stringify(receipt)}`
+          typeof failure === 'string' && failure.length > 0,
+          `sesUnavailable.${name} returned a verdict after startup failed`
         );
       }
       console.log(`PASS: JavaScript SES provider browser integration ${JSON.stringify({

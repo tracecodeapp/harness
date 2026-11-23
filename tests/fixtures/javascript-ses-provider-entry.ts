@@ -1304,7 +1304,7 @@ export async function runJavaScriptTraceParity(assetBaseUrl: string) {
   }
 }
 
-export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) {
+export async function runJavaScriptSesUnavailableFailure(assetBaseUrl: string) {
   const runtimeHost = createBrowserRuntimeHost({
     assetBaseUrl,
     assets: {
@@ -1319,22 +1319,30 @@ export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) 
     safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  const failureOf = async (result: Promise<unknown>) => {
+    try {
+      await result;
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  };
   try {
-    const code = await evaluate(host, {
-      id: 'ses-unavailable-code-fallback',
+    const code = await failureOf(evaluate(host, {
+      id: 'ses-unavailable-code-failure',
       language: 'javascript',
       code: 'function solve(value) { return value + 1; }',
       functionName: 'solve',
       cases: [{ id: 'code', input: { value: 4 }, expected: 5 }],
-    });
-    const trace = await evaluate(host, {
-      id: 'ses-unavailable-trace-fallback',
+    }));
+    const trace = await failureOf(evaluate(host, {
+      id: 'ses-unavailable-trace-failure',
       language: 'javascript',
       code: 'function solve(value) { return value + 1; }',
       functionName: 'solve',
       trace: true,
       cases: [{ id: 'trace', input: { value: 7 }, expected: 8 }],
-    });
+    }));
     return { code, trace };
   } finally {
     host.dispose();
