@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { availableParallelism, hostname, loadavg, release } from 'node:os';
@@ -12,6 +12,7 @@ import { chromium } from 'playwright';
 const [outArg, mode, sampleArg = '20', seedArg = '0212026', minuteArg = '720'] = process.argv.slice(2);
 const out = resolve(outArg);
 const target = mode === 'smoke' ? 1 : Number(sampleArg);
+const maxInvalid = mode === 'smoke' ? 1 : 5;
 const seed = Number(seedArg);
 const runMinutes = Number(minuteArg);
 assert.ok(Number.isInteger(target) && (mode === 'smoke' || target >= 20));
@@ -53,6 +54,7 @@ function shuffled(items) {
 }
 
 async function loadFixtures() {
+  const expected = await json(new URL('./fixture-digests.json', import.meta.url));
   const data = {};
   const provenance = {};
   for (const id of problemIds) {
@@ -94,9 +96,11 @@ async function loadFixtures() {
         },
         cases,
       };
+      const fixtureSha256 = sha256(JSON.stringify(fixture));
+      assert.equal(fixtureSha256, expected[id][language], 'Fixture differs from both app pins: ' + id + '/' + language);
       data[id][language] = fixture;
       provenance[id].fixture[language] = {
-        sourceFile, codeSha256: sha256(source), fixtureSha256: sha256(JSON.stringify(fixture)),
+        sourceFile, codeSha256: sha256(source), fixtureSha256,
         traceBudget: fixture.traceBudget,
       };
     }
@@ -143,6 +147,7 @@ async function prepareVersion(version) {
   assert.equal(manifest.version, version);
   const tarball = 'tracecode-harness-' + version + '.tgz';
   const dependencyFile = join(root, 'dependencies.json');
+  const shim = join(harness, 'dist', 'zlib-browser-shim.js');
   await build({
     entryPoints: ['benchmarks/speed-baseline-021/entry.ts'],
     outfile: join(site, 'entry.mjs'),
@@ -153,8 +158,7 @@ async function prepareVersion(version) {
     alias: {
       'tracecode-harness-under-test/judge': join(harness, 'dist', 'judge.js'),
       'tracecode-harness-under-test/tracekernel': join(harness, 'dist', 'tracekernel.js'),
-      zlib: join(harness, 'dist', 'zlib-browser-shim.js'),
-      'node:zlib': join(harness, 'dist', 'zlib-browser-shim.js'),
+      ...(existsSync(shim) && { zlib: shim, 'node:zlib': shim }),
     },
     define: { 'process.env.NODE_ENV': '"production"' },
     logLevel: 'warning',
@@ -307,10 +311,10 @@ try {
     const warmPages = new Map();
     const groupStarted = Date.now();
     try {
-      for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < target + 5); round++) {
+      for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
         for (const [position, version] of shuffled(group.versions).entries()) {
           const count = counts[version];
-          if (count.kept >= target || count.invalid >= target + 5) continue;
+          if (count.kept >= target || count.invalid >= maxInvalid) continue;
           await waitForQuiet();
           const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };
           delete sample.versions;
