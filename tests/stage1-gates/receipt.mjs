@@ -182,3 +182,27 @@ export function receiptEvidenceIds(fixture, request) {
   const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}/@request`;
   return [`${prefix}/receipt-publication`, ...(request.id === 'redraw-b' ? [`${prefix}/cache-hit`] : [])];
 }
+
+
+export function checkCppStarts(worker, admittedInputs) {
+  const commands = worker.filter(({ action, cppProtocol, reportsStarts }) =>
+    action === 'command' && cppProtocol && reportsStarts);
+  if (!commands.length) return;
+  const startedInputs = [];
+  const starts = worker.filter(({ action }) => action === 'ordinary-start');
+  for (const command of commands) {
+    const matches = ({ id, generation }) => id === command.id && generation === command.generation;
+    const reply = worker.findIndex((event) => event.action === 'response' && event.cppTerminal && matches(event));
+    assert(reply >= 0, 'No correlated C++ terminal response');
+    const inputs = Array.isArray(command.inputs) ? command.inputs : [command.inputs];
+    const scopedStarts = starts.filter(matches);
+    const indexes = scopedStarts.map(({ caseIndex }) => caseIndex);
+    assert.deepEqual(indexes, inputs.slice(0, indexes.length).map((_, index) => index), 'Ordinary C++ case start indexes');
+    for (const start of scopedStarts) {
+      assert(worker.indexOf(start) < reply, 'C++ case start followed its terminal response');
+      startedInputs.push(inputs[start.caseIndex]);
+    }
+  }
+  assert.equal(starts.length, startedInputs.length, 'Unmatched C++ ordinary start event');
+  assert.deepEqual(startedInputs, admittedInputs, 'C++ ordinary starts differ from admitted inputs');
+}

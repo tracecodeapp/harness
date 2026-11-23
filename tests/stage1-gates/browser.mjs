@@ -44,12 +44,22 @@ class ObservedWorker extends NativeWorker {
     const pathname = new URL(url, location.href).pathname;
     const pythonWorker = pathname.endsWith('/python-worker.js');
     const javaWorker = /\/java(?:-runtime)?-worker\.js$/.test(pathname);
+    const cppWorker = pathname.endsWith('/cpp-worker.js');
     const pending = new Map();
     const programs = new Map();
     this.addEventListener('message', (event) => {
       const data = event.data;
       const command = pending.get(data?.id);
       if (command) {
+        if (command.cppProtocolToken) {
+          if (!event.isTrusted || data.protocolToken !== command.cppProtocolToken) return;
+          if (data.type === 'runtime-progress' && data.payload?.stage === 'ordinary-case-started') {
+            transcript.push({ action: 'ordinary-start', worker, generation, id: data.id, caseIndex: data.payload.detail?.caseIndex });
+            return;
+          }
+          // A progress event is not a terminal worker acknowledgement.
+          if (data.type !== command.type && data.type !== 'error') return;
+        }
         if (data.type !== 'batch-case-progress') pending.delete(data.id);
         const rows = command.inputs;
         const mutate = (row, input, traced) => {
@@ -85,6 +95,10 @@ class ObservedWorker extends NativeWorker {
             data.payload?.algorithmIsolationProfile?.reasons ?? data.payload?.preparedRunnerReason,
           rows: data.payload?.results?.length, phase: data.payload?.phase,
           index: data.payload?.index,
+          ...(command.cppProtocolToken ? {
+            cppTerminal: true,
+            recorder: data.payload?.observation?.attemptToken === command.attemptToken ? data.payload?.observation : undefined,
+          } : {}),
         });
       }
     });
@@ -121,7 +135,14 @@ class ObservedWorker extends NativeWorker {
         trace: payload?.traceEnabledBatch ?? payload?.tracingEnabled ?? payload?.trace ?? payload?.traceFlags,
         forceJudgeCompatible: payload?.forceJudgeCompatible,
       };
-      if (command.id) pending.set(command.id, command);
+      const cppProtocol = cppWorker && typeof data?.protocolToken === 'string' &&
+        (payload.reportCaseProgress === true || typeof payload.attemptToken === 'string');
+      if (cppProtocol) {
+        command.cppProtocol = true;
+        command.reportsStarts = payload.reportCaseProgress === true;
+        command.attemptToken = payload.attemptToken;
+      }
+      if (command.id) pending.set(command.id, cppProtocol ? { ...command, cppProtocolToken: data.protocolToken } : command);
       transcript.push(command);
       post(data, options);
     };

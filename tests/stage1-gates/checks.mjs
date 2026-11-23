@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { assertGraph } from './graph.mjs';
 import {
-  assertNoLegacyRefusal, checkCacheHit, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
+  assertNoLegacyRefusal, checkCacheHit, checkCppStarts, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
 } from './receipt.mjs';
 import { jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 
@@ -153,7 +153,8 @@ export function checkObservation(fixture, request, observation, record, register
       const commands = observation.worker.filter(({ action, type }) => action === 'command' &&
         (/execute|compile-run/.test(type) || (continuation && type === 'observe-execution')));
       const acknowledged = commands.filter((command) => observation.worker.some((event) => (
-        event.action === 'response' && event.id === command.id && event.generation === command.generation
+        event.action === 'response' && event.id === command.id && event.generation === command.generation &&
+        (!command.cppProtocol || event.cppTerminal)
       )));
       if (evaluation.status === 'compile-failed') assert.equal(commands.length, 0);
       else if (continuation) {
@@ -172,6 +173,19 @@ export function checkObservation(fixture, request, observation, record, register
       }
       if (!continuation && request.route === 'disposable-worker') {
         assert(acknowledged.length && acknowledged.every((command) => !command.worker.includes('ses-algorithm')));
+      }
+      if (registered && fixture.language === 'cpp') {
+        const admittedInputs = continuation ? [] : evaluation.cases.filter(({ status }) => status !== 'not-run')
+          .map(({ caseId }) => rows.find(({ id }) => id === caseId)?.input);
+        checkCppStarts(observation.worker, admittedInputs);
+        if (continuation && evaluation.cases.some(({ attachment }) => attachment?.status !== 'refused')) {
+          for (const command of acknowledged.filter(({ cppProtocol }) => cppProtocol)) {
+            const terminal = observation.worker.find(({ action, id, generation, cppTerminal }) =>
+              action === 'response' && cppTerminal && id === command.id && generation === command.generation);
+            assert.equal(typeof command.attemptToken, 'string');
+            assert.equal(terminal.recorder?.attemptToken, command.attemptToken);
+          }
+        }
       }
       if (request.mode === 'continuation') {
         assert(acknowledged.every((command) => command.trace !== false && !(Array.isArray(command.trace) && command.trace.includes(false))));
@@ -406,8 +420,10 @@ export function checkCppDirect(fixture, route, observation, record) {
     const commands = observation.worker.filter((item) => item.type === type && item.action === 'command');
     assert.equal(commands.length, route === 'generated-batch' ? 1 : fixture.cases.length);
     for (const command of commands) {
-      assert(observation.worker.some((item) => item.id === command.id && item.generation === command.generation && item.action === 'response'));
+      assert(observation.worker.some((item) => item.id === command.id && item.generation === command.generation &&
+        item.action === 'response' && (!command.cppProtocol || item.cppTerminal)));
     }
+    checkCppStarts(observation.worker, fixture.cases.map(({ input }) => input));
   });
   check('@request', 'cardinality', () => assert.equal(observation.results.length, fixture.cases.length));
   for (const [index, expected] of fixture.cases.entries()) {

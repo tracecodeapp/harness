@@ -332,3 +332,38 @@ test('graph oracle accepts renamed opaque IDs while a product misgrade stays red
     assert.equal(result.find(({ id }) => id.endsWith('/A/verdict')).status, 'fail');
   }
 });
+
+test('C++ worker starts need the admitted indexes and a correlated terminal reply', () => {
+  const cpp = { ...fixture, language: 'cpp', cases: [{ ...fixture.cases[0], input: { n: 7 } }] };
+  const ordinaryWorker = { ...command, cppProtocol: true, reportsStarts: true, inputs: { n: 7 } };
+  const reply = { ...response, cppTerminal: true };
+  const start = { ...command, action: 'ordinary-start', caseIndex: 0 };
+  const check = (worker) => {
+    const assertions = [];
+    checkObservation(cpp, initialRequest, { ...initial, worker }, (item) => assertions.push(item), true);
+    return assertions.find(({ id }) => id.endsWith('/worker-ack')).status;
+  };
+  assert.equal(check([ordinaryWorker, start, reply]), 'pass');
+  assert.equal(check([ordinaryWorker, start, response]), 'fail');
+  assert.equal(check([ordinaryWorker, reply]), 'fail');
+  assert.equal(check([ordinaryWorker, start, start, reply]), 'fail');
+  assert.equal(check([ordinaryWorker, { ...start, caseIndex: 1 }, reply]), 'fail');
+  assert.equal(check([ordinaryWorker, { ...start, generation: 3 }, reply]), 'fail');
+  assert.equal(check([ordinaryWorker, reply, start]), 'fail');
+  assert.equal(check([{ ...ordinaryWorker, inputs: { n: 999 } }, start, reply]), 'fail');
+});
+
+test('C++ drawable continuation requires the worker to echo the requested attempt', () => {
+  const cpp = { ...fixture, language: 'cpp' };
+  const observe = { ...command, cppProtocol: true, attemptToken };
+  const terminal = { ...response, cppTerminal: true, recorder: { attemptToken } };
+  const check = (worker) => {
+    const assertions = [];
+    checkObservation(cpp, drawRequest, { ...draw, worker }, (item) => assertions.push(item), true);
+    return assertions.find(({ id }) => id.endsWith('/worker-ack')).status;
+  };
+  assert.equal(check([observe, terminal]), 'pass');
+  assert.equal(check([observe, { ...terminal, recorder: { attemptToken: 'stale' } }]), 'fail');
+  assert.equal(check([observe, { ...terminal, recorder: undefined }]), 'fail');
+  assert.equal(check([observe, { ...terminal, cppTerminal: false }]), 'fail');
+});
