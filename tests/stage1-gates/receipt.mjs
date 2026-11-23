@@ -156,7 +156,11 @@ export function checkCacheHit(request, observation) {
   const { drawnJournal, journal } = observation;
   const hits = phase(journal, 'observation-cache-hit');
   const resolutions = phase(journal, 'public-resolve');
-  assert.deepEqual(hits.map(({ caseId }) => caseId).sort(), [...request.selected].sort());
+  const stopped = new Set(observation.reported.evaluation.cases
+    .filter(({ status, attachment }) => status === 'not-run' && attachment?.status === 'refused' && attachment.reason === 'case-not-run')
+    .map(({ caseId }) => caseId));
+  const requiredHits = request.selected.filter((id) => !stopped.has(id) || hits.some(({ caseId }) => caseId === id));
+  assert.deepEqual(hits.map(({ caseId }) => caseId).sort(), requiredHits.sort());
   assert.equal(resolutions.length, 1);
   assert.equal(phase(journal, 'observer-start').length, 0);
   assert.equal(phase(journal, 'observer-end').length, 0);
@@ -164,17 +168,30 @@ export function checkCacheHit(request, observation) {
   const priorBinds = phase(drawnJournal, 'attachment-bind');
   const priorAttempts = phase(drawnJournal, 'observer-end');
   assert.equal(priorResolutions.length, 1);
-  for (const hit of hits) {
-    const { attachment } = observation.reported.evaluation.cases.find(({ caseId }) => caseId === hit.caseId);
-    assert(sameScope(hit, attachment));
-    assert(hit.sequence < resolutions[0].sequence);
-    assert(typeof hit.attemptToken === 'string' && hit.attemptToken.length > 0);
-    const binds = priorBinds.filter(({ caseId }) => caseId === hit.caseId);
+  for (const id of request.selected) {
+    const hit = hits.find(({ caseId }) => caseId === id);
+    const { attachment } = observation.reported.evaluation.cases.find(({ caseId }) => caseId === id);
+    const binds = priorBinds.filter(({ caseId }) => caseId === id);
     assert.equal(binds.length, 1);
-    assert(sameScope(hit, binds[0]));
-    assert(binds[0].sequence < priorResolutions[0].sequence && priorResolutions[0].sequence < hit.sequence);
+    assert(sameScope(attachment, binds[0]));
+    assert(sameScope(attachment, priorResolutions[0]) && sameScope(attachment, resolutions[0]));
+    assert(binds[0].sequence < priorResolutions[0].sequence && priorResolutions[0].sequence < resolutions[0].sequence);
+    const attempts = priorAttempts.filter(({ caseId }) => caseId === id);
+    if (hit) {
+      assert(sameScope(hit, attachment));
+      assert(priorResolutions[0].sequence < hit.sequence && hit.sequence < resolutions[0].sequence);
+    }
+    if (stopped.has(id)) {
+      const absent = (token) => token === undefined || token?.['$gate.undefined'] === true;
+      assert(absent(binds[0].attemptToken) && absent(hit?.attemptToken));
+      assert.equal(attempts.length, 0);
+      assert(!phase(drawnJournal, 'observer-start').some(({ caseId }) => caseId === id));
+      checkRedraw(observation);
+      continue;
+    }
+    assert(typeof hit.attemptToken === 'string' && hit.attemptToken.length > 0);
     // A refusal can settle before an observer starts.
-    for (const attempt of priorAttempts.filter(({ caseId }) => caseId === hit.caseId)) {
+    for (const attempt of attempts) {
       assert(sameScope(hit, attempt));
       assert.equal(hit.attemptToken, attempt.attemptToken);
     }

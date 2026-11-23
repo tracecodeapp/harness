@@ -4,6 +4,7 @@ import { createReadStream, realpathSync, statSync } from 'node:fs';
 import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
@@ -13,6 +14,7 @@ import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRou
 import { installAppTraceArchive } from './app-trace-archive.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
+import { retainedControlTargets } from './worker-evidence.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url), 'utf8'));
 const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
@@ -60,6 +62,7 @@ try {
       sourcefile: 'stage1-browser.mjs',
     },
     outfile: bundlePath, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
+    alias: { 'stage1-worker-evidence': fileURLToPath(new URL('worker-evidence.mjs', import.meta.url)) },
     external: ['/gate-routes.mjs', '/gate-app-trace-wire.mjs'],
     metafile: true,
     define: { 'process.env.NODE_ENV': '"production"' },
@@ -249,6 +252,7 @@ try {
     if (!options.control && !options.route && !fixture.untracedOnly && manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
       checkDifferential(fixture, observed, recordAssertion, registered);
     }
+    return registered;
   }
   for (const fixture of selectedFixtures) {
     if (fixture.name === 'ses-constructor-key') {
@@ -321,10 +325,15 @@ try {
     const hits = [];
     const observedValues = new Map();
     const requests = requestMatrix(fixture.cases.map(({ id }) => id), fixture);
-    await exercise(fixture, requests.filter((request) => control.requests.includes(request.id)), {
+    const controlled = requests.filter((request) => control.requests.includes(request.id));
+    const hitRequests = new Set();
+    const registered = await exercise(fixture, controlled, {
       control: control.seed,
       onObservation: (observation) => {
-        if (Array.isArray(observation.seedHits)) hits.push(...observation.seedHits);
+        if (Array.isArray(observation.seedHits) && observation.seedHits.length) {
+          hits.push(...observation.seedHits);
+          hitRequests.add(observation.request);
+        }
         for (const row of observation.reported?.evaluation?.cases ?? []) {
           observedValues.set(`${observation.request}/${row.caseId}/value`, row.value);
         }
@@ -341,9 +350,12 @@ try {
       const caseId = key.split('/')[1];
       return observed === fixture.cases.find(({ id }) => id === caseId).actual + 1;
     });
-    const pass = good && red && preserved && correctFault && hits.length === control.hits;
+    const retainedTargets = retainedControlTargets(control, controlled, registered);
+    const expectedHits = control.hits - retainedTargets.length;
+    const redispatched = retainedTargets.some((key) => hitRequests.has(key.split('/')[0]));
+    const pass = good && red && preserved && correctFault && !redispatched && hits.length === expectedHits;
     if (!pass) controlFailures.push(control.seed);
-    record('controls.jsonl', { seed: control.seed, pass, good, red, preserved, correctFault, hits, targets,
+    record('controls.jsonl', { seed: control.seed, pass, good, red, preserved, correctFault, expectedHits, redispatched, hits, targets,
       observedValues: Object.fromEntries(observedValues), results: Object.fromEntries(controlResults) });
   }
   const result = summarize([...inventory], assertions);

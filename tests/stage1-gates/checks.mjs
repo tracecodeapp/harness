@@ -10,6 +10,7 @@ const defined = (value) => value !== undefined && !(
 );
 const ownValue = (object, key) => Object.hasOwn(object, key) && defined(object[key]);
 const errorText = (error) => error instanceof Error ? error.message : String(error);
+const missingEvidence = Symbol('missing assertion evidence');
 
 // LF is optional after each captured message. Preserve embedded newlines,
 // blank lines and all other characters.
@@ -33,7 +34,7 @@ export function checkObservation(fixture, request, observation, record, register
   function check(caseId, assertion, comparison) {
     const id = `${prefix}/${caseId}/${assertion}`;
     try {
-      comparison();
+      if (comparison() === missingEvidence) return;
       record({ id, status: 'pass' });
     } catch (error) {
       record({ id, status: 'fail', message: errorText(error) });
@@ -143,12 +144,11 @@ export function checkObservation(fixture, request, observation, record, register
       assert.deepEqual(submitted.execution.limits, request.limits);
     });
   }
-  const coldContinuation = registered && request.mode === 'continuation' &&
-    request.id !== 'redraw-b' && request.selected.length === 1;
+  const singleContinuation = registered && request.mode === 'continuation' && request.selected.length === 1;
   const selectedCaseId = request.selected[0];
-  const retainedCase = coldContinuation &&
+  const retainedCase = singleContinuation &&
     observation.retainedEvaluation?.cases?.find(({ caseId }) => caseId === selectedCaseId);
-  const returnedCase = coldContinuation && evaluation.cases.find(({ caseId }) => caseId === selectedCaseId);
+  const returnedCase = singleContinuation && evaluation.cases.find(({ caseId }) => caseId === selectedCaseId);
   if ((retainedCase ?? returnedCase)?.status === 'not-run') {
     const worker = Array.isArray(observation.worker) ? observation.worker : undefined;
     const journal = Array.isArray(observation.journal) ? observation.journal : undefined;
@@ -160,6 +160,10 @@ export function checkObservation(fixture, request, observation, record, register
       check('@request', 'worker-ack', () => {
         assert(!command, `Not-run continuation dispatched a worker command (${command?.type})`);
         assert(!activity, `Not-run continuation recorded ${activity?.phase}`);
+        if (request.id === 'redraw-b') {
+          if (!defined(observation.drawnEvaluation)) return missingEvidence;
+          checkRedraw(observation);
+        }
       });
     }
   } else if (request.route !== 'mux') {
@@ -213,6 +217,8 @@ export function checkObservation(fixture, request, observation, record, register
   }
   if (fixture.expectedTier && !request.route && request.id === 'submit-default-AB') {
     check('@request', 'admitted-tier', () => {
+      const receiptPythonTier = registered && fixture.gate === 'G1' && fixture.language === 'python';
+      if (receiptPythonTier && !Array.isArray(observation.worker)) return missingEvidence;
       const observations = observation.worker.filter((event) => event.action === 'response' && event.success === true);
       assert(observations.some((event) => event.tier === fixture.expectedTier && event.mode === 'code'), `No ${fixture.expectedTier} code artifact acknowledgement`);
       const commands = observation.worker.filter((event) => event.action === 'command' && /execute-prepared/.test(event.type));
@@ -231,8 +237,9 @@ export function checkObservation(fixture, request, observation, record, register
           reply: observation.worker.find((event) => event.action === 'response'
             && event.type === 'execute-result' && event.generation === command.generation && event.id === command.id),
         }));
-        assert(executions.every(({ command, reply }) => command.tier === fixture.expectedTier && reply),
-          `Missing execution reply for ${fixture.expectedTier}`);
+        assert(executions.every(({ command }) => command.tier === fixture.expectedTier));
+        if (receiptPythonTier && executions.some(({ reply }) => !reply)) return missingEvidence;
+        assert(executions.every(({ reply }) => reply), `Missing execution reply for ${fixture.expectedTier}`);
         if (fixture.expectedTier === 'hard-isolated') {
           assert.deepEqual(executions.map(({ command }) => command.inputs), rows.map(({ input }) => input));
           assert.equal(new Set(commands.map(({ generation }) => generation)).size, rows.length);
@@ -242,6 +249,7 @@ export function checkObservation(fixture, request, observation, record, register
           const [{ command, reply }] = executions;
           assert.equal(command.type, 'execute-prepared-program-batch');
           assert.deepEqual(command.inputs, rows.map(({ input }) => input));
+          if (receiptPythonTier && !defined(reply.rows)) return missingEvidence;
           assert.equal(reply.rows, rows.length);
           for (const row of evaluation.cases) {
             if (fixture.expectedTier === 'algorithm-fast') assert.equal(row.timings?.algorithmFastBatch, true);
@@ -310,13 +318,23 @@ export function checkObservation(fixture, request, observation, record, register
   if (registered && observation.journal?.length &&
       (request.mode !== 'continuation' || observation.retainedJournal?.length)) {
     check('@request', 'receipt-publication', () => checkPublication(request, observation));
-    if (request.id === 'redraw-b' && observation.drawnJournal?.length) {
+    const stoppedRedrawEvidence = (retainedCase ?? returnedCase)?.status !== 'not-run' ||
+      (Array.isArray(observation.worker) && defined(observation.drawnEvaluation));
+    if (request.id === 'redraw-b' && observation.drawnJournal?.length && stoppedRedrawEvidence) {
       check('@request', 'cache-hit', () => checkCacheHit(request, observation));
     }
   }
 
   if (compileOnly) return;
-  for (const expected of rows) {
+  for (const fixtureCase of rows) {
+    // The legacy-budget Run can stop on A. A click on the retained B then
+    // checks the stopped receipt, while the initial Run still checks the oracle.
+    const stopped = registered && fixture.name === 'queens-legacy-budget' && retainedCase?.status === 'not-run' &&
+      retainedCase.caseId === fixtureCase.id
+      ? { reason: 'run-stopped-after-limit', stoppedByCaseId: fixture.cases[0].id, limit: 'line-limit' }
+      : undefined;
+    const expected = stopped ? { ...fixtureCase, status: 'not-run', verdict: 'not-evaluated' } : fixtureCase;
+    if (stopped) delete expected.actual;
     const index = evaluation.cases.findIndex((row) => row.caseId === expected.id);
     if (index < 0) continue;
     const row = evaluation.cases[index];
@@ -327,8 +345,9 @@ export function checkObservation(fixture, request, observation, record, register
     });
     check(expected.id, 'status', () => {
       assert.equal(row.status, expected.status);
-      const kind = expected.failure?.origin === 'limit' ? 'limit' : expected.failure ? 'failed' : 'completed';
+      const kind = stopped ? 'not-run' : expected.failure?.origin === 'limit' ? 'limit' : expected.failure ? 'failed' : 'completed';
       assert.equal(consumer.kind, kind);
+      if (stopped) assert.deepEqual(consumer, { kind, ...stopped, consoleOutput: [] });
       if (registered) {
         checkPresentation(row, consumer, observation.tracedProjections[index],
           request.selected.includes(expected.id), observation.workspaceDigest, fixture.archiveAppTraces);
@@ -347,15 +366,19 @@ export function checkObservation(fixture, request, observation, record, register
       assert.deepEqual(consumer.consoleOutput, messages(expected.stdout));
     });
     check(expected.id, 'failure', () => {
-      assert(!defined(row.notRun));
+      if (stopped) assert.deepEqual(row.notRun, stopped);
+      else assert(!defined(row.notRun));
       if (!expected.failure) assert(!defined(row.failure));
       else {
         for (const [key, value] of Object.entries(expected.failure)) assert.equal(row.failure?.[key], value, key);
       }
     });
-    check(expected.id, 'verdict', () => assert.equal(row.verdict.kind, expected.verdict));
+    check(expected.id, 'verdict', () => {
+      assert.equal(row.verdict.kind, expected.verdict);
+      if (stopped) assert.equal(row.verdict.reason, 'case-did-not-complete');
+    });
     check(expected.id, 'termination', () => {
-      if (expected.status === 'completed') assert.deepEqual(row.termination, { kind: 'exit', exitCode: 0 });
+      if (expected.status === 'completed' || stopped) assert.deepEqual(row.termination, { kind: 'exit', exitCode: 0 });
       else assert.notEqual(row.termination.exitCode, 0);
       assert.equal(row.timedOut, expected.status === 'timed-out');
     });

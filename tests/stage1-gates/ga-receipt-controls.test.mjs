@@ -178,6 +178,63 @@ test('cold draw of a retained not-run case rejects dispatch even when the result
   assert.deepEqual(summarize([id], [...withoutWorker.values()].filter((item) => item.id === id)).missing, [id]);
 });
 
+test('registered queens continuation keeps the stopped suffix and its refusal on redraw', () => {
+  const queens = { ...fixture, name: 'queens-legacy-budget', language: 'python',
+    cases: [{ ...fixture.cases[0], id: 'earlier-case' }, { ...fixture.cases[0], stdout: '' }] };
+  const notRun = { reason: 'run-stopped-after-limit', stoppedByCaseId: 'earlier-case', limit: 'line-limit' };
+  const retained = { ...row, status: 'not-run', notRun, stdout: '',
+    verdict: { kind: 'not-evaluated', reason: 'case-did-not-complete' } };
+  delete retained.value;
+  const refusal = { ...binding, status: 'refused', reason: 'case-not-run' };
+  const retainedEvaluation = { ...plainEvaluation, cases: [retained] };
+  const evaluation = { ...retainedEvaluation, cases: [{ ...retained, attachment: refusal }] };
+  const projection = { kind: 'not-run', ...notRun, consoleOutput: [] };
+  const cold = {
+    ...draw, retainedEvaluation, reported: { ...draw.reported, evaluation },
+    ordinaryProjections: [projection], tracedProjections: [projection], projections: [projection],
+    worker: [], journal: [mark('attachment-bind', 4, { caseId }), mark('public-resolve', 5)],
+  };
+  const warm = { ...cold, drawnEvaluation: evaluation, drawnJournal: cold.journal, journal: [mark('public-resolve', 6)] };
+  function check(request, sample, id, registered = true) {
+    const entries = [];
+    checkObservation(queens, request, sample, (item) => entries.push(item), registered);
+    return entries.find((item) => item.id.endsWith('/' + id))?.status;
+  }
+  for (const [request, sample] of [[drawRequest, cold], [redrawRequest, warm]]) {
+    for (const id of ['status', 'value', 'failure', 'verdict']) {
+      assert.equal(check(request, sample, `A/${id}`), 'pass');
+      assert.equal(check(request, sample, `A/${id}`, false), 'fail');
+    }
+    assert.equal(check(request, sample, '@request/worker-ack'), 'pass');
+    assert.equal(check(request, { ...sample, worker: [command, response] }, '@request/worker-ack'), 'fail');
+    assert.equal(check(request, { ...sample, worker: undefined }, '@request/worker-ack'), undefined);
+  }
+  assert.equal(check(redrawRequest, warm, '@request/cache-hit'), 'pass');
+  assert.equal(check(redrawRequest, { ...warm, drawnEvaluation: selectedEvaluation }, '@request/cache-hit'), 'fail');
+  const forged = { ...warm, journal: [mark('observation-cache-hit', 5.5, { caseId, attemptToken }), ...warm.journal] };
+  assert.equal(check(redrawRequest, forged, '@request/cache-hit'), 'fail');
+});
+
+test('Python batch route leaves an unwitnessed row count missing and rejects the wrong count', () => {
+  const tier = 'algorithm-fast';
+  const python = { ...fixture, language: 'python', expectedTier: tier };
+  const request = { ...initialRequest, id: 'submit-default-AB', mode: 'submit', selected: [] };
+  const sample = { ...initial, reported: { evaluation: { ...plainEvaluation,
+    cases: [{ ...row, timings: { algorithmFastBatch: true } }] } },
+  submitted: {}, projections: [ordinary] };
+  const batch = { ...command, tier, mode: 'code', type: 'execute-prepared-program-batch', inputs: [undefined] };
+  const terminal = { ...batch, action: 'response', type: 'execute-result', rows: 1, success: true };
+  function check(worker, registered = true) {
+    const entries = [];
+    checkObservation(python, request, { ...sample, worker }, (item) => entries.push(item), registered);
+    return entries.find(({ id }) => id.endsWith('/admitted-tier'))?.status;
+  }
+  assert.equal(check([batch, terminal]), 'pass');
+  assert.equal(check([batch, { ...terminal, rows: 0 }]), 'fail');
+  assert.equal(check([batch, { ...terminal, rows: undefined }]), undefined);
+  assert.equal(check([batch, { ...terminal, rows: undefined }], false), 'fail');
+});
+
 test('JS and TS cold continuations acknowledge their distinct observer commands', () => {
   const observer = { ...command, type: 'observe-execution', worker: 'javascript-worker.js', mode: undefined };
   const reply = { ...observer, type: 'execute-result', action: 'response' };

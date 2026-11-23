@@ -1,3 +1,4 @@
+import { matchesPythonReply, replyRowCount } from 'stage1-worker-evidence';
 import {
   builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
@@ -51,6 +52,7 @@ class ObservedWorker extends NativeWorker {
       const data = event.data;
       const command = pending.get(data?.id);
       if (command) {
+        if (pythonWorker && command.protocolToken !== undefined && !matchesPythonReply(event, command)) return;
         if (command.cppProtocolToken) {
           if (!event.isTrusted || data.protocolToken !== command.cppProtocolToken) return;
           if (data.type === 'runtime-progress' && data.payload?.stage === 'ordinary-case-started') {
@@ -93,7 +95,7 @@ class ObservedWorker extends NativeWorker {
             data.payload?.algorithmIsolationProfile?.tier ?? data.payload?.preparedRunnerTier,
           tierReason: data.payload?.artifact?.isolationProfile?.reasons ??
             data.payload?.algorithmIsolationProfile?.reasons ?? data.payload?.preparedRunnerReason,
-          rows: data.payload?.results?.length, phase: data.payload?.phase,
+          rows: replyRowCount(event, command), phase: data.payload?.phase,
           index: data.payload?.index,
           ...(command.cppProtocolToken ? {
             cppTerminal: true,
@@ -142,7 +144,11 @@ class ObservedWorker extends NativeWorker {
         command.reportsStarts = payload.reportCaseProgress === true;
         command.attemptToken = payload.attemptToken;
       }
-      if (command.id) pending.set(command.id, cppProtocol ? { ...command, cppProtocolToken: data.protocolToken } : command);
+      if (command.id) pending.set(command.id, {
+        ...command,
+        ...(cppProtocol ? { cppProtocolToken: data.protocolToken } : {}),
+        ...(pythonWorker ? { protocolToken: data.protocolToken } : {}),
+      });
       transcript.push(command);
       post(data, options);
     };
