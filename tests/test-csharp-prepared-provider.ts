@@ -824,3 +824,73 @@ test('C# tracing-disabled execution branches above rewritten learner bodies', ()
     'trace-aware member collections must stop before mutation argument allocation when tracing is off'
   );
 });
+
+test('C# observation prepares a companion and uses a dedicated runner during ordinary execution', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  const ordinaryRunner = new FakePreparedCSharpWorker();
+  const observerRunner = new FakePreparedCSharpWorker();
+  compiler.preparedRunnerTier = 'algorithm-fast';
+  const observationCalls: Array<{ prepared: CSharpPreparedProgramArtifact; inputs: Record<string, unknown> }> = [];
+  const ordinaryStarted = Promise.withResolvers<void>();
+  const releaseOrdinary = Promise.withResolvers<void>();
+  const executeCode = ordinaryRunner.executePreparedCode.bind(ordinaryRunner);
+  ordinaryRunner.executePreparedCode = async (prepared, call) => {
+    ordinaryStarted.resolve();
+    await releaseOrdinary.promise;
+    return executeCode(prepared, call);
+  };
+  Object.assign(observerRunner, {
+    async observePrepared(prepared: CSharpPreparedProgramArtifact, call: { inputs: Record<string, unknown> }) {
+      observationCalls.push({ prepared, inputs: call.inputs });
+      return { status: 'refused', reason: 'observer-encode' };
+    },
+  });
+  const authority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 1,
+    warmup: () => compiler.init(),
+    createRunner: () => ordinaryRunner as unknown as CSharpWorkerClient,
+    createObserverRunner: () => observerRunner as unknown as CSharpWorkerClient,
+    releaseRunner() {},
+    releaseObserverRunner() {},
+  };
+  const provider = createCSharpRuntimeClient(authority.compiler, authority);
+  const program = {
+    code: 'public class Solution { public int Solve(int value) => value; }',
+    functionName: 'Solve',
+    executionStyle: 'solution-method' as const,
+  };
+  const ordinary = await provider.prepareProgram({ ...program, mode: 'code' });
+  assert.ok(ordinary.kind === 'prepared' && ordinary.program.mode === 'code');
+  const codeProgram = ordinary.program;
+  const batch = codeProgram.executeBatchIsolated!({ inputBatch: [{ value: 7 }, { value: 11 }] });
+  await ordinaryStarted.promise;
+  try {
+    const observer = await provider.prepareObservation(program, { maxTraceBytes: 1 });
+    try {
+      const drawing = await observer.observe({
+        program, inputs: { value: 7 }, attemptToken: 'observation-attempt',
+        traceOptions: { maxTraceBytes: 1 },
+      });
+      assert.deepEqual(drawing, { status: 'refused', reason: 'observer-encode' });
+      assert.deepEqual(compiler.prepareCalls.map(({ mode }) => mode), ['code', 'trace']);
+      assert.equal(compiler.prepareCalls[0]?.traceOptions, undefined);
+      assert.equal(observationCalls.length, 1);
+      assert.equal(observationCalls[0]?.prepared.mode, 'trace');
+      assert.deepEqual(observationCalls[0]?.inputs, { value: 7 });
+      assert.equal(observerRunner.terminated, true);
+    } finally {
+      await observer.dispose();
+    }
+  } finally {
+    releaseOrdinary.resolve();
+    try {
+      const results = await batch;
+      assert.deepEqual(results.map((row) => row.kind === 'completed' && row.output), [7, 11]);
+      assert.deepEqual(ordinaryRunner.executeCalls.map(({ prepared }) => prepared.mode), ['code', 'code']);
+      assert.equal(ordinaryRunner.terminated, false);
+    } finally {
+      await codeProgram.dispose();
+    }
+  }
+});
