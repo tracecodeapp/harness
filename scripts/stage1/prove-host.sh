@@ -83,11 +83,18 @@ test.write_text(source.replace(opening, opening + """
 PY
 check historical-source-leaves node scripts/stage1/prove-known-leaves.mjs baseline "$baseline" "$receipts"
 
+stale_worker_control() {
+  local status=0
+  bash scripts/stage1/prove-stale-worker.sh "$receipts/lane-pack" "$proof/stale-worker" || status=$?
+  if [ -d "$proof/stale-worker" ]; then mv "$proof/stale-worker" "$receipts/stale-worker"; fi
+  if [ -f "$proof/stale-worker.log" ]; then mv "$proof/stale-worker.log" "$receipts/stale-worker.log"; fi
+  return "$status"
+}
 if record lane-clean-pack source_pack lane-pack "$head"; then
   check member-diff python3 scripts/stage1/tar-manifest.py "$tarball" "$receipts/pack-member-diff.json" \
     --against "$receipts"/lane-pack/*.tgz
   check digest-control bash scripts/stage1/prove-digest.sh "$receipts/lane-pack"
-  check stale-worker-control bash scripts/stage1/prove-stale-worker.sh "$receipts/lane-pack" "$receipts/stale-worker"
+  check stale-worker-control stale_worker_control
 else
   unexpected+=(lane-clean-pack)
 fi
