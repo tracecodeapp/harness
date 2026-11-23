@@ -177,6 +177,7 @@ let javaProjectBridgeRunCounter = 0;
 let javaCompileCacheLimit = DEFAULT_JAVA_COMPILE_CACHE_LIMIT;
 let externalJavaCompilerConfigured = false;
 const javaCompileCache = new Map();
+const javaPreparedSourceCache = new Map();
 const preparedJavaRuntimePrograms = new Map();
 const activeProtocolTokens = new Map();
 const pendingExternalJavaCompiles = new Map();
@@ -450,6 +451,13 @@ function postMessageResponse(message, options = {}) {
     ...(protocolToken ? { protocolToken } : {}),
   }, transported?.transfer ?? []);
 }
+
+self.TraceCodeJavaPreparedCaseAdmitted = (index, admissionId) => {
+  const id = self.TraceCodeActiveKernelRequestId;
+  if (id && activeProtocolTokens.has(id)) {
+    postMessageResponse({ id, type: 'java-prepared-case-admitted', payload: { index, admissionId } });
+  }
+};
 
 function javaHttpBase64FromString(value) {
   const bytes = javaHttpEncodeUtf8(String(value ?? ''));
@@ -8461,6 +8469,7 @@ async function runJavaCodeBatchRequest(payload, requestId) {
 async function prepareJavaRuntimeProgram(payload, requestId) {
   const totalStart = performance.now();
   const mode = payload?.mode;
+  const observerOnly = mode === 'trace' && payload?.observerOnly === true;
   if (mode !== 'code' && mode !== 'trace') {
     return {
       success: false,
@@ -8483,31 +8492,38 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       inputs: {},
       options: payload.options ?? {},
     });
-    stableCompileId = stableHash({
-      compileMode: `prepared-${mode}`,
-      code: normalizedPayload.code,
+    const buildKey = JSON.stringify({
+      compileMode: observerOnly ? 'prepared-observer' : `prepared-${mode}`,
+      code: payload.code,
       functionName: normalizedPayload.functionName,
       executionStyle: normalizedPayload.executionStyle,
       scriptMode: normalizedPayload.scriptMode === true,
       options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
     });
+    stableCompileId = stableHash(buildKey);
     // Admission excludes the exact generated entry shell and its nested
     // classes. Its identity must not be predictable from learner-controlled
     // source, otherwise a crafted top-level `$` class could impersonate an
     // excluded nested shell class.
-    const shellIdentity = javaWorkerSecureRandomHex(4);
-    const traceDynamicInputs = preparedDynamicInputEntriesForPayload(
+    const cached = observerOnly ? javaPreparedSourceCache.get(buildKey) : undefined;
+    const shellIdentity = cached?.shellIdentity ?? javaWorkerSecureRandomHex(4);
+    const traceDynamicInputs = cached?.dynamicInputs ?? preparedDynamicInputEntriesForPayload(
       normalizedPayload,
       stableCompileId
     );
     const sourceStart = performance.now();
-    if (mode === 'trace') {
+    if (cached) {
+      ({ preparedSources, entryClass, cleanEntryClass, dynamicInputs } = cached);
+      javaPreparedSourceCache.delete(buildKey);
+    } else if (mode === 'trace') {
       const traceShellIdentity = `${shellIdentity}Trace`;
       const cleanShellIdentity = `${shellIdentity}Clean`;
       const traceExportsClassName = buildExportsClassName(traceShellIdentity);
       const cleanExportsClassName = buildExportsClassName(cleanShellIdentity);
       entryClass = `${buildPackageName(traceShellIdentity)}.${traceExportsClassName}`;
-      cleanEntryClass = `${buildPackageName(cleanShellIdentity)}.${cleanExportsClassName}`;
+      cleanEntryClass = observerOnly
+        ? undefined
+        : `${buildPackageName(cleanShellIdentity)}.${cleanExportsClassName}`;
       preparedSources = [
         {
           path: `/str/${traceExportsClassName}.java`,
@@ -8517,7 +8533,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
             traceDynamicInputs
           ),
         },
-        {
+        ...(!observerOnly ? [{
           path: `/str/${cleanExportsClassName}.java`,
           source: buildPlainRunnableSource(
             normalizedPayload,
@@ -8527,7 +8543,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
             // there is no reason to serialize every case input twice.
             traceDynamicInputs
           ),
-        },
+        }] : []),
       ];
       dynamicInputs = traceDynamicInputs;
     } else {
@@ -8542,6 +8558,14 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
         ),
       }];
       dynamicInputs = traceDynamicInputs;
+    }
+    if (observerOnly && javaCompileCacheLimit > 0) {
+      javaPreparedSourceCache.set(buildKey, {
+        shellIdentity, preparedSources, dynamicInputs, entryClass, cleanEntryClass,
+      });
+      while (javaPreparedSourceCache.size > javaCompileCacheLimit) {
+        javaPreparedSourceCache.delete(javaPreparedSourceCache.keys().next().value);
+      }
     }
     rewriteMs = performance.now() - sourceStart;
   } catch (error) {
@@ -8655,6 +8679,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
 
   const preparedState = {
     mode,
+    ...(observerOnly ? { observerOnly: true } : {}),
     entryClass,
     ...(cleanEntryClass ? { cleanEntryClass } : {}),
     learnerFrame:
@@ -8750,6 +8775,7 @@ async function restorePreparedJavaRuntimeProgram(payload) {
   }
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
+    ...(snapshot.observerOnly === true ? { observerOnly: true } : {}),
     entryClass: snapshot.entryClass,
     ...(snapshot.cleanEntryClass
       ? { cleanEntryClass: snapshot.cleanEntryClass }
@@ -9045,7 +9071,25 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   }
 
   const libraryCallStart = performance.now();
+  const observerOnly = program.observerOnly === true;
+  const options = payload?.observationOptions ?? {};
+  const budget = (value, ceiling) => Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, ceiling)
+    : ceiling;
+  const stored = budget(options.maxStoredEvents, DEFAULT_MAX_STORED_EVENTS);
+  const steps = budget(options.maxTraceSteps, DEFAULT_MAX_STORED_EVENTS);
+  const maxTraceBytes = budget(options.maxTraceBytes, 8 * 1024 * 1024);
+  const observation = observerOnly ? {
+    nonce: javaWorkerSecureRandomHex(4),
+    eventCut: Number.isSafeInteger(options.maxTraceSteps) && options.maxTraceSteps > 0 &&
+      options.maxTraceSteps <= stored ? 'step-budget' : 'stored-event-budget',
+    maxTraceBytes,
+    maxLineEvents: budget(options.maxLineEvents, 0x7fffffff),
+    maxSingleLineHits: budget(options.maxSingleLineHits, 0x7fffffff),
+  } : undefined;
   let report;
+  const admissionId = payload?.admissionId;
+  const reportAdmission = !observerOnly && program.mode === 'code' && Number.isSafeInteger(admissionId);
   try {
     const compileLibraryClass = await getCompileLibraryClass();
     if (
@@ -9061,7 +9105,7 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
         programId,
         program.entryClass,
         String(
-          program.mode === 'trace'
+          observerOnly ? Math.min(stored, steps) : program.mode === 'trace'
             ? resolveMaxStoredEvents(program.traceOptions)
             : 1
         ),
@@ -9079,7 +9123,10 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
             : payload?.traceEnabledBatch ?? []
         ),
         program.cleanEntryClass ?? '',
-        String(payload?.stopAtFirstRunaway === true)
+        String(payload?.stopAtFirstRunaway === true),
+        ...(observerOnly
+          ? ['observer', JSON.stringify(observation)]
+          : reportAdmission ? ['ordinary', String(admissionId)] : [])
       );
     report = JSON.parse(reportText);
   } catch (error) {
@@ -9093,6 +9140,9 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   const libraryCallEnd = performance.now();
   const rawResults = Array.isArray(report.results) ? report.results : [];
   const results = rawResults.map((entry) => {
+    if (observerOnly) {
+      return preparedJavaObservationResult(entry, program, maxTraceBytes, report.runnerProcessCount);
+    }
     const executionTimeMs =
       (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0);
     const result = preparedJavaResultFromReport(
@@ -9139,6 +9189,41 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
       artifactCacheHit: true,
     },
   };
+}
+
+function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProcessCount) {
+  const timings = { runnerProcessCount: runnerProcessCount ?? 0 };
+  const refused = (reason) => ({
+    success: false, trace: { events: [] }, observation: { reason }, timings,
+  });
+  const report = entry.observation;
+  if (!report || report.reason) return refused(report?.reason ?? 'observer-protocol');
+  try {
+    const events = normalizeJavaTraceEvents(report.events, program.normalizedPayload);
+    const encoder = new TextEncoder();
+    let byteCount = 0;
+    let retained = 0;
+    for (const event of events) {
+      byteCount += encoder.encode(event).byteLength + 1;
+      if (byteCount > maxTraceBytes) break;
+      retained++;
+    }
+    const cut = retained < events.length ? 'byte-budget' : report.cut;
+    return {
+      success: true,
+      trace: { events: retained < events.length ? events.slice(0, retained) : events },
+      sourceText: program.normalizedPayload.sourceText,
+      observation: {
+        ...(cut ? {
+          cut,
+          attemptedEvents: Math.max(events.length, report.attemptedEvents ?? 0),
+        } : {}),
+      },
+      timings,
+    };
+  } catch {
+    return refused('observer-encode');
+  }
 }
 
 async function disposePreparedJavaRuntimeProgram(payload) {
@@ -9302,6 +9387,7 @@ self.onmessage = (event) => {
         const compileLibraryClass = await getCompileLibraryClass();
         await compileLibraryClass.resetPersistentRuntimeStorage();
         javaCompileCache.clear();
+        javaPreparedSourceCache.clear();
         postMessageResponse({
           id: message.id,
           type: 'reset-persistent-storage',
@@ -9337,13 +9423,18 @@ self.onmessage = (event) => {
     message.type === 'execute-prepared-runtime-program-batch' ||
     message.type === 'dispose-prepared-runtime-program'
   ) {
+    const queuedAt = performance.now();
     queue = queue.then(async () => {
       try {
+        const dequeuedAt = performance.now();
         applyWorkerOptions(message.payload);
         await ensureReady();
         // Complete trusted compiler/runtime loading before ambient browser
         // authority is removed for the user-controlled invocation.
-        await warmRunHost();
+        if (!(message.payload?.observerOnly === true ||
+          preparedJavaRuntimePrograms.get(message.payload?.programId)?.observerOnly)) {
+          await warmRunHost();
+        }
         const requestedAuthorityMode = message.type === 'execute-project-java'
           ? message.payload?.projectUserAuthorityMode ?? 'temporary'
           : 'temporary';
@@ -9409,6 +9500,13 @@ self.onmessage = (event) => {
           if (self.TraceCodeActiveKernelRequestId === message.id) {
             self.TraceCodeActiveKernelRequestId = undefined;
           }
+        }
+        if (result.timings && (
+          message.type === 'prepare-runtime-program' ||
+          message.type === 'execute-prepared-runtime-program-batch'
+        )) {
+          result.timings.queueMs = dequeuedAt - queuedAt;
+          result.timings.setupMs = performance.now() - dequeuedAt - (result.timings.totalMs ?? 0);
         }
         postExecutionResult(result);
       } catch (error) {

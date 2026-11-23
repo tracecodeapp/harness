@@ -1,5 +1,6 @@
 import type {
   CodeExecutionResult,
+  Drawing,
   ExecutionResult,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
@@ -8,6 +9,8 @@ import type {
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
   RuntimePreparedTraceProgram,
+  RuntimeObservationCall,
+  RuntimeObservationProvider,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
@@ -52,6 +55,10 @@ export type JavaBrowserPreparedExecutionProviderOptions =
 
 export interface JavaPreparedExecutionProvider
   extends RuntimePreparedExecutionProvider {
+  /** @internal A retained observer artifact on a worker separate from the ordinary lease. */
+  prepareObservation(
+    program: RuntimeObservationCall['program']
+  ): JavaPreparedObservation;
   /**
    * Releases only an unused warm standby. The provider remains valid and will
    * lazily create a new standby on its next init or preparation.
@@ -64,6 +71,11 @@ export interface JavaPreparedExecutionProvider
    * be disposed by their evaluation owner.
    */
   dispose(): void;
+}
+
+/** @internal The evaluation owner controls this lifetime and when cases are admitted. */
+export interface JavaPreparedObservation extends RuntimeObservationProvider {
+  dispose(): Promise<void>;
 }
 
 interface StandbyWorker {
@@ -228,11 +240,11 @@ class JavaPreparedCodeProgramImpl
   }
 
   executeBatchIsolated(
-    call: RuntimePreparedCodeBatchCall
+    call: RuntimePreparedCodeBatchCall & { onCaseStarted?: (index: number) => void }
   ): Promise<readonly CodeExecutionResult[]> {
     return this.executeWithClient(
       (client) =>
-        client.executePreparedCodeBatch(this.programId, call),
+        client.executePreparedCodeBatch(this.programId, call, call.onCaseStarted),
       call.signal
     );
   }
@@ -254,6 +266,15 @@ class JavaPreparedTraceProgramImpl
     >
   ) {
     super(programId, snapshot, client, releaseClient);
+  }
+
+  observe(call: RuntimeObservationCall): Promise<Drawing> {
+    return this.executeWithClient(
+      (client) => client.observePreparedProgram(
+        this.programId, call.inputs, call.traceOptions, call.signal
+      ),
+      call.signal
+    );
   }
 
   async executeIsolated(
@@ -316,6 +337,7 @@ class JavaPreparedExecutionProviderImpl
   /** JVM start, restore and replacement run outside each case's own clock. */
   readonly lifecycleAllowanceMs = 120_000;
   private standby: StandbyWorker | undefined;
+  private observerStandby: StandbyWorker | undefined;
   private disposed = false;
   private readonly activePreparationClients = new Set<JavaWorkerClient>();
   private readonly terminatedPreparationClients =
@@ -340,29 +362,81 @@ class JavaPreparedExecutionProviderImpl
       functionName: call.functionName,
       traceOptions: call.traceOptions,
     });
+    return this.prepareInLease(call, false);
+  }
 
-    const standby = this.takeStandby();
+  prepareObservation(program: RuntimeObservationCall['program']): JavaPreparedObservation {
+    this.assertActive();
+    const lifetime = new AbortController();
+    const ready = this.prepareInLease({
+      ...program,
+      mode: 'trace',
+      signal: lifetime.signal,
+    }, true).then((result) => result.kind === 'prepared' &&
+      result.program instanceof JavaPreparedTraceProgramImpl ? result.program : undefined,
+      () => undefined);
+    let disposed: Promise<void> | undefined;
+    return {
+      async observe(call) {
+        if (call.signal?.aborted) throw abortReason(call.signal);
+        if (lifetime.signal.aborted) throw abortReason(lifetime.signal);
+        if (call.traceOptions?.minimalTrace === true) {
+          return { status: 'refused', reason: 'unsupported-option' };
+        }
+        const prepared = await ready;
+        if (call.signal?.aborted) throw abortReason(call.signal);
+        if (lifetime.signal.aborted) throw abortReason(lifetime.signal);
+        if (!prepared) return { status: 'refused', reason: 'observer-prepare' };
+        try {
+          return await prepared.observe(call);
+        } catch (error) {
+          if (call.signal?.aborted) throw abortReason(call.signal);
+          if (lifetime.signal.aborted) throw abortReason(lifetime.signal);
+          return {
+            status: 'refused',
+            reason: error instanceof RuntimeProviderError && error.reason === 'protocol'
+              ? 'observer-protocol'
+              : 'observer-runtime',
+          };
+        }
+      },
+      dispose() {
+        if (disposed) return disposed;
+        lifetime.abort();
+        disposed = ready.then(async (prepared) => prepared?.dispose());
+        return disposed;
+      },
+    };
+  }
+
+  private async prepareInLease(
+    call: RuntimeProgramPreparationCall,
+    observerOnly: boolean
+  ): Promise<RuntimeProgramPreparationResult> {
+    if (call.signal?.aborted) throw abortReason(call.signal);
+    const standby = this.ensureStandby(observerOnly);
+    if (observerOnly) this.observerStandby = undefined;
+    else this.standby = undefined;
     this.activePreparationClients.add(standby.client);
-    let initialized: { success: boolean; loadTimeMs: number };
-    try {
-      initialized = await standby.ready;
-      this.assertActive();
-    } catch (error) {
-      this.terminatePreparationClientOnce(standby.client);
-      throw error;
-    }
-    if (!initialized.success) {
-      this.terminatePreparationClientOnce(standby.client);
-      throw new RuntimeProviderError('Java runtime initialization was unsuccessful.');
-    }
-
+    const cancel = () => this.terminatePreparationClientOnce(standby.client);
+    call.signal?.addEventListener('abort', cancel, { once: true });
     let result: JavaWorkerPreparedProgramResult;
     try {
-      result = await standby.client.prepareRuntimeProgram(call);
+      const initialized = await standby.ready;
       this.assertActive();
+      if (call.signal?.aborted) throw abortReason(call.signal);
+      if (!initialized.success) {
+        throw new RuntimeProviderError('Java runtime initialization was unsuccessful.');
+      }
+      result = await standby.client.prepareRuntimeProgram(call, observerOnly);
+      this.assertActive();
+      if (call.signal?.aborted) throw abortReason(call.signal);
     } catch (error) {
       this.terminatePreparationClientOnce(standby.client);
+      if (call.signal?.aborted) throw abortReason(call.signal);
       throw error;
+    } finally {
+      call.signal?.removeEventListener('abort', cancel);
     }
     if (!result.success || !result.programId) {
       this.terminatePreparationClientOnce(standby.client);
@@ -383,7 +457,7 @@ class JavaPreparedExecutionProviderImpl
     // the program returns the lease.
     this.activePreparationClients.delete(standby.client);
     const returnClient = (client: JavaWorkerClient) =>
-      this.returnWarmClient(client);
+      this.returnWarmClient(client, observerOnly);
 
     const program =
       call.mode === 'trace'
@@ -415,6 +489,10 @@ class JavaPreparedExecutionProviderImpl
       this.terminatePreparationClientOnce(this.standby.client);
     }
     this.standby = undefined;
+    if (this.observerStandby) {
+      this.terminatePreparationClientOnce(this.observerStandby.client);
+    }
+    this.observerStandby = undefined;
     for (const client of this.activePreparationClients) {
       this.terminatePreparationClientOnce(client);
     }
@@ -422,9 +500,10 @@ class JavaPreparedExecutionProviderImpl
 
   releaseStandby(): void {
     this.assertActive();
-    if (!this.standby) return;
-    this.terminatePreparationClientOnce(this.standby.client);
+    if (this.standby) this.terminatePreparationClientOnce(this.standby.client);
+    if (this.observerStandby) this.terminatePreparationClientOnce(this.observerStandby.client);
     this.standby = undefined;
+    this.observerStandby = undefined;
   }
 
   private assertActive(): void {
@@ -433,8 +512,9 @@ class JavaPreparedExecutionProviderImpl
     }
   }
 
-  private ensureStandby(): StandbyWorker {
-    if (this.standby) return this.standby;
+  private ensureStandby(observerOnly = false): StandbyWorker {
+    const prior = observerOnly ? this.observerStandby : this.standby;
+    if (prior) return prior;
     const client = this.options.createWorkerClient();
     const standby = {
       client,
@@ -443,18 +523,13 @@ class JavaPreparedExecutionProviderImpl
     // A caller may abandon init(). Prevent a rejected warmup from becoming an
     // unhandled rejection while preserving the original Promise for consumers.
     standby.ready.catch(() => undefined);
-    this.standby = standby;
+    if (observerOnly) this.observerStandby = standby;
+    else this.standby = standby;
     return standby;
   }
 
-  private takeStandby(): StandbyWorker {
-    const standby = this.ensureStandby();
-    this.standby = undefined;
-    return standby;
-  }
-
-  private returnWarmClient(client: JavaWorkerClient): void {
-    if (this.disposed || this.standby) {
+  private returnWarmClient(client: JavaWorkerClient, observerOnly: boolean): void {
+    if (this.disposed || (observerOnly ? this.observerStandby : this.standby)) {
       this.terminatePreparationClientOnce(client);
       return;
     }
@@ -463,7 +538,8 @@ class JavaPreparedExecutionProviderImpl
       ready: client.init(),
     };
     standby.ready.catch(() => undefined);
-    this.standby = standby;
+    if (observerOnly) this.observerStandby = standby;
+    else this.standby = standby;
   }
 
   private terminatePreparationClientOnce(client: JavaWorkerClient): void {

@@ -816,6 +816,37 @@ try {
           );
           if (!isolated) {
             await page.goto(`${origin}?isolated=false&stopping`);
+            const companion = await page.evaluate(() => globalThis.javaCompanionProbe());
+            assert.deepEqual(companion.admission, [0, 1, 2]);
+            assert.deepEqual(companion.outcomes[0]?.slice(0, 2), ['failed', ['ordinary 0']]);
+            assert.deepEqual(companion.outcomes[1], ['completed', ['ordinary 1'], 2]);
+            assert.equal(companion.outcomes[2]?.[2], 'client-timeout');
+            assert.equal(companion.positive.status, 'drawn');
+            assert.equal(companion.failed?.status, 'drawn');
+            assert.equal(companion.step.status, 'truncated');
+            assert.equal(companion.byte.status, 'truncated');
+            assert.equal(companion.line.status, 'truncated');
+            assert.equal(companion.singleLine.status, 'truncated');
+            if (companion.step.status === 'truncated' && companion.byte.status === 'truncated' &&
+              companion.line.status === 'truncated' && companion.singleLine.status === 'truncated') {
+              assert.equal(companion.step.reason, 'step-budget');
+              assert.ok(companion.step.trace.events.length > 0);
+              assert.equal(companion.byte.reason, 'byte-budget');
+              assert.equal(companion.byte.trace.events.length, 0);
+              assert.equal(companion.byte.attemptedEvents, 1);
+              assert.equal(companion.line.reason, 'line-budget');
+              assert.equal(companion.singleLine.reason, 'single-line-budget');
+            }
+            assert.equal(companion.workers, 2);
+            const prepares = companion.requests.filter(({ type }) => type === 'prepare-runtime-program');
+            assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)]),
+              [[1, false], [2, true]]);
+            assert.deepEqual(companion.requests.filter(({ type }) =>
+              type === 'execute-prepared-runtime-program-batch')
+              .map(({ worker, count }) => [worker, count]).sort(([a], [b]) => a! - b!),
+              [[1, 4], ...Array.from({ length: 6 }, () => [2, 1])]);
+            assert.ok(!companion.requests.some(({ type }) => type === 'restore-prepared-runtime-program'));
+            console.log('PASS: separate Java observer preserves the ordinary batch and reuses its artifact');
             let deadline: ReturnType<typeof setTimeout> | undefined;
             const probe = await Promise.race([
               page.evaluate(() => globalThis.javaStoppingBatchProbe()),

@@ -126,6 +126,15 @@ public final class TraceHooks {
   // are captured only when a run is started with profiling enabled.
   private static boolean profileEnabled = false;
   private static boolean budgetAbortArmed = false;
+  private static String observerEventCut;
+  private static String observerCut;
+  private static int observerMaxLineEvents;
+  private static int observerMaxSingleLineHits;
+  private static int observerMaxBytes;
+  private static int observerLineEvents;
+  private static int observerBytes;
+  private static final java.util.Map<Integer, Integer> OBSERVER_LINE_HITS =
+      new java.util.HashMap<>();
   private static int nextCallStackId = 0;
   private static long profileRunStartNs = 0L;
   private static long profileBudgetTripNs = 0L;
@@ -383,10 +392,9 @@ public final class TraceHooks {
         return;
       }
       if (totalStoredEvents >= maxEvents) {
-        traceLimitExceeded = true;
-        limitExceeded = true;
-        if (profileBudgetTripNs == 0L) profileBudgetTripNs = System.nanoTime();
-        droppedEventCount += 1;
+        tripBudgetLocked(observerEventCut);
+        throwBudgetExceeded = true;
+      } else if (observerEventCut != null && !retainObserverBytesLocked(sanitizedEvent)) {
         throwBudgetExceeded = true;
       } else {
         EVENTS.add(sanitizedEvent);
@@ -402,6 +410,56 @@ public final class TraceHooks {
     profileStoreCalls += 1;
     if (throwBudgetExceeded && budgetAbortArmed) {
       throw new TraceBudgetExceededError();
+    }
+  }
+
+  private static void tripBudgetLocked(String cut) {
+    traceLimitExceeded = true;
+    limitExceeded = true;
+    if (profileBudgetTripNs == 0L) profileBudgetTripNs = System.nanoTime();
+    droppedEventCount += 1;
+    observerCut = cut;
+  }
+
+  private static boolean retainObserverBytesLocked(String event) {
+    if (observerMaxBytes == 0) return true;
+    int bytes = 1; // NDJSON delimiter
+    for (int index = 0; index < event.length(); index++) {
+      char ch = event.charAt(index);
+      if (ch < 0x80) bytes += 1;
+      else if (ch < 0x800) bytes += 2;
+      else if (Character.isHighSurrogate(ch) && index + 1 < event.length()
+          && Character.isLowSurrogate(event.charAt(index + 1))) {
+        bytes += 4;
+        index += 1;
+      } else bytes += Character.isSurrogate(ch) ? 1 : 3;
+      if (bytes > observerMaxBytes - observerBytes) {
+        tripBudgetLocked("byte-budget");
+        return false;
+      }
+    }
+    observerBytes += bytes;
+    return true;
+  }
+
+  public static int beginObservation(
+      int maxEvents, boolean profile, String eventCut, int maxLines,
+      int maxSingleLineHits, int maxBytes) {
+    int token = beginRun(maxEvents, profile, true);
+    synchronized (STATE_LOCK) {
+      observerEventCut = eventCut;
+      observerMaxLineEvents = maxLines;
+      observerMaxSingleLineHits = maxSingleLineHits;
+      observerMaxBytes = maxBytes;
+      // The dedicated observer exports one authenticated frame.
+      slabDrainThreshold = 0;
+    }
+    return token;
+  }
+
+  public static String observationCut() {
+    synchronized (STATE_LOCK) {
+      return observerCut;
     }
   }
 
@@ -533,6 +591,11 @@ public final class TraceHooks {
     nextTraceReferenceId = 0;
     nextCallStackId = 0;
     budgetAbortArmed = false;
+    if (observerEventCut != null) OBSERVER_LINE_HITS.clear();
+    observerEventCut = null;
+    observerCut = null;
+    observerLineEvents = 0;
+    observerBytes = 0;
     resetProfileLocked();
   }
 
@@ -684,6 +747,19 @@ public final class TraceHooks {
   public static void emitLineAtLine(int line) {
     profileLineCalls += 1;
     if (dropIfStorageExhausted()) return;
+    if (observerEventCut != null && runActiveForCurrentThread()) {
+      synchronized (STATE_LOCK) {
+        if (observerMaxLineEvents > 0 && ++observerLineEvents > observerMaxLineEvents) {
+          tripBudgetLocked("line-budget");
+          throw new TraceBudgetExceededError();
+        }
+        if (observerMaxSingleLineHits > 0 &&
+            OBSERVER_LINE_HITS.merge(line, 1, Integer::sum) > observerMaxSingleLineHits) {
+          tripBudgetLocked("single-line-budget");
+          throw new TraceBudgetExceededError();
+        }
+      }
+    }
     java.util.List<TraceFrame> stack = state().callStack;
     String functionName = stack.isEmpty() ? null : stack.get(stack.size() - 1).functionName;
     if (emitFast(EVENT_HEADER_LINE, line, null, null, null, null, functionName)) return;

@@ -3,6 +3,7 @@ import {
   createBrowserJudgeHost,
 } from '../../src/judge';
 import { JavaWorkerClient } from '../../packages/runtime-java/src/java-worker-client';
+import { createJavaBrowserPreparedExecutionProvider } from '../../packages/runtime-java/src/java-prepared-provider';
 
 const workerUrl = '/workers/java-runtime-worker.js';
 const source = `class Solution {
@@ -188,7 +189,84 @@ export async function runJavaStoppingBatchBrowserTest() {
   }
 }
 
+export async function runJavaCompanionBrowserTest() {
+  const requests: Array<{ worker: number; type: string; observer?: boolean; count?: number }> = [];
+  let workers = 0;
+  const provider = createJavaBrowserPreparedExecutionProvider({
+    workerUrl: workerUrl + '?tracejvmBaseUrl=/tracejvm/',
+    tracingTimeoutMs: 1_500,
+    workerFactory(url) {
+      const worker = new Worker(url);
+      const id = ++workers;
+      const send = worker.postMessage.bind(worker);
+      worker.postMessage = (message, options?) => {
+        requests.push({
+          worker: id, type: message.type, observer: message.payload?.observerOnly,
+          count: message.payload?.inputBatch?.length,
+        });
+        send(message, options as StructuredSerializeOptions);
+      };
+      return worker;
+    },
+  });
+  const descriptor = {
+    code: `class Solution {
+      public int solve(int n) {
+        System.out.println("ordinary " + n);
+        if (n == 0) throw new IllegalStateException("expected");
+        if (n < 0) while (true) {}
+        int result = n + 1;
+        for (int i = 0; i < n; i++) {
+          result += 0;
+        }
+        return result;
+      }
+    }`,
+    functionName: 'solve',
+    executionStyle: 'solution-method' as const,
+  };
+  const ordinaryPending = provider.prepareProgram({ ...descriptor, mode: 'code' });
+  const observer = provider.prepareObservation(descriptor);
+  const draw = (n: number, traceOptions?: import('../../packages/runtime-contracts/src').TraceExecutionOptions) =>
+    observer.observe({ program: descriptor, inputs: { n }, traceOptions, attemptToken: 'browser-' + n });
+  const ordinary = await ordinaryPending;
+  try {
+    if (ordinary.kind !== 'prepared' || ordinary.program.mode !== 'code') {
+      throw new Error('Java ordinary preparation failed');
+    }
+    const admission: number[] = [];
+    const caseDrawings: Array<ReturnType<typeof draw>> = [];
+    const call = {
+      inputBatch: [{ n: 0 }, { n: 1 }, { n: -1 }, { n: 2 }],
+      limits: { wallClockMs: 800 },
+      stopAtFirstRunaway: true,
+      onCaseStarted(index: number) {
+        admission.push(index);
+        if (index === 0) caseDrawings.push(draw(0));
+      },
+    };
+    const batch = await ordinary.program.executeBatchIsolated!(call);
+    const [failed, positive, step, byte, line, singleLine] = await Promise.all([
+      caseDrawings[0], draw(1), draw(1, { maxTraceSteps: 2 }),
+      draw(1, { maxTraceBytes: 1 }), draw(1, { maxLineEvents: 1 }),
+      draw(3, { maxSingleLineHits: 1 }),
+    ]);
+    return {
+      admission,
+      outcomes: batch.map((item) => ([item.kind, item.consoleOutput,
+        item.kind === 'completed' ? item.output : item.kind === 'limit' ? item.reason : undefined])),
+      failed, positive, step, byte, line, singleLine, requests, workers,
+    };
+  } finally {
+    await observer.dispose();
+    if (ordinary.kind === 'prepared') await ordinary.program.dispose();
+    provider.dispose();
+  }
+}
+
 declare global {
   var javaStoppingBatchProbe: typeof runJavaStoppingBatchBrowserTest;
+  var javaCompanionProbe: typeof runJavaCompanionBrowserTest;
 }
 globalThis.javaStoppingBatchProbe = runJavaStoppingBatchBrowserTest;
+globalThis.javaCompanionProbe = runJavaCompanionBrowserTest;

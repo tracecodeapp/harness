@@ -1047,6 +1047,7 @@ async function runInLeasedTraceJVMBatchProcess(
     fallbackArgs,
     reuseProcess,
     stopAtFirstRunaway,
+    onCaseAdmitted,
     reportRun,
   }
 ) {
@@ -1129,12 +1130,13 @@ async function runInLeasedTraceJVMBatchProcess(
   try {
     for (let index = 0; index < systemPropertiesBatch.length; index += 1) {
       if (!process) await createProcess();
+      onCaseAdmitted?.(index);
       const deadline = perCaseWallClockMs > 0
         ? performance.now() + perCaseWallClockMs
         : Infinity;
       const run = await runAttempt(index, argsBatch?.[index] ?? request.args, deadline);
       let report = reportRun(run);
-      if (report.fallbackRequired) {
+      if (fallbackArgs && report.fallbackRequired) {
         releaseProcess();
         await resetTraceKernelExecutionScope(programId);
         if (performance.now() < deadline) await createProcess();
@@ -1437,6 +1439,33 @@ function executionReport(
     retirementRecommended: false,
     ...(run.timeoutReason ? { timeoutReason: run.timeoutReason } : {}),
     fallbackRequired,
+  };
+}
+
+function traceJVMObservationReport(run, nonce) {
+  const refuse = (reason) => ({ success: false, observation: { reason } });
+  if (run.timeoutReason === 'client-timeout') return refuse('observer-timeout');
+  if (run.status !== 'completed' || run.exitCode !== 0) return refuse('observer-runtime');
+  const lines = run.stdout.trimEnd().split(/\r?\n/u);
+  const marker = `__TRACECODE_OBSERVATION_END__:${nonce}:`;
+  const end = lines.at(-1);
+  if (!end?.startsWith(marker)) return refuse('recorder-unavailable');
+  const [cut, droppedText, extra] = end.slice(marker.length).split(':');
+  const dropped = Number(droppedText);
+  const beginMarker = `__TRACECODE_OBSERVATION_BEGIN__:${nonce}:`;
+  const beginIndex = lines.findLastIndex((line) => line.startsWith(beginMarker));
+  const count = lines.length - beginIndex - 2;
+  if (beginIndex < 0 || lines[beginIndex] !== beginMarker + count ||
+      !/^\d+$/u.test(droppedText ?? '') || !Number.isSafeInteger(count + dropped) ||
+      extra !== undefined || Boolean(cut) !== (dropped > 0)) {
+    return refuse('observer-protocol');
+  }
+  return {
+    success: true,
+    observation: {
+      events: lines.slice(beginIndex + 1, -1),
+      ...(cut ? { cut, attemptedEvents: count + dropped } : {}),
+    },
   };
 }
 
@@ -1896,7 +1925,9 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   traceProfile = '',
   traceEnabledBatch = '[]',
   cleanEntryClass = '',
-  stopAtFirstRunaway = 'false'
+  stopAtFirstRunaway = 'false',
+  batchRole = '',
+  observationOptions = '{}'
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1955,11 +1986,22 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   let batch;
   try {
     const cleanEntry = String(cleanEntryClass) || String(entryClass);
+    const observerOnly = batchRole === 'observer';
+    const observation = observerOnly ? JSON.parse(observationOptions) : undefined;
     const traceArgs = traceJVMRunnerArgs(entryClass, maxStoredEvents, {
       learnerFrame,
       profile: String(traceProfile) === 'true',
       fallbackEntryClass: cleanEntry,
     });
+    if (observation?.nonce) {
+      traceArgs.push(
+        observation.nonce,
+        String(observation.eventCut),
+        String(observation.maxLineEvents),
+        String(observation.maxSingleLineHits),
+        String(observation.maxTraceBytes)
+      );
+    }
     const cleanArgs = traceJVMRunnerArgs(cleanEntry, maxStoredEvents, {
       learnerFrame,
       profile: String(traceProfile) === 'true',
@@ -1989,10 +2031,15 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       {
         perCaseWallClockMs: Number.parseInt(String(perCaseWallClockMs), 10) || 0,
         argsBatch,
-        fallbackArgs: cleanArgs,
+        fallbackArgs: observerOnly ? undefined : cleanArgs,
+        onCaseAdmitted: batchRole === 'ordinary'
+          ? (index) => self.TraceCodeJavaPreparedCaseAdmitted?.(index, Number(observationOptions))
+          : undefined,
         reuseProcess: prepared.algorithmIsolationProfile?.tier === 'algorithm-fast',
         stopAtFirstRunaway: String(stopAtFirstRunaway) === 'true',
-        reportRun: (run) => executionReport(run, compile, prepared.compilerDebugProfile, true),
+        reportRun: (run) => observation?.nonce
+          ? traceJVMObservationReport(run, observation.nonce)
+          : executionReport(run, compile, prepared.compilerDebugProfile, true),
       }
     );
   } finally {

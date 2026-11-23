@@ -10,6 +10,30 @@ const completed = (stdout, isolation = 'clean') => ({
   status: 'completed', exitCode: 0, stdout, stderr: '', isolation: { status: isolation },
 });
 
+test('observer export requires the matching recorder frame and retains an empty byte-cut witness', () => {
+  const evaluate = (stdout) => runInNewContext(worker + `
+    traceJVMObservationReport({ status: 'completed', exitCode: 0, stdout }, 'trusted')
+  `, {
+    stdout, URL, TextDecoder, Uint8Array,
+    self: {
+      location: { href: 'https://test.invalid/workers/java-runtime-worker.js' },
+      postMessage() {}, addEventListener() {}, close() {}, importScripts() {},
+    },
+  }).observation;
+  assert.equal(evaluate(
+    '__TRACECODE_OBSERVATION_BEGIN__:forged:0\n__TRACECODE_OBSERVATION_END__:forged:byte-budget:1\n'
+  ).reason, 'recorder-unavailable');
+  assert.equal(evaluate(
+    '__TRACECODE_OBSERVATION_BEGIN__:trusted:2\ntrace:{}\n__TRACECODE_OBSERVATION_END__:trusted::0\n'
+  ).reason, 'observer-protocol');
+  const valid = evaluate(
+    '__TRACECODE_OBSERVATION_BEGIN__:trusted:0\n__TRACECODE_OBSERVATION_END__:trusted:byte-budget:1\n'
+  );
+  assert.equal(valid.cut, 'byte-budget');
+  assert.equal(valid.attemptedEvents, 1);
+  assert.equal(valid.events.length, 0);
+});
+
 function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast' } = {}) {
   const calls = [];
   const timers = new Map();
