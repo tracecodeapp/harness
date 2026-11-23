@@ -1041,11 +1041,15 @@ async function runInLeasedTraceJVMBatchProcess(
   request,
   systemPropertiesBatch,
   programId,
-  perCaseWallClockMs,
-  argsBatch,
-  reuseProcess = false
+  {
+    perCaseWallClockMs,
+    argsBatch,
+    fallbackArgs,
+    reuseProcess,
+    stopAtFirstRunaway,
+    reportRun,
+  }
 ) {
-  const processFiles = request.processFiles;
   const results = [];
   let processCount = 0;
   let process;
@@ -1058,104 +1062,99 @@ async function runInLeasedTraceJVMBatchProcess(
     host = undefined;
   };
 
-  const createProcess = async (remainingExecutions) => {
-    processCount += 1;
+  const createProcess = async () => {
     host = traceJVMProcessHost(programId);
-    const kernelBound = host.kernelBound;
     process = await client.createProcess({
       workingDirectory: '/workspace',
-      retirementAfterExecutions: remainingExecutions,
-      ...(kernelBound ? { host } : {}),
+      retirementAfterExecutions: reuseProcess ? TRACE_JVM_LEASE_MAX_EXECUTIONS : 1,
+      ...(host.kernelBound ? { host } : {}),
     });
-    await stageTraceJVMKernelFiles(
-      host,
-      kernelBound ? processFiles : []
-    );
+    processCount += 1;
+  };
+
+  const runAttempt = async (index, args, deadline) => {
+    const timedOut = Symbol('tracejvm-case-timeout');
+    const remainingMs = deadline - performance.now();
+    let timer;
+    try {
+      if (remainingMs > 0) {
+        const timeout = Number.isFinite(remainingMs)
+          ? new Promise((resolve) => {
+              timer = setTimeout(() => resolve(timedOut), Math.ceil(remainingMs));
+            })
+          : undefined;
+        const run = Promise.resolve(process.run({
+          ...request,
+          args,
+          systemProperties: systemPropertiesBatch[index],
+        }));
+        const outcome = timeout ? await Promise.race([run, timeout]) : await run;
+        if (outcome !== timedOut && performance.now() < deadline) {
+          if (
+            !reuseProcess ||
+            outcome.isolation?.status !== 'clean' ||
+            outcome.retirementRecommended === true ||
+            process.retirementRecommended === true
+          ) {
+            releaseProcess();
+          }
+          return outcome;
+        }
+        // Dispose the VM and drain its bridge before resetting TraceKernel or
+        // starting another runner. Both runners would share the same OS image.
+        releaseProcess();
+        await run.catch(() => undefined);
+      }
+      releaseProcess();
+      return {
+        status: 'cancelled',
+        exitCode: 124,
+        stdout: '',
+        stderr: `Java execution timed out after ${perCaseWallClockMs}ms.`,
+        timings: { compileAndRunMs: perCaseWallClockMs },
+        isolation: {
+          status: 'tainted',
+          restored: [],
+          taintReasons: ['wall-clock-timeout'],
+          hardBoundaryRecommended: true,
+        },
+        retirementRecommended: true,
+        timeoutReason: 'client-timeout',
+      };
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   };
 
   try {
     for (let index = 0; index < systemPropertiesBatch.length; index += 1) {
-      if (!process) {
-        await createProcess(
-          Math.min(
-            systemPropertiesBatch.length - index,
-            TRACE_JVM_LEASE_MAX_EXECUTIONS
-          )
-        );
-      }
-      const kernelBound = host.kernelBound;
-      const timedOut = Symbol('tracejvm-case-timeout');
-      let timeout;
-      const run = process.run({
-        ...request,
-        ...(Array.isArray(argsBatch?.[index])
-          ? { args: argsBatch[index] }
-          : {}),
-        ...(kernelBound && request.processFiles
-          ? { processFiles: undefined }
-          : {}),
-        systemProperties: systemPropertiesBatch[index],
-      });
-      const timeoutResult =
-        Number.isFinite(perCaseWallClockMs) && perCaseWallClockMs > 0
-          ? new Promise((resolve) => {
-              timeout = setTimeout(
-                () => resolve(timedOut),
-                perCaseWallClockMs
-              );
-            })
-          : undefined;
-      let result;
-      try {
-        const outcome = timeoutResult
-          ? await Promise.race([run, timeoutResult])
-          : await run;
-        if (outcome === timedOut) {
-          releaseProcess();
-          result = {
-            status: 'cancelled',
-            exitCode: 124,
-            stdout: '',
-            stderr:
-              `Java execution timed out after ${perCaseWallClockMs}ms.`,
-            timings: {
-              runtimeInitMs: 0,
-              queueMs: 0,
-              compileAndRunMs: perCaseWallClockMs,
-              totalMs: perCaseWallClockMs,
-            },
-            isolation: {
-              status: 'tainted',
-              restored: [],
-              taintReasons: ['wall-clock-timeout'],
-              hardBoundaryRecommended: true,
-            },
-            retirementRecommended: true,
-            timeoutReason: 'client-timeout',
-          };
-        } else {
-          result = outcome;
-        }
-      } finally {
-        if (timeout !== undefined) clearTimeout(timeout);
-      }
-      results.push(result);
-      if (
-        kernelBound &&
-        index + 1 < systemPropertiesBatch.length
-      ) {
-        await resetTraceKernelExecutionScope(programId);
-      }
-      // A recommendation can be a taint signal or the bounded 64-execution
-      // lease ceiling. Either way, the next case needs a fresh process.
-      if (
-        (!reuseProcess ||
-          result.isolation?.status !== 'clean' ||
-          result.retirementRecommended === true ||
-          process?.retirementRecommended === true) &&
-        index + 1 < systemPropertiesBatch.length
-      ) {
+      if (!process) await createProcess();
+      const deadline = perCaseWallClockMs > 0
+        ? performance.now() + perCaseWallClockMs
+        : Infinity;
+      const run = await runAttempt(index, argsBatch?.[index] ?? request.args, deadline);
+      let report = reportRun(run);
+      if (report.fallbackRequired) {
         releaseProcess();
+        await resetTraceKernelExecutionScope(programId);
+        if (performance.now() < deadline) await createProcess();
+        const cleanRun = await runAttempt(index, fallbackArgs, deadline);
+        // The clean attempt is a separate execution, so it gets fresh scope
+        // and a fresh JVM. Only clean, admitted runners are reusable.
+        report = mergeTraceFallbackReport(report, reportRun(cleanRun));
+        if (cleanRun.timeoutReason === 'client-timeout') {
+          report.runTimeMs = perCaseWallClockMs;
+        }
+      }
+      results.push(report);
+      if (
+        stopAtFirstRunaway && !report.success &&
+        ['client-timeout', 'line-limit', 'single-line-limit'].includes(report.timeoutReason)
+      ) {
+        break;
+      }
+      if (index + 1 < systemPropertiesBatch.length) {
+        await resetTraceKernelExecutionScope(programId);
       }
     }
     return { results, processCount };
@@ -1896,7 +1895,8 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   learnerFrame = '',
   traceProfile = '',
   traceEnabledBatch = '[]',
-  cleanEntryClass = ''
+  cleanEntryClass = '',
+  stopAtFirstRunaway = 'false'
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1953,7 +1953,6 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
     traceJVMLocalKernelAuthorities.set(normalizedProgramId, localAuthority);
   }
   let batch;
-  let reports;
   try {
     const cleanEntry = String(cleanEntryClass) || String(entryClass);
     const traceArgs = traceJVMRunnerArgs(entryClass, maxStoredEvents, {
@@ -1972,6 +1971,11 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       : parsedTraceEnabledBatch.map((enabled) =>
           enabled ? traceArgs : cleanArgs
         );
+    const compile = {
+      stdout: prepared.compilerStdout,
+      stderr: prepared.compilerStderr,
+      timings: { totalMs: prepared.compileTimeMs },
+    };
     batch = await runInLeasedTraceJVMBatchProcess(
       client,
       {
@@ -1982,43 +1986,15 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       },
       systemPropertiesBatch,
       normalizedProgramId,
-      Number.parseInt(String(perCaseWallClockMs), 10) || 0,
-      argsBatch,
-      prepared.algorithmIsolationProfile?.tier === 'algorithm-fast'
+      {
+        perCaseWallClockMs: Number.parseInt(String(perCaseWallClockMs), 10) || 0,
+        argsBatch,
+        fallbackArgs: cleanArgs,
+        reuseProcess: prepared.algorithmIsolationProfile?.tier === 'algorithm-fast',
+        stopAtFirstRunaway: String(stopAtFirstRunaway) === 'true',
+        reportRun: (run) => executionReport(run, compile, prepared.compilerDebugProfile, true),
+      }
     );
-    reports = batch.results.map((run) =>
-      executionReport(
-        run,
-        {
-          stdout: prepared.compilerStdout,
-          stderr: prepared.compilerStderr,
-          timings: { totalMs: prepared.compileTimeMs },
-        },
-        prepared.compilerDebugProfile,
-        true
-      )
-    );
-    for (let index = 0; index < reports.length; index += 1) {
-      if (!reports[index].fallbackRequired) continue;
-      reports[index] = await completeTraceFallback(
-        reports[index],
-        () => runInFreshTraceJVMProcess(client, {
-          program: prepared.program,
-          classpath: [helperJar],
-          systemProperties: systemPropertiesBatch[index],
-          mainClass: 'tracecode.browser.TraceExecutionRunner',
-          args: cleanArgs,
-        }, normalizedProgramId),
-        {
-          stdout: prepared.compilerStdout,
-          stderr: prepared.compilerStderr,
-          timings: { totalMs: prepared.compileTimeMs },
-        },
-        prepared.compilerDebugProfile,
-        true
-      );
-      batch.processCount += 1;
-    }
   } finally {
     if (localAuthority) {
       traceJVMLocalKernelAuthorities.delete(normalizedProgramId);
@@ -2027,8 +2003,8 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   }
   prepared.executions += batch.results.length;
   return JSON.stringify({
-    success: reports.every((report) => report.success),
-    results: reports,
+    success: batch.results.every((report) => report.success),
+    results: batch.results,
     algorithmIsolationProfile: prepared.algorithmIsolationProfile,
     runnerProcessCount: batch.processCount,
     preparedExecutionCount: prepared.executions,

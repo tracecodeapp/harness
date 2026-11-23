@@ -217,9 +217,15 @@ function createFakeClient(options: {
         inputBatch: call.inputBatch,
       });
       return call.inputBatch.map((inputs) => {
-        state.traceCalls.push({ programId, inputs });
+        const error = options.traceFailure ?? options.traceFailureFor?.(inputs);
+        if (error && !isTraceUnavailableError(error)) throw error;
         return {
-          success: true,
+          success: error === undefined,
+          ...(error && {
+            traceUnavailable: true,
+            error: error.message,
+            diagnosticStage: 'runtime',
+          }),
           output: inputs.value,
           events: [],
           sourceText: 'class Solution {}',
@@ -285,6 +291,7 @@ test('Java prepared provider keeps one compiler worker and executes fresh proces
     profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
+    stopsAtFirstRunaway: true,
   });
   assert.equal(
     (await preparation.program.executeIsolated({
@@ -943,6 +950,8 @@ test('a Java traced batch refuses only the case the tracer cannot trace', async 
     traceEnabledBatch: [false, true, false],
   });
   assert.deepEqual(results.map((result) => result.kind), ['completed', 'failed', 'completed']);
+  assert.equal(fake.state.traceBatchCalls.length, 1);
+  assert.deepEqual(fake.state.traceCalls, []);
   const refused = results[1]!;
   assert.deepEqual(
     refused.kind === 'failed' ? refused.providerFailure : undefined,

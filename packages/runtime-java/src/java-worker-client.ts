@@ -46,6 +46,7 @@ import { logRuntimeDiagnostic } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import { isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import {
+  isExecutionTimeoutError,
   WorkerCrashedError,
   WorkerStartupError,
   WorkerReadyTimeoutError,
@@ -153,6 +154,7 @@ export interface JavaWorkerRawTraceResult {
   diagnostic?: unknown;
   consoleOutput: string[];
   traceLimitExceeded?: boolean;
+  traceLimitReason?: ExecutionLimitReason;
   timeoutReason?: ExecutionLimitReason;
   droppedEventCount?: number;
   timings?: RuntimeExecutionTimings;
@@ -856,31 +858,31 @@ export class JavaWorkerClient {
     }
   }
 
-  async executePreparedCodeBatch(
+  private async executePreparedBatch<
+    Raw extends Pick<JavaWorkerCodeResult, 'success' | 'timeoutReason'>,
+    Result
+  >(
     programId: string,
-    call: RuntimePreparedCodeBatchCall
-  ): Promise<readonly JavaWorkerPreparedCodeResult[]> {
+    call: RuntimePreparedCodeBatchCall,
+    perCaseWallClockMs: number,
+    options: Record<string, unknown>,
+    decode: (entry: Raw, index: number) => Result
+  ): Promise<readonly Result[]> {
     if (call.inputBatch.length === 0) return [];
     const kernelProcess = await createJavaKernelProcess();
-    const perCaseWallClockMs =
-      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
         this.core.withExecutionDeadline(
-          this.core.sendMessageEffect<
-            JavaWorkerPreparedBatchResult<JavaWorkerCodeResult>
-          >(
+          this.core.sendMessageEffectWithOptions<JavaWorkerPreparedBatchResult<Raw>>(
             'execute-prepared-runtime-program-batch',
             {
               programId,
               inputBatch: call.inputBatch,
               perCaseWallClockMs,
+              stopAtFirstRunaway: call.stopAtFirstRunaway === true,
+              ...options,
             },
-            null,
-            undefined,
-            undefined,
-            undefined,
-            kernelProcess.bridge
+            { timeoutMs: null, kernelSyscalls: kernelProcess.bridge }
           ),
           javaBatchTransportDeadlineMs(
             perCaseWallClockMs, call.inputBatch.length, INIT_TIMEOUT_MS
@@ -889,28 +891,66 @@ export class JavaWorkerClient {
       )
     );
     try {
-      const result = await this.core.runClientEffect(program, call.signal);
-      if (result.results.length !== call.inputBatch.length) {
-        throw new Error(
-          result.error ??
-            `Java prepared batch returned ${result.results.length} results for ${call.inputBatch.length} cases.`
+      const reply = await this.core.runClientEffect(program, call.signal);
+      const results = reply?.results;
+      if (
+        !Array.isArray(results) ||
+        results.some((entry) => typeof entry?.success !== 'boolean')
+      ) {
+        throw new RuntimeProviderError('Java prepared batch returned an invalid result array.', {
+          reason: 'protocol',
+        });
+      }
+      if (results.length === 0 && typeof reply.error === 'string') {
+        throw new RuntimeProviderError(reply.error);
+      }
+      const runawayIndex = call.stopAtFirstRunaway
+        ? results.findIndex((entry) => !entry.success && (
+            entry.timeoutReason === 'client-timeout' ||
+            entry.timeoutReason === 'line-limit' ||
+            entry.timeoutReason === 'single-line-limit'
+          ))
+        : -1;
+      if (
+        results.length > call.inputBatch.length ||
+        (runawayIndex === -1
+          ? results.length !== call.inputBatch.length
+          : runawayIndex !== results.length - 1)
+      ) {
+        throw new RuntimeProviderError(
+          `Java prepared batch returned an invalid prefix of ${results.length} results for ${call.inputBatch.length} cases.`,
+          { reason: 'protocol' }
         );
       }
-      await kernelProcess.complete(result.success ? 0 : 1);
-      if (
-        kernelProcess.bridge &&
-        kernelProcess.retireWorkerAfterCompletion
-      ) {
-        this.core.closeSession();
-      }
-      return result.results.map((entry) => ({
-        ...liftCodeOutcome(entry, 'Java prepared execution failed'),
-        ...javaPreparedExecutionMetadata(entry),
-      }));
+      const decoded = results.map(decode);
+      await kernelProcess.complete(reply.success ? 0 : 1);
+      return decoded;
     } catch (error) {
       await kernelProcess.fail(error);
+      if (isExecutionTimeoutError(error)) {
+        throw new RuntimeProviderError(
+          'The Java prepared batch exceeded its transport deadline.',
+          { cause: error }
+        );
+      }
       throw error;
     }
+  }
+
+  executePreparedCodeBatch(
+    programId: string,
+    call: RuntimePreparedCodeBatchCall
+  ): Promise<readonly JavaWorkerPreparedCodeResult[]> {
+    return this.executePreparedBatch<JavaWorkerCodeResult, JavaWorkerPreparedCodeResult>(
+      programId,
+      call,
+      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS,
+      {},
+      (entry) => ({
+        ...liftCodeOutcome(entry, 'Java prepared execution failed'),
+        ...javaPreparedExecutionMetadata(entry),
+      })
+    );
   }
 
   async executePreparedWithTracing(
@@ -995,8 +1035,6 @@ export class JavaWorkerClient {
         'Java trace selection must contain one boolean per batch case.'
       );
     }
-    if (call.inputBatch.length === 0) return [];
-    const kernelProcess = await createJavaKernelProcess();
     const perCaseWallClockMs =
       call.limits?.wallClockMs ??
       (
@@ -1005,55 +1043,16 @@ export class JavaWorkerClient {
           ? Math.floor(Number(this.options.tracingTimeoutMs))
           : TRACING_TIMEOUT_MS
       );
-    const program = this.initGateEffect().pipe(
-      Effect.andThen(
-        this.core.withExecutionDeadline(
-          this.core.sendMessageEffect<
-            JavaWorkerPreparedBatchResult<
-              JavaWorkerRawPreparedTraceBatchItem
-            >
-          >(
-            'execute-prepared-runtime-program-batch',
-            {
-              programId,
-              inputBatch: call.inputBatch,
-              perCaseWallClockMs,
-              traceEventTransport: traceEventTransferRequest(),
-              ...(traceEnabledBatch
-                ? { traceEnabledBatch }
-                : {}),
-            },
-            null,
-            undefined,
-            undefined,
-            undefined,
-            kernelProcess.bridge
-          ),
-          javaBatchTransportDeadlineMs(
-            perCaseWallClockMs, call.inputBatch.length, INIT_TIMEOUT_MS
-          )
-        )
-      )
-    );
-    try {
-      const result = await this.core.runClientEffect(program, call.signal);
-      if (result.results.length !== call.inputBatch.length) {
-        throw new Error(
-          result.error ??
-            `Java prepared trace batch returned ${result.results.length} results for ${call.inputBatch.length} cases.`
-        );
-      }
-      await kernelProcess.complete(result.success ? 0 : 1);
-      if (
-        kernelProcess.bridge &&
-        kernelProcess.retireWorkerAfterCompletion
-      ) {
-        this.core.closeSession();
-      }
-      return result.results.map((entry, index) => {
-        const events = entry.success
-          ? javaTraceEvents(entry.trace?.events)
-          : entry.trace.events;
+    return this.executePreparedBatch<JavaWorkerRawPreparedTraceBatchItem, JavaWorkerPreparedTraceResult>(
+      programId,
+      call,
+      perCaseWallClockMs,
+      {
+        traceEventTransport: traceEventTransferRequest(),
+        ...(traceEnabledBatch ? { traceEnabledBatch } : {}),
+      },
+      (entry, index) => {
+        const events = javaTraceEvents(entry.trace?.events);
         const empty = createEmptyRuntimeTrace('java', {
           runId: 'java:run',
           file: JAVA_DEFAULT_FILE,
@@ -1093,11 +1092,8 @@ export class JavaWorkerClient {
           trace,
           ...javaPreparedExecutionMetadata(entry),
         };
-      });
-    } catch (error) {
-      await kernelProcess.fail(error);
-      throw error;
-    }
+      }
+    );
   }
 
   async disposePreparedRuntimeProgram(programId: string): Promise<void> {
