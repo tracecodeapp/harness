@@ -21,6 +21,9 @@ try {
   const assetRoot = '/workers/cpp/tracecc/' + lock.consumerHash;
   const compilerAssets = lock.files.map(({ path, size, sha256 }) => ({ path, size, sha256 }));
   const workerSha256 = sha256(await readFile(join(workers, 'cpp-worker.js')));
+  const subject = execFileSync('git', ['rev-parse', process.env.CPP_STEP_SUBJECT ?? '96412c18'], { encoding: 'utf8' }).trim();
+  const committedWorker = execFileSync('git', ['show', subject + ':workers/cpp/cpp-worker.js']);
+  if (workerSha256 !== sha256(committedWorker)) throw new Error('Staged worker differs from subject ' + subject);
   const bundled = await build({
     stdin: {
       contents: [
@@ -115,8 +118,9 @@ try {
         check('trace-complete', null, raw.traced.traceTruncated ?? null);
         for (const [index, step] of c.steps.entries()) {
           const line = lineOf(c.code, step.anchor);
-          const values = raw.traced.trace.events.filter(event => event.line === line && event.kind === step.kind &&
-            (event.target?.variable === step.variable || (step.kind === 'call' && event.callee === step.variable)) &&
+          const values = (raw.traced.trace?.events ?? []).filter(event => event.line === line && event.kind === step.kind &&
+            (event.target?.variable === step.variable ||
+              (['call', 'return'].includes(step.kind) && event.function === step.variable)) &&
             equal(event.target?.path ?? [], step.path)).map(event =>
               step.kind === 'call' ? (event.args?.seed ?? null) : event.value);
           check('step-' + index, step.values, values);
@@ -133,7 +137,7 @@ try {
   }
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   await writeFile(process.argv[2] ?? 'cpp-step-legacy.json', JSON.stringify({
-    head, workerSha256, compiler: lock.releaseId, browser: browser.version(), rows,
+    head, subject, workerSha256, compiler: lock.releaseId, browser: browser.version(), rows,
   }, null, 2) + '\n');
   // An expected historical red must still exit red.
   if (rows.some(row => row.status !== 'pass')) process.exitCode = 1;

@@ -12,7 +12,7 @@ const event = (anchor, kind, variable, values, path = []) => ({ anchor, kind, va
 export const legacyCases = [
   witness('scalar-overwrite', 'scalars', method('int k = seed;\nk = 7;\nk = 1;\nreturn k;'), 1,
     event('k = 7;', 'write', 'k', [7]), event('k = 1;', 'write', 'k', [1])),
-  witness('braceless-write', 'scalars', method('int k = 0;\nif (seed)\n  k = 5;\nreturn k;'), 5,
+  witness('braceless-write', 'other', method('int k = 0;\nif (seed)\n  k = 5;\nreturn k;'), 5,
     event('k = 5;', 'write', 'k', [5])),
   witness('loop-reentry', 'loops', method('int sum = 0;\nfor (int i = 0; i < 2; ++i) {\n  int local = i + 3;\n  sum += local;\n}\nreturn sum;'), 7,
     event('int local = i + 3;', 'write', 'local', [3, 4]),
@@ -30,6 +30,9 @@ export const legacyCases = [
   witness('vector-overwrite', 'vectors and arrays', method(
     'std::vector<int> v(3, 3);\nv[0] = 9;\nint got = v[0];\nreturn got;', '#include <vector>'), 9,
     event('v[0] = 9;', 'write', 'v', [9], [0]), event('int got = v[0];', 'read', 'v', [9], [0])),
+  witness('raw-array-element', 'vectors and arrays', method(
+    'int a[2] = {seed, 4};\na[1] = 9;\nint got = a[1];\nreturn got;'), 9,
+    event('a[1] = 9;', 'write', 'a', [9], [1]), event('int got = a[1];', 'read', 'a', [9], [1])),
   witness('string-element-mutation', 'strings', method(
     "std::vector<std::string> v(1, \"x\");\nv[0].push_back('a');\nreturn int(v[0].size());", '#include <string>\n#include <vector>'), 2,
     event("v[0].push_back('a');", 'write', 'v', ['xa'], [0])),
@@ -38,14 +41,15 @@ export const legacyCases = [
     event('int got = m[2];', 'read', 'm', [0], [2]), event('int got = m[2];', 'write', 'm', [0], [2])),
   witness('set-insert', 'maps and sets', method(
     'std::set<int> s;\ns.insert(seed);\nreturn int(s.size());', '#include <set>'), 1,
-    event('s.insert(seed);', 'snapshot', 's', [[1]])),
+    event('s.insert(seed);', 'write', 's', [true], [1])),
   witness('struct-field', 'structs', method(
     'Cell cell{seed};\ncell.value = 9;\nint got = cell.value;\nreturn got;', 'struct Cell { int value; };'), 9,
     event('cell.value = 9;', 'write', 'cell', [9], ['value']),
     event('int got = cell.value;', 'read', 'cell', [9], ['value'])),
   witness('recursive-call', 'recursion', method(
     'if (seed == 0) {\n  return 1;\n}\nint got = solve(seed - 1);\nreturn got + 1;'), 2,
-    event('int got = solve(seed - 1);', 'call', 'solve', [0])),
+    event('int solve(int seed)', 'call', 'solve', [1, 0]),
+    event('return 1;', 'return', 'solve', [1]), event('return got + 1;', 'return', 'solve', [2])),
   witness('uninitialized-scalar', 'uninitialized locals', method(
     'int unread;\nunread = 9;\nreturn unread;'), 9,
     event('int unread;', 'snapshot', 'unread', []), event('unread = 9;', 'write', 'unread', [9])),
@@ -55,6 +59,9 @@ export const legacyCases = [
   { ...witness('invalid-vector-bool-or', 'compile negative', method(
     'std::vector<bool> flags{false};\nflags[0] |= true;\nreturn seed;', '#include <vector>'), undefined),
     invalid: true },
+  witness('string-assignment', 'strings', method(
+    'std::string text = "cat";\ntext = "dog";\nreturn int(text.size());', '#include <string>'), 3,
+    event('text = "dog";', 'write', 'text', ['dog'])),
   witness('string-terminator', 'strings', method(
     'std::string text = "cat";\nchar end = text[text.size()];\nreturn int(end);', '#include <string>'), 0,
     event('char end = text[text.size()];', 'read', 'text', ['\0'], [3])),
