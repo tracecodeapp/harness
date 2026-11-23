@@ -334,7 +334,7 @@ try {
               if (sample.refusal || priorError) throw new Error(sample.refusal ?? priorError);
               await bounded(page.evaluate(() => window.bench.release()), 'Release previous problem');
             }
-            await waitForQuiet();
+            checkDeadline();
             sample.beforeInitial = pressure();
             if (mode === 'run' && sample.beforeInitial.oneMinute > 2) {
               sample.excluded = 'initial load > 2.0';
