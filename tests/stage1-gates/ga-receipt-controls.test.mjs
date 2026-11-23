@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { checkCppDirect, checkDifferential, checkObservation } from './checks.mjs';
+import { checkCppDirect, checkDifferential, checkObservation, summarize } from './checks.mjs';
 import { runGraphControls } from './graph.mjs';
 import { requestMatrix } from './requests.mjs';
 import { checkPresentation, hasReceiptEvidence } from './receipt.mjs';
@@ -139,6 +139,43 @@ test('cold draw needs an observation acknowledgement or a typed pre-dispatch ref
   }
   refused.ordinaryProjections[0].consoleOutput = [];
   assert.equal(status(drawRequest, refused, 'A/console'), 'fail');
+});
+
+test('cold draw of a retained not-run case rejects dispatch even when the result is discarded', () => {
+  const retained = { ...row, status: 'not-run', stoppedByCaseId: 'earlier-case' };
+  const refused = { ...binding, status: 'refused', reason: 'case-not-run' };
+  const projection = { kind: 'not-run', stoppedByCaseId: retained.stoppedByCaseId, consoleOutput: [] };
+  const sample = {
+    ...draw,
+    retainedEvaluation: { ...plainEvaluation, cases: [retained] },
+    reported: { ...draw.reported, evaluation: { ...plainEvaluation, cases: [{ ...retained, attachment: refused }] } },
+    ordinaryProjections: [projection], tracedProjections: [projection], projections: [projection],
+    worker: [],
+    journal: [mark('attachment-bind', 4, { caseId }), mark('public-resolve', 5)],
+  };
+  const ack = '@request/worker-ack';
+  assert.equal(status(drawRequest, sample, ack), 'pass');
+  const discarded = { ...sample, worker: [command, response] };
+  assert.equal(status(drawRequest, discarded, ack), 'fail');
+  assert.equal(status(drawRequest, discarded, ack, false), 'pass');
+  assert.equal(status(drawRequest, discarded, '@request/correlation'), 'pass');
+  assert.equal(status(drawRequest, discarded, '@request/receipt-publication'), 'pass');
+  assert.equal(status(drawRequest, { ...discarded, journal: undefined }, ack), 'fail');
+  seed(drawRequest, sample, ack, (target) => {
+    target.worker.push({ action: 'command', type: 'prepare-runtime-program' });
+  });
+  seed(drawRequest, sample, ack, (target) => {
+    target.journal.unshift(mark('observer-start', 3, { caseId, attemptToken }));
+  });
+  for (const patch of [
+    { worker: undefined }, { journal: undefined }, { journal: [] },
+    { journal: sample.journal.slice(0, 1) }, { retainedEvaluation: undefined },
+  ]) {
+    assert.equal(status(drawRequest, { ...sample, ...patch }, ack), undefined);
+  }
+  const id = results(drawRequest, sample).get(ack).id;
+  const withoutWorker = results(drawRequest, { ...sample, worker: undefined });
+  assert.deepEqual(summarize([id], [...withoutWorker.values()].filter((item) => item.id === id)).missing, [id]);
 });
 
 test('JS and TS cold continuations acknowledge their distinct observer commands', () => {

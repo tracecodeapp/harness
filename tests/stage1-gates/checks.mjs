@@ -143,7 +143,26 @@ export function checkObservation(fixture, request, observation, record, register
       assert.deepEqual(submitted.execution.limits, request.limits);
     });
   }
-  if (request.route !== 'mux') {
+  const coldContinuation = registered && request.mode === 'continuation' &&
+    request.id !== 'redraw-b' && request.selected.length === 1;
+  const selectedCaseId = request.selected[0];
+  const retainedCase = coldContinuation &&
+    observation.retainedEvaluation?.cases?.find(({ caseId }) => caseId === selectedCaseId);
+  const returnedCase = coldContinuation && evaluation.cases.find(({ caseId }) => caseId === selectedCaseId);
+  if ((retainedCase ?? returnedCase)?.status === 'not-run') {
+    const worker = Array.isArray(observation.worker) ? observation.worker : undefined;
+    const journal = Array.isArray(observation.journal) ? observation.journal : undefined;
+    const command = worker?.find(({ action }) => action === 'command');
+    const activity = journal?.find(({ phase }) => phase === 'observer-start' || phase === 'observer-end' ||
+      phase === 'ordinary-write-attempt' || phase === 'ordinary-commit');
+    // An empty worker log is evidence only alongside a witnessed continuation.
+    if (command || activity || (retainedCase && worker && journal?.some(({ phase }) => phase === 'public-resolve'))) {
+      check('@request', 'worker-ack', () => {
+        assert(!command, `Not-run continuation dispatched a worker command (${command?.type})`);
+        assert(!activity, `Not-run continuation recorded ${activity?.phase}`);
+      });
+    }
+  } else if (request.route !== 'mux') {
     check('@request', 'worker-ack', () => {
       if (registered && request.id === 'redraw-b') {
         checkRedraw(observation);
