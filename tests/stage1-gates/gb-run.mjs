@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, createWriteStream, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, realpathSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -110,7 +110,9 @@ async function prepareSite() {
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   const judgeEntry = Object.keys(built.metafile.inputs).find((path) => path.endsWith('/dist/judge.js'));
-  assert(judgeEntry && resolve(consumer, judgeEntry).startsWith(consumer + sep), 'Browser bundle must use installed ESM Judge');
+  assert(judgeEntry, 'Browser bundle must include the public ESM Judge');
+  const resolvedJudge = realpathSync(resolve(consumer, judgeEntry));
+  assert.equal(resolvedJudge, process.env.TRACECODE_STAGE1_VERIFIED_JUDGE, 'Browser bundle must use the byte-verified ESM Judge');
   const [sha256] = (await readFile(join(output, 'tarball.sha256'), 'utf8')).split(/\s+/u);
   const browserBundleSha256 = createHash('sha256').update(await readFile(join(site, 'gate.mjs'))).digest('hex');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -269,7 +271,8 @@ async function main() {
     runId, ...meta, browserMs: performance.now() - browserTime, wallMs: performance.now() - timer,
     checks: { expected: planned.length, seen: count('passed') + count('failed'), passed: count('passed'), failed: count('failed'),
       missing: phases.reduce((total, phase) => total + phase.missing.length, 0) },
-    byLanguage: inventoryReceipt.counts, phases, notes, controls: controls(samples),
+    byLanguage: inventoryReceipt.counts, unexpected: inventoryReceipt.unexpected, repeated: inventoryReceipt.repeated,
+    phases, notes, controls: controls(samples),
   };
   const filename = `gb-${runId}.json`;
   await writeFile(join(output, filename), JSON.stringify(report, null, 2) + '\n');
