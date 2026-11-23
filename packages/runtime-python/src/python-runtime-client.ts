@@ -807,6 +807,10 @@ class PythonBatchExecutionBudget {
   }
 }
 
+type PythonOrdinaryBatchCall = RuntimePreparedCodeBatchCall & {
+  readonly onCaseStarted?: (index: number) => void;
+};
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
@@ -865,7 +869,7 @@ class PreparedPythonProgramLifetime {
   }
 
   async executeCodeBatch(
-    call: RuntimePreparedCodeBatchCall
+    call: PythonOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     const budget = new PythonBatchExecutionBudget(
       calculatePythonCodeBatchDeadlineMs(
@@ -888,10 +892,16 @@ class PreparedPythonProgramLifetime {
         return result.results ?? [];
       });
     }
+    let dispatched = false;
+    const onCaseStarted = call.onCaseStarted && ((index: number) => {
+      dispatched = true;
+      call.onCaseStarted?.(index);
+    });
     const runBatch = async (client: PythonWorkerClient, signal: AbortSignal) => {
       const result = await client.executePreparedCodeBatch(this.handle, {
         ...call,
         signal,
+        onCaseStarted,
       });
       if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
         throw new Error('Prepared Python batch returned an invalid result envelope.');
@@ -918,6 +928,7 @@ class PreparedPythonProgramLifetime {
           timings: { artifactCacheHit: true },
         }));
       }
+      if (dispatched) throw error;
       if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
         // The shared batch worker was lost. Re-run the cases each in a fresh
         // worker; a worker lost again rejects as the provider's failure.
@@ -986,11 +997,11 @@ class PreparedPythonProgramLifetime {
   }
 
   private async executeCompatibilityCodeBatch(
-    call: RuntimePreparedCodeBatchCall,
+    call: PythonOrdinaryBatchCall,
     budget: PythonBatchExecutionBudget
   ): Promise<readonly CodeExecutionResult[]> {
     const results: CodeExecutionResult[] = [];
-    for (const inputs of call.inputBatch) {
+    for (const [index, inputs] of call.inputBatch.entries()) {
       if (call.stopAtFirstRunaway === true && isPythonRunawayOutcome(results[results.length - 1])) break;
       try {
         results.push(
@@ -1001,6 +1012,7 @@ class PreparedPythonProgramLifetime {
                   inputs,
                   signal: budgetSignal,
                   limits: call.limits,
+                  onCaseStarted: call.onCaseStarted && (() => call.onCaseStarted?.(index)),
                 }),
               signal
             )

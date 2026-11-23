@@ -1548,6 +1548,112 @@ def _tracecode_prepare_call(target, values, inspect_module):
     return target, args, kwargs
 `;
 
+// Both ordinary drivers share the conversion rules. Only compatibility
+// leases may resolve string annotations, and node construction keeps each
+// tier's existing class policy.
+function buildPythonAnnotationHydrator({
+  fast = false,
+  namespaceExpression,
+  annotationLocalsExpression,
+}) {
+  return `
+def _tracecode_hydrate_for_annotation(_obj, _annotation):
+${fast
+  ? `    _tracecode_typing = _tracecode_batch_typing
+    _tracecode_collections_abc = _tracecode_batch_collections_abc`
+  : `    try:
+        import typing as _tracecode_typing
+        import collections.abc as _tracecode_collections_abc
+    except Exception:
+        return _obj`}
+    if _annotation is None:
+        return _obj
+${fast ? '' : `
+    if isinstance(_annotation, _builtins.str):
+        _annotation = ${namespaceExpression}.get(_annotation, _annotation)`}
+    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
+        return _obj
+    _origin = _tracecode_typing.get_origin(_annotation)
+    _args = _tracecode_typing.get_args(_annotation)
+    if _origin is _tracecode_typing.Union${fast ? ' or _origin is _tracecode_batch_types.UnionType' : ''}:
+        _non_none = [_arg for _arg in _args if _arg is not type(None)]
+        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
+    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
+        if isinstance(_obj, ${fast ? '(_builtins.list, _builtins.tuple)' : '_builtins.list'}):
+            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
+                _items = [
+                    _tracecode_hydrate_for_annotation(
+                        _item,
+                        _args[_index] if _index < len(_args) else None,
+                    )
+                    for _index, _item in enumerate(_obj)
+                ]
+            else:
+                _item_annotation = _args[0] if _args else None
+                _items = [
+                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
+                    for _item in _obj
+                ]
+            if _origin is _builtins.tuple:
+                return tuple(_items)
+            if _origin is _builtins.set:
+                return _builtins.set(_items)
+            if _origin is _builtins.frozenset:
+                return _builtins.frozenset(_items)
+            return _items
+        return _obj
+    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
+        _key_annotation = _args[0] if len(_args) > 0 else None
+        _value_annotation = _args[1] if len(_args) > 1 else None
+        return {
+            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
+            for _key, _value in _obj.items()
+        }
+    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
+        # A parameter declared as a tree or list node gets one, even from a
+        # key-less dict: a link it does not list is None.
+${fast
+  ? `        if _annotation.__name__ in ('TreeNode', 'ListNode'):
+            return _tracecode_batch_linked_node(
+                _obj,
+                _annotation,
+                ('left', 'right') if _annotation.__name__ == 'TreeNode' else ('next',),
+            )`
+  : `        if _annotation.__name__ == 'TreeNode':
+            return _dict_to_tree(_obj)
+        if _annotation.__name__ == 'ListNode':
+            return _dict_to_list(_obj)`}
+        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
+${fast
+  ? `        _constructor = getattr(_annotation, '__init__', None)
+        _ctor_hints = getattr(_constructor, '__annotations__', {}) or {}`
+  : `        try:
+            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${namespaceExpression}, ${annotationLocalsExpression})
+        except Exception:
+            _ctor_hints = {}`}
+        _hydrated_fields = {
+            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
+            for key, value in _fields.items()
+        }
+        try:
+            return _annotation(**_hydrated_fields)
+        except Exception:
+            pass
+        try:
+            return _annotation(*_builtins.list(_hydrated_fields.values()))
+        except Exception:
+            pass
+        try:
+            _instance = _annotation.__new__(_annotation)
+            for _key, _value in _hydrated_fields.items():
+                setattr(_instance, _key, _value)
+            return _instance
+        except Exception:
+            return _obj
+    return _obj
+`;
+}
+
 function buildPythonAlgorithmFastBatchSource(
   deps,
   functionName,
@@ -1959,99 +2065,7 @@ def _tracecode_batch_linked_node(value, node_type, links):
                 pending.append((child, source.get(link)))
     return root
 
-def _tracecode_batch_hydrate_for_annotation(value, annotation):
-    if annotation is None:
-        return value
-    if (
-        isinstance(annotation, type)
-        and annotation.__name__ in ('TreeNode', 'ListNode')
-    ):
-        if isinstance(value, dict):
-            return _tracecode_batch_linked_node(
-                value,
-                annotation,
-                ('left', 'right') if annotation.__name__ == 'TreeNode' else ('next',),
-            )
-        return value
-    origin = _tracecode_batch_typing.get_origin(annotation)
-    args = _tracecode_batch_typing.get_args(annotation)
-    if origin in (_tracecode_batch_typing.Union, _tracecode_batch_types.UnionType):
-        candidates = [item for item in args if item is not type(None)]
-        return (
-            _tracecode_batch_hydrate_for_annotation(value, candidates[0])
-            if len(candidates) == 1
-            else value
-        )
-    if origin in (list, tuple, set, frozenset) and isinstance(value, (list, tuple)):
-        if origin is tuple and len(args) > 1 and args[-1] is not Ellipsis:
-            items = [
-                _tracecode_batch_hydrate_for_annotation(
-                    item,
-                    args[index] if index < len(args) else None,
-                )
-                for index, item in enumerate(value)
-            ]
-        else:
-            item_annotation = args[0] if args else None
-            items = [
-                _tracecode_batch_hydrate_for_annotation(item, item_annotation)
-                for item in value
-            ]
-        if origin is tuple:
-            return tuple(items)
-        if origin is set:
-            return set(items)
-        if origin is frozenset:
-            return frozenset(items)
-        return items
-    if (
-        origin in (
-            dict,
-            _tracecode_batch_collections_abc.Mapping,
-            _tracecode_batch_collections_abc.MutableMapping,
-        )
-        and isinstance(value, dict)
-    ):
-        key_annotation = args[0] if len(args) > 0 else None
-        value_annotation = args[1] if len(args) > 1 else None
-        return {
-            _tracecode_batch_hydrate_for_annotation(key, key_annotation):
-                _tracecode_batch_hydrate_for_annotation(item, value_annotation)
-            for key, item in value.items()
-        }
-    if isinstance(annotation, type) and isinstance(value, dict):
-        fields = {
-            key: item
-            for key, item in value.items()
-            if key not in ('__type__', '__class__', '__id__')
-        }
-        constructor = getattr(annotation, '__init__', None)
-        constructor_annotations = (
-            getattr(constructor, '__annotations__', {}) or {}
-        )
-        hydrated_fields = {
-            key: _tracecode_batch_hydrate_for_annotation(
-                item,
-                constructor_annotations.get(key),
-            )
-            for key, item in fields.items()
-        }
-        try:
-            return annotation(**hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return annotation(*list(hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            instance = annotation.__new__(annotation)
-            for key, item in hydrated_fields.items():
-                setattr(instance, key, item)
-            return instance
-        except Exception:
-            return value
-    return value
+${buildPythonAnnotationHydrator({ fast: true })}
 
 def _tracecode_batch_hydrate_inputs(target, values, case_globals):
     annotations = getattr(target, '__annotations__', {}) or {}
@@ -2060,7 +2074,7 @@ def _tracecode_batch_hydrate_inputs(target, values, case_globals):
             continue
         annotation = annotations[name]
         if not _tracecode_annotation_preserves_literal_shape(annotation):
-            values[name] = _tracecode_batch_hydrate_for_annotation(
+            values[name] = _tracecode_hydrate_for_annotation(
                 values[name],
                 annotation,
             )
@@ -2705,86 +2719,7 @@ def _tracecode_materialize_named_inputs(_names):
 ${materializeInputHelper}
 ${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
 
-def _tracecode_hydrate_for_annotation(_obj, _annotation):
-    try:
-        import typing as _tracecode_typing
-        import collections.abc as _tracecode_collections_abc
-    except Exception:
-        return _obj
-    if _annotation is None:
-        return _obj
-    if isinstance(_annotation, _builtins.str):
-        _annotation = ${namespaceExpression}.get(_annotation, _annotation)
-    if _annotation in (_builtins.object, getattr(_tracecode_typing, 'Any', None)):
-        return _obj
-    _origin = _tracecode_typing.get_origin(_annotation)
-    _args = _tracecode_typing.get_args(_annotation)
-    if _origin is _tracecode_typing.Union:
-        _non_none = [_arg for _arg in _args if _arg is not type(None)]
-        return _tracecode_hydrate_for_annotation(_obj, _non_none[0]) if len(_non_none) == 1 else _obj
-    if _origin in (_builtins.list, _builtins.tuple, _builtins.set, _builtins.frozenset):
-        if isinstance(_obj, _builtins.list):
-            if _origin is _builtins.tuple and len(_args) > 1 and _args[-1] is not Ellipsis:
-                _items = [
-                    _tracecode_hydrate_for_annotation(
-                        _item,
-                        _args[_index] if _index < len(_args) else None,
-                    )
-                    for _index, _item in enumerate(_obj)
-                ]
-            else:
-                _item_annotation = _args[0] if _args else None
-                _items = [
-                    _tracecode_hydrate_for_annotation(_item, _item_annotation)
-                    for _item in _obj
-                ]
-            if _origin is _builtins.tuple:
-                return tuple(_items)
-            if _origin is _builtins.set:
-                return _builtins.set(_items)
-            if _origin is _builtins.frozenset:
-                return _builtins.frozenset(_items)
-            return _items
-        return _obj
-    if _origin in (_builtins.dict, _tracecode_collections_abc.Mapping, _tracecode_collections_abc.MutableMapping) and isinstance(_obj, _builtins.dict):
-        _key_annotation = _args[0] if len(_args) > 0 else None
-        _value_annotation = _args[1] if len(_args) > 1 else None
-        return {
-            _tracecode_hydrate_for_annotation(_key, _key_annotation): _tracecode_hydrate_for_annotation(_value, _value_annotation)
-            for _key, _value in _obj.items()
-        }
-    if isinstance(_annotation, _builtins.type) and isinstance(_obj, _builtins.dict):
-        # A parameter declared as a tree or list node gets one, even from a
-        # key-less dict: a link it does not list is None.
-        if _annotation.__name__ == 'TreeNode':
-            return _dict_to_tree(_obj)
-        if _annotation.__name__ == 'ListNode':
-            return _dict_to_list(_obj)
-        _fields = {key: value for key, value in _obj.items() if key not in ('__type__', '__class__', '__id__')}
-        try:
-            _ctor_hints = _tracecode_typing.get_type_hints(getattr(_annotation, '__init__'), ${namespaceExpression}, ${annotationLocalsExpression})
-        except Exception:
-            _ctor_hints = {}
-        _hydrated_fields = {
-            key: _tracecode_hydrate_for_annotation(value, _ctor_hints.get(key))
-            for key, value in _fields.items()
-        }
-        try:
-            return _annotation(**_hydrated_fields)
-        except Exception:
-            pass
-        try:
-            return _annotation(*_builtins.list(_hydrated_fields.values()))
-        except Exception:
-            pass
-        try:
-            _instance = _annotation.__new__(_annotation)
-            for _key, _value in _hydrated_fields.items():
-                setattr(_instance, _key, _value)
-            return _instance
-        except Exception:
-            return _obj
-    return _obj
+${buildPythonAnnotationHydrator({ namespaceExpression, annotationLocalsExpression })}
 
 def _tracecode_resolve_target_callable(_function_name, _execution_style):
     _namespace = ${namespaceExpression}
@@ -8839,7 +8774,8 @@ async function executePreparedProgram(
   artifact,
   inputs,
   limits,
-  tracingEnabled = artifact?.mode === 'trace'
+  tracingEnabled = artifact?.mode === 'trace',
+  beforeLearnerCode
 ) {
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
@@ -8892,6 +8828,7 @@ async function executePreparedProgram(
             userCodeObject,
             tracingEnabled: false,
             isolationTier,
+            beforeLearnerCode,
           }
         );
     const runMs = deps.performanceNow() - startedAt;

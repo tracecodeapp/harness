@@ -21,7 +21,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = resolve(root, '.' + pathname);
-  if (!path.startsWith(root + sep) || !pathname.startsWith('/workers/python/')) {
+  if (!path.startsWith(root + sep) || !pathname.startsWith('/workers/')) {
     response.writeHead(404).end();
     return;
   }
@@ -39,6 +39,10 @@ let watchdog;
 try {
   browser = await chromium.launch();
   const page = await browser.newPage();
+  page.on('console', (message) => {
+    if (message.type() === 'error') console.error(message.text());
+  });
+  page.on('requestfailed', (request) => console.error(request.url(), request.failure()?.errorText));
   await page.goto(`http://127.0.0.1:${server.address().port}`);
   const results = await Promise.race([
     page.evaluate(async () => {
@@ -55,12 +59,18 @@ try {
       async function client() {
         const worker = new Worker(workerUrl);
         workers.push(worker);
+        await new Promise((accept, reject) => {
+          worker.addEventListener('message', ({ data }) => {
+            if (data.type === 'worker-ready') accept();
+          });
+          worker.addEventListener('error', (event) => reject(new Error(event.message)), { once: true });
+        });
         const request = (type, payload) => new Promise((accept, reject) => {
           const id = crypto.randomUUID();
           const protocolToken = crypto.randomUUID();
           function onMessage({ data }) {
             if (data.id !== id || data.protocolToken !== protocolToken) return;
-            if (data.type === 'execute-case-started' || data.type === 'execute-case-finished') return;
+            if (data.type === 'batch-case-progress') return;
             worker.removeEventListener('message', onMessage);
             if (data.type === 'error') reject(new Error(data.payload.error));
             else accept({ type: data.type, payload: data.payload });

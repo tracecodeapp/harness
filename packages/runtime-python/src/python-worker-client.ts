@@ -677,22 +677,38 @@ export class PythonWorkerClient {
 
   async executePreparedCode(
     handle: PythonPreparedProgramHandle,
-    call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'>
+    call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'> & {
+      readonly onCaseStarted?: () => void;
+    }
   ): Promise<CodeExecutionResult> {
     const wallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
     const guestLimits = pickGuestLimits(call.limits);
-    const program = this.core.withExecutionDeadline(
-      this.core.sendMessageEffect<RawExecutionPayload>(
-        'execute-prepared-program',
-        {
-          artifact: handle.artifact,
-          mode: 'code',
-          inputs: call.inputs,
-          ...(guestLimits ? { limits: guestLimits } : {}),
+    let commandId: string | undefined;
+    const send = this.core.sendMessageEffectWithOptions<RawExecutionPayload>(
+      'execute-prepared-program',
+      {
+        artifact: handle.artifact,
+        mode: 'code',
+        inputs: call.inputs,
+        ...(call.onCaseStarted ? { reportCaseProgress: true } : {}),
+        ...(guestLimits ? { limits: guestLimits } : {}),
+      },
+      {
+        timeoutMs: null,
+        onRequestRegistered: (id) => {
+          if (!call.onCaseStarted) return;
+          commandId = id;
+          const progress = new StoppingBatchProgress(1);
+          this.batchProgress.set(id, (message) => {
+            if (progress.accept(message) && progress.running === 0) call.onCaseStarted?.();
+          });
         },
-        null
-      ),
-      wallClockMs
+      }
+    );
+    const program = this.core.withExecutionDeadline(send, wallClockMs).pipe(
+      Effect.ensuring(Effect.sync(() => {
+        if (commandId !== undefined) this.batchProgress.delete(commandId);
+      }))
     );
     const result = await this.core.runClientEffect(program, call.signal);
     return liftCodeOutcome(result, 'Prepared Python execution failed');
@@ -705,6 +721,7 @@ export class PythonWorkerClient {
       readonly signal?: AbortSignal;
       readonly limits?: RuntimeExecutionLimits;
       readonly stopAtFirstRunaway?: boolean;
+      readonly onCaseStarted?: (index: number) => void;
     }
   ): Promise<CodeExecutionBatchResult> {
     const perCaseWallClockMs =
@@ -730,7 +747,8 @@ export class PythonWorkerClient {
         call.inputBatch.length,
         perCaseWallClockMs,
         wallClockMs,
-        call.signal
+        call.signal,
+        call.onCaseStarted
       );
       if (outcome.kind === 'case-timeout') {
         return liftCodeBatchOutcome(
@@ -972,7 +990,8 @@ export class PythonWorkerClient {
     caseCount: number,
     perCaseWallClockMs: number,
     startupDeadlineMs: number,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    onCaseStarted?: (index: number) => void
   ): Promise<StoppingBatchOutcome<R>> {
     const progress = new StoppingBatchProgress(caseCount);
     const caseClockMs = Math.min(
@@ -1006,7 +1025,9 @@ export class PythonWorkerClient {
         onRequestRegistered: (id) => {
           commandId = id;
           this.batchProgress.set(id, (message) => {
-            if (progress.accept(message)) restartClock();
+            if (!progress.accept(message)) return;
+            restartClock();
+            if (progress.running !== undefined) onCaseStarted?.(progress.running);
           });
         },
       }
