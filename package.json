@@ -165,6 +165,8 @@
     "test:cpp-prepared-lifecycle": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-cpp-compiler-lifecycle.ts",
     "test:cpp-browser-worker": "pnpm run test:tracecc && pnpm run test:tracecc-browser",
     "test:js-runtime": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-runtime.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-worker-lifecycle.ts && pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+    "test:javascript-trace-compile": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile.ts",
+    "test:javascript-trace-compile-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile-browser.ts",
     "test:javascript-ses-provider-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-ses-provider-browser.ts",
     "test:runtime-chaining": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-workspace-runtime-chaining.ts",
     "test:runtime-chaining:browser": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx tests/test-workspace-runtime-chaining-browser.ts",

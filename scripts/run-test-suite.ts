@@ -91,6 +91,8 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:tracekernel-capabilities'),
       task('test:terminal-executable-restoration'),
       task('test:runtime-execution-judge'),
+      // Untraced is the truth on whether a JavaScript/TypeScript program compiles.
+      task('test:javascript-trace-compile'),
       task('test:prepared-provider-release-gate'),
       task('test:native-harness'),
       task('test:standalone-boundary'),
@@ -118,6 +120,7 @@ export const TEST_PHASES: TestPhase[] = [
       task('test:python-learner-exception-stage'),
       task('test:python-prepared-provider', 2),
       task('test:python-browser-worker'),
+      task('test:javascript-trace-compile-browser', 2),
       task('test:python-worker-client-http'),
       task('test:sql-browser-example', 1, ['all']),
     ],

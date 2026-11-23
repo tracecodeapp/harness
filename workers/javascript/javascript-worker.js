@@ -2861,57 +2861,6 @@ function determineTraceLineBounds(code, functionName, executionStyle) {
   return { startLine, endLine };
 }
 
-function createSyntheticTrace(payload, codeResult) {
-  const { code, functionName, inputs, executionStyle = 'function' } = payload ?? {};
-  const { startLine, endLine } = determineTraceLineBounds(code, functionName, executionStyle);
-  const traceFunctionName =
-    typeof functionName === 'string' && functionName.length > 0 ? functionName : '<module>';
-
-  const normalizedInputs = normalizeInputs(inputs);
-  const traceNodeRefState = { ids: new WeakMap(), nextId: 1 };
-  const inputSnapshot = {};
-  for (const [key, value] of Object.entries(normalizedInputs)) {
-    inputSnapshot[key] = serializeTopLevelValue(value, traceNodeRefState);
-  }
-
-  const callFrame = {
-    function: traceFunctionName,
-    args: inputSnapshot,
-    line: startLine,
-  };
-
-  const returnVariables = { ...inputSnapshot };
-  if (traceFunctionName === '<module>') {
-    returnVariables.result = codeResult.output;
-  }
-
-  return [
-    {
-      line: startLine,
-      event: 'call',
-      variables: inputSnapshot,
-      function: traceFunctionName,
-      callStack: [callFrame],
-    },
-    {
-      line: startLine,
-      event: 'line',
-      variables: inputSnapshot,
-      function: traceFunctionName,
-      callStack: [callFrame],
-    },
-    {
-      line: endLine,
-      event: 'return',
-      variables: returnVariables,
-      function: traceFunctionName,
-      callStack: [callFrame],
-      returnValue: codeResult.output,
-      stdoutLineCount: Array.isArray(codeResult.consoleOutput) ? codeResult.consoleOutput.length : 0,
-    },
-  ];
-}
-
 function createEmptyRuntimeTrace(language, runId = `${language}:run`) {
   return {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
@@ -2927,61 +2876,7 @@ function defaultRuntimeTraceFile(language) {
   return language === 'typescript' ? 'solution.ts' : 'solution.js';
 }
 
-function createSyntheticRuntimeTrace(payload, codeResult, language) {
-  const syntheticTrace = createSyntheticTrace(payload, codeResult);
-  const runId = `${language}:run`;
-  const file = defaultRuntimeTraceFile(language);
-  const events = [];
-  for (const step of syntheticTrace) {
-    const stack = Array.isArray(step.callStack) ? step.callStack : [];
-    const base = {
-      runId,
-      file,
-      line: step.line,
-      frameId: runtimeTraceFrameIdForSyntheticStep(step),
-      ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
-    };
-    if (step.event === 'call') {
-      events.push({
-        ...base,
-        kind: 'call',
-        function: step.function,
-        args: stack.at(-1)?.args,
-      });
-    } else if (step.event === 'line') {
-      events.push({ ...base, kind: 'line', function: step.function });
-    } else if (step.event === 'return') {
-      events.push({
-        ...base,
-        kind: 'return',
-        function: step.function,
-        value: step.returnValue,
-      });
-    }
-    for (const [variable, value] of Object.entries(step.variables ?? {})) {
-      events.push({ ...base, kind: 'snapshot', target: { variable }, value });
-    }
-  }
-  return {
-    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
-    language,
-    runId,
-    events,
-    lineEventCount: events.filter((event) => event.kind === 'line').length,
-    traceStepCount: events.length,
-  };
-}
-
 const RUNTIME_TRACE_SCHEMA_VERSION = 'runtime-trace-2026-04-28';
-
-function runtimeTraceFrameIdForSyntheticStep(step) {
-  const stack = Array.isArray(step?.callStack) ? step.callStack : [];
-  if (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    return `${frame.function}:${frame.line}`;
-  }
-  return `${step.function}:${step.line}`;
-}
 
 function valueAtPath(value, path) {
   if (!Array.isArray(path) || path.length === 0) return value;
@@ -5232,6 +5127,45 @@ function wrapFunctionBodyForTracing(
   return updateFunctionLikeWithBody(ts, functionLikeNode, wrappedBody);
 }
 
+// The tracer's helper calls are never assignment targets. The printer would
+// print one all the same, and V8 reports such a target only when it runs.
+function tracerBrokeAssignmentTarget(ts, root) {
+  const isBroken = (node) => {
+    const target = unwrapParenthesizedExpression(ts, node);
+    if (!target) return false;
+    if (ts.isCallExpression(target)) {
+      return ts.isIdentifier(target.expression) && target.expression.text.startsWith('__trace');
+    }
+    if (ts.isArrayLiteralExpression(target)) return target.elements.some(isBroken);
+    if (ts.isSpreadElement(target)) return isBroken(target.expression);
+    if (ts.isObjectLiteralExpression(target)) {
+      return target.properties.some((property) =>
+        (ts.isPropertyAssignment(property) && isBroken(property.initializer)) ||
+        (ts.isSpreadAssignment(property) && isBroken(property.expression))
+      );
+    }
+    // `target = default` inside a destructuring pattern.
+    return ts.isBinaryExpression(target) &&
+      target.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isBroken(target.left);
+  };
+  const visit = (node) => {
+    if (ts.isBinaryExpression(node) && isAssignmentOperatorToken(ts, node.operatorToken.kind)) {
+      if (isBroken(node.left)) return true;
+    } else if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
+      if (
+        (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) &&
+        isBroken(node.operand)
+      ) return true;
+    } else if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      if (isBroken(node.initializer)) return true;
+    }
+    return ts.forEachChild(node, visit) === true;
+  };
+  return visit(root);
+}
+
+/** The instrumented source, or null when the tracer cannot build it. */
 async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption) {
   await ensureTypeScriptCompiler();
   const ts = getTypeScriptCompiler();
@@ -5248,6 +5182,9 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
     true,
     scriptKind
   );
+  // The parser recovers from what it cannot parse and the printer prints the
+  // recovered tree, which is a different program from the learner's.
+  if (sourceFile.parseDiagnostics?.length) return null;
 
   const variableNames = collectTraceVariableNames(ts, sourceFile);
   const userCallsiteNames = collectUserCallsiteNames(ts, sourceFile);
@@ -5695,6 +5632,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   const transformed = ts.transform(sourceFile, [transformer]);
   try {
     const outputFile = transformed.transformed[0];
+    if (tracerBrokeAssignmentTarget(ts, outputFile)) return null;
     const printer = ts.createPrinter({
       newLine: ts.NewLineKind.LineFeed,
       removeComments: false,
@@ -5703,6 +5641,34 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   } finally {
     transformed.dispose();
   }
+}
+
+// The same code as Judge's provider diagnostic: a failure of the runtime
+// itself. It never refuses a program and never blames the learner's.
+const RUNTIME_FAULT_CODE = 'runtime-provider-error';
+
+function runtimeFault(cause) {
+  const fault = new Error(cause instanceof Error ? cause.message : String(cause));
+  fault.code = RUNTIME_FAULT_CODE;
+  return fault;
+}
+
+// Loading the compiler is not part of building one program, so it happens
+// outside every catch that turns a failed build into a refusal.
+async function loadTracerCompiler() {
+  try {
+    await ensureTypeScriptCompiler();
+  } catch (error) {
+    throw runtimeFault(error);
+  }
+}
+
+async function buildInstrumentedExecutableCode(code, executableCode, language, traceFunctionName, maxPathDepth) {
+  if (language === 'typescript') {
+    const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
+    return instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
+  }
+  return instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
 }
 
 function buildScriptExecutionRunner(code, sourceCode = code) {
@@ -6945,6 +6911,7 @@ async function prepareExecutionRequest(payload) {
     throw new Error(`Unsupported language for JavaScript worker: ${String(language)}`);
   }
 
+  if (operation === 'execute-with-tracing') await loadTracerCompiler();
   const executableCode = await prepareExecutableCode(code, language);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
@@ -6972,37 +6939,31 @@ async function prepareExecutionRequest(payload) {
   let instrumentedCode;
   let traceLineBounds;
   if (operation === 'execute-with-tracing') {
-    const traceFunctionName = hasNamedFunction ? targetName : '<module>';
-    const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
-    traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
+    // Preparation never decides whether the program compiles; the untraced
+    // build does that where it runs. With the compiler loaded, a step that
+    // fails here is a failure to build this program, so it must not reject.
+    instrumentedCode = null;
     try {
-      if (language === 'typescript') {
-        const instrumentedTypeScript = await instrumentCodeForTracing(
-          code,
-          language,
-          traceFunctionName,
-          maxPathDepth
-        );
-        instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
-      } else {
-        instrumentedCode = await instrumentCodeForTracing(
-          executableCode,
-          language,
-          traceFunctionName,
-          maxPathDepth
-        );
-      }
+      const traceFunctionName = hasNamedFunction ? targetName : '<module>';
+      const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
+      traceLineBounds = determineTraceLineBounds(code, targetName, executionStyle);
+      instrumentedCode = await buildInstrumentedExecutableCode(
+        code,
+        executableCode,
+        language,
+        traceFunctionName,
+        maxPathDepth
+      );
     } catch (instrumentationError) {
       const message = instrumentationError instanceof Error
         ? instrumentationError.message
         : String(instrumentationError);
       emitRuntimeDiagnostic(
         'warn',
-        'trace-instrumentation-fallback',
-        'Trace instrumentation failed during trusted preparation; using synthetic fallback.',
+        'trace-instrumentation-failed',
+        'Trace instrumentation failed during trusted preparation; this program has no traced build.',
         { message }
       );
-      instrumentedCode = null;
     }
   }
 
@@ -7155,6 +7116,13 @@ async function executeCode(payload) {
   }
 }
 
+// The same code as TRACE_UNAVAILABLE_CODE in runtime-contracts.
+const TRACE_UNAVAILABLE_CODE = 'trace-unavailable';
+const TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
+// What executeWithTracing returns for a case it refuses; compared by identity,
+// so nothing a learner's program returns or throws can stand for it.
+const TRACE_UNAVAILABLE_RESULT = Object.freeze({});
+
 async function executeWithTracing(payload) {
   const startedAt = performanceNow();
   if (payload?.tracingEnabled === false) {
@@ -7189,6 +7157,10 @@ async function executeWithTracing(payload) {
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
+  const hasPreparedTracedBuild = Boolean(
+    prepared && Object.prototype.hasOwnProperty.call(prepared, 'instrumentedCode')
+  );
+  if (!hasPreparedTracedBuild) await loadTracerCompiler();
   const normalizedInputs = normalizeInputs(inputs);
   const materializers = prepared?.materializers ?? await resolveInputMaterializers(
     code,
@@ -7205,6 +7177,7 @@ async function executeWithTracing(payload) {
   const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth, statementSourceMap });
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
+  let untracedBuildFault;
 
   try {
     if (typeof code !== 'string') {
@@ -7224,68 +7197,67 @@ async function executeWithTracing(payload) {
       );
     }
 
-    const executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
-    traceLineBounds = prepared?.traceLineBounds ?? determineTraceLineBounds(code, targetName, executionStyle);
-
-    let instrumentedCode = null;
-    if (prepared && Object.prototype.hasOwnProperty.call(prepared, 'instrumentedCode')) {
-      instrumentedCode = prepared.instrumentedCode;
-    } else {
-      try {
-        if (language === 'typescript') {
-          const instrumentedTypeScript = await instrumentCodeForTracing(code, language, traceFunctionName, maxPathDepth);
-          instrumentedCode = instrumentedTypeScript ? transpileTypeScript(instrumentedTypeScript) : null;
-        } else {
-          instrumentedCode = await instrumentCodeForTracing(executableCode, language, traceFunctionName, maxPathDepth);
+    // The untraced build is the truth on whether this program compiles, so it
+    // comes first, exactly as executeCode builds it. Whatever stops it is
+    // what the untraced Run reports: the traced Run reports that, untraced.
+    let executableCode;
+    let argNames = [];
+    let argValues = [];
+    let argumentMaterializers = [];
+    try {
+      executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
+      if (hasNamedFunction) {
+        if (executionStyle !== 'ops-class') {
+          const inputArguments = prepared
+            ? orderInputArgumentsByParameterDescriptors(
+              prepared.inputArguments,
+              materializedInputs,
+              Object.keys(materializedInputs)
+            )
+            : await resolveOrderedInputArguments(
+              code,
+              targetName,
+              materializedInputs,
+              executionStyle,
+              language
+            );
+          argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+          argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+          argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
         }
-      } catch (instrumentationError) {
-        const message =
-          instrumentationError instanceof Error ? instrumentationError.message : String(instrumentationError);
-        emitRuntimeDiagnostic('warn', 'trace-instrumentation-fallback', 'Trace instrumentation failed; using synthetic fallback.', {
-          message,
-        });
+        buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
+      } else {
+        if (executionStyle !== 'function') {
+          throw new Error('Script-mode execution only supports executionStyle="function".');
+        }
+        buildScriptExecutionRunner(executableCode, code);
       }
+    } catch (untracedBuildError) {
+      const untraced = await executeWithTracing({ ...payload, tracingEnabled: false });
+      if (!untraced.success) return untraced;
+      // The same build works the second time: the first failure was not the program's.
+      untracedBuildFault = runtimeFault(untracedBuildError);
+      throw untracedBuildFault;
     }
 
-    if (!instrumentedCode) {
-      const fallbackResult = await executeCode(payload);
-      const executionTimeMs = performanceNow() - startedAt;
-
-      if (!fallbackResult.success) {
-        const trace = createEmptyRuntimeTrace(language);
-        return {
-          success: false,
-          error: fallbackResult.error,
-          errorLine: fallbackResult.errorLine,
-          ...(fallbackResult.diagnosticStage ? { diagnosticStage: fallbackResult.diagnosticStage } : {}),
-          trace,
-          executionTimeMs,
-          consoleOutput: fallbackResult.consoleOutput ?? [],
-          lineEventCount: trace.lineEventCount,
-          traceStepCount: trace.traceStepCount,
-          timings: {
-            totalMs: executionTimeMs,
-            runMs: executionTimeMs,
-            artifactCacheHit: Boolean(prepared),
-          },
-        };
-      }
-
-      const trace = createSyntheticRuntimeTrace(payload, fallbackResult, language);
-      return {
-        success: true,
-        output: fallbackResult.output,
-        trace,
-        executionTimeMs,
-        consoleOutput: fallbackResult.consoleOutput ?? [],
-        lineEventCount: trace.lineEventCount,
-        traceStepCount: trace.traceStepCount,
-        timings: {
-          totalMs: executionTimeMs,
-          runMs: executionTimeMs,
-          artifactCacheHit: Boolean(prepared),
-        },
-      };
+    // It compiles untraced, so a tracing step that fails from here until the
+    // program runs is the tracer's failure: the case is refused.
+    let runner;
+    try {
+      traceLineBounds = prepared?.traceLineBounds ?? determineTraceLineBounds(code, targetName, executionStyle);
+      const instrumentedCode = hasPreparedTracedBuild
+        ? prepared.instrumentedCode
+        : await buildInstrumentedExecutableCode(code, executableCode, language, traceFunctionName, maxPathDepth);
+      if (!instrumentedCode) return TRACE_UNAVAILABLE_RESULT;
+      runner = hasNamedFunction
+        ? buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code, targetName)
+        : buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
+    } catch (tracedBuildError) {
+      const message = tracedBuildError instanceof Error ? tracedBuildError.message : String(tracedBuildError);
+      emitRuntimeDiagnostic('warn', 'trace-build-failed', 'The traced build failed; this case is trace-unavailable.', {
+        message,
+      });
+      return TRACE_UNAVAILABLE_RESULT;
     }
 
     const serializedInputs = {};
@@ -7297,7 +7269,6 @@ async function executeWithTracing(payload) {
     if (hasNamedFunction) {
       if (executionStyle === 'ops-class') {
         const { operations, argumentsList } = getOpsClassInputs(materializedInputs);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, [], maxPathDepth, [], code, targetName);
         output = await withJavaScriptUserAuthorityLockdown(() =>
           Promise.resolve(runner(
             consoleProxy,
@@ -7309,23 +7280,6 @@ async function executeWithTracing(payload) {
           ))
         );
       } else {
-        const inputArguments = prepared
-          ? orderInputArgumentsByParameterDescriptors(
-            prepared.inputArguments,
-            materializedInputs,
-            Object.keys(materializedInputs)
-          )
-          : await resolveOrderedInputArguments(
-            code,
-            targetName,
-            materializedInputs,
-            executionStyle,
-            language
-          );
-        const argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
-        const argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
-        const argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
-        const runner = buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code, targetName);
         output = await withJavaScriptUserAuthorityLockdown(() => Promise.resolve(
           executionStyle === 'solution-method'
             ? runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, targetName, ...argValues, runtimeGlobal)
@@ -7333,11 +7287,7 @@ async function executeWithTracing(payload) {
         ));
       }
     } else {
-      if (executionStyle !== 'function') {
-        throw new Error('Script-mode execution only supports executionStyle="function".');
-      }
       const scriptStdin = typeof materializedInputs.stdin === 'string' ? materializedInputs.stdin : undefined;
-      const runner = buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
       output = await withJavaScriptUserAuthorityLockdown(() => Promise.resolve(
         runner(consoleProxy, traceRecorder, { functionName: traceFunctionName }, scriptStdin, runtimeGlobal)
       ));
@@ -7372,6 +7322,7 @@ async function executeWithTracing(payload) {
       },
     };
   } catch (error) {
+    if (untracedBuildFault) throw untracedBuildFault;
     const executionTimeMs = performanceNow() - startedAt;
     const message = formatRuntimeErrorMessage(error);
     const errorLine = learnerSourceLine(extractUserErrorLine(error), code);
@@ -7528,6 +7479,14 @@ async function processMessage(data) {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
         }
         const result = await executeWithTracing(payload);
+        if (result === TRACE_UNAVAILABLE_RESULT) {
+          // The provider's refusal of this case, never the program's failure.
+          postProtocolMessage(id, protocolToken, 'error', {
+            error: TRACE_UNAVAILABLE_MESSAGE,
+            code: TRACE_UNAVAILABLE_CODE,
+          });
+          break;
+        }
         postTraceResultProtocolMessage(
           id,
           protocolToken,
@@ -7560,6 +7519,7 @@ async function processMessage(data) {
     postProtocolMessage(id, protocolToken, 'error', {
       error: error instanceof Error ? error.message : String(error),
       ...(errorLine !== undefined ? { errorLine } : {}),
+      ...(error?.code === RUNTIME_FAULT_CODE ? { code: RUNTIME_FAULT_CODE } : {}),
     });
   }
 }
