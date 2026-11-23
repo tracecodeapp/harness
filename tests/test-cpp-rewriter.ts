@@ -527,4 +527,71 @@ for (const loop of [
   );
 }
 
+// `delete` is a C++ keyword, so an ops-class learner names the method
+// `deleteKey` or maps it with a macro. The prepared driver reads operation
+// names at run time and must dispatch them to the method the single-case
+// driver resolves (resolveCppObjectMethodMacro): macro target first, then
+// deleteKey. Unknown operations keep falling through to the unresolved error.
+const deleteAliasDispatch = (driver: string, method: string) =>
+  new RegExp(
+    `if \\(__tc_operation_name == "delete"\\) \\{\\s*__tc_operation_handled = __tc_call_${method}\\(`
+  ).test(driver);
+const deleteKeySource = [
+  '#include <string>',
+  '#include <unordered_map>',
+  'class KeyValueStore {',
+  '  std::unordered_map<std::string, int> store;',
+  'public:',
+  '  void set(std::string key, int value) { store[key] = value; }',
+  '  bool deleteKey(std::string key) { return store.erase(key) > 0; }',
+  '};',
+].join('\n');
+const macroDeleteSource = [
+  '#include <string>',
+  '#include <unordered_map>',
+  '#define delete removeKey',
+  'class KeyValueStore {',
+  '  std::unordered_map<std::string, int> store;',
+  'public:',
+  '  bool removeKey(std::string key) { return store.erase(key) > 0; }',
+  '  bool deleteKey(std::string key) { store.clear(); return false; }',
+  '};',
+].join('\n');
+const noDeleteSource = [
+  'class KeyValueStore {',
+  'public:',
+  '  void set(int key, int value) {}',
+  '  bool remove(int key) { return false; }',
+  '};',
+].join('\n');
+for (const tracing of [false, true]) {
+  const deleteKeyDriver = rewriter.buildPreparedOpsClassDriverSource(deleteKeySource, 'KeyValueStore', { tracing });
+  assertCondition(
+    deleteAliasDispatch(deleteKeyDriver, 'deleteKey') &&
+      /if \(__tc_operation_name == "deleteKey"\) \{\s*__tc_operation_handled = __tc_call_deleteKey\(/.test(deleteKeyDriver),
+    `prepared ops-class driver (tracing ${tracing}) should dispatch "delete" to deleteKey and keep "deleteKey" by name`
+  );
+  const macroDriver = rewriter.buildPreparedOpsClassDriverSource(macroDeleteSource, 'KeyValueStore', { tracing });
+  assertCondition(
+    deleteAliasDispatch(macroDriver, 'removeKey') && !deleteAliasDispatch(macroDriver, 'deleteKey'),
+    `prepared ops-class driver (tracing ${tracing}) should let a #define delete macro win over deleteKey, as the single-case driver does`
+  );
+  const singleMacroDriver = rewriter.buildOpsClassDriverSource(
+    macroDeleteSource,
+    'KeyValueStore',
+    { operations: ['KeyValueStore', 'delete'], arguments: [[], ['a']] },
+    { tracing }
+  );
+  assertCondition(
+    singleMacroDriver.includes('__tc_instance.removeKey(') && !singleMacroDriver.includes('__tc_instance.deleteKey('),
+    `single-case ops-class driver (tracing ${tracing}) should resolve "delete" through the macro`
+  );
+  const noDeleteDriver = rewriter.buildPreparedOpsClassDriverSource(noDeleteSource, 'KeyValueStore', { tracing });
+  assertCondition(
+    !noDeleteDriver.includes('__tc_operation_name == "delete"') &&
+      noDeleteDriver.includes('C++ ops-class method could not be resolved.'),
+    `prepared ops-class driver (tracing ${tracing}) should not invent a "delete" dispatch without a target method`
+  );
+}
+
 console.log('PASS: C++ rewriter source snapshots');
