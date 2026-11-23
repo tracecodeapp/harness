@@ -200,7 +200,7 @@ export function installJournal(fixture) {
       if (wire.ordinary && completed) {
         // Untokened SES terminal envelopes can close the command, but
         // cannot attest anything about the set of cases that started.
-        const startedCaseIndices = payload?.startedCaseIndices;
+        const startedCaseIndices = payload?.startedCaseIndexes ?? payload?.startedCaseIndices;
         record('ordinary-terminal', {
           ...wire.correlated,
           ...(protocolToken === wire.token && Array.isArray(startedCaseIndices)

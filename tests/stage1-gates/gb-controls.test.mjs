@@ -733,7 +733,7 @@ test('Worker terminals close SES commands and carry started sets only with trust
     worker.postMessage({
       id: 'code', type: 'execute-code', protocolToken: 'code-token', payload: { inputs: { n: 7 } },
     });
-    const terminal = { id: 'code', type: 'execute-result', payload: { startedCaseIndices: [] } };
+    const terminal = { id: 'code', type: 'execute-result', payload: { startedCaseIndexes: [] } };
     worker.reply({ ...terminal, protocolToken: 'wrong-token' });
     worker.reply({ ...terminal, protocolToken: 'code-token' }, false);
     assert.equal(journal.since(0).filter(({ kind }) => kind === 'ordinary-terminal').length, 1);
