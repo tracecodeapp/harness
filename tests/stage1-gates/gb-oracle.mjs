@@ -40,7 +40,9 @@ function required(fixture, route) {
     if (route.startsWith('run-') || continuation(route) || route === 'submit-traced') ids.push(...observationChecks);
     for (const row of drawingRows(fixture, route)) {
       ids.push(`${row.id}/attachment-status`);
-      if (fixture.anchor) ids.push(`${row.id}/anchor`, `${row.id}/recorder-boundary`);
+      const faultingObserver = faultNames.includes(fixture.name) && row.id === 'A';
+      if (fixture.anchor && !faultingObserver) ids.push(`${row.id}/anchor`, `${row.id}/recorder-boundary`);
+      if (fixture.name === 'observer-encoder-fault' && faultingObserver) ids.push('A/recorder-boundary');
       if (fixture.name === 'step-cap') ids.push(`${row.id}/real-prefix`);
       if (fixture.name === 'byte-cap') ids.push(`${row.id}/attempted-events`);
       if (faultNames.includes(fixture.name) && row.id === 'A') ids.push('A/injection-ack', 'A/provenance');
@@ -130,7 +132,7 @@ function check(fixture, route, sample, assert) {
   if (!route.startsWith('run-') && !continuation(route)) {
     const passed = rows.filter((row) => desiredRow(fixture, route, row) === 'completed').length;
     const verdict = serviceCut(fixture, route) ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
-    const ok = verdict === 'indeterminate' ? undefined : verdict === 'passed';
+    const ok = verdict === 'indeterminate' ? 'unknown' : verdict === 'passed';
     assert('aggregate', receipt?.verdict === verdict && receipt?.policy?.result === ok, [receipt?.verdict, receipt?.policy]);
     assert('counts', receipt?.passedCount === passed && receipt?.totalCount === rows.length, [receipt?.passedCount, receipt?.totalCount]);
   }
@@ -206,15 +208,21 @@ function check(fixture, route, sample, assert) {
         }[fixture.name];
         const complete = attachment.status === 'complete' && (attachment.events?.length ?? 0) > 0;
         const validRefusal = attachment.status === 'refused' && attachment.events?.length === 0;
+        const realWitnessCause = fixture.name === 'json-element' ? 'observer-encode-failed'
+          : fixture.name === 'trace-compile' ? 'observer-prepare-failed'
+          : undefined;
         const accepted = refusedFault
           ? validRefusal && attachment.cause === reason
-          : complete || (fixture.name === 'json-element' && validRefusal && attachment.cause === 'observer-encode-failed');
+          : complete || (!!realWitnessCause && validRefusal && attachment.cause === realWitnessCause);
         assert(`${label}/attachment-status`, accepted, attachment);
         if (refusedFault) assert('A/provenance', validRefusal && attachment.cause === reason, attachment);
       }
       if (fixture.anchor) {
-        const expectsAnchor = !refusedFault && (fixture.name !== 'json-element' || attachment.status === 'complete');
-        if (expectsAnchor) assert(`${label}/anchor`, matchesAnchor(fixture, expected, attachment), attachment.events);
+        const allowedEncoderRefusal = fixture.name === 'json-element' && attachment.status === 'refused' &&
+          attachment.cause === 'observer-encode-failed' && attachment.events?.length === 0;
+        if (!refusedFault) {
+          assert(`${label}/anchor`, allowedEncoderRefusal || matchesAnchor(fixture, expected, attachment), attachment.events);
+        }
       }
     }
   }

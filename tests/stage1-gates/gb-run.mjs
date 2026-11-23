@@ -141,7 +141,7 @@ function controls(samples) {
     const hits = mutate(mutant);
     const after = state(mutant);
     const status = before?.status === 'passed' && after?.status === 'failed' && hits === 1 ? 'caught' : 'unproven';
-    out.push({ name, status, id, hits, before, after, exit: after?.status === 'failed' ? 1 : 0 });
+    out.push({ name, status, id, hits, before, after });
   };
   const g4 = fixtures.fixtures.find(({ gate, language, name }) => gate === 'G4' && language === 'python' && name === 'three-rows');
   seed(g4, 'submit-omitted-A', samples.get(key(g4, 'submit-omitted-A')), 'timeout overwrites completed A', 'A/status', (sample) => {
