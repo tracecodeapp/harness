@@ -102,7 +102,9 @@ function prepareCSharpTraceEventTransfer(result, request) {
   try {
     encoded = new TextEncoder().encode(JSON.stringify(events));
   } catch {
-    return null;
+    return result.observationStatus
+      ? { payload: { observationStatus: 'refused', reason: 'observer-encode' } }
+      : null;
   }
   const requestedMinBytes = Number(request.minTransferBytes);
   const minTransferBytes = Number.isSafeInteger(requestedMinBytes)
@@ -4174,9 +4176,12 @@ async function executePreparedCSharpProgram(message) {
     executionStyle: prepared.executionStyle ?? 'solution-method',
     trace: prepared.mode === 'trace',
     recordTrace:
-      prepared.mode === 'trace' && payload.tracingEnabled !== false,
+      prepared.mode === 'trace' &&
+      (payload.observation !== undefined || payload.tracingEnabled !== false),
+    observationOnly: payload.observation !== undefined,
+    observationMaxTraceBytes: Math.min(0x7fff_ffff, payload.observation?.maxTraceBytes ?? 0),
     timeoutMs: payload.timeoutMs,
-    maxTraceSteps: prepared.traceOptions?.maxTraceSteps,
+    maxTraceSteps: prepared.traceOptions?.maxTraceSteps ?? (payload.observation ? 16_000 : undefined),
     maxLineEvents: prepared.traceOptions?.maxLineEvents,
     maxSingleLineHits: prepared.traceOptions?.maxSingleLineHits,
     maxStoredEvents: prepared.traceOptions?.maxStoredEvents,
@@ -4217,11 +4222,12 @@ async function executePreparedCSharpProgram(message) {
             request.maxSingleLineHits ?? 0,
             request.maxStoredEvents ?? 0,
             request.minimalTrace === true,
-            request.recordTrace === true
+            request.recordTrace === true,
+            request.observationMaxTraceBytes
           )
         );
         const parsed = JSON.parse(exportedJson);
-        const outputBytes = typeof parsed.outputBytes === 'string'
+        const outputBytes = !payload.observation && typeof parsed.outputBytes === 'string'
           ? Uint8Array.from(
               atob(parsed.outputBytes),
               (character) => character.charCodeAt(0)
@@ -4252,7 +4258,8 @@ async function executePreparedCSharpProgram(message) {
           request.compiledArtifactKey,
           request.compiledArtifactBase64,
           request.compiledArtifactSha256,
-          payload.inputBytes
+          payload.inputBytes,
+          request.timeoutMs ?? 5_000
         )
       );
       if (outputBytes.length === 0) {
@@ -4334,6 +4341,68 @@ async function executePreparedCSharpProgram(message) {
       totalMs: elapsedMs(startedAt),
     },
   };
+}
+
+function encodeCSharpObservationEvents(events, maximumBytes) {
+  if (maximumBytes === undefined) return { events, byteCut: false };
+  const encoder = new TextEncoder();
+  let bytes = 2; // JSON array delimiters
+  let retained = 0;
+  for (const event of events) {
+    bytes += encoder.encode(JSON.stringify(event)).byteLength + (retained === 0 ? 0 : 1);
+    if (bytes > maximumBytes) break;
+    retained += 1;
+  }
+  return { events: events.slice(0, retained), byteCut: retained < events.length };
+}
+
+async function observePreparedCSharpProgram(message) {
+  const { prepared, observation } = message.payload;
+  if (prepared?.mode !== 'trace') throw new Error('C# observation requires a trace artifact.');
+
+  const result = await classifyCSharpProgramExecution(async () => {
+    const reply = await executePreparedCSharpProgram(message);
+    // A managed event serializer failure is stamped where encoding failed.
+    // Let the observation adapter consume it before generic host failures.
+    return reply?.observerFailure === 'observer-encode'
+      ? { success: true, observerFailure: reply.observerFailure }
+      : reply;
+  });
+  const refuse = (reason) => ({ observationStatus: 'refused', reason });
+  if (result?.observerFailure === 'observer-encode') return refuse('observer-encode');
+  const deadline = result?.timeoutReason === 'client-timeout';
+  if (!Array.isArray(result?.events)) {
+    return refuse(deadline ? 'observer-timeout' : 'observer-runtime');
+  }
+  // A timeout diagnostic is not a learner event or a genuine trace prefix.
+  const recorded = result.events.filter((event) => event.kind !== 'timeout');
+  const { maxStoredEvents, maxTraceSteps = 16_000 } = prepared.traceOptions ?? {};
+  const cut = {
+    'client-timeout': 'observer-deadline',
+    'line-limit': 'line-budget',
+    'single-line-limit': 'single-line-budget',
+    'trace-byte-limit': 'byte-budget',
+    'trace-limit': maxStoredEvents !== undefined && maxStoredEvents < maxTraceSteps
+      ? 'stored-event-budget' : 'step-budget',
+  }[result.timeoutReason];
+  let encoded;
+  try {
+    encoded = encodeCSharpObservationEvents(recorded, observation.maxTraceBytes);
+  } catch {
+    return refuse('observer-encode');
+  }
+  const reason = encoded.byteCut ? 'byte-budget' : cut;
+  if (reason === 'observer-deadline' && !encoded.events.length) return refuse('observer-timeout');
+  if (reason) {
+    return {
+      observationStatus: 'truncated',
+      reason,
+      events: encoded.events,
+      attemptedEvents: recorded.length + (cut && !deadline ? 1 : 0),
+    };
+  }
+  if (!recorded.length) return refuse(result.success ? 'recorder-unavailable' : 'observer-runtime');
+  return { observationStatus: 'drawn', events: encoded.events };
 }
 
 function disposePreparedCSharpProgram(payload) {
@@ -4524,6 +4593,10 @@ async function handleMessage(message) {
 
   if (message.type === 'prepare-program') {
     return prepareCSharpProgram(message);
+  }
+
+  if (message.type === 'execute-prepared-trace' && message.payload?.observation !== undefined) {
+    return observePreparedCSharpProgram(message);
   }
 
   if (

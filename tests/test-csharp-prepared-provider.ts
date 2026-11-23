@@ -866,7 +866,8 @@ test('C# observation prepares a companion and uses a dedicated runner during ord
   const batch = codeProgram.executeBatchIsolated!({ inputBatch: [{ value: 7 }, { value: 11 }] });
   await ordinaryStarted.promise;
   try {
-    const observer = await provider.prepareObservation(program, { maxTraceBytes: 1 });
+    const observer = await provider.prepareObservation(program, undefined, { maxTraceBytes: 1 });
+    assert.ok(!('status' in observer));
     try {
       const drawing = await observer.observe({
         program, inputs: { value: 7 }, attemptToken: 'observation-attempt',
@@ -893,4 +894,15 @@ test('C# observation prepares a companion and uses a dedicated runner during ord
       await codeProgram.dispose();
     }
   }
+});
+
+test('C# refuses unsupported observer options at preparation without entering Roslyn', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  const provider = createCSharpRuntimeClient(compiler as unknown as CSharpWorkerClient);
+  const result = await provider.prepareObservation({
+    code: 'public class Solution { public int Solve(int value) => value; }',
+    functionName: 'Solve',
+  }, undefined, { traceProfile: true });
+  assert.deepEqual(result, { status: 'refused', reason: 'unsupported-option' });
+  assert.equal(compiler.prepareCalls.length, 0);
 });

@@ -1,6 +1,8 @@
+import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
+  judgeCaseExecutionOutcome,
 } from '../../src/judge';
 
 const code = `public class Solution
@@ -28,6 +30,7 @@ const cases = [
 interface WorkerCommand {
   workerId: number;
   mode: string;
+  type: string;
   functionName: string;
   success?: boolean;
   tier?: string;
@@ -41,6 +44,7 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
   const replacementPrime = Promise.withResolvers<WorkerCommand>();
   let workerId = 0;
   let initialRunnerId: number | undefined;
+  let trackInitialSubmit = false;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
@@ -50,7 +54,8 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
         const command = pending.get(data?.id);
         if (!command) return;
         pending.delete(data.id);
-        command.success = data.payload?.success;
+        command.success = data.payload?.success ??
+          (data.payload?.observationStatus === 'drawn' || data.payload?.observationStatus === 'truncated');
         command.tier = data.payload?.timings?.preparedRunnerTier;
         command.completedAt = performance.now();
         if (
@@ -66,14 +71,18 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
       const post = this.postMessage.bind(this);
       this.postMessage = ((message, transfer) => {
         const prepared = message?.payload?.prepared;
-        if (message?.type === 'execute-prepared-code' && prepared) {
+        if (
+          (message?.type === 'execute-prepared-code' || message?.type === 'execute-prepared-trace') &&
+          prepared
+        ) {
           const command: WorkerCommand = {
             workerId: id,
+            type: message.type,
             mode: prepared.mode,
             functionName: prepared.functionName,
             sentAt: performance.now(),
           };
-          if (command.mode === 'code' && command.functionName === 'Search') {
+          if (trackInitialSubmit && command.mode === 'code' && command.functionName === 'Search') {
             initialRunnerId ??= id;
           }
           commands.push(command);
@@ -122,6 +131,28 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
           throw new Error(`C# ${id} failed: ${JSON.stringify(receipt.evaluation)}`);
         }
       }
+      const tracedBundle = await createAlgorithmJudgeBundle({
+        id: 'run-before-warm-resubmit',
+        language: 'csharp',
+        code,
+        functionName: 'Search',
+        executionStyle: 'solution-method',
+        trace: true,
+        cases,
+        comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+      });
+      const run = await host.execute({
+        bundle: tracedBundle, interactive: true, tracing: { caseIds: ['present'] },
+      });
+      const traced = commands.find((command) =>
+        command.type === 'execute-prepared-trace' && command.functionName === 'Search' && command.success === true
+      );
+      const trace = run.evaluation.cases[0]?.trace as RuntimeTrace | undefined;
+      if (!run.executionId || !trace?.events.length || !traced) {
+        throw new Error('C# warm resubmit history did not complete a traced execution.');
+      }
+      await host.disposeExecution(run.executionId);
+      trackInitialSubmit = true;
       await submit('initial-submit');
 
       // The initial Submit releases its runner and starts warming a standby.
@@ -150,6 +181,168 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
         firstCase.sentAt - prime.completedAt <= 2_000
       ) {
         throw new Error(`C# resubmit did not use the aged replacement runner: ${JSON.stringify({ prime, firstCase })}`);
+      }
+    } finally {
+      await host.dispose();
+    }
+  } finally {
+    globalThis.Worker = NativeWorker;
+  }
+}
+
+
+const jsonElementCode = `using System.Text.Json;
+public class Solution {
+  public int solve(int n) {
+    JsonElement element = default(JsonElement);
+    int result = n + (int)element.ValueKind;
+    return result;
+  }
+}`;
+const healthyCode = `public class Solution {
+  private static int count;
+  public int solve(int n) {
+    count++;
+    return n + count - 1;
+  }
+}`;
+
+export async function assertCSharpObservationBoundary(
+  csharpWorker: string,
+  csharpRunnerAssetBaseUrl: string,
+  fault: boolean
+): Promise<void> {
+  const NativeWorker = globalThis.Worker;
+  const starts: Array<{ workerId: number; type: string; mode: string; inputs: unknown }> = [];
+  let nextWorkerId = 0;
+  let injected = false;
+  globalThis.Worker = class extends NativeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      const workerId = ++nextWorkerId;
+      const post = this.postMessage.bind(this);
+      this.postMessage = ((message, transfer) => {
+        const { prepared, inputs } = message?.payload ?? {};
+        if (prepared?.functionName === 'solve' && message.type.startsWith('execute-prepared-')) {
+          starts.push({ workerId, type: message.type, mode: prepared.mode, inputs });
+        }
+        post(message, transfer as Transferable[]);
+      }) as typeof this.postMessage;
+      this.addEventListener('message', ({ data }) => {
+        if (data?.type === 'execute-prepared-trace' && data.payload?.encoderInjectionAck === true) {
+          injected = true;
+        }
+      });
+    }
+  };
+
+  try {
+    const host = createBrowserJudgeHost({
+      providers: ['csharp'],
+      assetBaseUrl: '/workers',
+      assets: { csharpWorker, csharpRunnerAssetBaseUrl },
+      safeExecution: { workerLifecycle: 'warm-and-retire' },
+    });
+    try {
+      await host.warmLanguage('csharp');
+      const makeBundle = (source: string, trace: boolean, maxTraceBytes?: number) =>
+        createAlgorithmJudgeBundle({
+          id: 'csharp-observation-boundary',
+          language: 'csharp',
+          code: source,
+          functionName: 'solve',
+          executionStyle: 'solution-method',
+          trace,
+          ...(maxTraceBytes === undefined ? {} : { traceOptions: { maxTraceBytes } }),
+          limits: { wallClockMs: 10_000 },
+          cases: [
+            { id: 'A', input: { n: 7 }, expected: 7 },
+            { id: 'B', input: { n: 11 }, expected: 11 },
+          ],
+          comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+        });
+      const assertGrades = (rows: Awaited<ReturnType<typeof host.evaluateAlgorithm>>['evaluation']['cases']) => {
+        for (const [index, expected] of [7, 11].entries()) {
+          const row = rows[index];
+          if (row?.status !== 'completed' || row.value !== expected || row.verdict.kind !== 'passed') {
+            throw new Error(`C# ordinary grade ${index} failed: ${JSON.stringify(row)}`);
+          }
+          const outcome = judgeCaseExecutionOutcome(row, { language: 'csharp', trace: false });
+          for (const field of ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun', 'providerFailure']) {
+            if (Object.hasOwn(row, field) || Object.hasOwn(outcome, field)) {
+              throw new Error(`C# leaked ${field} onto an ordinary result`);
+            }
+          }
+        }
+      };
+
+      async function run(source: string, maxTraceBytes?: number) {
+        const before = starts.length;
+        const bundle = await makeBundle(source, true, maxTraceBytes);
+        const result = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+        const { evaluation, executionId } = result;
+        if (evaluation.status !== 'completed' || !executionId || evaluation.compile?.failure) {
+          throw new Error(`C# ordinary compile failed: ${JSON.stringify(evaluation)}`);
+        }
+        try {
+          assertGrades(evaluation.cases);
+          const [selected, unselected] = evaluation.cases;
+          if (!selected?.attachment || !unselected || Object.hasOwn(unselected, 'attachment') || Object.hasOwn(unselected, 'trace')) {
+            throw new Error('C# did not attach exactly the requested drawing.');
+          }
+          const gradeStarts = starts.slice(before).filter((entry) => entry.type === 'execute-prepared-code');
+          const observerStarts = starts.slice(before).filter((entry) => entry.type === 'execute-prepared-trace');
+          if (gradeStarts.length !== 2 || gradeStarts.some((entry) => entry.mode !== 'code') ||
+              observerStarts.length !== 1 || observerStarts[0]?.mode !== 'trace' ||
+              gradeStarts.some((entry) => entry.workerId === observerStarts[0]?.workerId)) {
+            throw new Error(`C# used the wrong artifact or worker: ${JSON.stringify(starts.slice(before))}`);
+          }
+          const beforeRedraw = starts.length;
+          const redraw = await host.execute({ executionId, tracing: { caseIds: ['A'] } });
+          if (starts.length !== beforeRedraw || redraw.evaluation.cases[0]?.value !== 7 ||
+              redraw.evaluation.cases[0]?.attachment !== selected.attachment) {
+            throw new Error('C# redraw changed the verdict or dispatched learner work.');
+          }
+          if (selected.attachment.status === 'refused') {
+            const presentation = judgeCaseExecutionOutcome(selected, { language: 'csharp', trace: true });
+            if (presentation.kind !== 'trace-refused' || Object.keys(presentation).length !== 1) {
+              throw new Error(`C# refused drawing leaked legacy fields: ${JSON.stringify(presentation)}`);
+            }
+          }
+          return selected.attachment;
+        } finally {
+          await host.disposeExecution(executionId);
+        }
+      }
+
+      if (fault) {
+        const drawing = await run(healthyCode);
+        if (!injected || drawing.status !== 'refused' || drawing.reason !== 'observer-encode') {
+          throw new Error(`C# encoder fault was not acknowledged: ${JSON.stringify(drawing)}`);
+        }
+        return;
+      }
+      const jsonDrawing = await run(jsonElementCode);
+      if (jsonDrawing.status !== 'drawn' &&
+          !(jsonDrawing.status === 'refused' && jsonDrawing.reason === 'observer-encode')) {
+        throw new Error(`C# JSON element drawing had the wrong origin: ${JSON.stringify(jsonDrawing)}`);
+      }
+      const healthy = await run(healthyCode);
+      if (healthy.status !== 'drawn' || !healthy.trace.events.some((event) => event.kind === 'line' && event.line === 4)) {
+        throw new Error(`C# observer did not draw the learner line: ${JSON.stringify(healthy)}`);
+      }
+      const capped = await run(healthyCode, 1);
+      if (capped.status !== 'truncated' || capped.reason !== 'byte-budget' ||
+          capped.trace.events.length !== 0 || capped.attemptedEvents < 1) {
+        throw new Error(`C# one-byte cap did not preserve attempted-event evidence: ${JSON.stringify(capped)}`);
+      }
+      for (const trace of [false, true]) {
+        const receipt = await host.evaluateAlgorithm({ bundle: await makeBundle(jsonElementCode, trace) });
+        if (receipt.verdict !== 'passed') throw new Error('C# mux-shaped receipt failed.');
+        assertGrades(receipt.evaluation.cases);
+        if (receipt.evaluation.cases.some((row) => Object.hasOwn(row, 'attachment') !== trace)) {
+          throw new Error('C# mux-shaped receipt did not preserve the requested selection.');
+        }
       }
     } finally {
       await host.dispose();

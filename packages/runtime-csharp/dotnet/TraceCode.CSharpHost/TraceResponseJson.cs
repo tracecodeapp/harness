@@ -1,3 +1,5 @@
+using System;
+using System.Buffers;
 using System.Text.Json;
 
 namespace TraceCode.CSharpHost;
@@ -8,6 +10,41 @@ namespace TraceCode.CSharpHost;
 // only unrecognized leaf values fall back to the reflection serializer.
 public static class TraceResponseJson
 {
+    // The transport consumes this before it attributes a host or learner failure.
+    public const string ObserverEncodeFailure =
+        "{\"success\":false,\"hostFailure\":true,\"error\":\"Could not encode the C# trace.\",\"observerFailure\":\"observer-encode\"}";
+
+    public static bool TryWriteTraceEvent(
+        Utf8JsonWriter writer,
+        RuntimeTraceEvent traceEvent,
+        JsonSerializerOptions fallbackOptions)
+    {
+        try
+        {
+            WriteTraceEvent(writer, traceEvent, fallbackOptions);
+            return true;
+        }
+        catch (Exception)
+        {
+            // The caller discards the entire, possibly half-written buffer.
+            return false;
+        }
+    }
+
+    public static Func<RuntimeTraceEvent, int> CreateTraceEventMeasurer(JsonSerializerOptions options)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new Utf8JsonWriter(buffer);
+        return traceEvent =>
+        {
+            buffer.Clear();
+            writer.Reset(buffer);
+            if (!TryWriteTraceEvent(writer, traceEvent, options)) return -1;
+            writer.Flush();
+            return buffer.WrittenCount;
+        };
+    }
+
     public static void WriteTraceEvent(Utf8JsonWriter writer, RuntimeTraceEvent traceEvent, JsonSerializerOptions fallbackOptions)
     {
         writer.WriteStartObject();

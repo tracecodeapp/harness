@@ -78,6 +78,21 @@ async function main(): Promise<void> {
       response.end(historyEntry.contents);
       return;
     }
+    if (url.pathname === '/workers/csharp/csharp-worker.js' && url.searchParams.has('forceObserverEncoderFailure')) {
+      const worker = readFileSync(join(ROOT, url.pathname), 'utf8');
+      const encoder = 'function encodeCSharpObservationEvents(events, maximumBytes) {';
+      const refusal = "return refuse('observer-encode');\n  }\n  const reason";
+      assertCondition(worker.includes(encoder) && worker.includes(refusal), 'C# test injection source changed.');
+      response.writeHead(200, {
+        'Content-Type': 'text/javascript',
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      });
+      response.end(worker
+        .replace(encoder, `${encoder} throw new Error('Injected observation encoder fault');`)
+        .replace(refusal, "return { ...refuse('observer-encode'), encoderInjectionAck: true };\n  }\n  const reason"));
+      return;
+    }
     const candidate = normalize(join(ROOT, decodeURIComponent(url.pathname)));
     if (candidate !== ROOT && !candidate.startsWith(`${ROOT}${sep}`)) {
       response.writeHead(403).end('Forbidden');
@@ -123,6 +138,21 @@ async function main(): Promise<void> {
       await assertCSharpWarmResubmit('/workers/csharp/csharp-worker.js');
     });
     console.log('C# warm resubmit history test passed.');
+    await page.evaluate(async (runnerAssetPath) => {
+      const moduleUrl: string = '/csharp-warm-resubmit.mjs';
+      const { assertCSharpObservationBoundary } = await import(moduleUrl);
+      const worker = '/workers/csharp/csharp-worker.js';
+      await assertCSharpObservationBoundary(worker, '/' + runnerAssetPath, false);
+    }, runnerAssetPath);
+    console.log('C# registered JSON element, byte cap, and mux-shaped receipts passed.');
+    await page.evaluate(async (runnerAssetPath) => {
+      const moduleUrl: string = '/csharp-warm-resubmit.mjs';
+      const { assertCSharpObservationBoundary } = await import(moduleUrl);
+      await assertCSharpObservationBoundary(
+        '/workers/csharp/csharp-worker.js?forceObserverEncoderFailure', '/' + runnerAssetPath, true
+      );
+    }, runnerAssetPath);
+    console.log('C# forced encoder refusal and ordinary grades passed.');
     await page.evaluate('globalThis.__name = (fn) => fn');
     const result = await page.evaluate(async ({
       origin,

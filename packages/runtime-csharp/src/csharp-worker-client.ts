@@ -16,7 +16,10 @@ import {
   type RuntimeTraceEvent,
 } from '@tracecode/runtime-contracts';
 import type {
+  Cut,
+  Drawing,
   ExecutionLimitReason,
+  RuntimeObservationCall,
   RuntimeBatchCall,
   RuntimeCodeCall,
   RuntimePreparedCodeCall,
@@ -681,7 +684,9 @@ export class CSharpWorkerClient {
               inputs: call.inputs,
               ...(inputBytes ? { inputBytes } : {}),
               assetBaseUrl: this.options.assetBaseUrl,
-              timeoutMs: Math.max(100, wallClockMs - 1_000),
+              timeoutMs: prepared.preparedRunnerTier === 'algorithm-fast'
+                ? wallClockMs
+                : Math.max(100, wallClockMs - 1_000),
               ...this.workerOptionsPayload(),
             }, null),
             wallClockMs
@@ -788,6 +793,72 @@ export class CSharpWorkerClient {
         prepared.traceOptions,
         wallClockMs
       );
+    });
+  }
+
+  async observePrepared(
+    prepared: CSharpPreparedProgramArtifact,
+    call: RuntimeObservationCall
+  ): Promise<Drawing> {
+    if (prepared.mode !== 'trace') return { status: 'refused', reason: 'observer-protocol' };
+    return this.runPreparedExecutionGeneration(call.signal, async () => {
+      const wallClockMs = this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
+      const maxTraceBytes = call.traceOptions?.maxTraceBytes;
+      const inputBytes = prepared.preparedRunnerTier === 'algorithm-fast'
+        ? encodeTraceClrWireInputs(prepared.traceClrWireContract!, call.inputs)
+        : undefined;
+      const program = this.preparedReadyEffect().pipe(
+        Effect.andThen(
+          this.core.withExecutionDeadline(
+            this.sendCommandEffect<{
+              observationStatus?: 'drawn' | 'truncated' | 'refused';
+              reason?: Cut | 'observer-encode' | 'observer-runtime' | 'observer-timeout' | 'recorder-unavailable';
+              events?: RuntimeTraceEvent[];
+              attemptedEvents?: number;
+            }>('execute-prepared-trace', {
+              prepared,
+              inputs: call.inputs,
+              ...(inputBytes ? { inputBytes } : {}),
+              observation: { maxTraceBytes: maxTraceBytes === 0 ? 1 : maxTraceBytes },
+              assetBaseUrl: this.options.assetBaseUrl,
+              timeoutMs: Math.max(100, wallClockMs - 1_000),
+              traceEventTransport: traceEventTransferRequest(),
+              ...this.workerOptionsPayload(),
+            }, null),
+            wallClockMs
+          )
+        )
+      );
+      let result;
+      try {
+        result = await this.core.runClientEffect(program, call.signal);
+      } catch (error) {
+        if (call.signal?.aborted) throw error;
+        return {
+          status: 'refused',
+          reason: taggedError(error, 'ExecutionTimeoutError') ||
+            taggedError(error, 'WorkerRequestTimeoutError')
+            ? 'observer-timeout'
+            : 'observer-runtime',
+        };
+      }
+      const { observationStatus, reason, events, attemptedEvents } = result;
+      if (observationStatus === 'refused' &&
+          (reason === 'observer-encode' || reason === 'observer-runtime' ||
+            reason === 'observer-timeout' || reason === 'recorder-unavailable')) {
+        return { status: observationStatus, reason };
+      }
+      if (!Array.isArray(events)) return { status: 'refused', reason: 'observer-protocol' };
+      const trace = this.createTrace(events, { maxPathDepth: prepared.traceOptions?.maxPathDepth });
+      if (observationStatus === 'drawn' && events.length > 0) {
+        return { status: observationStatus, trace };
+      }
+      if (observationStatus === 'truncated' && attemptedEvents !== undefined &&
+          (reason === 'step-budget' || reason === 'stored-event-budget' || reason === 'line-budget' ||
+            reason === 'single-line-budget' || reason === 'byte-budget' || reason === 'observer-deadline')) {
+        return { status: observationStatus, reason, trace, attemptedEvents };
+      }
+      return { status: 'refused', reason: 'observer-protocol' };
     });
   }
 
