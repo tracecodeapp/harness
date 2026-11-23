@@ -6,6 +6,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.20.4] - 2026-11-23
+
+**Required consumer setting:** a browser consumer that calls `evaluateAlgorithm`
+for Python must pass `stopAtFirstRunaway: true` (the app: Python in
+`SUBMIT_STOPS_AT_FIRST_RUNAWAY`). See the Python line guard entry below. Without
+it, a Python Submit with several never-ending cases can reach the flat 30 s batch
+clock and report every case, the correct ones included, as `client-timeout`.
+
 ### Added
 
 - A traced run that failed, or was stopped by a limit, after its trace stopped
@@ -36,17 +44,74 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
-- A warm C# runner no longer reports a correct untraced case as
-  `client-timeout` ("C# execution timed out.") within milliseconds. The
-  runner's trace sink was left recording, with a two-second deadline, after
-  every traced or compatibility execution, including the trusted prime of a
-  standby runner. The next untraced algorithm-fast case that started more than
-  two seconds later hit that deadline on its first line. With
-  `stopAtFirstRunaway`, the rest of the Submit was then not run. The sink is
-  now idle between executions and the untraced path resets it. A real runaway
-  still stops at its own limit as `client-timeout`. Only the runner role
-  artifact is rebuilt.
-
+- **Java: cycles and shared nodes in prepared inputs are kept.** Within one case,
+  `{"__ref__": id}` now resolves to the same object as the node with that `__id__`
+  (lists, trees, any object graph, across parameters), and a node referenced from
+  inside itself is registered before its fields are filled, so cycles close. A
+  correct `linked-list-cycle` solution used to be judged wrong on every `true`
+  case. Each input node is now constructed once: a 16-node list used to build
+  65,535 nodes, and deep lists and skewed trees effectively hung. A learner class
+  whose constructor mutates its argument or counts instances now sees one
+  construction per node, as hand-written code would. (#63)
+- **Python: the untraced line guard no longer stops correct catalog solutions.**
+  It is raised from 400,000 lines and 150,000 hits on one line to 4,000,000 and
+  1,500,000 (worker default and the fallbacks in `python-runtime.js`), 3.5× the
+  catalog's worst legitimate case (`n-queens` h5, `open-the-lock` 3 and h6 used to
+  end in "didn't finish"). A trip is still `failure.origin: 'limit'`
+  (`line-limit` / `single-line-limit`); a single runaway now takes about 7–11 s to
+  trip instead of about 1 s. Traced budgets are unchanged. Requires
+  `stopAtFirstRunaway: true` for Python Submit, as stated above. (#66)
+- **Java: only the case that cannot be traced is refused.** A Java case whose
+  trace can't be read back is now `runtime-error` with failure `provider` /
+  `runtime-failure`, diagnostic `trace-unavailable` ("TraceCode could not trace
+  this case."), no value; `judgeCaseExecutionOutcome` throws
+  `RuntimeProviderError { code: 'trace-unavailable' }`. The other cases keep their
+  results. Before, one such case made every case of the Run a provider failure.
+  A trace limit reached inside a learner's constructor is now an ordinary trace
+  limit (result, steps up to the limit, `trace-limit` warning), not "No matching
+  prepared Java constructor". A cyclic cause chain in an input constructor's
+  exception no longer runs to the 25 s limit. A traced reply without a valid
+  events array is a provider protocol failure. (#67)
+- **JavaScript/TypeScript: the untraced build decides whether a traced program
+  compiles.** The tracer's printer could repair a missing or extra brace, so a
+  traced case passed beside the untraced cases' compile errors. Now, if the
+  untraced build fails, the traced case reports that same compile error; a
+  failure of only the traced build refuses that case as `trace-unavailable`; a
+  failure of the runtime itself (compiler not loading, worker death, an asset
+  preflight) is a provider fault. The synthetic-trace fallback is removed. (#68)
+- **JavaScript/TypeScript: an untraced result no longer depends on what ran
+  earlier on the host.** A traced request with a trace option the SES pool
+  doesn't take (for example an app's trace budgets) used to disable the pool
+  for the life of the host, so later untraced programs took the compatibility
+  route: after one traced Run, `function process(){}` or `const window` failed
+  to compile, and some programs SES rejects passed. Now only a fault of the
+  pool itself (a worker that crashed, hung or broke the protocol, or a pool that
+  couldn't start) takes later programs off it. A Run's untraced cases get what
+  an untraced request on the same cases gets. A traced case the pool can't trace
+  runs on a disposable worker, and if that worker can't build what the SES
+  route compiled, the case is refused as `trace-unavailable`. When such a
+  traced case prints past the pool's console budget, the Run checks once on
+  the pool, so its cases follow untraced Submit's route. Cases a limit stopped
+  are never re-run. (#69)
+- **Python: a Run judges a case's full returned value, as Submit does.** Every
+  Python Run path (traced or untraced cases) used to cut the returned value to
+  the trace display limits (256 list items, 128 object fields, 32 levels) before
+  judging it, so a correct answer larger than that was judged wrong: the 352
+  boards of `n-queens` for n = 9, or a linked list longer than about 31 nodes.
+  The judged value now goes through Submit's serializer and limits, including
+  `serialization-limit`, and trace snapshots keep their display limits. The
+  remaining differences on the traced case are listed under Known limits. (#71)
+- **C#: a warm runner no longer reports a correct untraced case as
+  `client-timeout`** ("C# execution timed out.") within milliseconds. The
+  runner's trace sink was left recording, with a 2 s deadline, after every
+  traced or compatibility execution, including the trusted prime of a standby
+  runner. The next untraced case that started more than 2 s later hit that
+  deadline on its first line, for example Submit after a traced Run or after a
+  compile failure. With `stopAtFirstRunaway`, the rest of the Submit was then
+  not run. 0.17.1 reported the same failure as a provider error. The sink is
+  now idle between executions and the untraced path resets it. An untraced
+  case's time limit is the client's wall clock, as on a fresh runner; a real
+  runaway still stops at its own limit. (#72)
 - A Python or C# browser worker lost while it ran a learner's case (the host
   terminated it and its `error` event fired) is now the provider's failure:
   each case reports `failure.origin: "provider"` (`runtime-provider-error`),
@@ -109,6 +174,141 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   CPython. The trip is still recorded, so a fallback the learner returns is
   not the result, but a loop that catches the stop runs until the client's
   clock.
+- **C++ `throw` inside `try`/`catch` doesn't run as C++ specifies,** in Submit and
+  Run alike: the build lowers `throw` to "set a flag and return", so code after a
+  throwing call in the same `try` block still runs (`try { f(); x = 5; }
+  catch (...) {}` returns 5 where C++ returns 0). Programs that don't throw are
+  unaffected. 1 of 280 catalog C++ references contains `throw` (an unreachable
+  fallback); none contains `try`. Present since at least 0.17.1.
+- **C++ `s[s.size()]` on a `std::string` fails every Run case** as the learner's
+  runtime error: the trace build reads through `.at()`, which aborts in the
+  no-exceptions build. Submit is right.
+- **C++ Run's untraced cases use the trace build with recording off,** which can
+  differ from the untraced build (consumers should take verdicts from an untraced
+  request). C++ drawings can show wrong steps for right results (loop tests,
+  untaken `||` operands, braceless bodies, aliases, uninitialized values); the
+  redesign is planned.
+- **Python: a costly correct case can time out inside a batch.** A case that
+  takes about 6 s alone takes about 50 s inside a two-case fast batch, so with
+  the default 30 s batch clock correct cases can end `client-timeout`. Present in
+  0.20.1; cause under investigation.
+- **JavaScript/TypeScript: one case that outgrows the SES console budget (100
+  lines) moves the rest of its Submit to compatibility workers,** where
+  top-level names such as `process` or `window` collide with the runtime and
+  become compile errors. A Run matches Submit of the same cases.
+- **JavaScript/TypeScript: a runtime `SyntaxError` (for example
+  `JSON.parse("{")`) on a traced case is labeled `compile`;** untraced it is
+  `runtime`.
+- **Java compile output contains an internal file name** (`Exports<hash>.java`)
+  with its own line numbers; the diagnostic's message and line are the learner's.
+- **C# traced unbounded recursion is sometimes `provider` ("Out of memory");**
+  a Python native stack overflow past `sys.setrecursionlimit(10**7)` is
+  `provider`.
+- When no Java constructor matches an input node's fields, one is called with
+  default values, and a constructor that validates its argument fails as the
+  program's error.
+- **C#: a traced case that holds a `default(JsonElement)` fails the whole traced
+  Run as the provider's:** the trace serializer throws on it. Submit is
+  unaffected.
+- **Python: a correct program that defines its own `ListNode` or `TreeNode` and
+  returns the input nodes is judged wrong,** on Submit and, since #71, on Run.
+  The input nodes are the runtime's classes, so they serialize as plain objects
+  carrying the runtime's `value` field, which doesn't match the expected answer.
+  Programs that return nodes they built, or that don't define the class, are
+  unaffected. Present in 0.17.1 on Submit.
+- **Python, a Run's traced case:** its 8 MiB limit counts only the returned
+  value, where Submit's also counts console output, and serializing doesn't stop
+  at the case's deadline. Untraced cases match Submit.
+- **C++: an ops-class operation whose name is a C++ keyword** (for example
+  `delete`) can't be resolved, and every case is reported as the program's
+  runtime error.
+- **JavaScript/TypeScript, a Run's untraced cases:**
+  - A traced case stopped by a trace budget isn't checked against the SES
+    console budget, so its untraced siblings can stay on the SES route where a
+    Submit of the same cases would move to compatibility workers.
+  - A traced case run on a disposable worker can behave differently from the
+    SES route. For example, SES lockdown orders `localeCompare` by code unit,
+    so that case's console output, and with it the budget check, follows the
+    disposable run.
+
+## [0.20.3] - 2026-11-21
+
+### Fixed
+
+- A Python Run whose learner code never ends reports "didn't finish" on that
+  case after one per-case clock again (the case's limit plus 1 s; about 31 s at
+  the 30 s default, as in 0.20.1). 0.20.2 ran an interactive Run (a stopping
+  batch) as one request under one clock for the whole batch: traced, 30 s times
+  the number of cases, after which every case was reported timed out, a prefix
+  the Judge rejects, so the Run ended with no verdict; untraced, 30 s and then a
+  re-run of every case under a fresh 30 s clock to name the runaway case. The
+  worker now reports each case as it starts and finishes, the client restarts a
+  per-case clock on each report, and when a case outlives its clock the worker
+  is terminated and the finished cases keep their results; the runaway case is
+  `limit`/`client-timeout` and the rest are `not-run`. The re-run is gone.
+  Submit (a non-stopping batch) is unchanged. Correct programs run in the same
+  time as in 0.20.2.
+- A time limit is the learner's only for a case whose code was running. When a
+  Python stopping batch's clock expires while no case is running (the worker's
+  setup before the first case, or between cases), no learner code was running:
+  the evaluation fails as the provider's (`RuntimeProviderError`), not as a time
+  limit on the next case.
+- A provider failure on a batch (any language) makes every case in it the
+  provider's failure (`failure.origin: 'provider'`, a `runtime-provider-error`
+  diagnostic), and the evaluation completes. It used to reject with
+  `JudgeInfrastructureError` ("completed without publishing per-case
+  outcomes"), which lost the provider classification. A batch with neither
+  per-case outcomes nor a provider failure is still a `JudgeInfrastructureError`.
+  `judgeCaseExecutionOutcome` keeps a provider failure's `protocol` reason on
+  the `RuntimeProviderError` it throws.
+- The Python algorithm-fast batch stops at the first runaway by the result it
+  recorded. When encoding replaced a case's result with a limit (a deadline or
+  serialization ceiling reached while encoding), the batch used to continue past
+  it and the Judge rejected the prefix.
+- A browser runtime worker that never became ready (its script failed to load,
+  it failed before signalling ready, or its `init`, `warmup` or
+  `prewarm-executor` command failed) rejects with `RuntimeProviderError`
+  (`WorkerStartupError`) instead of producing a failed verdict on every case.
+  This covers a JavaScript `init` error reply (copied to every batch case as a
+  compile failure before), a Python compatibility batch whose replacement worker
+  crashed while starting, and C# prepared code and trace crashing before ready.
+  A crash after the worker was ready is reported as before. Each language's
+  reset-and-retry-once rule for a failed runtime load is unchanged.
+- Java returns the learner's printed lines in `consoleOutput` (after any
+  compiler output, in print order) for every outcome where the program ran, as
+  the other languages do. The TraceJVM worker dropped them, on success and on
+  failure; a program that printed and then threw showed the error without its
+  output.
+- The Judge's `debugging.regression-test` claim cites evidence when it is not
+  proven: the regression edit when the replay on the starter produced no exit;
+  the edit and the replay step when the submitted tests passed on the starter;
+  and the edit, the replay step and the repository-tests step when the replay
+  failed but the repository tests failed or did not finish. Statuses and
+  summaries are unchanged.
+
+### Known limits
+
+- A Java, C++, C# or JavaScript Run sends one provider request per case. If a
+  later case's request fails as the provider's, the cases that finished before
+  it are reported as the provider's failure too. Before 0.20.3 the same
+  situation rejected the whole evaluation, so no finished case reached the
+  caller either.
+- Python parses each case's input after the case has started. An input so large
+  that parsing it takes longer than the case's clock is reported as that case's
+  time limit.
+- In a traced Python Run, when the trace reaches its size budget the worker
+  stops tracing altogether, so a loop that never ends is stopped by the per-case
+  clock (about 31 s) rather than by the in-worker loop guard (about 1.5 s).
+  0.20.1 behaves the same.
+
+### Development
+
+- CI runs again: the smoke job's JavaScript SES parity case expected a keyed
+  `plain-id` object to stay a plain object, which 0.20.2's tree-node rule
+  changed on purpose; browser test bundles now build TraceKernel first; the
+  nightly Judge browser job (public browser Judge boundary and the
+  learner-failure matrix) no longer needs a TraceJVM sibling checkout, can run
+  on demand (`workflow_dispatch`), and has 120 minutes.
 
 ## [0.20.2] - 2026-11-17
 
