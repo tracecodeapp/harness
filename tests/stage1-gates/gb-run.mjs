@@ -6,14 +6,19 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { ledgerFor, ordinaryProjection } from './gb-oracle.mjs';
+import { summarize } from './checks.mjs';
 
-const gates = dirname(new URL(import.meta.url).pathname);
+const gates = dirname(fileURLToPath(import.meta.url));
 const fixtures = JSON.parse(await readFile(join(gates, 'gb-fixtures.json'), 'utf8'));
-const output = resolve(process.env.GB_EVIDENCE ?? 'gb-evidence');
-const consumer = resolve(process.env.GB_CONSUMER ?? 'gb-consumer');
+const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
+if (!installationArg || !assetsArg || !evidenceArg) throw new Error('Usage: gb-run.mjs INSTALLATION ASSET_ROOT EVIDENCE');
+const output = resolve(evidenceArg);
+const consumer = resolve(installationArg);
+const assets = resolve(assetsArg);
 const site = join(output, 'site');
 const runId = randomUUID();
 const timer = performance.now();
@@ -45,8 +50,11 @@ async function serve() {
   };
   const server = createServer((request, response) => {
     const { pathname } = new URL(request.url, 'http://localhost');
-    const file = resolve(site, '.' + (pathname === '/' || pathname === '/no-coep' ? '/index.html' : pathname));
-    if (!file.startsWith(site + sep) || !statSync(file, { throwIfNoEntry: false })?.isFile()) {
+    const asset = pathname.startsWith('/workers/');
+    const root = asset ? assets : site;
+    const name = pathname === '/' || pathname === '/no-coep' ? 'index.html' : pathname.slice(asset ? '/workers/'.length : 1);
+    const file = resolve(root, decodeURIComponent(name));
+    if (!file.startsWith(root + sep) || !statSync(file, { throwIfNoEntry: false })?.isFile()) {
       response.writeHead(404).end();
       return;
     }
@@ -73,18 +81,14 @@ async function serve() {
 
 async function prepareSite() {
   const fromConsumer = installedRequire();
-  const packageRoot = dirname(fromConsumer.resolve('@tracecode/harness/package.json'));
-  const cli = join(packageRoot, 'dist/cli.cjs');
   await mkdir(site, { recursive: true });
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
-  const assets = execFileSync(process.execPath, [cli, 'sync-assets', join(site, 'workers'), '--inventory'], {
-    cwd: consumer, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024,
-  });
-  await writeFile(join(output, 'asset-inventory.json'), assets);
   const judge = fromConsumer.resolve('@tracecode/harness/judge');
+  assert(judge.startsWith(consumer + sep), 'Judge must resolve inside the installed consumer');
   // Resolve the public ESM export from the disposable consumer. Do not bundle
   // source or resolve any package through the lane checkout's workspace.
-  await build({
+  const built = await build({
+    metafile: true,
     entryPoints: [join(gates, 'gb-browser.mjs')],
     plugins: [{
       name: 'installed-public-judge',
@@ -101,10 +105,12 @@ async function prepareSite() {
     logLevel: 'warning',
     define: { 'process.env.NODE_ENV': '"production"' },
   });
-  const artifact = join(output, 'tracecode-harness-0.20.4.tgz');
-  const sha256 = createHash('sha256').update(await readFile(artifact)).digest('hex');
+  const judgeEntry = Object.keys(built.metafile.inputs).find((path) => path.endsWith('/dist/judge.js'));
+  assert(judgeEntry && resolve(consumer, judgeEntry).startsWith(consumer + sep), 'Browser bundle must use installed ESM Judge');
+  const [sha256] = (await readFile(join(output, 'tarball.sha256'), 'utf8')).split(/\s+/u);
+  const browserBundleSha256 = createHash('sha256').update(await readFile(join(site, 'gate.mjs'))).digest('hex');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  return { head, candidate: fixtures.candidate, sha256, publicExport: judge, setupMs: performance.now() - timer };
+  return { head, candidate: fixtures.candidate, sha256, browserBundleSha256, publicExport: judgeEntry, setupMs: performance.now() - timer };
 }
 
 function summarizeSample(sample) {
@@ -250,11 +256,16 @@ async function main() {
     };
   });
   const count = (status) => phases.flatMap((phase) => phase.receipts).filter((receipt) => receipt.status === status).length;
+  const inventoryReceipt = summarize(planned, phases.flatMap((phase) => phase.receipts.map((receipt) => ({
+    ...receipt, status: receipt.status === 'passed' ? 'pass' : 'fail',
+  }))));
+  assert.equal(inventoryReceipt.repeated.length, 0);
+  assert.equal(inventoryReceipt.unexpected.length, 0);
   const report = {
     runId, ...meta, browserMs: performance.now() - browserTime, wallMs: performance.now() - timer,
     checks: { expected: planned.length, seen: count('passed') + count('failed'), passed: count('passed'), failed: count('failed'),
       missing: phases.reduce((total, phase) => total + phase.missing.length, 0) },
-    phases, notes, controls: controls(samples),
+    byLanguage: inventoryReceipt.counts, phases, notes, controls: controls(samples),
   };
   const filename = `gb-${runId}.json`;
   await writeFile(join(output, filename), JSON.stringify(report, null, 2) + '\n');
