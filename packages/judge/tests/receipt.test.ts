@@ -275,6 +275,11 @@ test('selected rows always project an outcome, including a missing reply and a s
   assert.deepEqual(projection.cases[0]?.attachment, { ...a, status: 'refused', reason: 'observer-protocol' });
   assert.deepEqual(projection.cases[1]?.attachment, { ...b, status: 'refused', reason: 'case-not-run' });
   for (const row of projection.cases) assert.equal('trace' in row, false);
+  for (const row of projection.cases) {
+    for (const legacyField of ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun', 'providerFailure']) {
+      assert.equal(Object.hasOwn(row, legacyField), false);
+    }
+  }
   assert.equal('attachment' in projection.cases[2]!, false);
   assert.equal(store.publishDrawing(pending, a, drawn), false);
   assert.equal(store.projectEvaluation().cases[0], receipt.evaluation.cases[0]);
@@ -363,6 +368,23 @@ test('case outcome reads attachment presentation and preserves ordinary result b
   }
 });
 
+test('the ordinary conversion and archive never read observer properties', () => {
+  const plain = ordinary();
+  const poison = {
+    ...plain,
+    get trace(): never { throw new Error('read observer trace'); },
+    get attachment(): never { throw new Error('read observer attachment'); },
+  };
+  const options = { language: 'javascript', trace: false } as const;
+  assert.deepEqual(judgeCaseExecutionOutcome(poison, options), judgeCaseExecutionOutcome(plain, options));
+  const store = owner();
+  assert.deepEqual(store.commitOrdinary(a, poison), plain);
+  store.seal({ status: 'completed' }, evaluatedAt);
+  const [row] = store.projectEvaluation().cases;
+  assert.equal(Object.hasOwn(row!, 'trace'), false);
+  assert.equal(Object.hasOwn(row!, 'attachment'), false);
+});
+
 test('an observer deadline requires a retained prefix to count as truncated', () => {
   const cases = [
     { draw: { status: 'truncated', reason: 'observer-deadline', trace, attemptedEvents: 1 },
@@ -381,7 +403,13 @@ test('an observer deadline requires a retained prefix to count as truncated', ()
     assert.equal(store.publishDrawing(attempt, a, draw), true);
     const row = store.projectEvaluation(['A']).cases[0]!;
     assert.deepEqual(row.attachment, { ...a, ...expected });
-    if (expected.status === 'refused') assert.equal('trace' in row, false);
+    if (expected.status === 'refused') {
+      assert.equal('trace' in row, false);
+    } else {
+      const outcome = judgeCaseExecutionOutcome(row, { language: 'javascript', trace: true });
+      assert.equal(outcome.kind, 'completed');
+      assert.notEqual(outcome.traceTruncated, 'client-timeout');
+    }
   }
 });
 
