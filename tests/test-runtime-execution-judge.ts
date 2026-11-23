@@ -19,12 +19,17 @@ import {
   createBrowserJudgeHostFromRuntimeHost,
   createBrowserRuntimeJudge,
 } from '../src/internal/browser-judge';
+import type {
+  BrowserRuntimeJudgeReceiptLease,
+  JudgeReceiptProvider,
+} from '../packages/runtime-browser/src/browser-runtime-host-internal';
 import { RuntimePreparedProgramRegistry } from '../src/internal/judge-prepared-program';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
   type BrowserRuntimeHost,
   type BrowserRuntimeProvider,
+  type BrowserRuntimeProviderContext,
 } from '../packages/runtime-browser/src';
 import {
   liftCodeOutcome,
@@ -674,14 +679,18 @@ function codeBinding(
 }
 
 function browserHostFor(
-  provider: RuntimePreparedExecutionProvider
+  provider: RuntimePreparedExecutionProvider,
+  bindReceiptProvider?: (context: BrowserRuntimeProviderContext) => JudgeReceiptProvider,
+  assetBaseUrl?: string
 ): BrowserRuntimeHost {
   const browserProvider: BrowserRuntimeProvider = {
     id: 'test-runtime-execution-provider',
     languages: [RUNTIME],
-    create() {
+    create(context): BrowserRuntimeJudgeReceiptLease {
+      const receiptProvider = bindReceiptProvider?.(context);
       return {
         preparedProviders: new Map([[RUNTIME, provider]]),
+        ...(receiptProvider ? { judgeReceiptProviders: new Map([[RUNTIME, receiptProvider]]) } : {}),
         disposeLanguage() {},
         dispose() {},
       };
@@ -690,6 +699,7 @@ function browserHostFor(
   return createBrowserRuntimeHost({
     providerRegistry: createBrowserRuntimeProviderRegistry([browserProvider]),
     providers: [RUNTIME],
+    assetBaseUrl,
     featureOverrides: BROWSER_FEATURES,
   });
 }
@@ -3131,7 +3141,6 @@ function receiptFixture(options: {
       };
     },
   };
-  const runtimeHost = browserHostFor(provider);
   const preparedDescriptors: Array<ObserverCall['program'] & { readonly runtimeVersion: string }> = [];
   const registration = {
     runtimeVersion: 'receipt-fixture.v1',
@@ -3157,9 +3166,8 @@ function receiptFixture(options: {
     },
     mark(marker: (typeof markers)[number]) { markers.push(marker); notify(); },
   };
-  const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost, {
+  const host = createBrowserJudgeHostFromRuntimeHost(browserHostFor(provider, () => registration), {
     interactiveExecutionIdleTimeoutMs: options.idleMs,
-    receiptProviders: { javascript: registration },
   });
   return {
     host, state, ordinaryStarts, ordinarySignals, observerCalls, markers, waitUntil, acknowledgements,
@@ -3765,5 +3773,47 @@ test('migrated initial join holds the idle lease after ordinary commit', { timeo
     }), /Unknown or disposed/u);
   } finally {
     f.host.dispose();
+  }
+});
+
+test('Judge observation adapters bind once to each runtime host and its selected assets', async () => {
+  const bindings: BrowserRuntimeProviderContext[] = [];
+  const preparations: string[] = [];
+  const bind = (context: BrowserRuntimeProviderContext): JudgeReceiptProvider => {
+    bindings.push(context);
+    return {
+      runtimeVersion: context.assets.javascriptWorker,
+      capabilities: { observationLease: 'separate', observationDeadlineMs: 3000 },
+      async prepareObservation(program) {
+        preparations.push(program.runtimeVersion);
+        return {
+          observe: async (call) => recordedDrawing(call),
+          dispose() {},
+        };
+      },
+    };
+  };
+  const first = createBrowserJudgeHostFromRuntimeHost(browserHostFor(
+    preparedProvider(makePreparedState()), bind, 'https://first.example/workers/'
+  ));
+  const second = createBrowserJudgeHostFromRuntimeHost(browserHostFor(
+    preparedProvider(makePreparedState()), bind, 'https://second.example/workers/'
+  ));
+  try {
+    assert.equal(bindings.length, 2);
+    assert.equal(bindings[0]?.assets, first.assets);
+    assert.equal(bindings[1]?.assets, second.assets);
+    const bundle = await receiptBundle();
+    for (const host of [first, second, first]) {
+      const result = await host.execute({ bundle, tracing: { caseIds: ['A'] } });
+      assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
+    }
+    assert.deepEqual(preparations, [
+      first.assets.javascriptWorker, second.assets.javascriptWorker, first.assets.javascriptWorker,
+    ]);
+    assert.equal(bindings.length, 2, 'evaluation reuses the host-owned adapter');
+  } finally {
+    first.dispose();
+    second.dispose();
   }
 });

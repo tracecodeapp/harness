@@ -36,7 +36,9 @@ import type {
   BrowserRuntimeAssets,
 } from '../../packages/runtime-browser/src/runtime-assets';
 import {
+  getBrowserRuntimeHostJudgeReceiptProvider,
   getBrowserRuntimeHostPreparedProvider,
+  type JudgeReceiptProvider,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import {
   createBrowserRuntimeHost,
@@ -110,9 +112,6 @@ import {
   JudgeObservationSchedule,
   RuntimePreparedProgramRegistry,
   judgeAbortError,
-  judgeReceiptProviders,
-  type JudgeReceiptProvider,
-  type JudgeReceiptProviders,
 } from './judge-prepared-program';
 import {
   createBrowserProjectJudge,
@@ -2321,7 +2320,9 @@ export function createBrowserRuntimeJudge(
   never,
   Scope.Scope
 > {
-  return composeBrowserRuntimeJudge(options, judgeReceiptProviders[options.language]);
+  return composeBrowserRuntimeJudge(
+    options, getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language)
+  );
 }
 
 function composeBrowserRuntimeJudge(
@@ -2421,14 +2422,13 @@ export function createBrowserJudgeHostFromRuntimeHost(
   options: Pick<
     CreateBrowserJudgeHostOptions,
     'interactiveExecutionIdleTimeoutMs' | 'project'
-  > & { readonly receiptProviders?: JudgeReceiptProviders } = {}
+  > = {}
 ): BrowserJudgeHost {
   const interactiveExecutionIdleTimeoutMs =
     resolveInteractiveExecutionIdleTimeoutMs(
       options.interactiveExecutionIdleTimeoutMs
     );
   const retainedExecutions = new Map<string, RetainedBrowserJudgeExecution>();
-  const receiptProviders = options.receiptProviders ?? judgeReceiptProviders;
   const lifetime = new AbortController();
 
   const clearIdleTimer = (retained: RetainedBrowserJudgeExecution): void => {
@@ -2527,7 +2527,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     const requestStartedAt = judgeTimingNow();
     const phases: RuntimeJudgeExecutionPhaseTiming[] = [];
     const language = request.bundle.plan.runtime as Language;
-    const registration = receiptProviders[language];
+    const registration = getBrowserRuntimeHostJudgeReceiptProvider(host, language);
     const bundle = registration ? structuredClone(request.bundle) : request.bundle;
     const tracing = registration && request.tracing
       ? { caseIds: [...request.tracing.caseIds] }
@@ -2619,7 +2619,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     warmLanguage: host.warmLanguage.bind(host),
     disposeLanguage: host.disposeLanguage.bind(host),
     createJudge: (judgeOptions: CreateBrowserJudgeOptions) => {
-      const registration = receiptProviders[judgeOptions.language];
+      const registration = getBrowserRuntimeHostJudgeReceiptProvider(host, judgeOptions.language);
       return composeBrowserRuntimeJudge(
         { host, ...judgeOptions },
         registration,

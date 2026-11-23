@@ -1,7 +1,6 @@
 import type {
   CodeExecutionResult,
   ExecutionResult,
-  Language,
   TraceExecutionOptions,
   RuntimePreparedCodeCall,
   RuntimePreparedCodeBatchCall,
@@ -21,78 +20,25 @@ import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/sr
 import type {
   Drawing,
   RuntimeObservationCall,
-  RuntimeObservationProvider,
 } from '../../packages/runtime-contracts/src/runtime-calls';
+import type {
+  JudgeObservationLease,
+  JudgeObservationProgram,
+  JudgeOrdinaryBatchCall,
+  JudgeReceiptProvider,
+  JudgeSchedulePhase,
+} from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../../packages/judge/src/algorithm-model';
 import type { Binding } from '../../packages/judge/src/internal/receipt-types';
 import type { JudgeEvaluationResult } from '../../packages/judge/src/model';
 import { VerdictReceiptStore } from '../../packages/judge/src/internal/receipt-store';
 
-type ObservationProgram = RuntimeObservationCall['program'] & {
-  readonly runtimeVersion: string;
-};
 type ObservationRefusal = Extract<Drawing, { status: 'refused' }>;
-type ObservationPreparation = ObservationLease | ObservationRefusal;
+type ObservationPreparation = JudgeObservationLease | ObservationRefusal;
 
 function observationRefused(reason: ObservationRefusal['reason']): ObservationRefusal {
   return { status: 'refused', reason };
 }
-
-interface ObservationLease extends RuntimeObservationProvider {
-  /**
-   * Each observe call gets fresh learner state. An abort must retire or reset
-   * that state before the adapter admits a subsequent case on the lease.
-   */
-  observe(call: RuntimeObservationCall): Promise<Drawing>;
-  dispose(): void | Promise<void>;
-}
-
-export interface JudgeOrdinaryBatchCall extends RuntimePreparedCodeBatchCall {
-  /** Called only when the worker has admitted this entry to execute. */
-  readonly onCaseStarted?: (index: number) => void;
-}
-
-type JudgeSchedulePhase =
-  | 'ordinary-write-attempt'
-  | 'ordinary-commit'
-  | 'observer-start'
-  | 'observer-end'
-  | 'attachment-bind'
-  | 'observation-cache-hit'
-  | 'public-resolve';
-
-interface JudgeScheduleMarker extends Omit<Binding, 'caseId'> {
-  readonly phase: JudgeSchedulePhase;
-  readonly caseId?: string;
-  readonly attemptToken?: string;
-  readonly at: number;
-}
-
-export interface JudgeReceiptProvider {
-  /** Identity of the installed runtime build used for this registration. */
-  readonly runtimeVersion: string;
-  readonly capabilities: {
-    readonly observationLease: 'separate';
-    /** Backstop for an observer that fails to return a terminal drawing. */
-    readonly observationDeadlineMs: number;
-    readonly observationPrepareDeadlineMs?: number;
-    /** Native stopping batches can acknowledge admission before delivering rows. */
-    readonly stoppingBatchAdmission?: 'worker-start';
-  };
-  /** Uses isolated capacity and never receives the ordinary lease or writer. */
-  prepareObservation(
-    program: ObservationProgram,
-    signal: AbortSignal,
-    traceOptions?: Readonly<TraceExecutionOptions>
-  ): Promise<ObservationPreparation>;
-  /** Private trusted composition journal. Never comes from a request or a worker. */
-  mark?(marker: JudgeScheduleMarker): void;
-}
-
-export type JudgeReceiptProviders = Readonly<Partial<Record<Language, JudgeReceiptProvider>>>;
-
-// Registration changes with the installed provider, never with a failed request.
-export const judgeReceiptProviders: JudgeReceiptProviders = Object.freeze({});
 
 export function judgeAbortError(): DOMException {
   return new DOMException('The run was aborted.', 'AbortError');
@@ -126,9 +72,9 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly inputs: ReadonlyMap<string, Record<string, unknown>>;
   private readonly receipt: VerdictReceiptStore;
   private readonly binding: Omit<Binding, 'caseId'>;
-  private program?: ObservationProgram;
+  private program?: JudgeObservationProgram;
   private artifact?: Promise<ObservationPreparation>;
-  private lease?: ObservationLease;
+  private lease?: JudgeObservationLease;
 
   constructor(
     evaluationId: string,
