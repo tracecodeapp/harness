@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,14 +9,14 @@ import { controls } from './controls.mjs';
 import { inspect, knownGood, passingStatuses } from './oracle.mjs';
 
 const [command, catalog, argument, receiptPath] = process.argv.slice(2);
-if (!catalog || !['candidate', 'controls', 'prototype'].includes(command)) {
-  throw new Error('Usage: run.mjs <candidate|controls|prototype> <catalog-root> [adapter.mjs|replay.json] [report.json]');
+if (!catalog || !['candidate', 'controls', 'prototype', 'receipt'].includes(command)) {
+  throw new Error('Usage: run.mjs <candidate|controls|prototype|receipt> <catalog-root> ' +
+    '[adapter.mjs|replay.json|case-id|-] [report.json]');
 }
 const references = catalogWitnesses(catalog);
 const witnesses = [...syntheticWitnesses, ...references];
 const manifestSha256 = createHash('sha256').update(JSON.stringify(witnesses)).digest('hex');
 const rows = [];
-const good = new Map(witnesses.map(witness => [witness.request.id, knownGood(witness)]));
 const candidateCase = async (adapter, witness) => {
   try {
     const receipt = await adapter.runCase(structuredClone(witness.request));
@@ -25,7 +26,12 @@ const candidateCase = async (adapter, witness) => {
   }
 };
 
-if (command === 'candidate') {
+if (command === 'receipt') {
+  const witness = witnesses.find(w => w.request.id === argument);
+  if (!witness) throw new Error('Unknown fixture ' + argument);
+  const raw = JSON.parse(readFileSync(0, 'utf8'));
+  rows.push({ id: argument, ...inspect(witness, raw), raw });
+} else if (command === 'candidate') {
   const adapter = await import(pathToFileURL(resolve(argument)).href);
   if (typeof adapter.runCase !== 'function') throw new Error('Adapter must export runCase(request)');
   for (const witness of witnesses) {
@@ -65,6 +71,14 @@ if (command === 'candidate') {
     rows.push({ id, status: assertions.every(a => a.pass) ? 'projection-pass' : 'wrong', assertions, raw });
   }
 } else {
+  const good = new Map(witnesses.map(witness => [witness.request.id, knownGood(witness)]));
+  const assertExit = (id, receipt, exit) => {
+    const child = spawnSync(process.execPath, [process.argv[1], 'receipt', catalog, id], {
+      input: JSON.stringify(receipt), encoding: 'utf8', timeout: 10000,
+    });
+    assert.equal(child.status, exit, child.stderr || child.error?.message || child.stdout);
+    return child.status;
+  };
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ channel: 'chromium' });
   try {
@@ -96,7 +110,8 @@ if (command === 'candidate') {
       receipt.drawing = await paint(receipt.attachment);
       const result = inspect(witness, receipt);
       assert(passingStatuses.has(result.status), JSON.stringify(result.assertions.filter(a => !a.pass)));
-      rows.push({ id: witness.request.id + '/control-good', ...result });
+      const gateExit = assertExit(witness.request.id, receipt, 0);
+      rows.push({ id: witness.request.id + '/control-good', ...result, gateExit });
     }
     for (const [name, id, assertion, inject] of controls) {
       for (const layer of ['attachment', 'drawing']) {
@@ -115,8 +130,9 @@ if (command === 'candidate') {
         if (layer === 'drawing') {
           assert(result.assertions.filter(a => a.id.startsWith(id + '/attachment/')).every(a => a.pass));
         }
+        const gateExit = assertExit(id, receipt, 1);
         rows.push({ id: name + '/' + layer, status: 'control-caught', mutantStatus: result.status,
-          assertions: result.assertions });
+          injectionHits: 1, gateExit, requiredFailedAssertion: want, assertions: result.assertions });
       }
     }
   } finally {
