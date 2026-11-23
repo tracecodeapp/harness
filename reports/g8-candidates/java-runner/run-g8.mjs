@@ -26,11 +26,14 @@ const seed = Number(seedArg);
 const runMinutes = Number(minuteArg);
 const groupSelector = process.env.SPEED_GROUP_SELECTOR;
 const candidateScope = process.env.SPEED_JAVA_SCOPE;
+const releaseVersion = process.env.SPEED_G8_RELEASE;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
-assert.ok(['java', 'csharp', 'python'].includes(testedLanguage));
-const candidate = candidateScope ? await jsonCandidate() : undefined;
+assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
+assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
+const staged = candidateScope ? await jsonCandidate() : undefined;
+const candidate = releaseVersion === undefined ? staged : undefined;
 async function jsonCandidate() {
-  return JSON.parse(await readFile(join(out, 'vcandidate', 'candidate.json'), 'utf8'));
+  return JSON.parse(await readFile(join(out, releaseVersion ? 'vrelease' : 'vcandidate', 'candidate.json'), 'utf8'));
 }
 assert.ok(mode === 'smoke' || Object.hasOwn(windowLanguages, windowName));
 assert.ok(Number.isSafeInteger(seed) && Number.isFinite(runMinutes) && runMinutes > 0);
@@ -39,7 +42,7 @@ assert.ok(
     (groupSelector === 'java-switched-run' && mode === 'run' && windowName === 'desktop-a'),
   'SPEED_GROUP_SELECTOR must be unset or java-switched-run in a Desktop A run',
 );
-if (candidate) {
+if (staged) {
   assert.ok(mode === 'run' && !groupSelector);
   assert.ok((candidateScope === 'desktop' || candidateScope === 'spot') && windowName === 'desktop-a' ||
     candidateScope === 'phone' && windowName === 'phone');
@@ -51,13 +54,16 @@ const appRefs = {
   '0.17.1': '083bf3f4aec34a353dd6da749d691ca29ed601e8',
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
-const versions = candidate ? ['candidate-main', 'candidate-deploy'] : Object.keys(appRefs);
+const versions = releaseVersion ? ['release-deploy'] : candidate
+  ? ['candidate-main', 'candidate-deploy'] : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
+const filePrefix = releaseVersion ? 'r-' + releaseVersion + '-' +
+    (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
+  candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
 const metadataPath = join(out, filePrefix + 'metadata.json');
 const samplesPath = join(out, filePrefix + 'samples.jsonl');
@@ -173,28 +179,28 @@ async function serve(site) {
 }
 
 async function prepareVersion(version) {
-  const candidateVersion = version.startsWith('candidate-');
-  const root = join(out, candidateVersion ? 'vcandidate' : 'v' + version);
+  const stagedVersion = version.startsWith('candidate-') || version === 'release-deploy';
+  const root = join(out, stagedVersion ? (releaseVersion ? 'vrelease' : 'vcandidate') : 'v' + version);
   const harness = join(root, 'package');
   const site = join(root, 'site');
   const manifest = await json(join(harness, 'package.json'));
-  assert.equal(manifest.version, candidateVersion ? candidate.version : version);
-  const tarball = candidateVersion ? 'candidate.tgz' : 'tracecode-harness-' + version + '.tgz';
+  assert.equal(manifest.version, stagedVersion ? staged.version : version);
+  const tarball = stagedVersion ? 'candidate.tgz' : 'tracecode-harness-' + version + '.tgz';
   const tarballBytes = await readFile(join(root, tarball));
   const integrity = 'sha512-' + createHash('sha512').update(tarballBytes).digest('base64');
-  if (candidateVersion) assert.equal(sha256(tarballBytes), candidate.tarballSha256);
+  if (stagedVersion) assert.equal(sha256(tarballBytes), staged.tarballSha256);
   else assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
   const dependencyFile = join(root, 'dependencies.json');
   const dependencyBytes = await readFile(dependencyFile);
   const dependenciesSha256 = sha256(dependencyBytes);
-  assert.equal(dependenciesSha256, candidateVersion ? candidate.dependenciesSha256 : frozenDependencyHashes[version],
+  assert.equal(dependenciesSha256, stagedVersion ? staged.dependenciesSha256 : frozenDependencyHashes[version],
     `Installed dependency tree differs from the frozen tree for Harness ${version}`);
   const dependencyLockSha256 = sha256(await readFile(join(harness, 'package-lock.json')));
   const expectedLock = new URL(`./dependency-locks/${version}.package-lock.json`, import.meta.url);
-  assert.equal(dependencyLockSha256, candidateVersion ? candidate.dependencyLockSha256 :
+  assert.equal(dependencyLockSha256, stagedVersion ? staged.dependencyLockSha256 :
     sha256(await readFile(expectedLock)), `Install lock differs from the frozen lock for Harness ${version}`);
-  if (candidateVersion) {
-    for (const [name, hash] of Object.entries(candidate.files)) {
+  if (stagedVersion) {
+    for (const [name, hash] of Object.entries(staged.files)) {
       assert.equal(sha256(await readFile(join(root, name))), hash, name + ' differs from staged bytes');
     }
   }
@@ -216,8 +222,8 @@ async function prepareVersion(version) {
   });
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
   const metadata = {
-    appRef: candidateVersion ? appRefs['0.20.1'] : appRefs[version],
-    ...(candidateVersion && { commit: candidate.commit, files: candidate.files }),
+    appRef: stagedVersion ? appRefs[releaseVersion ? '0.17.1' : '0.20.1'] : appRefs[version],
+    ...(stagedVersion && { ...(staged.commit && { commit: staged.commit }), files: staged.files }),
     tarball, integrity, sha256: sha256(tarballBytes),
     dependencyLockSha256, dependenciesSha256,
     dependencies: JSON.parse(dependencyBytes.toString('utf8')),
@@ -330,11 +336,12 @@ function expectedGroupSeconds(group) {
 function plan() {
   const groups = [];
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
-  const cheapFirst = candidateScope === 'spot' ? windowLanguages.phone.filter((lang) => lang !== testedLanguage) :
-    candidate ? [testedLanguage] : mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
+  const spotExcluded = releaseVersion ? new Set(['csharp', 'python']) : new Set([testedLanguage]);
+  const cheapFirst = candidateScope === 'spot' ? windowLanguages.phone.filter((lang) => !spotExcluded.has(lang)) :
+    staged ? [testedLanguage] : mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
   for (const language of cheapFirst) {
     for (const cpu of cpuRates) {
-      const target = candidate ? 20 : mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
+      const target = staged ? 20 : mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
       const phoneSubset = mode === 'run' && windowName === 'phone';
       for (const state of phoneSubset ? ['warm', 'cold'] : ['warm', 'cold', 'switched']) {
         for (const journey of phoneSubset ? ['run'] : ['submit', 'run']) {
@@ -345,9 +352,9 @@ function plan() {
             });
           }
         }
-        if (state === 'warm' && !phoneSubset) {
+        if (state === 'warm' && !phoneSubset && !releaseVersion) {
           groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target,
-            versions: candidate ? ['candidate-main'] : ['0.20.1'] });
+            versions: releaseVersion ? ['release-deploy'] : candidate ? ['candidate-main'] : ['0.20.1'] });
         }
       }
     }
@@ -355,7 +362,7 @@ function plan() {
   if (candidateScope === 'spot') {
     return groups.filter(({ problem, state, journey }) =>
       problem === 'binary-search' && state === 'warm' && journey === 'run')
-      .map((group) => ({ ...group, versions: ['candidate-main'], continuation: false }));
+      .map((group) => ({ ...group, versions: [releaseVersion ? 'release-deploy' : 'candidate-main'], continuation: false }));
   }
   if (mode !== 'smoke') {
     const decide = g => testedLanguage === 'java' && candidateScope === 'desktop' &&
@@ -402,7 +409,7 @@ if (groupSelector !== undefined) {
 const report = {
   schema: 'tracecode.speed-baseline.v1',
   mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
-  ...(candidate && { candidateScope, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
+  ...(staged && { candidateScope, ...(releaseVersion && { releaseVersion }), runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
     encoding: 'utf8',
   }).trim() }),
   ...(groupSelector !== undefined && {
@@ -429,7 +436,7 @@ try {
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   report.browser.version = browser.version();
-  if (candidate) assert.match(report.browser.version, /^145\./, 'S(Java) requires Chromium 145');
+  if (staged) assert.match(report.browser.version, /^145\./, 'S(language) requires Chromium 145');
   await save();
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
     [version, await browser.newContext()])));

@@ -4,6 +4,15 @@ The exclusive timing windows require the coordinator's go after W and the
 TraceCC check clear the host. The staging job only installs, builds, and
 verifies packages. It launches no browser.
 
+The production `0.17.3` patch runs first after the TraceCC reservation. Its
+archive is `tracecode-harness-0.17.3-d69fc275910c.tgz`, pinned to SHA-256
+`d69fc275910c39a99364e9bb5e2b79d47b920ac951840e3e6b29c02ed3e2c290`.
+The 90-minute release window measures its deploy policy only, using the frozen
+0.17.1 deploy samples as the comparator without rerunning 0.17.1. It covers
+S(C#), S(Python), and warm Binary Search Run spot cells for JavaScript,
+TypeScript, C++ and Java. The release stays on the original 0.17.x witness path;
+the 0.21 candidate worker witnesses do not apply.
+
 Python has a replacement candidate pin,
 `9e2afce5186c62e60a685e937099e51b6814c3dc`, at
 `/root/ci/coord-artifacts/feat-b3-python-9e2afce5186c.tgz` with SHA-256
@@ -61,6 +70,7 @@ ar=/Users/obinnanwachukwu/Code/tracecodeapp/harness-artifacts/tools/ar-harness.s
 wt=/Users/obinnanwachukwu/.t3/worktrees/harness/t3-df2808a1-af3ae7dd551a2a6c
 stage=/root/ci/g8-candidates.qHpuBwkE
 
+"$ar" "$wt" speed-g8-release-0173 "true && bash $stage/session-and-score-release.sh 90"
 "$ar" "$wt" speed-g8-java "true && bash $stage/session-and-score.sh java 55"
 "$ar" "$wt" speed-g8-csharp "true && bash $stage/session-and-score.sh csharp 90"
 "$ar" "$wt" speed-g8-python "true && bash $stage/session-and-score.sh python 75"
