@@ -16,6 +16,18 @@ export type JudgeObservationProgram = RuntimeObservationCall['program'] & {
   readonly runtimeVersion: string;
 };
 
+const ordinaryPreparationKeys = new WeakMap<JudgeObservationProgram, object>();
+
+export function bindJudgeOrdinaryPreparation(program: JudgeObservationProgram, key: object): void {
+  ordinaryPreparationKeys.set(program, key);
+}
+
+export function getJudgeOrdinaryPreparationKey(program: JudgeObservationProgram): object {
+  const key = ordinaryPreparationKeys.get(program);
+  if (!key) throw new Error('Missing ordinary preparation for Judge observation.');
+  return key;
+}
+
 type ObservationRefusal = Extract<RuntimeObservationReply, { status: 'refused' }>;
 
 export interface JudgeObservationLease extends RuntimeObservationProvider {
@@ -70,9 +82,7 @@ export interface JudgeReceiptProvider {
   prepareObservation(
     program: JudgeObservationProgram,
     signal: AbortSignal,
-    traceOptions: Readonly<TraceExecutionOptions> | undefined,
-    /** Opaque per-evaluation key for deriving a drawing from immutable compilation bytes. */
-    ordinaryPreparationKey: object,
+    traceOptions?: Readonly<TraceExecutionOptions>,
   ): Promise<JudgeObservationLease | ObservationRefusal>;
   /** Private trusted composition journal. Never comes from a request or a worker. */
   mark?(marker: JudgeScheduleMarker): void;

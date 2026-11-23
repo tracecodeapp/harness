@@ -11,6 +11,7 @@ import type {
   BrowserRuntimeJudgeReceiptLease,
   JudgeReceiptProvider,
 } from '../../runtime-browser/src/browser-runtime-host-internal';
+import { getJudgeOrdinaryPreparationKey } from '../../runtime-browser/src/browser-runtime-host-internal';
 import {
   createJavaScriptPreparedExecutionProvider,
 } from './javascript-runtime-client';
@@ -92,8 +93,8 @@ export function createJavaScriptBrowserRuntimeProvider(
           observationLease: 'separate',
           observationDeadlineMs: 20_000,
         },
-        prepareObservation: (_program, signal, options, key) =>
-          worker.prepareObservation(key, options, signal),
+        prepareObservation: (program, signal, options) =>
+          worker.prepareObservation(getJudgeOrdinaryPreparationKey(program), options, signal),
       };
       return {
         preparedProviders,

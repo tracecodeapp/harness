@@ -425,8 +425,8 @@ async function main(): Promise<void> {
       assertCondition(Object.keys(sesUnavailable).length === 2, 'Both SES startup failures must be witnessed');
       for (const [name, failure] of Object.entries(sesUnavailable)) {
         assertCondition(
-          typeof failure === 'string' && failure.length > 0,
-          `sesUnavailable.${name} returned a verdict after startup failed`
+          failure === 'provider' || failure === 'RuntimeProviderError',
+          `sesUnavailable.${name} returned ${failure} after startup failed`
         );
       }
       console.log(`PASS: JavaScript SES provider browser integration ${JSON.stringify({

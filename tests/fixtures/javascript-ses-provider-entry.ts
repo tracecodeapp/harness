@@ -60,6 +60,7 @@ async function evaluate(
     passedCount: receipt.passedCount,
     totalCount: receipt.totalCount,
     evaluationStatus: receipt.evaluation.status,
+    compileFailure: receipt.evaluation.compile?.failure,
     values: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.value)
       : [],
@@ -1319,12 +1320,15 @@ export async function runJavaScriptSesUnavailableFailure(assetBaseUrl: string) {
     safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
-  const failureOf = async (result: Promise<unknown>) => {
+  const failureOf = async (result: ReturnType<typeof evaluate>) => {
     try {
-      await result;
-      return undefined;
+      const receipt = await result;
+      return receipt.evaluationStatus === 'compile-failed' &&
+        receipt.compileFailure?.origin === 'provider' && receipt.totalCount === 0
+        ? 'provider'
+        : JSON.stringify(receipt);
     } catch (error) {
-      return error instanceof Error ? error.message : String(error);
+      return error instanceof Error ? error.name : String(error);
     }
   };
   try {

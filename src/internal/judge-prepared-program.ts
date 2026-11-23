@@ -28,6 +28,7 @@ import type {
   JudgeReceiptProvider,
   JudgeSchedulePhase,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
+import { bindJudgeOrdinaryPreparation } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../../packages/judge/src/algorithm-model';
 import type { Binding } from '../../packages/judge/src/internal/receipt-types';
 import type { JudgeEvaluationResult } from '../../packages/judge/src/model';
@@ -75,7 +76,6 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly receipt: VerdictReceiptStore;
   private readonly binding: Omit<Binding, 'caseId'>;
   private program?: JudgeObservationProgram;
-  private ordinaryPreparationKey?: object;
   private artifact?: Promise<ObservationPreparation>;
   private lease?: JudgeObservationLease;
 
@@ -102,13 +102,13 @@ export class JudgeObservationSchedule<Result, Expected> {
   }
 
   recordPrepare(call: RuntimeProgramPreparationCall): void {
-    this.ordinaryPreparationKey = call;
     this.program = Object.freeze({
       code: call.code,
       functionName: call.functionName,
       executionStyle: call.executionStyle,
       runtimeVersion: this.registration.runtimeVersion,
     });
+    bindJudgeOrdinaryPreparation(this.program, call);
     if (this.selected.size > 0) this.prepareObserver();
   }
 
@@ -202,9 +202,7 @@ export class JudgeObservationSchedule<Result, Expected> {
             return observationRefused('observer-prepare');
           }
         }
-        const prepared = this.registration.prepareObservation(
-          program, signal, this.traceOptions, this.ordinaryPreparationKey!
-        ).then(async (artifact) => {
+        const prepared = this.registration.prepareObservation(program, signal, this.traceOptions).then(async (artifact) => {
           if ('status' in artifact) return artifact;
           if (signal.aborted) await artifact.dispose();
           else this.lease = artifact;
