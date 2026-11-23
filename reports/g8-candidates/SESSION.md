@@ -19,12 +19,19 @@ collects 20 samples per release for warm Run and warm Submit on Binary Search
 and Permutations. Cold Run on both problems supplies the near-zero control and
 its second-trace receipt. This control changes no score threshold.
 
+Java's next authorized session uses registered head
+`305683221863a4e719d88c9a25d5fdb39e022109`, at
+`/root/ci/coord-artifacts/b5-java-journal-registered-30568322.tgz` with SHA-256
+`8f095ae3449e5e94575065b0d02345a9e57aebfd6acb7597b634a37464fb9bd6`.
+The prior `9336c784` install remains as provenance and is not reused for timing.
+
 Python has a replacement candidate pin,
-`9e2afce5186c62e60a685e937099e51b6814c3dc`, at
-`/root/ci/coord-artifacts/feat-b3-python-9e2afce5186c.tgz` with SHA-256
-`d80eda2b50640065d3b8d62190828e93e548a20d55768b42ca15079bed8a6a6f`.
+`df3bdb1257347ced197949360da1f77ffa435f81`, at
+`/root/ci/coord-artifacts/feat-b3-python-df3bdb125734.tgz` with SHA-256
+`8b4d8e4d9df566bb1f845151e0edf83e7819ce73c0238d152b4f723551c944d5`.
 Do not stage or time it until the coordinator gives a separate go after its GB
-recheck and Grok read. The withdrawn `1ff364128765` pin must not be used.
+recheck and Grok read. The withdrawn `1ff364128765` and superseded
+`9e2afce5186c` pins must not be used.
 
 ## Scope and time
 
