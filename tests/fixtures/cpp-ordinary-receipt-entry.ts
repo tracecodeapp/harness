@@ -102,9 +102,6 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
   };
   const legacy = createLegacyCppDrawingProducer({
     createObserverWorkerClient: () => createClient('legacy'),
-    // The rewritten artifact runs as a negative control. Its events do not
-    // independently establish that its execution represents this source.
-    certify: () => ({ status: 'refused', reason: 'uncertified-drawing' }),
   });
   const sparse = createSparseCppDrawingProducer({
     // Released TraceCC has no independently verified map for these programs.
@@ -119,6 +116,7 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
     },
   };
   const suites = [];
+  let legacyDrawings = 0;
   for (const [name, producer] of Object.entries({ legacy, sparse, refusal })) {
     const ordinary = createCppOrdinaryExecutionProvider({ createWorkerClient: () => createClient('ordinary') });
     const registration = createCppObservationRegistration(producer, {
@@ -174,10 +172,17 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
             check(row.status === 'completed' && row.verdict.kind === 'passed' &&
               JSON.stringify(row.value) === JSON.stringify(expected),
             `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(row)}`);
-            for (const key of ['trace', 'traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded', 'providerFailure']) {
+            for (const key of ['traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded', 'providerFailure']) {
               check(!Object.hasOwn(row, key), label + ' leaked ' + key);
             }
             check(row.diagnostics.every(({ code }) => code !== 'trace-unavailable'), label + '/diagnostics');
+            if (row.attachment?.status === 'drawn') {
+              check(name === 'legacy' && row.trace === row.attachment.trace &&
+                row.trace.events.some(({ kind }) => kind === 'line'), label + '/recorded-trace');
+              legacyDrawings++;
+            } else {
+              check(!Object.hasOwn(row, 'trace'), label + '/absent-trace');
+            }
           });
         };
 
@@ -185,10 +190,11 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
         check(run.evaluation.status === 'completed' && run.evaluation.compile?.status === 'compiled', fixture.id + '/run-first/compile');
         checkRows(run.evaluation.cases, 'run-first');
         const [a, b] = run.evaluation.cases;
-        check(a?.attachment?.status === 'refused', fixture.id + '/run-first/A/attachment-status');
+        check(a?.attachment && (name === 'legacy' || a.attachment.status === 'refused'),
+          fixture.id + '/run-first/A/attachment-status');
         check(b && !Object.hasOwn(b, 'attachment'), fixture.id + '/run-first/B/unselected');
         if (name === 'legacy' && fixture.id.endsWith('/trace-compile')) {
-          check(a.attachment.reason === 'observer-prepare', fixture.id + '/observer-prepare');
+          check(a.attachment.status === 'refused' && a.attachment.reason === 'observer-prepare', fixture.id + '/observer-prepare');
         }
         check(run.executionId, fixture.id + '/run-first/handle');
         await host.disposeExecution(run.executionId);
@@ -204,7 +210,8 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
         checkRows(receipt.evaluation.cases, 'one-shot');
         check(receipt.verdict === 'passed' && receipt.passedCount === 2 && receipt.totalCount === 2,
           fixture.id + '/one-shot/aggregate');
-        check(receipt.evaluation.cases.every(({ attachment }) => attachment?.status === 'refused'),
+        check(receipt.evaluation.cases.every(({ attachment }) =>
+          attachment && ((name === 'legacy' && !fixture.id.endsWith('/trace-compile')) || attachment.status === 'refused')),
           fixture.id + '/one-shot/attachment-status');
         suites.push(`${fixture.id}/${name}`);
       }
@@ -212,6 +219,7 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
       await host.dispose();
     }
   }
+  check(legacyDrawings > 0, 'the legacy producer never supplied a recorded drawing');
   check(thrownCompiles === 1, 'expected one injected observer compile throw');
   check(requests.some(({ role, mode }) => role === 'legacy' && mode === 'trace'), 'legacy observer was never dispatched');
   check(requests.filter(({ role }) => role === 'ordinary').length === fixtures.length * 3 * 2,

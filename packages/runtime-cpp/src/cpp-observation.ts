@@ -110,8 +110,27 @@ interface LegacyCppDrawingOptions {
   /** Must allocate an observer-owned worker client, never the ordinary client. */
   createObserverWorkerClient(): Pick<CppWorkerClient,
     'init' | 'prepareRuntimeProgram' | 'executePreparedTrace' | 'terminate'>;
-  /** Runtime events from the rewritten program require independent certification. */
-  certify(result: ExecutionResult, call: RuntimeObservationCall): Drawing | Promise<Drawing>;
+}
+
+/**
+ * Compatibility presentation for the explicitly selected legacy producer.
+ * Recorded events describe the rewritten execution. A legacy budget signal
+ * supplies neither a certified prefix nor an attempted-event count.
+ */
+function legacyDrawing(result: ExecutionResult): Drawing {
+  if (result.kind === 'limit' && result.reason === 'client-timeout') {
+    return refused('observer-timeout');
+  }
+  if (result.traceTruncated || result.kind === 'limit') {
+    return refused('uncertified-drawing');
+  }
+  if (result.kind === 'failed') {
+    return refused(result.providerFailure ? 'recorder-unavailable' : 'observer-runtime');
+  }
+  const { trace } = result;
+  if (trace.language !== 'cpp') return refused('observer-protocol');
+  if (!trace.events.some(({ kind }) => kind === 'line')) return refused('recorder-unavailable');
+  return { status: 'drawn', trace };
 }
 
 export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions): CppDrawingProducer {
@@ -183,15 +202,7 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
               signal: call.signal,
             });
             call.signal?.throwIfAborted();
-            if (result.kind === 'limit' && result.reason === 'client-timeout') {
-              return refused('observer-timeout');
-            }
-            try {
-              return await options.certify(result, call);
-            } catch {
-              call.signal?.throwIfAborted();
-              return refused('observer-encode');
-            }
+            return legacyDrawing(result);
           } finally {
             call.signal?.removeEventListener('abort', abort);
             retire(client);
