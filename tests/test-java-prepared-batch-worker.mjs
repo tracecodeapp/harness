@@ -10,7 +10,7 @@ const completed = (stdout, isolation = 'clean') => ({
   status: 'completed', exitCode: 0, stdout, stderr: '', isolation: { status: isolation },
 });
 
-function testBatch(run, { stop = true } = {}) {
+function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast' } = {}) {
   const calls = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -44,7 +44,11 @@ function testBatch(run, { stop = true } = {}) {
   };
   const self = {
     location: { href: 'https://test.invalid/workers/java-runtime-worker.js' },
-    postMessage() {},
+    postMessage(message) {
+      if (message.type === 'java-prepared-case-admitted') {
+        calls.push(['admit', message.payload.index]);
+      }
+    },
     addEventListener() {},
     close() {},
     importScripts() {},
@@ -57,14 +61,19 @@ function testBatch(run, { stop = true } = {}) {
       close() { record('close'); },
     });
     traceJVMPreparedPrograms.set('p', {
-      program: {}, executions: 0, algorithmIsolationProfile: { tier: 'algorithm-fast' },
+      program: {}, executions: 0, algorithmIsolationProfile: { tier: profile },
+    });
+    self.TraceCodeActiveKernelRequestId = 'request';
+    self.TraceCodeJavaPreparedCaseAdmitted = (index) => self.postMessage({
+      type: 'java-prepared-case-admitted', payload: { index },
     });
     traceJVMRunPreparedRuntimeProgramBatch(
       'p', 'Traced', '1', '[{"caseId":"first"},{"caseId":"second"},{"caseId":"suffix"}]',
-      '500', '', '', '[false,true,false]', 'Clean', String(stop)
+      '500', '', '', mode === 'ordinary' ? '[false,false,false]' : '[false,true,false]',
+      'Clean', String(stop), mode
     );
   `, {
-    self, client, stop, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, mode, profile, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;
@@ -75,6 +84,31 @@ function testBatch(run, { stop = true } = {}) {
   });
   return { calls, result: result.then(JSON.parse), timers };
 }
+
+test('ordinary admission precedes each start and excludes a stopped suffix', async () => {
+  const { calls, result } = testBatch(({ caseId, advance, onDispose }) => {
+    if (caseId === 'first') return completed(output('first'));
+    queueMicrotask(() => advance(501));
+    return new Promise((resolve) => onDispose(() => resolve(completed(''))));
+  }, { mode: 'ordinary' });
+  const report = await result;
+  assert.equal(report.runnerProcessCount, 1);
+  assert.equal(report.results[1].timeoutReason, 'client-timeout');
+  assert.deepEqual(calls, [
+    ['admit', 0], ['run', 1, 'first', 'Clean'], ['reset'],
+    ['admit', 1], ['run', 1, 'second', 'Clean'], ['dispose', 1], ['close'],
+  ]);
+});
+
+test('observer-only batch preserves a budget stop without executing the clean companion', async () => {
+  const { calls, result } = testBatch(({ entry }) =>
+    completed(entry === 'Traced' ? fallback : output('clean')), { mode: 'observer' });
+  const report = await result;
+  assert.equal(report.results[1].traceLimitExceeded, true);
+  assert.equal(report.results[1].output, undefined);
+  assert.equal(calls.filter(([type]) => type === 'run').length, 3);
+  assert.equal(report.runnerProcessCount, 1);
+});
 
 test('prepared Java trace fallback shares the case deadline and stops before dispatching the suffix', async () => {
   let cancelFallback;
