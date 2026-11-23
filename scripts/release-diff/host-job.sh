@@ -4,10 +4,11 @@
 #   ar-harness.sh <wt> rd-dry bash scripts/release-diff/host-job.sh
 # Environment (all optional): RD_LANGUAGES (default all six, cheapest first), RD_PROBLEMS,
 # RD_CATALOG (default all), RD_BASE_VERSION (default 0.17.1), RD_SKIP_BUILD=1.
+# RD_RERUN_FILE: lines "<language> <id>,<id>" rerun only those problems (with RD_OUT=rerun-out).
 # Output: release-diff-out/<label>-<language>.json and logs, copied back with scp.
 set -uo pipefail
 ROOT=$(pwd)
-OUT="$ROOT/release-diff-out"
+OUT="$ROOT/${RD_OUT:-release-diff-out}"
 CORPUS=${RD_CORPUS:-/root/ci/parity-app-data}
 BASE_VERSION=${RD_BASE_VERSION:-0.17.1}
 LANGS=${RD_LANGUAGES:-javascript,typescript,cpp,java,csharp,python}
@@ -50,12 +51,32 @@ run_side() {
     RD_CATALOG="${RD_CATALOG:-all}" RD_LANGUAGES="$lang" RD_PROBLEMS="${RD_PROBLEMS:-}" \
     RD_REPORT="$OUT/$label-$lang.json" \
     corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-release-diff-catalog.ts \
-    >"$OUT/$label-$lang.log" 2>&1
+    </dev/null >"$OUT/$label-$lang.log" 2>&1
   local code=$?
   echo "== $label $lang end $(date -u +%H:%M:%SZ) exit=$code fixtures=$(grep -cE '^\[' "$OUT/$label-$lang.log")"
   grep -E 'runner-timeout|crashed|Error' "$OUT/$label-$lang.log" | head -5
   return $code
 }
+run_lang() {
+  local lang=$1
+  if [ "${RD_PARALLEL:-0}" = 1 ]; then
+    run_side "$lang" base & local b=$!
+    run_side "$lang" target & local t=$!
+    wait $b || status=1
+    wait $t || status=1
+  else
+    run_side "$lang" base || status=1
+    run_side "$lang" target || status=1
+  fi
+}
+if [ -n "${RD_RERUN_FILE:-}" ]; then
+  while read -r lang ids; do
+    [ -n "$lang" ] || continue
+    RD_PROBLEMS="$ids" run_lang "$lang"
+  done <"$RD_RERUN_FILE"
+  echo "done $(date -u +%H:%M:%SZ)"
+  exit $status
+fi
 IFS=, read -ra LANG_LIST <<<"$LANGS"
 for lang in "${LANG_LIST[@]}"; do
   if [ "${RD_PARALLEL:-0}" = 1 ]; then
