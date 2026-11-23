@@ -12,4 +12,6 @@ mkdir -p u4-out
 for i in 1 2 3 4 5; do echo "csharp signed-routing-audit,task-dependency-order"; done >u4-out/rerun-list.txt
 RD_RERUN_FILE=u4-out/rerun-list.txt RD_OUT=u4-out RD_SIDES="target target-nostop" RD_SKIP_BUILD=1 \
   bash scripts/release-diff/host-job.sh || status=1
+# Python full pass, both versions side by side (it did not run in the full job).
+RD_PARALLEL=1 RD_LANGUAGES=python RD_SKIP_BUILD=1 bash scripts/release-diff/host-job.sh || status=1
 exit $status
