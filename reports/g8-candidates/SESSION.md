@@ -26,12 +26,12 @@ Java's next authorized session uses registered head
 The prior `9336c784` install remains as provenance and is not reused for timing.
 
 Python has a replacement candidate pin,
-`df3bdb1257347ced197949360da1f77ffa435f81`, at
-`/root/ci/coord-artifacts/feat-b3-python-df3bdb125734.tgz` with SHA-256
-`8b4d8e4d9df566bb1f845151e0edf83e7819ce73c0238d152b4f723551c944d5`.
+`3dfc7dc13de0c8d9cfc325197d10dff8a16051cb`, at
+`/root/ci/coord-artifacts/feat-b3-python-3dfc7dc13de0.tgz` with SHA-256
+`6df28a9148984fbffd0eba023a77cd441bde0a40b2cbfcb0982a149eb0a46850`.
 Do not stage or time it until the coordinator gives a separate go after its GB
 recheck and Grok read. The withdrawn `1ff364128765` and superseded
-`9e2afce5186c` pins must not be used.
+`9e2afce5186c` and `df3bdb125734` pins must not be used.
 
 ## Scope and time
 
