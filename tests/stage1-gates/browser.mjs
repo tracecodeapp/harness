@@ -51,8 +51,12 @@ class ObservedWorker extends NativeWorker {
         }
         transcript.push({
           action: 'response', worker, generation, id: data.id, type: data.type,
-          success: data.payload?.success ?? data.ok, mode: data.payload?.mode,
-          tier: data.payload?.isolationProfile?.tier,
+          success: data.payload?.success ?? data.ok,
+          mode: data.payload?.mode ?? data.payload?.artifact?.mode,
+          tier: data.payload?.isolationProfile?.tier ?? data.payload?.artifact?.isolationProfile?.tier ??
+            data.payload?.algorithmIsolationProfile?.tier ?? data.payload?.preparedRunnerTier,
+          tierReason: data.payload?.artifact?.isolationProfile?.reasons ??
+            data.payload?.algorithmIsolationProfile?.reasons ?? data.payload?.preparedRunnerReason,
           rows: data.payload?.results?.length, phase: data.payload?.phase,
           index: data.payload?.index,
         });
@@ -84,10 +88,12 @@ class ObservedWorker extends NativeWorker {
       const command = {
         action: 'command', worker, generation, id: data?.id, type: data?.type,
         role: payload?.runtimeRole, mode: payload?.mode ?? prepared?.mode ?? program?.mode,
-        tier: payload?.isolationProfile?.tier ?? prepared?.isolationProfile?.tier,
+        tier: payload?.isolationProfile?.tier ?? prepared?.isolationProfile?.tier ??
+          payload?.preparedRunnerTier ?? prepared?.preparedRunnerTier,
         functionName: payload?.functionName ?? prepared?.functionName ?? program?.functionName,
         inputs: payload?.inputBatch ?? payload?.inputs,
         trace: payload?.traceEnabledBatch ?? payload?.tracingEnabled ?? payload?.trace ?? payload?.traceFlags,
+        forceJudgeCompatible: payload?.forceJudgeCompatible,
       };
       if (command.id) pending.set(command.id, command);
       transcript.push(command);

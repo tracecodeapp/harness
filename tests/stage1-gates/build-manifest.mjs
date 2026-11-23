@@ -209,6 +209,13 @@ add('G6', 'over-ceiling', 'py', program, [
   { id: 'B', input: { kind: 'small', n: 0 }, actual: [1, 2, 3], expected: [1, 2, 3] },
 ], queensOptions);
 
+add('G6', 'python-fast-scalar', 'py', 'def solve(n): return n\n', rows([{ n: 7 }, { n: 11 }], [7, 11]),
+  { untracedOnly: true, expectedTier: 'algorithm-fast' });
+add('G6', 'python-hard-isolated-scalar', 'py', 'def solve(n): return int(type(n) is int) * n\n', rows([{ n: 7 }, { n: 11 }], [7, 11]),
+  { untracedOnly: true, expectedTier: 'hard-isolated' });
+const compatible = fixtures.find((fixture) => fixture.name === 'invocation-ops' && fixture.language === 'python');
+compatible.expectedTier = 'judge-compatible';
+
 const requests = requestMatrix(['A', 'B']);
 const rowChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics'];
 const requiredAppFixtures = appSpec.map((spec) => ({
@@ -228,6 +235,9 @@ const inventory = [...fixtures, ...requiredAppFixtures].flatMap((fixture) => [
   ];
 }));
 for (const fixture of fixtures) {
+  if (fixture.expectedTier) {
+    inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/submit-default-AB/@request/admitted-tier`);
+  }
   for (const route of cppDirectRoutes(fixture)) {
     const prefix = `${fixture.gate}/cpp/${fixture.name}/${route}/code`;
     inventory.push(`${prefix}/@request/worker-ack`, `${prefix}/@request/cardinality`);

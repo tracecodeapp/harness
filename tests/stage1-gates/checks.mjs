@@ -88,6 +88,19 @@ export function checkObservation(fixture, request, observation, record) {
       }
     });
   }
+  if (fixture.expectedTier && !request.route && request.id === 'submit-default-AB') {
+    check('@request', 'admitted-tier', () => {
+      const observations = observation.worker.filter((event) => event.action === 'response' && event.success === true);
+      assert(observations.some((event) => event.tier === fixture.expectedTier && event.mode === 'code'), `No ${fixture.expectedTier} code artifact acknowledgement`);
+      const commands = observation.worker.filter((event) => event.action === 'command' && /execute-prepared/.test(event.type));
+      if (fixture.expectedTier === 'hard-isolated') {
+        assert.equal(new Set(commands.map(({ generation }) => generation)).size, 2);
+        assert(commands.every(({ type }) => type === 'execute-prepared-program'));
+      } else {
+        assert(commands.some(({ type, inputs }) => type === 'execute-prepared-program-batch' && inputs.length === 2));
+      }
+    });
+  }
   if (request.id.startsWith('legacy-')) {
     check('@request', 'legacy-projection', () => {
       assert.equal(observation.legacy.requestId, submitted.id);
