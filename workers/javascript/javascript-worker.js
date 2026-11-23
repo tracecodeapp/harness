@@ -498,17 +498,26 @@ function createSesConsoleBudget() {
   let stopped = false;
   let exceeded = false;
   return {
-    capture(rendered) {
+    // `rendered` holds the arguments this console rendered: all `count` of
+    // them, or those before one that could not be printed (`failed`).
+    capture(rendered, count = rendered.length, failed = false) {
       if (stopped) return;
       if (lines >= 99) {
         stopped = true;
         exceeded = true;
         return;
       }
-      const argumentLimit = Math.min(rendered.length, 40);
+      const argumentLimit = Math.min(count, 40);
+      const values = rendered.slice(0, argumentLimit);
+      if (failed && values.length < argumentLimit) {
+        values.push('[Unprintable]');
+        // The pool renders the arguments after it too; this console never
+        // did, so the pool must be asked.
+        if (values.length < argumentLimit) exceeded = true;
+      }
       let line = '';
-      for (let index = 0; index < argumentLimit; index += 1) {
-        const value = truncate(rendered[index] ?? '', 4096);
+      for (let index = 0; index < values.length; index += 1) {
+        const value = truncate(values[index] ?? '', 4096);
         if (value.endsWith(marker)) exceeded = true;
         line = truncate(line + (index === 0 ? '' : ' ') + value, 8192);
         if (line.endsWith(marker)) {
@@ -516,9 +525,9 @@ function createSesConsoleBudget() {
           break;
         }
       }
-      if (rendered.length > argumentLimit && !line.endsWith(marker)) {
+      if (count > argumentLimit && !line.endsWith(marker)) {
         exceeded = true;
-        line = truncate(line + ' … ' + (rendered.length - argumentLimit) + ' more', 8192);
+        line = truncate(line + ' … ' + (count - argumentLimit) + ' more', 8192);
       }
       const remaining = 65536 - totalCharacters;
       if (line.length > remaining) {
@@ -535,8 +544,17 @@ function createSesConsoleBudget() {
 
 function createConsoleProxy(output, sesConsoleBudget) {
   const capture = (...args) => {
-    // Each argument is rendered once: a learner's toJSON or getter runs once.
-    const rendered = args.map(formatConsoleArg);
+    // Each argument is rendered once, in order, as before: a learner's toJSON
+    // or getter runs once, and one that cannot be printed still throws here.
+    const rendered = [];
+    for (const arg of args) {
+      try {
+        rendered.push(formatConsoleArg(arg));
+      } catch (error) {
+        sesConsoleBudget?.capture(rendered, args.length, true);
+        throw error;
+      }
+    }
     sesConsoleBudget?.capture(rendered);
     output.push(rendered.join(' '));
   };
