@@ -414,6 +414,15 @@ function prepareTraceEventTransfer(result, request, path) {
   return { payload, transfer: chunks };
 }
 
+function postBatchCaseStarted(id, protocolToken, index) {
+  trustedPythonWorkerPostMessage({
+    id,
+    type: 'batch-case-progress',
+    payload: { index, phase: 'started' },
+    protocolToken,
+  });
+}
+
 /**
  * A stopping batch's per-case progress (see executePreparedProgramBatch): the
  * client restarts its per-case clock on each message and keeps each finished
@@ -426,14 +435,7 @@ function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport)
     get finishedCount() {
       return finishedCount;
     },
-    started(index) {
-      trustedPythonWorkerPostMessage({
-        id,
-        type: 'batch-case-progress',
-        payload: { index, phase: 'started' },
-        protocolToken,
-      });
-    },
+    started: (index) => postBatchCaseStarted(id, protocolToken, index),
     finished(index, result) {
       finishedCount += 1;
       const transported = traceEventTransport
@@ -9752,7 +9754,7 @@ async function processMessage(data) {
 
       case 'execute-prepared-program': {
         const beforeLearnerCode = payload?.mode === 'code' && payload.reportCaseProgress === true
-          ? () => createBatchCaseProgressReporter(id, protocolToken).started(0)
+          ? () => postBatchCaseStarted(id, protocolToken, 0)
           : undefined;
         const result = await executePreparedPythonProgram(
           payload?.artifact,
@@ -9782,14 +9784,19 @@ async function processMessage(data) {
       }
 
       case 'execute-prepared-program-batch': {
-        const caseProgress =
-          payload?.reportCaseProgress === true && payload?.stopAtFirstRunaway === true
+        const streamingProgress =
+          payload?.reportCaseProgress === true && payload.stopAtFirstRunaway === true
             ? createBatchCaseProgressReporter(
                 id,
                 protocolToken,
-                payload?.mode === 'trace' ? payload?.traceEventTransport : undefined
+                payload.mode === 'trace' ? payload.traceEventTransport : undefined
               )
             : undefined;
+        const caseProgress = streamingProgress ?? (
+          payload?.reportCaseProgress === true && payload.mode === 'code'
+            ? { started: (index) => postBatchCaseStarted(id, protocolToken, index) }
+            : undefined
+        );
         const result = batchReplyWithoutStreamedResults(
           await executePreparedPythonProgramBatch(
             payload?.artifact,
@@ -9800,7 +9807,7 @@ async function processMessage(data) {
             payload?.stopAtFirstRunaway,
             caseProgress
           ),
-          caseProgress
+          streamingProgress
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

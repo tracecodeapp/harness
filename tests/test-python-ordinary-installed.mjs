@@ -183,6 +183,8 @@ try {
       return run();
     });
     assert.deepEqual(result.initial, result.submit);
+    assert.deepEqual(result.runPassingCase, result.submit);
+    assert.equal(result.failingCaseHasAttachment, false);
     assert.deepEqual(result.continuation, [result.initial[1]]);
     assert.deepEqual(result.redraw, result.continuation);
     assert.deepEqual(result.initial[0].outcome.consoleOutput, ['7']);
@@ -205,7 +207,17 @@ try {
     assert.equal(observer.length, 2);
     assert.ok(observer.every(({ worker }) => worker !== ordinary[0].worker));
     assert.deepEqual(result.watchedTraffic.filter(({ phase }) => phase === 'admit').map(({ index }) => index), [0, 1]);
-    console.log(JSON.stringify({ witness: 'installed-python-public-judge', traffic: result.watchedTraffic }));
+    assert.deepEqual(result.submitTraffic.map(({ phase, mode, index }) => [phase, mode, index]), [
+      ['dispatch', 'code', undefined],
+      ['admit', 'code', 0],
+      ['admit', 'code', 1],
+      ['ack', 'code', undefined],
+    ]);
+    console.log(JSON.stringify({
+      witness: 'installed-python-public-judge',
+      traffic: result.watchedTraffic,
+      submitTraffic: result.submitTraffic,
+    }));
   }
   console.log(JSON.stringify({ witness: 'installed-python-ordinary-worker', tiers: results.tiers, assets: Object.fromEntries(assets) }));
 } finally {

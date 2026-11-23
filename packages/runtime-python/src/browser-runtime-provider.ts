@@ -140,6 +140,7 @@ export function createPythonBrowserRuntimeProvider(
           observationDeadlineMs: 15_000,
           observationPrepareDeadlineMs: 30_000,
           stoppingBatchAdmission: 'worker-start',
+          nonStoppingBatchAdmission: 'worker-start',
         },
         prepareObservation: (program, signal, traceOptions) =>
           preparedProvider.prepareObservation(program, signal, traceOptions),

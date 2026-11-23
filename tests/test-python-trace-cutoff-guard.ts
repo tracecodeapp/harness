@@ -40,7 +40,8 @@ type Runtime = {
     functionName: string,
     inputs: Record<string, unknown>,
     executionStyle: string,
-    options: Record<string, unknown>
+    options: Record<string, unknown>,
+    prepared?: { observationOnly: boolean }
   ) => { code: string };
 };
 
@@ -828,4 +829,38 @@ test('python3, sys.settrace: the guard still stops a runaway that rebound ValueE
     epilogue: "_test_sys.monitoring.free_tool_id(4)",
   });
   assertGuardStopKept(outcome, ['line-limit']);
+});
+
+test('a Python step-limited observation contains only the genuine recorder prefix', async () => {
+  const runtime = await loadRuntime();
+  const source = [
+    'def solve(n):',
+    '    total = 0',
+    '    for i in range(20):',
+    '        total += i',
+    '    return n',
+  ].join('\n');
+  const observe = async (maxTraceSteps: number) => {
+    const { code } = runtime.generateTracingCode(
+      deps,
+      source,
+      'solve',
+      { n: 3 },
+      'function',
+      { maxTraceSteps, maxStoredEvents: 16_000 },
+      { observationOnly: true }
+    );
+    return JSON.parse(await runPython3(code)) as {
+      timeoutReason: string;
+      observation: { attemptedEvents: number };
+      runtimeTrace: { events: Array<{ kind: string }> };
+    };
+  };
+  const capped = await observe(2);
+  const reference = await observe(12);
+  const events = capped.runtimeTrace.events;
+  assert.equal(capped.timeoutReason, 'trace-limit');
+  assert.equal(capped.observation.attemptedEvents, events.length + 1);
+  assert.ok(events.length > 0 && events.length < reference.runtimeTrace.events.length);
+  assert.deepEqual(events, reference.runtimeTrace.events.slice(0, events.length));
 });

@@ -769,13 +769,31 @@ export class PythonWorkerClient {
       }
       result = outcome.reply;
     } else {
-      const program = this.core.withExecutionDeadline(
-        this.core.sendMessageEffect<PythonRawCodeBatchResult>(
-          'execute-prepared-program-batch',
-          request,
-          null
-        ),
-        wallClockMs
+      const onCaseStarted = call.onCaseStarted;
+      let commandId: string | undefined;
+      let nextCase = 0;
+      const send = this.core.sendMessageEffectWithOptions<PythonRawCodeBatchResult>(
+        'execute-prepared-program-batch',
+        { ...request, ...(onCaseStarted ? { reportCaseProgress: true } : {}) },
+        {
+          timeoutMs: null,
+          onRequestRegistered: (id) => {
+            if (!onCaseStarted) return;
+            commandId = id;
+            this.batchProgress.set(id, (message) => {
+              if (!message || typeof message !== 'object') return;
+              const { index, phase } = message as { index?: unknown; phase?: unknown };
+              if (phase === 'started' && index === nextCase && nextCase < call.inputBatch.length) {
+                onCaseStarted(nextCase++);
+              }
+            });
+          },
+        }
+      );
+      const program = this.core.withExecutionDeadline(send, wallClockMs).pipe(
+        Effect.ensuring(Effect.sync(() => {
+          if (commandId !== undefined) this.batchProgress.delete(commandId);
+        }))
       );
       result = await this.core.runClientEffect(program, call.signal);
     }

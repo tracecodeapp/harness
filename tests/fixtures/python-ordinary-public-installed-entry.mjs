@@ -21,24 +21,25 @@ export async function run() {
       const send = this.postMessage.bind(this);
       this.postMessage = (message, transfer) => {
         if (message.type === 'execute-prepared-program-batch' || message.type === 'execute-prepared-program') {
-          const command = {
+          const record = {
             worker,
             mode: message.payload.mode,
             observer: message.payload.artifact?.observationOnly === true,
             count: message.payload.inputBatch?.length ?? 1,
           };
-          commands.set(message.id, command);
-          traffic.push({ ...command, phase: 'dispatch' });
+          commands.set(message.id, { protocolToken: message.protocolToken, record });
+          traffic.push({ ...record, phase: 'dispatch' });
         }
         return send(message, transfer ?? []);
       };
       this.addEventListener('message', ({ data }) => {
         const command = commands.get(data?.id);
-        if (!command) return;
+        if (!command || data.protocolToken !== command.protocolToken) return;
+        const { record } = command;
         if (data.type === 'batch-case-progress' && data.payload.phase === 'started') {
-          traffic.push({ ...command, phase: 'admit', index: data.payload.index });
+          traffic.push({ ...record, phase: 'admit', index: data.payload.index });
         } else if (data.type === 'execute-result') {
-          traffic.push({ ...command, phase: 'ack' });
+          traffic.push({ ...record, phase: 'ack' });
           commands.delete(data.id);
         }
       });
@@ -71,6 +72,11 @@ export async function run() {
     const submit = await host.evaluateAlgorithm({
       bundle: await createAlgorithmJudgeBundle({ ...options, id: 'submit', trace: false }),
     });
+    const submitTraffic = traffic.splice(0);
+    const runPassingCase = await host.execute({
+      bundle: await createAlgorithmJudgeBundle({ ...options, id: 'run-passing-case', trace: true }),
+      tracing: { caseIds: ['B'] },
+    });
     const byte = await host.execute({
       bundle: await createAlgorithmJudgeBundle({
         ...options,
@@ -84,6 +90,9 @@ export async function run() {
     return {
       initial: projection(run.evaluation),
       submit: projection(submit.evaluation),
+      runPassingCase: projection(runPassingCase.evaluation),
+      failingCaseHasAttachment: Object.hasOwn(runPassingCase.evaluation.cases[0], 'attachment'),
+      submitTraffic,
       continuation: projection(continuation.evaluation),
       redraw: projection(redraw.evaluation),
       drawing: selected.attachment,

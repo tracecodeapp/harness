@@ -1932,9 +1932,9 @@ _tracecode_batch_function_name = ${functionNameLiteral}
 _tracecode_batch_execution_style = ${executionStyleLiteral}
 _tracecode_batch_random_state = _tracecode_batch_random.getstate()
 _tracecode_batch_encoded_results = []
-# Present only for a stopping batch whose client keeps a per-case clock: it
-# reports each case's start and encoded result to the host as the batch runs.
-# Held by the trusted driver only; learner code runs in its own globals.
+# The trusted driver reports starts for ordinary batches and also sends
+# encoded results when the client keeps a per-case clock for a stopping batch.
+# Learner code runs in its own globals.
 try:
     _tracecode_batch_case_progress = __tracecode_case_progress
     del __tracecode_case_progress
@@ -2629,7 +2629,10 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
     _tracecode_case_result = _tracecode_batch_append_result(
         _tracecode_case_result
     )
-    if _tracecode_batch_case_progress is not None:
+    if (
+        _tracecode_batch_case_progress is not None
+        and _tracecode_batch_limits.get('stopAtFirstRunaway', False)
+    ):
         _tracecode_batch_case_progress(
             _tracecode_batch_case_index,
             _tracecode_batch_encoded_results[-1],
@@ -4168,7 +4171,10 @@ def __tracecode_pending_access_budget(frame, reserve=0):
 
 def __tracecode_append_trace_step(frame, step):
     global _trace_limit_exceeded, _timeout_reason
-    if _trace_limit_exceeded and (not isinstance(step, _builtins.dict) or step.get('event') != 'timeout'):
+${observationOnly ? `    # A drawing contains recorded events; cutoff metadata is reported separately.
+    if isinstance(step, _builtins.dict) and step.get('event') == 'timeout':
+        return
+` : ''}    if _trace_limit_exceeded and (not isinstance(step, _builtins.dict) or step.get('event') != 'timeout'):
         return
     if len(_trace_data) >= _max_trace_steps and (not isinstance(step, _builtins.dict) or step.get('event') != 'timeout'):
         if not _trace_limit_exceeded:
@@ -8921,12 +8927,9 @@ async function executePreparedProgramBatch(
   stopAtFirstRunaway = false,
   caseProgress = undefined
 ) {
-  // `caseProgress` ({ started(index), finished(index, result) }) reports each
-  // case as it starts and finishes, so the client can hold a stopping batch to
-  // a per-case clock and keep the finished prefix if a case never returns.
-  // Only stopping batches report: they are the only ones that run in case
-  // order (a non-stopping trace batch regroups its cases by trace selection).
-  if (stopAtFirstRunaway !== true) caseProgress = undefined;
+  // Stopping batches also report finishes so the client can keep a prefix
+  // under its per-case clock. Non-stopping trace batches can reorder cases.
+  if (stopAtFirstRunaway !== true && artifact?.mode !== 'code') caseProgress = undefined;
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
@@ -9351,7 +9354,7 @@ async function executePreparedProgramBatch(
           : timedResult
       );
       startCase();
-      caseProgress?.finished(caseIndex, results[results.length - 1]);
+      caseProgress?.finished?.(caseIndex, results[results.length - 1]);
       if (stopAtFirstRunaway === true && isPythonRunawayResult(timedResult)) break;
     }
     const runMs = deps.performanceNow() - startedAt;

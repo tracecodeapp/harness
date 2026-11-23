@@ -214,7 +214,8 @@ export type RuntimeJudgeBinding =
 
 interface OwnedRuntimeDispatch {
   readonly binding: RuntimeJudgeCodeBinding;
-  readonly acknowledgeBatchStarts: boolean;
+  readonly acknowledgeStoppingBatchStarts: boolean;
+  readonly acknowledgeNonStoppingBatchStarts: boolean;
   readonly overlapObservationWithInitialization?: true;
   recordPrepare(call: RuntimeProgramPreparationCall): void;
   admit(caseId: string): void;
@@ -1103,7 +1104,7 @@ function executePreparedProviderBatch(
               signal,
               limits: options.binding.limits,
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
-              options.owned?.acknowledgeBatchStarts),
+              options.owned?.acknowledgeNonStoppingBatchStarts),
       catch: errorFromUnknown,
     });
     if (outcomes.length !== cases.length) {
@@ -1187,7 +1188,7 @@ function executeProviderStoppingBatch(
               limits: options.binding.limits,
               stopAtFirstRunaway: true,
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
-              options.owned?.acknowledgeBatchStarts),
+              options.owned?.acknowledgeStoppingBatchStarts),
       catch: errorFromUnknown,
     });
     const runawayIndex = outcomes.findIndex((outcome) =>
@@ -1953,7 +1954,8 @@ class RuntimeJudgeComposition
       return yield* Effect.uninterruptibleMask((restore) => Effect.gen(this, function* () {
         this.bridge.beginEvaluation(evaluationId, {
           binding: codeBinding,
-          acknowledgeBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          acknowledgeStoppingBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          acknowledgeNonStoppingBatchStarts: this.receiptProvider?.capabilities.nonStoppingBatchAdmission === 'worker-start',
           overlapObservationWithInitialization: this.receiptProvider?.capabilities.overlapObservationWithInitialization,
           recordPrepare: (call) => schedule.recordPrepare(call),
           admit: (caseId) => schedule.admit(caseId),

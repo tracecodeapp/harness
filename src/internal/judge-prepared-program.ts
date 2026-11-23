@@ -480,8 +480,10 @@ export class RuntimePreparedProgramRegistry {
     }
     if (program.executeBatchIsolated) {
       return gate.run(call.signal, async () => {
-        if (!call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
-        if (!acknowledgeStarts || !admit) return program.executeBatchIsolated!(call);
+        if (!acknowledgeStarts || !admit) {
+          if (!call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
+          return program.executeBatchIsolated!(call);
+        }
         let live = true;
         const admittedBatch: JudgeOrdinaryBatchCall = {
           ...call,

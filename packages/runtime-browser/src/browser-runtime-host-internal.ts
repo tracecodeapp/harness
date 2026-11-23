@@ -64,6 +64,7 @@ export interface JudgeReceiptProvider {
     readonly overlapObservationWithInitialization?: true;
     /** Native stopping batches can acknowledge admission before delivering rows. */
     readonly stoppingBatchAdmission?: 'worker-start';
+    readonly nonStoppingBatchAdmission?: 'worker-start';
   };
   prepareObservation(
     program: JudgeObservationProgram,

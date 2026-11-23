@@ -66,6 +66,7 @@ interface WorkerLog {
   batchWorkerTerminated: Array<() => boolean>;
   /** Batch requests that reached a worker which never received `init`. */
   unwarmedBatchRequests?: number;
+  deliveringInvalidProgress?: boolean;
 }
 
 /**
@@ -134,9 +135,21 @@ class StuckCaseWorker {
       // In module format a worker that never received `init` has no runtime
       // asset configuration and cannot bootstrap.
       if (!this.initialized) this.log.unwarmedBatchRequests = (this.log.unwarmedBatchRequests ?? 0) + 1;
-      void this.runBatch(payload ?? {}, reply, (progress) =>
-        this.emit({ id, type: 'batch-case-progress', payload: progress, protocolToken })
-      );
+      void this.runBatch(payload ?? {}, reply, (progress) => {
+        const event = { id, type: 'batch-case-progress', payload: progress, protocolToken };
+        if (payload?.stopAtFirstRunaway !== true) {
+          const forgedStart = { index: progress.index, phase: 'started' };
+          this.log.deliveringInvalidProgress = true;
+          this.emit({ ...event, payload: forgedStart, protocolToken: 'wrong-token' });
+          this.emit({ ...event, payload: forgedStart, id: 'stale-command' });
+          this.emit({ ...event, payload: { index: Number(progress.index) + 1, phase: 'started' } });
+          this.log.deliveringInvalidProgress = false;
+          this.emit(event);
+          this.log.deliveringInvalidProgress = true;
+        }
+        this.emit(event);
+        this.log.deliveringInvalidProgress = false;
+      });
     }
   }
 
@@ -149,6 +162,7 @@ class StuckCaseWorker {
     const inputBatch = payload.inputBatch as Array<{ value: number }>;
     const trace = payload.mode === 'trace';
     const report = payload.reportCaseProgress === true;
+    const stream = report && payload.stopAtFirstRunaway === true;
     const results: Record<string, unknown>[] = [];
     if (this.stall?.kind === 'before-first-case') return; // trusted setup never ends
     for (let index = 0; index < inputBatch.length; index += 1) {
@@ -156,7 +170,9 @@ class StuckCaseWorker {
       if (report) progress({ index, phase: 'started' });
       if (index === this.runawayCase) return; // learner code never returns
       if (index === this.crashCase) return this.crash();
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (payload.stopAtFirstRunaway === true) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       if (this.terminated) return;
       const result = {
         success: true,
@@ -176,10 +192,10 @@ class StuckCaseWorker {
         timings: { runMs: 5, algorithmFastBatch: true },
       };
       results.push(result);
-      if (report) progress({ index, phase: 'finished', result });
+      if (stream) progress({ index, phase: 'finished', result });
     }
     if (this.stall?.kind === 'withhold-reply') return;
-    reply('execute-result', report
+    reply('execute-result', stream
       ? { success: true, resultsStreamed: results.length, consoleOutput: [] }
       : { success: true, results, consoleOutput: [] });
   }
@@ -303,6 +319,29 @@ test('Python non-stopping batch keeps one request and its whole-batch results', 
   assert.equal(log.batchRequests[0]!.reportCaseProgress, undefined, 'Submit does not ask for case progress');
   await program.dispose();
   provider.terminate();
+});
+
+test('Python non-stopping code batch acknowledges each case once on the matching command', async () => {
+  const log = newLog();
+  const { provider, program } = await preparedProgram('code', -1, log);
+  const started: Array<{ index: number; invalid: boolean }> = [];
+  try {
+    assert.equal(program.mode, 'code');
+    const call = {
+      inputBatch: [{ value: 1 }, { value: 2 }],
+      onCaseStarted: (index: number) => started.push({ index, invalid: log.deliveringInvalidProgress === true }),
+    };
+    const results = await program.executeBatchIsolated!(call);
+    assert.deepEqual(started, [{ index: 0, invalid: false }, { index: 1, invalid: false }]);
+    assert.deepEqual(results.map((result) => result.kind === 'completed' && result.output), [1, 2]);
+    assert.equal(log.batchRequests.length, 1);
+    assert.equal(log.batchRequests[0]?.mode, 'code');
+    assert.equal(log.batchRequests[0]?.reportCaseProgress, true);
+    assert.notEqual(log.batchRequests[0]?.stopAtFirstRunaway, true);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
 });
 
 test('Python stopping batch whose cases all finish returns every streamed result', async () => {
