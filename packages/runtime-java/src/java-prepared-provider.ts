@@ -24,6 +24,7 @@ import {
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { isExecutionTimeoutError } from '@tracecode/runtime-browser/internal';
+import type { JudgeReceiptProvider } from '../../runtime-browser/src/browser-runtime-host-internal';
 import {
   JavaWorkerClient,
   type JavaWorkerClientOptions,
@@ -75,6 +76,7 @@ export interface JavaPreparedExecutionProvider
 
 /** @internal The evaluation owner controls this lifetime and when cases are admitted. */
 export interface JavaPreparedObservation extends RuntimeObservationProvider {
+  readonly ready: Promise<boolean>;
   dispose(): Promise<void>;
 }
 
@@ -377,6 +379,7 @@ class JavaPreparedExecutionProviderImpl
       () => undefined);
     let disposed: Promise<void> | undefined;
     return {
+      ready: ready.then(Boolean),
       async observe(call) {
         if (call.signal?.aborted) throw abortReason(call.signal);
         if (lifetime.signal.aborted) throw abortReason(lifetime.signal);
@@ -548,6 +551,42 @@ class JavaPreparedExecutionProviderImpl
     this.terminatedPreparationClients.add(client);
     client.terminate();
   }
+}
+
+/** @internal Bind the observer to the Java provider already owned by this host. */
+export function createJavaJudgeReceiptProvider(
+  provider: JavaPreparedExecutionProvider,
+  runtimeVersion: string
+): JudgeReceiptProvider {
+  return {
+    runtimeVersion,
+    capabilities: {
+      observationLease: 'separate',
+      observationDeadlineMs: 30_000,
+      observationPrepareDeadlineMs: 120_000,
+      stoppingBatchAdmission: 'worker-start',
+    },
+    async prepareObservation(program, signal, traceOptions) {
+      signal.throwIfAborted();
+      if (traceOptions?.minimalTrace === true) {
+        return { status: 'refused', reason: 'unsupported-option' };
+      }
+      const observation = provider.prepareObservation(program);
+      const abort = () => { void observation.dispose().catch(() => undefined); };
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        if (!(await observation.ready)) {
+          signal.throwIfAborted();
+          await observation.dispose();
+          return { status: 'refused', reason: 'observer-prepare' };
+        }
+        signal.throwIfAborted();
+        return observation;
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    },
+  };
 }
 
 export function createJavaPreparedExecutionProvider(
