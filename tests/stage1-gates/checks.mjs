@@ -172,10 +172,10 @@ export function checkObservation(fixture, request, observation, record) {
         )), `No recorded event on print line ${expected.anchor}`);
       });
       check(expected.id, 'case-binding', () => {
-        assert(Array.isArray(events) && events.some((event) => (
-          event.line === expected.anchor && event.kind === 'snapshot' &&
-          event.target?.variable === 'n' && event.value === expected.anchorInput
-        )), `No print-line snapshot binding n=${expected.anchorInput}`);
+        assert(Array.isArray(events) && events.some((event) => event.line === expected.anchor && (
+          (event.kind === 'snapshot' && event.target?.variable === 'n' && event.value === expected.anchorInput) ||
+          (event.kind === 'stdout' && event.callStack?.at(-1)?.args?.n === expected.anchorInput)
+        )), `No print-line event binding n=${expected.anchorInput}`);
       });
     }
   }

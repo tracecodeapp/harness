@@ -1,0 +1,22 @@
+# Stage 1 G1 and G6 qualification
+
+The default matrix resolves `@tracecode/harness/judge` from an isolated tarball installation and runs in full Chromium. `manifest.json` contains the exact programs, expected answers, comparator targets and assertion IDs. It is reproducible with `node tests/stage1-gates/build-manifest.mjs` from a checkout that can read the pinned fixture commits. The manifest contains 18 default row observations and 144 ordinary row assertions for each two-case stdout fixture.
+
+Script invocation leaves the selector and execution style unset. The script's oracle is its stdout and a null result. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The true app stages use their own budgets and remain external to this checkout.
+
+```bash
+node tests/stage1-gates/app-cases.mjs /path/to/read-only/algoflow /outside/git/app-stage-manifest.json
+bash tests/stage1-gates/stage-mux.sh /path/to/multiplexer /outside/git/mux
+```
+
+`app-cases.mjs` reads the pinned app commit without changing the worktree. It computes the answers from the graph and ranking rules and checks them against the supplied comparator targets. Stage the generated app manifest and mux directory separately on the build host. From `ar-harness.sh`, invoke the gate's host command as follows.
+
+```bash
+bash tests/stage1-gates/agent-runner.sh baseline ".*" /external/app-stage-manifest.json /external/mux
+```
+
+The host job packs and installs `b025fdb8`, stages assets with the installed CLI and archives the tarball digest, candidate build diff, runner SHA, raw observations and assertion receipts. `summary.json` reports exact missing IDs, failures and duplicate IDs. A filter produces a partial run. A build, browser or worker setup failure leaves required IDs missing. `controls.jsonl` records the original verdict checks, injected values and whether each seed reached its designated assertion. Keep the first run's evidence when retrying with a new run ID.
+
+The pinned mux adapter runs against a Playwright-supplied private slot and checks both raw and legacy projections. Release qualification also needs the real mux worker's result writer and reader. Provider companions compile from the frozen candidate's source and serve assets from the installed artifact, with separate route IDs for the selectable JS/TS routes and C++ direct execution.
+
+The cap dispositions are part of the assertion inventory. Python tests its existing item ceiling. The other baseline byte-limit cells fail with the recorded absence of a product-owned seam. The gate needs a product-owned policy before it can run the 1,024-byte control on those serializers.

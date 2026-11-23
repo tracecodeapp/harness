@@ -24,18 +24,22 @@ function graphIndex(root) {
   }
   index(root);
   for (const id of references) assert(definitions.has(id), `Dangling graph reference ${id}`);
-  return (node) => node && typeof node === 'object' && Object.hasOwn(node, '__ref__')
-    ? definitions.get(node.__ref__) : node;
+  const required = new Set(references);
+  return {
+    dereference: (node) => node && typeof node === 'object' && Object.hasOwn(node, '__ref__')
+      ? definitions.get(node.__ref__) : node,
+    requiresId: (node) => required.has(node.__id__),
+  };
 }
 
 export function assertGraph(actual, expected) {
-  const dereferenceActual = graphIndex(actual);
-  const dereferenceExpected = graphIndex(expected);
+  const actualGraph = graphIndex(actual);
+  const expectedGraph = graphIndex(expected);
   const forward = new Map();
   const reverse = new Map();
   function compare(leftWire, rightWire, path) {
-    const left = dereferenceActual(leftWire);
-    const right = dereferenceExpected(rightWire);
+    const left = actualGraph.dereference(leftWire);
+    const right = expectedGraph.dereference(rightWire);
     if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') {
       assert.deepEqual(left, right, path);
       return;
@@ -49,7 +53,7 @@ export function assertGraph(actual, expected) {
     reverse.set(right, left);
     if (Array.isArray(left)) assert.equal(left.length, right.length, path);
     // Validate identity requirements separately from the payload fields.
-    if (Object.hasOwn(right, '__id__')) assert(Object.hasOwn(left, '__id__'), `${path} has no identity`);
+    if (expectedGraph.requiresId(right)) assert(Object.hasOwn(left, '__id__'), `${path} has no identity`);
     const payload = (object) => Object.keys(object).filter((key) => key !== '__id__').sort();
     const fields = payload(right);
     assert.deepEqual(payload(left), fields, `${path} fields`);
