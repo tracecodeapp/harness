@@ -311,31 +311,39 @@ export async function runUntracedRouteChecks(
   }
 
   if (settings.runaway) {
-    // A traced case that hit a limit already has its answer: no second run.
+    // A traced case that hit a limit already has its answer: no second run,
+    // even with a console at the pool's budget.
     const once = named('runaway: a traced runaway case in a budgeted Run is timed once');
     const limitMs = 1500;
+    const runaways = [
+      // No line events inside the regex, so only the clock stops it.
+      ['time limit', 'timed-out', 'for (let i = 0; i < 200; i++) console.log(i);\n  return /^(a+)+$/.test("a".repeat(40 + n) + "b") ? 1 : n;'],
+      // The app's single-line budget stops this one first.
+      ['step limit', undefined, 'for (let i = 0; i < 200; i++) console.log(i);\n  while (n > -1) { n += 1; }\n  return n;'],
+    ] as const;
     for (const language of LANGUAGES) {
-      const program = {
-        code: language === 'typescript'
-          ? 'function solve(n: number): number {\n  for (let i = 0; i < 200; i++) console.log(i);\n  while (n > 0) { }\n  return n;\n}'
-          : 'function solve(n) {\n  for (let i = 0; i < 200; i++) console.log(i);\n  while (n > 0) { }\n  return n;\n}',
-        functionName: 'solve',
-        executionStyle: 'function',
-        limits: { wallClockMs: limitMs },
-        cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 0 }, expected: 0 }],
-        policy: allCasesPassPolicy(),
-      };
-      await onHost(async (host) => {
-        await submit(host, language, warmUpFor(language));
-        const startedAt = performance.now();
-        const started = await host.execute({ bundle: await bundle(language, program, budgets), interactive: true, tracing: { caseIds: ['1'] } });
-        const elapsed = performance.now() - startedAt;
-        if (started.executionId) await host.disposeExecution(started.executionId);
-        const traced = (started.evaluation as any).cases.find((result: any) => result.caseId === '1');
-        once.compared += 1;
-        if (traced?.status !== 'timed-out') once.violations.push(`${language}: the traced case should time out, got ${traced?.status}`);
-        if (elapsed > limitMs * 1.8) once.violations.push(`${language}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
-      });
+      for (const [kind, status, body] of runaways) {
+        const program = {
+          code: language === 'typescript' ? `function solve(n: number): number {\n  ${body}\n}` : `function solve(n) {\n  ${body}\n}`,
+          functionName: 'solve',
+          executionStyle: 'function',
+          limits: { wallClockMs: limitMs },
+          cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 0 }, expected: 0 }],
+          policy: allCasesPassPolicy(),
+        };
+        await onHost(async (host) => {
+          await submit(host, language, warmUpFor(language));
+          const startedAt = performance.now();
+          const started = await host.execute({ bundle: await bundle(language, program, budgets), interactive: true, tracing: { caseIds: ['1'] } });
+          const elapsed = performance.now() - startedAt;
+          if (started.executionId) await host.disposeExecution(started.executionId);
+          const traced = (started.evaluation as any).cases.find((result: any) => result.caseId === '1');
+          once.compared += 1;
+          if (status && traced?.status !== status) once.violations.push(`${language}/${kind}: the traced case should be ${status}, got ${traced?.status}`);
+          if (!status && traced?.status === 'completed') once.violations.push(`${language}/${kind}: the traced case should stop at a limit`);
+          if (elapsed > limitMs * 1.8) once.violations.push(`${language}/${kind}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
+        });
+      }
     }
   }
   return checks;
