@@ -1352,6 +1352,98 @@ function testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers(): void {
   console.log('PASS: C# TraceRewriter indexed assignments avoid post-assignment getter reads');
 }
 
+/**
+ * A runner lost while it ran the learner's case (the host terminated it and
+ * its `error` event fired) failed for a reason the program did not cause:
+ * the prepared program rejects, as every other runtime's does, for run and
+ * trace, single case and batch. It is never the program's runtime failure.
+ */
+async function testPreparedRunnerLostMidCaseRejects(): Promise<void> {
+  for (const mode of ['code', 'trace'] as const) {
+    MockCSharpWorker.responses = [];
+    MockCSharpWorker.received = [];
+    MockCSharpWorker.instances = [];
+    MockCSharpWorker.hangingMessageTypes = new Set<string>();
+    MockCSharpWorker.erroringMessageTypes = new Set<string>();
+    MockCSharpWorker.warmupFailuresRemaining = 0;
+    const context = {
+      assets: {
+        csharpWorker: '/workers/csharp-worker.js',
+        csharpAssetBaseUrl: '/workers/vendor/csharp',
+        csharpCompilerAssetBaseUrl: '/workers/vendor/csharp-compiler',
+        csharpRunnerAssetBaseUrl: '/workers/vendor/csharp-runner',
+      },
+      debug: false,
+      workerLifecyclePolicy: 'warm-and-retire',
+      workerFactoryFor: () =>
+        (url: string | URL) =>
+          new MockCSharpWorker(url) as unknown as Worker,
+      preflight: () => async () => undefined,
+      manifestAsset: () => undefined,
+      manifestAssetCollection: () => undefined,
+    } as unknown as BrowserRuntimeProviderContext;
+    const lease = createCSharpBrowserRuntimeProvider().create(context);
+    try {
+      const provider = lease.preparedProviders.get('csharp');
+      assertCondition(provider, 'C# provider lease should expose prepared execution');
+      MockCSharpWorker.responses.push({
+        success: true,
+        compiledArtifactKey: `lost-runner-${mode}`,
+        compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+        compiledArtifactSha256:
+          'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+        preparedRunnerTier: 'compatibility',
+        preparedRunnerReason: 'test compatibility artifact',
+        consoleOutput: [],
+      });
+      const prepared = await provider.prepareProgram({
+        mode,
+        code: 'public class Solution { public int Echo(int value) => value; }',
+        functionName: 'Echo',
+      });
+      assertCondition(
+        prepared.kind === 'prepared' && prepared.program.mode === mode,
+        `Lost-runner test requires a prepared C# ${mode} program`
+      );
+      if (prepared.kind !== 'prepared') return;
+      const executeType = mode === 'code' ? 'execute-prepared-code' : 'execute-prepared-trace';
+      MockCSharpWorker.erroringMessageTypes = new Set([executeType]);
+      const program = prepared.program as {
+        executeIsolated(call: { inputs: Record<string, unknown> }): Promise<unknown>;
+        executeBatchIsolated?(call: { inputBatch: Record<string, unknown>[] }): Promise<unknown>;
+      };
+      const single = await program.executeIsolated({ inputs: { value: 7 } }).then(
+        (result) => ({ resolved: result }),
+        (error: unknown) => ({ rejected: error })
+      );
+      assertCondition(
+        'rejected' in single &&
+          single.rejected instanceof Error &&
+          single.rejected.message === `mock ${executeType} worker error`,
+        `C# ${mode}: a runner lost mid-case must reject, got ${JSON.stringify(single)}`
+      );
+      assertCondition(program.executeBatchIsolated, `C# ${mode} program should expose batches`);
+      const batch = await program.executeBatchIsolated!({
+        inputBatch: [{ value: 1 }, { value: 2 }],
+      }).then(
+        (result) => ({ resolved: result }),
+        (error: unknown) => ({ rejected: error })
+      );
+      assertCondition(
+        'rejected' in batch &&
+          batch.rejected instanceof Error &&
+          batch.rejected.message === `mock ${executeType} worker error`,
+        `C# ${mode} batch: a runner lost mid-case must reject, got ${JSON.stringify(batch)}`
+      );
+    } finally {
+      MockCSharpWorker.erroringMessageTypes = new Set<string>();
+      lease.dispose();
+    }
+  }
+
+  console.log('PASS: C# prepared runner lost mid-case rejects as the provider failure');
+}
+
 async function main(): Promise<void> {
   await testRuntimeAdapterContract();
   await testWorkerResultMapping();
@@ -1369,6 +1461,7 @@ async function main(): Promise<void> {
   await testLegacyManifestRejectedByJudgeProvider();
   testTraceRewriterTargetTypedFieldWritesDoNotReadAssignedMembers();
   testTraceRewriterIndexedAssignmentsDoNotReadAssignedIndexers();
+  await testPreparedRunnerLostMidCaseRejects();
 }
 
 test('csharp runtime', main);
