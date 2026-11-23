@@ -211,6 +211,26 @@ function preparationErrorLine(error: unknown): number | undefined {
 /** The refusal of a case, worded as the worker words it. */
 const TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
+/**
+ * Whether the pool might have needed its console compatibility fallback for
+ * a traced case: one refused, or one that completed near the pool's console
+ * budget (99 lines, 40 arguments a call, 64 KiB). Deliberately broad, since a
+ * flagged case is run once on the pool to find out exactly. A case that hit a
+ * limit or failed in the learner's code already has its answer: running it
+ * again would only double a runaway's time.
+ */
+function mayNeedSesConsoleFallback(result: ExecutionResult): boolean {
+  if (result.kind === 'failed') return result.providerFailure !== undefined;
+  if (result.kind !== 'completed') return false;
+  const lines = result.consoleOutput ?? [];
+  let characters = 0;
+  for (const line of lines) {
+    characters += line.length;
+    if (line.length >= 1000 || line.split(' ').length > 40) return true;
+  }
+  return lines.length >= 90 || characters >= 30_000;
+}
+
 /** A failure the worker reports as the runtime's own stays the provider's. */
 function reportedRuntimeFault(error: unknown): RuntimeProviderError | undefined {
   return error instanceof WorkerReportedError && error.code === 'runtime-provider-error'
@@ -355,6 +375,37 @@ export class JavaScriptWorkerClient {
     const reported = this.sesAlgorithmModule?.SesAlgorithmWorkerReportedError;
     if (error instanceof TypeError || (reported && error instanceof reported)) return;
     this.disableSesAlgorithmPool();
+  }
+
+  /**
+   * Runs these cases untraced on the pool only to learn whether untraced
+   * Submit would take them to compatibility workers. Their results are not used.
+   */
+  private async needsSesCompatibility(
+    pool: SesAlgorithmWorkerPool,
+    program: SesAlgorithmPreparedProgram,
+    programTraces: boolean,
+    inputBatch: readonly Record<string, unknown>[],
+    call: { readonly signal?: AbortSignal; readonly limits?: RuntimePreparedTraceBatchCall['limits'] },
+    generation: number
+  ): Promise<boolean> {
+    try {
+      if (programTraces) {
+        await pool.executeTraceBatch(program, inputBatch, inputBatch.map(() => false), call.limits, call.signal);
+      } else {
+        await pool.executeBatch(program, inputBatch, call.limits, call.signal);
+      }
+      return false;
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || call.signal?.aborted)) throw error;
+      const module = this.sesAlgorithmModule;
+      if (!(module && error instanceof module.SesAlgorithmCompatibilityRequiredError) &&
+          !(error instanceof Error && error.name === 'SesAlgorithmCompatibilityRequiredError')) {
+        // As untraced Submit does on a failure of the pool.
+        this.disableSesAlgorithmPoolForFault(error, generation);
+      }
+      return true;
+    }
   }
 
   private disableSesAlgorithmPool(): void {
@@ -1138,7 +1189,7 @@ export class JavaScriptWorkerClient {
           (_, index) => batchCall.traceEnabledBatch?.[index] ?? true
         );
         const untracedInputs = batchCall.inputBatch.filter((_, index) => !traced[index]);
-        const untraced = untracedInputs.length > 0
+        let untraced = untracedInputs.length > 0
           ? await executeSesBatchOrFallback({ ...batchCall, inputBatch: untracedInputs })
           : [];
         let tracedResults: readonly ExecutionResult[] | undefined;
@@ -1157,6 +1208,46 @@ export class JavaScriptWorkerClient {
             },
             generation
           );
+        }
+        // Untraced Submit runs a whole batch on compatibility workers when one
+        // case outgrows the pool's console, and keeps the program there. A
+        // traced case off the pool cannot show that, so a case that may have
+        // is run once untraced on the pool to find out.
+        if (tracedResults && programSesEligible && sesProgram && programSesPool) {
+          const tracedInputs = batchCall.inputBatch.filter((_, index) => traced[index]);
+          const asked = tracedInputs.filter((_, index) => mayNeedSesConsoleFallback(tracedResults![index]!));
+          if (asked.length > 0 && await this.needsSesCompatibility(
+            programSesPool,
+            sesProgram,
+            sesProgramTraces,
+            asked,
+            batchCall,
+            generation
+          )) {
+            programSesEligible = false;
+            // Then every case of this batch takes the compatibility route, as
+            // in untraced Submit; a refusal there is the untraced answer.
+            untraced = untracedInputs.length > 0
+              ? await executeSesBatchOrFallback({ ...batchCall, inputBatch: untracedInputs })
+              : [];
+            const refusedInputs = tracedInputs.filter((_, index) => {
+              const result = tracedResults![index]!;
+              return result.kind === 'failed' && result.providerFailure !== undefined;
+            });
+            if (refusedInputs.length > 0) {
+              const rerun = await this.executePreparedTraceBatchInternal(
+                language,
+                preparation,
+                requirePreparedExecution(),
+                { inputBatch: refusedInputs, signal: batchCall.signal, limits: batchCall.limits },
+                generation
+              );
+              let nextRerun = 0;
+              tracedResults = tracedResults.map((result) =>
+                result.kind === 'failed' && result.providerFailure ? rerun[nextRerun++]! : result
+              );
+            }
+          }
         }
         let next = 0;
         let nextTraced = 0;
