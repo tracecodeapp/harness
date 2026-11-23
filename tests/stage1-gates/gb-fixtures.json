@@ -1,0 +1,1814 @@
+{
+  "candidate": "b025fdb8220694cdfe96b136a0b8bb82843f7371",
+  "fixtures": [
+    {
+      "gate": "G4",
+      "language": "python",
+      "name": "three-rows",
+      "code": "def solve(n):\n    if n != 0: return n\n    left, right = 0, n\n    while left <= right:\n        mid = (left + right) // 2\n    return left",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "python",
+      "name": "stdout",
+      "code": "def solve(n):\n    print(n)\n    return n\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 2
+    },
+    {
+      "gate": "G5",
+      "language": "python",
+      "name": "step-cap",
+      "code": "def solve(n):\n    total = 0\n    for i in range(20000):\n        total += i\n    return n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "python",
+      "name": "byte-cap",
+      "code": "def solve(n):\n    total = 0\n    for i in range(20000):\n        total += i\n    return n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "python",
+      "name": "transport",
+      "code": "def solve(n):\n    if n != 0: return n\n    left, right = 0, n\n    while left <= right:\n        mid = (left + right) // 2\n    return left",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 22
+          },
+          "expected": 22,
+          "actual": 22,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "cut-keep",
+        "cut-stop",
+        "deadline-keep",
+        "deadline-stop",
+        "during-keep",
+        "during-stop",
+        "timeout-fanout",
+        "clock-virtual",
+        "clock-real"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "javascript",
+      "name": "three-rows",
+      "code": "function solve(n) {\n  if (n != 0) return n;\n  let left = 0;\n  const right = n;\n  while (left <= right) {\n    left = Math.min(left, right);\n  }\n  return left;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "stdout",
+      "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 2
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "step-cap",
+      "code": "function solve(n) {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "byte-cap",
+      "code": "function solve(n) {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "typescript",
+      "name": "three-rows",
+      "code": "function solve(n: number): number {\n  if (n != 0) return n;\n  let left = 0;\n  const right = n;\n  while (left <= right) {\n    left = Math.min(left, right);\n  }\n  return left;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "typescript",
+      "name": "stdout",
+      "code": "function solve(n: number): number {\n  console.log(n);\n  return n;\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 2
+    },
+    {
+      "gate": "G5",
+      "language": "typescript",
+      "name": "step-cap",
+      "code": "function solve(n: number): number {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "typescript",
+      "name": "byte-cap",
+      "code": "function solve(n: number): number {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "java",
+      "name": "three-rows",
+      "code": "class Solution {\n  public int solve(int n) {\n    if (n != 0) return n;\n    int left = 0;\n    int right = n;\n    while (left <= right) {\n      left = Math.min(left, right);\n    }\n    return left;\n  }\n}",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "java",
+      "name": "stdout",
+      "code": "class Solution {\n  public int solve(int n) {\n    System.out.println(n);\n    return n;\n  }\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 3
+    },
+    {
+      "gate": "G5",
+      "language": "java",
+      "name": "step-cap",
+      "code": "class Solution {\n  public int solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n}",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "java",
+      "name": "byte-cap",
+      "code": "class Solution {\n  public int solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n}",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "java",
+      "name": "transport",
+      "code": "class Solution {\n  public int solve(int n) {\n    if (n != 0) return n;\n    int left = 0;\n    int right = n;\n    while (left <= right) {\n      left = Math.min(left, right);\n    }\n    return left;\n  }\n}",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 22
+          },
+          "expected": 22,
+          "actual": 22,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "cut-keep",
+        "cut-stop",
+        "deadline-keep",
+        "deadline-stop",
+        "during-keep",
+        "during-stop",
+        "timeout-fanout"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "csharp",
+      "name": "three-rows",
+      "code": "using System;\npublic class Solution {\n  public int Solve(int n) {\n    if (n != 0) return n;\n    int left = 0;\n    int right = n;\n    while (left <= right) {\n      left = Math.Min(left, right);\n    }\n    return left;\n  }\n}",
+      "functionName": "Solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "csharp",
+      "name": "stdout",
+      "code": "public class Solution\n{\n    public int solve(int n)\n    {\n        System.Console.WriteLine(n);\n        return n;\n    }\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 5
+    },
+    {
+      "gate": "G5",
+      "language": "csharp",
+      "name": "step-cap",
+      "code": "public class Solution {\n  public int Solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n}",
+      "functionName": "Solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "csharp",
+      "name": "byte-cap",
+      "code": "public class Solution {\n  public int Solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n}",
+      "functionName": "Solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "cpp",
+      "name": "three-rows",
+      "code": "class Solution {\npublic:\n  int solve(int n) {\n    if (n != 0) return n;\n    volatile int left = 0;\n    int right = n;\n    while (left <= right) {\n      left = left < right ? left : right;\n    }\n    return left;\n  }\n};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 0
+          },
+          "expected": 0,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout",
+            "line-limit",
+            "single-line-limit"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "n": 33
+          },
+          "expected": 33,
+          "actual": 33,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-omitted",
+        "submit-keep",
+        "submit-stop",
+        "mux-shape",
+        "run-first",
+        "run-all",
+        "run-none",
+        "continue-A"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "stdout",
+      "code": "class Solution {\npublic:\n  int solve(int n) {\n    std::printf(\"%d\\n\", n);\n    return n + 1;\n  }\n};\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 8,
+          "actual": 8,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 12,
+          "actual": 12,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 4
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "step-cap",
+      "code": "class Solution {\npublic:\n  int solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 2,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "byte-cap",
+      "code": "class Solution {\npublic:\n  int solve(int n) {\n    int total = 0;\n    for (int i = 0; i < 20000; i++) {\n      total += i;\n    }\n    return n;\n  }\n};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000,
+        "maxTraceBytes": 1
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 3,
+          "actual": 3,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 4
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G4",
+      "language": "python",
+      "name": "stopping-clock",
+      "code": "class Solution:\n    def search(self, nums, target):\n        left, right = 0, len(nums) - 1\n        while left <= right:\n            mid = (left + right) // 2\n            if nums[mid] == target:\n                max(iter(int, 1))\n                return mid\n            if nums[mid] < target:\n                left = mid + 1\n            else:\n                right = mid - 1\n        return -1",
+      "functionName": "search",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 4000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "nums": [
+              1,
+              3,
+              5,
+              7,
+              9
+            ],
+            "target": 4
+          },
+          "expected": -1,
+          "actual": -1,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "nums": [
+              1,
+              3,
+              5,
+              7,
+              9
+            ],
+            "target": 5
+          },
+          "expected": -1,
+          "actual": null,
+          "stdout": "",
+          "grade": "not-evaluated",
+          "limitReasons": [
+            "client-timeout"
+          ]
+        },
+        {
+          "id": "C",
+          "input": {
+            "nums": [
+              1,
+              3,
+              5,
+              7,
+              9
+            ],
+            "target": 4
+          },
+          "expected": -1,
+          "actual": -1,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted-C",
+        "submit-stop",
+        "run-first",
+        "run-all",
+        "run-none"
+      ],
+      "noInterruptBuffer": true
+    },
+    {
+      "gate": "G5",
+      "language": "csharp",
+      "name": "json-element",
+      "code": "using System.Text.Json;\npublic class Solution {\n  public int solve(int n) {\n    JsonElement element = default(JsonElement);\n    int result = n + (int)element.ValueKind;\n    return result;\n  }\n}",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B",
+        "repeat-B",
+        "run-all",
+        "run-none",
+        "submit-omitted-A",
+        "submit-omitted-B",
+        "submit-omitted",
+        "submit-stop-A",
+        "submit-stop-B",
+        "submit-stop",
+        "submit-traced"
+      ],
+      "anchor": 5
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "string-end",
+      "code": "#include <string>\nclass Solution { public: int solve(std::string s) { return int(s[s.size()]); } };",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "s": "cat"
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "s": ""
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "compound-assignment",
+      "code": "#include <vector>\nclass Solution {public: int solve(int n){std::vector<int> v{n}; v[0]*=1.5; return v[0];}};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 3
+          },
+          "expected": 4,
+          "actual": 4,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 5
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "trace-wrong",
+      "code": "#include <vector>\nclass Solution {\npublic:\n  int solve(std::vector<int>& nums) {\n    auto& cur = nums[0];\n    cur = 0;\n    return nums[0];\n  }\n};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "nums": [
+              3
+            ]
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "nums": [
+              5
+            ]
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "cpp",
+      "name": "trace-compile",
+      "code": "#include <type_traits>\n#include <vector>\nclass Solution {\npublic:\n  int solve(std::vector<int>& nums) {\n    auto& cur = nums[0];\n    static_assert(std::is_reference_v<decltype(cur)>);\n    cur = 0;\n    return nums[0];\n  }\n};",
+      "functionName": "solve",
+      "executionStyle": "solution-method",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "nums": [
+              3
+            ]
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "nums": [
+              5
+            ]
+          },
+          "expected": 0,
+          "actual": 0,
+          "stdout": "",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "submit-omitted",
+        "run-first"
+      ]
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "no-recorder",
+      "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B"
+      ],
+      "anchor": 2
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "observer-compile-fault",
+      "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B"
+      ],
+      "anchor": 2
+    },
+    {
+      "gate": "G5",
+      "language": "javascript",
+      "name": "observer-encoder-fault",
+      "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+      "functionName": "solve",
+      "executionStyle": "function",
+      "limits": {
+        "wallClockMs": 10000
+      },
+      "traceOptions": {
+        "maxTraceSteps": 4000,
+        "maxLineEvents": 12000,
+        "maxLineHits": 1000,
+        "maxStoredEvents": 16000
+      },
+      "cases": [
+        {
+          "id": "A",
+          "input": {
+            "n": 7
+          },
+          "expected": 7,
+          "actual": 7,
+          "stdout": "7\n",
+          "grade": "passed"
+        },
+        {
+          "id": "B",
+          "input": {
+            "n": 11
+          },
+          "expected": 11,
+          "actual": 11,
+          "stdout": "11\n",
+          "grade": "passed"
+        }
+      ],
+      "routes": [
+        "run-first",
+        "continue-B"
+      ],
+      "anchor": 2
+    }
+  ]
+}
