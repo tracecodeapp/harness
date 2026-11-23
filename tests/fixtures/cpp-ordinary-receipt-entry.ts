@@ -2,7 +2,7 @@ import type { BrowserRuntimeJudgeReceiptLease } from '../../packages/runtime-bro
 import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/browser-runtime-host';
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
 import { createAlgorithmJudgeBundle } from '../../packages/judge/src/algorithm-bundle';
-import { createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
+import { createBrowserJudgeHost, createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
 import type { JudgeCaseResult } from '../../packages/judge/src/model';
 import { createCppOrdinaryExecutionProvider } from '../../packages/runtime-cpp/src/cpp-prepared-provider';
 import {
@@ -12,6 +12,8 @@ import {
   type CppDrawingProducer,
 } from '../../packages/runtime-cpp/src/cpp-observation';
 import { CppWorkerClient, type CppWorkerClientOptions } from '../../packages/runtime-cpp/src/cpp-worker-client';
+
+import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 
 const endCharacter = `#include <string>
 class Solution {
@@ -228,4 +230,51 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
     mode === 'code' && traceOptions === undefined), 'trace options reached ordinary preparation');
   check(requests.every(({ traceEnabled }) => traceEnabled !== false), 'recording-off trace execution');
   return suites;
+}
+
+
+/** Exercise the real per-host C++ composition and the receipt's bind-time verdict. */
+export async function assertCppProductReceiptPaths() {
+  const host = createBrowserJudgeHost({
+    assetBaseUrl: '/workers',
+    providers: ['cpp'],
+    assets: { runtimeManifests: { cpp: createTraceCCRuntimeManifest('/tracecc') } },
+  });
+  try {
+    const healthy = await createAlgorithmJudgeBundle({
+      id: 'cpp-legacy-matches',
+      language: 'cpp',
+      code: '#include <cstdio>\nclass Solution {\npublic:\n int solve(int n) {\n  printf("learner output\\n");\n  return n + 1;\n }\n};',
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+      trace: true,
+      cases: [{ id: 'A', input: { n: 1 }, expected: 2 }],
+    });
+    const receipt = await host.evaluateAlgorithm({ bundle: healthy });
+    check(receipt.evaluation.status === 'completed', 'product C++ healthy compile');
+    const [row] = receipt.evaluation.cases;
+    check(row?.status === 'completed' && row.value === 2 && row.stdout === 'learner output\n' &&
+      row.attachment?.status === 'drawn', 'product C++ matching legacy drawing');
+    check(!Object.hasOwn(row.attachment, 'finalState'), 'legacy final-state evidence escaped onto an attachment');
+
+    const mismatch = await createAlgorithmJudgeBundle({
+      id: 'cpp-legacy-mismatch',
+      language: 'cpp',
+      code: reference(false),
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+      trace: true,
+      cases: [{ id: 'A', input: { nums: [3] }, expected: 0 }],
+    });
+    const rejected = await host.evaluateAlgorithm({ bundle: mismatch });
+    check(rejected.evaluation.status === 'completed', 'product C++ mismatch compile');
+    const [mismatching] = rejected.evaluation.cases;
+    check(mismatching?.status === 'completed' && mismatching.value === 0 && rejected.verdict === 'passed',
+      'product C++ mismatch contaminated the verdict');
+    check(mismatching.attachment?.status === 'refused' && mismatching.attachment.reason === 'uncertified-drawing' &&
+      !Object.hasOwn(mismatching, 'trace'), 'product C++ mismatched legacy trace was published');
+    return true;
+  } finally {
+    await host.dispose();
+  }
 }
