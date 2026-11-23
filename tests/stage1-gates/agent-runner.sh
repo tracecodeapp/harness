@@ -3,6 +3,7 @@
 set -euo pipefail
 
 candidate=b025fdb8220694cdfe96b136a0b8bb82843f7371
+canonical_sha=7669429b3c0937853eb06e3afb5c51f4f9715be86d7564e4fca4e925832f5460
 subject=${TRACECODE_STAGE1_SUBJECT:-$candidate}
 case "$subject" in
   "$candidate"|e13bf6ec1b67681eede99c8dea1df951b424eb91|15ebff79943cf991ed5f4921fd9609c3b48f33d3|published-0.17.1) ;;
@@ -13,6 +14,7 @@ run_id=${1:-baseline}
 filter=${2:-}
 app_input=${3:-}
 mux_input=${4:-}
+canonical_tarball=${TRACECODE_STAGE1_CANONICAL_TARBALL:-}
 case "$run_id" in
   *[!A-Za-z0-9._-]*|'') echo "Invalid run ID" >&2; exit 2 ;;
 esac
@@ -31,6 +33,8 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   else
     git clone --quiet --no-checkout /root/ci/harness.git "$job_root/gate-candidate"
     git -C "$job_root/gate-candidate" checkout --quiet --detach "$subject"
+    git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/packed-source.sha"
+    [ "$(cat "$evidence/packed-source.sha")" = "$subject" ]
     (
       cd "$job_root/gate-candidate"
       corepack pnpm install --frozen-lockfile --prefer-offline
@@ -42,12 +46,28 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
     git -C "$job_root/gate-candidate" diff --binary >"$evidence/candidate-build.diff"
   fi
   tarball=$(find "$job_root/gate-package" -maxdepth 1 -name '*.tgz')
+  sha256sum "$tarball" >"$evidence/local-pack.sha256"
+  if [ "$subject" = "$candidate" ] && ! printf '%s  %s\n' "$canonical_sha" "$tarball" | sha256sum --check --status; then
+    if [ -z "$canonical_tarball" ]; then
+      echo "Local pack does not match pinned b025fdb8 tarball $canonical_sha. No browser run." >&2
+      cat "$evidence/local-pack.sha256" >&2
+      exit 3
+    fi
+    printf '%s  %s\n' "$canonical_sha" "$canonical_tarball" | sha256sum --check
+    python3 tests/stage1-gates/compare-packs.py "$canonical_tarball" "$tarball" >"$evidence/pack-diff.json"
+    mkdir "$job_root/gate-package/canonical"
+    cp "$canonical_tarball" "$job_root/gate-package/canonical/tracecode-harness-0.20.4.tgz"
+    tarball="$job_root/gate-package/canonical/tracecode-harness-0.20.4.tgz"
+  fi
   sha256sum "$tarball" >"$job_root/gate-package/tarball.sha256"
   printf '%s\n' "$subject" >"$job_root/gate-package.ready"
 fi
 [ "$(cat "$job_root/gate-package.ready")" = "$subject" ] || { echo 'Use a fresh host job for a different subject.' >&2; exit 2; }
 sha256sum --check --status "$job_root/gate-package/tarball.sha256"
 read -r _ tarball <"$job_root/gate-package/tarball.sha256"
+if [ "$subject" = "$candidate" ]; then
+  printf '%s  %s\n' "$canonical_sha" "$tarball" | sha256sum --check --status
+fi
 if [ ! -f "$consumer/.installed" ]; then
   mkdir -p "$consumer"
   printf '%s\n' '{"name":"stage1-gates-consumer","private":true,"type":"module"}' >"$consumer/package.json"
