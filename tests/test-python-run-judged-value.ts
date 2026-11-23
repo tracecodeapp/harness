@@ -384,7 +384,10 @@ test('the case clock runs out while the value is serialized: client-timeout on R
 // keep the serialization they had: their own class is the node class on the
 // compatibility path, and an object on the algorithm-fast path.
 
-async function submitOutcomes(code: string, cases: readonly Record<string, unknown>[]) {
+async function submitOutcomes(
+  code: string,
+  cases: readonly Record<string, unknown>[]
+): Promise<ReturnType<typeof outcome>[]> {
   await setup();
   const batch = await runtime.executePreparedProgramBatch!(deps, await prepareSource(code, 'code'), cases, LIMITS);
   assert.equal(batch.results?.length, cases.length, JSON.stringify(batch).slice(0, 300));
