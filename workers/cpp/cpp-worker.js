@@ -6371,11 +6371,10 @@ function cppCodeOnlySource(source) {
   return out;
 }
 
-// The one ops-class operation-to-method resolution. A `#define NAME target`
-// macro wins, then `delete` (a C++ keyword) maps to a deleteKey method.
-// Comments and literals are ignored. The single-case drivers call it per
-// operation; the prepared driver applies it through
-// resolveCppObjectMethodAliases.
+// Single-case ops-class operation-to-method resolution: the first
+// `#define NAME target` macro wins, then `delete` (a C++ keyword) maps to
+// deleteKey. Comments and literals are ignored. This is text, not the
+// preprocessor: it does not see #undef or #if (a known limit).
 function resolveCppObjectMethodMacro(source, operation) {
   const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const code = cppCodeOnlySource(source);
@@ -6385,25 +6384,15 @@ function resolveCppObjectMethodMacro(source, operation) {
   return operation;
 }
 
-// Operation names resolveCppObjectMethodMacro maps to a different method that
-// the prepared driver can dispatch: every `#define NAME target` macro name,
-// and `delete`. The prepared driver reads operation names at run time, so it
-// emits these up front. An alias replaces the exact-name branch for that name,
-// as in the single-case driver, where the macro target wins over a method of
-// the same name. A target that is not a dispatchable method adds nothing.
-function resolveCppObjectMethodAliases(source, methodNames) {
-  const code = cppCodeOnlySource(source);
-  const candidates = new Set(['delete']);
-  const macroPattern = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*$/gm;
-  let macroMatch;
-  while ((macroMatch = macroPattern.exec(code))) {
-    candidates.add(macroMatch[1]);
-  }
+// Prepared ops-class operation aliases. `delete` is a C++ keyword, so it can
+// never be a method name and a learner names the method `deleteKey`; the
+// prepared driver, which reads operation names at run time, maps the one onto
+// the other when the class has a public deleteKey. It does no macro-based
+// aliasing: text cannot tell a live macro from a dead one, so every other
+// operation dispatches by exact name, as the compiler would resolve it.
+function preparedOpsClassOperationAliases(methodNames) {
   const aliases = new Map();
-  for (const operation of candidates) {
-    const target = resolveCppObjectMethodMacro(source, operation);
-    if (target !== operation && methodNames.has(target)) aliases.set(operation, target);
-  }
+  if (methodNames.has('deleteKey') && !methodNames.has('delete')) aliases.set('delete', 'deleteKey');
   return aliases;
 }
 
@@ -11789,15 +11778,13 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   lines.push('        return 1;');
   lines.push('      }');
   lines.push('      bool __tc_operation_handled = false;');
-  const operationAliases = resolveCppObjectMethodAliases(userCode, groupedMethods);
   for (const [methodName] of groupedMethods) {
-    if (operationAliases.has(methodName)) continue;
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(methodName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
     lines.push('      }');
   }
-  for (const [operationName, methodName] of operationAliases) {
+  for (const [operationName, methodName] of preparedOpsClassOperationAliases(groupedMethods)) {
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(operationName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
