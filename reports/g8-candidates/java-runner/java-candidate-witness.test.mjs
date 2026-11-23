@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { javaCandidateOutcome } from './java-candidate-witness.mjs';
+import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 
 function random(seed) {
   let state = seed >>> 0;
@@ -21,7 +21,7 @@ function runResult(ordinaryWorker, observerWorker, caseCount) {
           type: 'execute-prepared-runtime-program-batch',
           cases: caseCount,
           tier: 'algorithm-fast',
-          timings: {},
+          timings: { runnerProcessCount: 1 },
         },
         { worker: observerWorker, role: 'observer', type: 'prepare-runtime-program' },
         {
@@ -83,4 +83,32 @@ test('ordinary restores and shared outer workers remain invalid', () => {
   const missingWorker = runResult(undefined, 2, 10);
   assert.equal(javaCandidateOutcome(missingWorker, 'run', 10, 'selected'),
     'Java role, batch or worker-reuse witness differs');
+});
+
+test('ordinary batch rejects missing timings or runner-process evidence', () => {
+  const noTimings = runResult(1, 2, 10);
+  const noTimingsBatch = noTimings.java.phases.find(({ role, type }) =>
+    role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
+  delete noTimingsBatch.timings;
+  assert.equal(javaCandidateOutcome(noTimings, 'run', 10, 'selected'),
+    'Java role, batch or worker-reuse witness differs');
+
+  const noRunnerProcessCount = runResult(1, 2, 10);
+  const noCountBatch = noRunnerProcessCount.java.phases.find(({ role, type }) =>
+    role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
+  delete noCountBatch.timings.runnerProcessCount;
+  assert.equal(javaCandidateOutcome(noRunnerProcessCount, 'run', 10, 'selected'),
+    'Java role, batch or worker-reuse witness differs');
+});
+
+test('cache receipt records both candidate prepare roles without treating missing flags as hits', () => {
+  const result = runResult(1, 2, 10);
+  const ordinaryPrepare = result.java.phases[0];
+  ordinaryPrepare.timings = { compileCacheHit: true, artifactCacheHit: false };
+  const observerPrepare = result.java.phases[2];
+  observerPrepare.timings = { compileCacheHit: false };
+  assert.deepEqual(javaCandidateCacheReceipt(result), {
+    ordinary: [{ role: 'ordinary', worker: 1, compileCacheHit: true, artifactCacheHit: false }],
+    observer: [{ role: 'observer', worker: 2, compileCacheHit: false, artifactCacheHit: undefined }],
+  });
 });

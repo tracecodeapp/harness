@@ -22,7 +22,7 @@ const endpoints = (g) => g.journey === 'run'
 function collect(folder, prefix) {
   const metadata = json(join(folder, prefix + '-metadata.json'));
   const samples = records(join(folder, prefix + '-samples.jsonl'));
-  const values = new Map(), seen = new Set();
+  const values = new Map(), cacheReceipts = new Map(), seen = new Set();
   assert.equal(metadata.seed, 212026);
   assert.equal(metadata.loadThreshold, 2);
   for (const sample of samples) {
@@ -43,15 +43,40 @@ function collect(folder, prefix) {
       const name = key(group, endpoint) + '/' + sample.version;
       if (!values.has(name)) values.set(name, []);
       values.get(name).push(measured);
+      if (sample.language === 'java') {
+        if (!cacheReceipts.has(name)) cacheReceipts.set(name, []);
+        cacheReceipts.get(name).push(sample.cache);
+      }
     }
   }
-  return { metadata, samples, values };
+  return { metadata, samples, values, cacheReceipts };
 }
 function stats(values = []) {
   const ordered = [...values].sort((a,b) => a-b);
   const n = ordered.length;
   return n ? { n, median: (ordered[Math.floor((n-1)/2)] + ordered[Math.floor(n/2)])/2,
     p90: ordered[Math.ceil(.9*n)-1] } : { n };
+}
+function cacheStats(receipts = [], roles = ['ordinary', 'observer']) {
+  const roleStats = (role) => {
+    const rows = receipts.map((receipt) => receipt?.initial?.[role] ?? []);
+    return {
+      samples: rows.length,
+      compileMisses: rows.filter((prepares) => prepares.some((row) => row.compileCacheHit === false)).length,
+      artifactMisses: rows.filter((prepares) => prepares.some((row) => row.artifactCacheHit === false)).length,
+      missing: rows.filter((prepares) => prepares.length === 0 || prepares.some((row) =>
+        typeof row.compileCacheHit !== 'boolean' || typeof row.artifactCacheHit !== 'boolean')).length,
+    };
+  };
+  const prepares = receipts.map((receipt) => roles.flatMap((role) => receipt?.initial?.[role] ?? []));
+  return {
+    samples: receipts.length,
+    compileMisses: prepares.filter((rows) => rows.some((row) => row.compileCacheHit === false)).length,
+    artifactMisses: prepares.filter((rows) => rows.some((row) => row.artifactCacheHit === false)).length,
+    missing: prepares.filter((rows) => rows.length === 0 || rows.some((row) =>
+      typeof row.compileCacheHit !== 'boolean' || typeof row.artifactCacheHit !== 'boolean')).length,
+    roles: Object.fromEntries(roles.map((role) => [role, roleStats(role)])),
+  };
 }
 const capture = ['desktop-a-with-topup', 'desktop-b', 'phone'].map(w => collect(archive, 'speed-' + w));
 const archived = new Map(capture.flatMap(receipt => [...receipt.values]));
@@ -112,6 +137,10 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       Object.assign(thresholds, { median: 830.4, p90: 944.1 });
     for (const policy of policyFor(scope, cell)) {
       const result = stats(observed.values.get(cell + '/' + policy));
+      const cache = primary === 'java'
+        ? cacheStats(observed.cacheReceipts.get(cell + '/' + policy),
+            cell.endsWith('/submitVerdicts') ? ['ordinary'] : ['ordinary', 'observer'])
+        : undefined;
       const complete = result.n === 20;
       const pass = complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
       const id = cell + '/' + policy;
@@ -119,7 +148,7 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       else if (!pass && scope === 'spot') summary.escalations.push(id);
       else if (!pass && primary === 'python' && scope === 'phone') (summary.pythonPhone[policy] ??= []).push(id);
       else if (!pass) summary.failed.push(id);
-      console.log(JSON.stringify({ scope, cell, policy, result, history, thresholds, complete, pass,
+      console.log(JSON.stringify({ scope, cell, policy, result, cache, history, thresholds, complete, pass,
         ...(warmCsharp && { advisory: '0.17.1' }) }));
     }
   }

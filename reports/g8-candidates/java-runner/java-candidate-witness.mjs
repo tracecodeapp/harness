@@ -10,10 +10,24 @@ function isSingleWorker(workerSet) {
 }
 
 function isStoppingBatch(batch, caseCount) {
-  const runnerProcessCount = batch.timings?.runnerProcessCount;
   return batch.cases === caseCount &&
     batch.tier === 'algorithm-fast' &&
-    (runnerProcessCount === undefined || runnerProcessCount === 1);
+    batch.timings?.runnerProcessCount === 1;
+}
+
+export function javaCandidateCacheReceipt(result) {
+  const prepares = (result?.java?.phases ?? [])
+    .filter(({ type }) => type === 'prepare-runtime-program')
+    .map(({ role, worker, timings }) => ({
+      role,
+      worker,
+      compileCacheHit: timings?.compileCacheHit,
+      artifactCacheHit: timings?.artifactCacheHit,
+    }));
+  return Object.fromEntries(['ordinary', 'observer'].map((role) => [
+    role,
+    prepares.filter((prepare) => prepare.role === role),
+  ]));
 }
 
 export function javaCandidateOutcome(result, role, caseCount, caseId) {

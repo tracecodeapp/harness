@@ -9,7 +9,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { javaCandidateOutcome } from './java-candidate-witness.mjs';
+import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -494,6 +494,12 @@ try {
             }
           }
 
+          if (group.language === 'java' && candidate) {
+            sample.cache = {
+              initial: javaCandidateCacheReceipt(sample.initial),
+              ...(sample.second && { second: javaCandidateCacheReceipt(sample.second) }),
+            };
+          }
           sample.wallMs = Date.now() - attemptStarted;
           sample.metrics = addressedBySample(sample);
           sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal;
