@@ -21,17 +21,30 @@ type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
   readonly program: JudgeObservationProgram;
 };
 
+type FinalState =
+  | { readonly status: 'completed'; readonly value: { present: boolean; value?: unknown }; readonly console: string }
+  | { readonly status: 'trapped' | 'timed-out' | 'compile-failed'; readonly console: string };
+
+type CppObservation = Drawing & { readonly finalState?: FinalState };
+type CppDrawingLease = Omit<JudgeObservationLease, 'observe'> & {
+  observe(call: RuntimeObservationCall): Promise<CppObservation>;
+};
+
 /** Internal composition supplies exactly one producer. */
 export interface CppDrawingProducer {
-  prepare(call: Preparation): Promise<JudgeObservationLease>;
+  readonly certification?: 'ends-same';
+  prepare(call: Preparation): Promise<CppDrawingLease>;
 }
 
-function refused(reason: Refusal): Drawing {
+function refused(reason: Refusal): Extract<Drawing, { status: 'refused' }> {
   return { status: 'refused', reason };
 }
 
-function refusalLease(reason: Refusal): JudgeObservationLease {
-  return { observe: async () => refused(reason), dispose() {} };
+function refusalLease(reason: Refusal, finalState?: FinalState): CppDrawingLease {
+  return {
+    observe: async () => ({ ...refused(reason), ...(finalState && { finalState }) }),
+    dispose() {},
+  };
 }
 
 /** Keeps the observation adapter limited to presentation data. */
@@ -46,14 +59,18 @@ export function createCppObservationRegistration(
   const { runtimeVersion, ...deadlines } = options;
   return {
     runtimeVersion,
-    capabilities: { observationLease: 'separate' as const, ...deadlines },
+    capabilities: {
+      observationLease: 'separate' as const,
+      ...deadlines,
+      ...(producer.certification && { certification: producer.certification }),
+    },
     async prepareObservation(
       program: JudgeObservationProgram,
       signal: AbortSignal,
       traceOptions?: Preparation['traceOptions']
-    ): Promise<JudgeObservationLease> {
+    ): Promise<CppDrawingLease> {
       signal.throwIfAborted();
-      let lease: JudgeObservationLease;
+      let lease: CppDrawingLease;
       try {
         lease = await producer.prepare({ program, traceOptions, signal });
       } catch {
@@ -72,7 +89,7 @@ export function createCppObservationRegistration(
             ? AbortSignal.any([attempt.signal, lifetime.signal])
             : lifetime.signal;
           signal.throwIfAborted();
-          let drawing: Drawing;
+          let drawing: CppObservation;
           try {
             drawing = await lease.observe({ ...attempt, signal });
           } catch {
@@ -80,18 +97,21 @@ export function createCppObservationRegistration(
             return refused('observer-runtime');
           }
           signal.throwIfAborted();
+          const finalState = drawing?.finalState;
+          const evidence = finalState ? { finalState } : {};
           switch (drawing?.status) {
             case 'drawn':
-              return { status: 'drawn', trace: drawing.trace };
+              return { status: 'drawn', trace: drawing.trace, ...evidence };
             case 'truncated':
               return {
                 status: 'truncated',
                 reason: drawing.reason,
                 trace: drawing.trace,
                 attemptedEvents: drawing.attemptedEvents,
+                ...evidence,
               };
             case 'refused':
-              return refused(drawing.reason);
+              return { ...refused(drawing.reason), ...evidence };
             default:
               return refused('observer-protocol');
           }
@@ -133,8 +153,31 @@ function legacyDrawing(result: ExecutionResult): Drawing {
   return { status: 'drawn', trace };
 }
 
+function legacyFinalState(result: ExecutionResult): FinalState {
+  // Match Judge's ordinary outputText framing. The runtime already decoded
+  // the value with its prepared driver's JSON result protocol.
+  const console = result.consoleOutput
+    .map((line) => line.endsWith('\n') ? line : `${line}\n`)
+    .join('');
+  if (result.kind === 'completed') {
+    return {
+      status: 'completed',
+      value: result.output === undefined ? { present: false } : { present: true, value: result.output },
+      console,
+    };
+  }
+  return { status: result.kind === 'limit' && result.reason === 'client-timeout' ? 'timed-out' : 'trapped', console };
+}
+
+type LegacyPrepareFailure = 'compile-failed' | 'timed-out';
+
+function legacyPrepareRefusal(status: LegacyPrepareFailure): CppDrawingLease {
+  return refusalLease(status === 'timed-out' ? 'observer-timeout' : 'observer-prepare', { status, console: '' });
+}
+
 export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions): CppDrawingProducer {
   return {
+    certification: 'ends-same',
     async prepare({ program, traceOptions, signal }) {
       type ObserverClient = ReturnType<LegacyCppDrawingOptions['createObserverWorkerClient']>;
       const clients = new Set<ObserverClient>();
@@ -162,35 +205,32 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
           signal?.throwIfAborted();
           if (preparation.success === false) {
             retire(client);
-            return undefined;
+            return { status: preparation.compileDeadlineExceeded ? 'timed-out' : 'compile-failed' } as const;
           }
-          return { client, handle: preparation.handle };
-        } catch (error) {
+          return { status: 'prepared', client, handle: preparation.handle } as const;
+        } catch {
           retire(client);
-          throw error;
+          signal?.throwIfAborted();
+          return { status: 'compile-failed' } as const;
         } finally {
           signal?.removeEventListener('abort', abort);
         }
       }
 
-      let standby = await compile(signal);
-      if (!standby) return refusalLease('observer-prepare');
+      const initial = await compile(signal);
+      if (initial.status !== 'prepared') return legacyPrepareRefusal(initial.status);
+      let standby: typeof initial | undefined = initial;
       return {
         async observe(call) {
           call.signal?.throwIfAborted();
           // A contender must never run on a worker another attempt can abort.
           // The separate trusted compiler may cache immutable compiler output.
-          let artifact = standby;
+          const ready = standby;
           standby = undefined;
-          if (!artifact) {
-            try {
-              artifact = await compile(call.signal);
-            } catch {
-              call.signal?.throwIfAborted();
-              return refused('observer-prepare');
-            }
+          const artifact = ready ?? await compile(call.signal);
+          if (artifact.status !== 'prepared') {
+            return legacyPrepareRefusal(artifact.status).observe(call);
           }
-          if (!artifact) return refused('observer-prepare');
           const { client, handle } = artifact;
           const abort = () => retire(client);
           call.signal?.addEventListener('abort', abort, { once: true });
@@ -202,7 +242,7 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
               signal: call.signal,
             });
             call.signal?.throwIfAborted();
-            return legacyDrawing(result);
+            return { ...legacyDrawing(result), finalState: legacyFinalState(result) };
           } finally {
             call.signal?.removeEventListener('abort', abort);
             retire(client);
