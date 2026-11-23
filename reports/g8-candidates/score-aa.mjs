@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { metricEndpoints, relative, stats } from './aa-score-lib.mjs';
+import { metricEndpoints, relative, sampleCounts, stats } from './aa-score-lib.mjs';
 
 const [archive, raw] = process.argv.slice(2);
 assert.ok(archive && raw);
@@ -76,10 +76,8 @@ for (const language of ['csharp', 'python']) {
     language,
     packages: Object.fromEntries(Object.entries(observed.metadata.packages)
       .map(([name, pkg]) => [name, { commit: pkg.commit, sha256: pkg.sha256 }])),
-    invalid: Object.fromEntries(versions.map((version) => [version,
-      observed.samples.filter((row) => row.version === version && (row.invalid || row.refusal)).length])),
-    excluded: Object.fromEntries(versions.map((version) => [version,
-      observed.samples.filter((row) => row.version === version && row.excluded).length])),
+    counts: Object.fromEntries(versions.map((version) => [version,
+      sampleCounts(observed.samples, language, version)])),
   }));
 
   for (const group of observed.metadata.schedule.filter((group) => group.language === language)) {

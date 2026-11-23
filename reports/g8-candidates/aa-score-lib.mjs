@@ -15,6 +15,16 @@ export function metricEndpoints(group) {
   return [group.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts'];
 }
 
+export function sampleCounts(samples, language, version) {
+  const selected = samples.filter((sample) => sample.language === language && sample.version === version);
+  return {
+    attempts: selected.length,
+    kept: selected.filter((sample) => sample.kept).length,
+    invalid: selected.filter((sample) => sample.invalid || sample.refusal).length,
+    excluded: selected.filter((sample) => sample.excluded).length,
+  };
+}
+
 export function relative(observed, reference) {
   if (!observed.n || !reference.n) return undefined;
   return {
