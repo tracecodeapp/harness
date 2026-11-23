@@ -1727,3 +1727,78 @@ test('the Python trace client leaves an unknown traceLimitReason to the outcome 
     (error: unknown) => error instanceof Error && /unknown traceLimitReason/.test(error.message)
   );
 });
+
+/**
+ * A worker lost while it ran the learner's case (the host terminated it, its
+ * `error` event fired) failed for a reason the program did not cause. The
+ * provider rejects, as every other runtime does; it never reports the case as
+ * the program's runtime failure.
+ */
+function lostWorkerClientFactory(
+  tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated',
+  calls: string[]
+): () => PythonWorkerClient {
+  const lost = (method: string) => {
+    calls.push(method);
+    return Promise.reject(new WorkerCrashedError({
+      workerMessage: 'injected: worker lost after dispatch',
+      filename: undefined,
+      lineno: undefined,
+      colno: undefined,
+    }));
+  };
+  return () => ({
+    async warmup() {
+      return { success: true, loadTimeMs: 1 };
+    },
+    async prepareProgram(call: RuntimeProgramPreparationCall) {
+      return {
+        success: true as const,
+        artifact: artifact(call.mode, tier),
+        mode: call.mode,
+        consoleOutput: [],
+      };
+    },
+    executePreparedCode: () => lost('execute-code'),
+    executePreparedTrace: () => lost('execute-trace'),
+    executePreparedCodeBatch: () => lost('execute-code-batch'),
+    executePreparedTraceBatch: () => lost('execute-trace-batch'),
+    terminate() {},
+  }) as unknown as PythonWorkerClient;
+}
+
+for (const tier of ['algorithm-fast', 'judge-compatible', 'hard-isolated'] as const) {
+  for (const mode of ['code', 'trace'] as const) {
+    test(`Python ${tier} ${mode}: a worker lost mid-case rejects as the provider's failure`, async () => {
+      const calls: string[] = [];
+      const provider = createPythonPreparedExecutionProvider({
+        createWorkerClient: lostWorkerClientFactory(tier, calls),
+      });
+      const preparation = await provider.prepareProgram(preparationCall(mode));
+      assert.equal(preparation.kind, 'prepared');
+      if (preparation.kind !== 'prepared') return;
+      const program = preparation.program;
+      const lostWorker = (error: unknown) =>
+        error instanceof Error &&
+        (error as { _tag?: unknown })._tag === 'WorkerCrashedError' &&
+        error.message === 'injected: worker lost after dispatch';
+
+      await assert.rejects(
+        program.executeIsolated({ inputs: { value: 1 } }) as Promise<unknown>,
+        lostWorker,
+        'single case'
+      );
+      assert.ok(program.executeBatchIsolated);
+      await assert.rejects(
+        program.executeBatchIsolated!({
+          inputBatch: [{ value: 1 }, { value: 2 }],
+        }) as Promise<unknown>,
+        lostWorker,
+        'batch'
+      );
+      assert.ok(calls.length > 0, 'the fake worker was never asked to run a case');
+      await program.dispose();
+      provider.terminate();
+    });
+  }
+}
