@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { basename } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 const [reportPath, ...files] = process.argv.slice(2);
 assert.ok(reportPath && [2, 4, 6].includes(files.length),
@@ -23,14 +24,52 @@ for (let i = 0; i < files.length; i += 2) {
   });
 }
 const { metadata } = windows[0];
-for (const { metadata: other } of windows.slice(1)) {
-  assert.deepEqual(other.appRefs, metadata.appRefs);
-  assert.deepEqual(other.host, metadata.host);
-  assert.deepEqual(other.browser, metadata.browser);
-  assert.deepEqual(other.fixtures, metadata.fixtures);
-  for (const version of Object.keys(metadata.appRefs)) {
-    assert.equal(other.packages[version].sha256, metadata.packages[version].sha256);
-    assert.deepEqual(other.packages[version].dependencies, metadata.packages[version].dependencies);
+const historicalBareFsComparisons = new Set();
+const tracejvmNode = (tree) => tree?.dependencies?.['@tracecode/tracejvm'];
+const archiveNode = (tree) => tracejvmNode(tree)?.dependencies?.['tar-stream'];
+const bareFsNode = (tree) => archiveNode(tree)?.dependencies?.['bare-fs'];
+
+function assertDependencyTrees(reference, candidate, version) {
+  const expectedTree = reference.packages[version].dependencies;
+  const actualTree = candidate.packages[version].dependencies;
+  if (isDeepStrictEqual(actualTree, expectedTree)) return;
+
+  const [desktopB, other] = reference.window === 'desktop-b'
+    ? [reference, candidate] : [candidate, reference];
+  const matchesArchiveDependency = (metadata, expectedVersion) => {
+    const tree = metadata.packages[version].dependencies;
+    const entry = bareFsNode(tree);
+    return tracejvmNode(tree)?.version === '0.4.1' &&
+      archiveNode(tree)?.version === '3.2.0' && entry?.version === expectedVersion &&
+      entry.resolved === 'https://registry.npmjs.org/bare-fs/-/bare-fs-' + expectedVersion + '.tgz';
+  };
+  const historicalArchiveDrift = desktopB.window === 'desktop-b' &&
+    ['desktop-a', 'phone'].includes(other.window) &&
+    matchesArchiveDependency(desktopB, '4.8.5') && matchesArchiveDependency(other, '4.8.6');
+  if (!historicalArchiveDrift) {
+    assert.deepEqual(actualTree, expectedTree);
+    return;
+  }
+
+  const comparableTree = structuredClone(actualTree);
+  const actualBareFs = bareFsNode(comparableTree);
+  const expectedBareFs = bareFsNode(expectedTree);
+  actualBareFs.version = expectedBareFs.version;
+  actualBareFs.resolved = expectedBareFs.resolved;
+  assert.deepEqual(comparableTree, expectedTree);
+  historicalBareFsComparisons.add(other.window + ' / Harness ' + version);
+}
+
+for (const [index, { metadata: reference }] of windows.entries()) {
+  for (const { metadata: candidate } of windows.slice(index + 1)) {
+    assert.deepEqual(candidate.appRefs, reference.appRefs);
+    assert.deepEqual(candidate.host, reference.host);
+    assert.deepEqual(candidate.browser, reference.browser);
+    assert.deepEqual(candidate.fixtures, reference.fixtures);
+    for (const version of Object.keys(reference.appRefs)) {
+      assert.equal(candidate.packages[version].sha256, reference.packages[version].sha256);
+      assertDependencyTrees(reference, candidate, version);
+    }
   }
 }
 
@@ -169,6 +208,17 @@ const lines = [
   ...windows.map(({ samplesPath, metadataPath, digest }) =>
     '- [' + basename(samplesPath) + '](./' + basename(samplesPath) + '), SHA-256 `' + digest +
     '`. [' + basename(metadataPath) + '](./' + basename(metadataPath) + ') has fixture hashes and resolved npm dependencies.'),
+  ...(historicalBareFsComparisons.size ? [
+    '',
+    '**Historical Node archive dependency.** Desktop B installed `bare-fs` 4.8.5 and the following comparisons installed 4.8.6 under ' +
+    '`@tracecode/tracejvm > tar-stream > bare-fs` (' + [...historicalBareFsComparisons].join(', ') + '). ' +
+    'Only that node’s version and corresponding registry URL may differ.',
+    '',
+    'A scan of the 39 served JavaScript and source-map files for each installed release, including the page entry and every worker, ' +
+    'found no `bare-fs`, `tar-stream`, `bare-os`, `node-gyp-build` or native binding markers. ' +
+    'The packaged TraceJVM 0.4.1 Node archive extractor imports `tar-stream` before the browser starts. ' +
+    'Its 3.2.0 manifest selects `bare-fs` for the Bare runtime and built-in `fs` on Node.',
+  ] : []),
   '',
   '## Timing boundary', '',
   '- Chromium served the installed tarballs’ workers from same-origin loopback pages without cross-origin isolation. ' +
