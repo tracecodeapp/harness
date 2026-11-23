@@ -1,11 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
+import { schedulerInjection } from './gb-probe.mjs';
 
 const healthyChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics', 'conversion'];
 const transportChecks = ['injection-ack', 'A/ordinary-start-count', 'A/worker-finish', 'A/coordinator-commit'];
 const observationChecks = ['ordinary-start-count', 'ordinary-before-observer', 'observer-grade-writes'];
 const stopRoute = (route) => route.startsWith('run-') || route === 'submit-stop';
 const continuation = (route) => route.startsWith('continue-') || route.startsWith('repeat-');
-const faultNames = ['no-recorder', 'observer-compile-fault', 'observer-encoder-fault'];
+const faultNames = ['no-recorder', 'observer-compile-fault', 'observer-encoder-fault', 'observer-deadline'];
 
 export function selectedRows(fixture, route) {
   return /-[ABC]$/u.test(route) ? fixture.cases.filter((row) => row.id === route.at(-1)) : fixture.cases;
@@ -67,6 +68,7 @@ const refusalReasons = new Map([
   ['no-recorder', ['recorder-unavailable', 'recorder-unavailable']],
   ['observer-compile-fault', ['observer-prepare', 'observer-prepare-failed']],
   ['observer-encoder-fault', ['observer-encode', 'observer-encode-failed']],
+  ['observer-deadline', ['observer-timeout', 'observer-timeout']],
 ]);
 
 function rawAttachment(row) {
@@ -140,7 +142,8 @@ function eventProjection(event) {
   return [event?.kind, event?.file, event?.line, event?.sourceSpan?.startLine,
     event?.sourceSpan?.startColumn, event?.sourceSpan?.endLine, event?.sourceSpan?.endColumn,
     event?.function, event?.frameId, event?.statementId, event?.text,
-    event?.target?.variable, event?.target?.objectId, event?.value, event?.args];
+    event?.target?.variable, event?.target?.objectId, event?.value, event?.args,
+    event?.callStack?.map((frame) => [frame.function, frame.line, frame.args])];
 }
 
 function checkRecorder(fixture, attachment, witness) {
@@ -187,7 +190,7 @@ function checkObservation(fixture, route, sample, rows, published, assert) {
   const wrongStart = starts.some((event) => !expectedStarts.includes(event.caseId)) ||
     new Set(starts.map(({ caseId }) => caseId)).size !== starts.length;
   const startCoverage = dispatch.length > 0 && dispatch.every(({ reportsStarts }) => reportsStarts === true);
-  const observableContinuation = fixture.language === 'python' || wire.some(({ kind }) => kind === 'ordinary-coverage');
+  const observableContinuation = fixture.language === 'python';
   if (wrongStart || startCoverage || (continuation(route) &&
       (dispatch.length > 0 || (observableContinuation && (observerReply || cacheHit))))) {
     assert('ordinary-start-count', !wrongStart && (!continuation(route) || dispatch.length === 0) &&
@@ -370,19 +373,37 @@ function check(fixture, route, sample, assert) {
       const evidence = cacheHit ? [...(sample.retainedEvidence ?? []), ...currentEvidence] : currentEvidence;
       const replies = evidence.filter(({ kind, caseId }) => kind === 'observer-reply' && caseId === label);
       const recorder = replies.length === 1 && bound && checkRecorder(fixture, attachment, replies[0]);
-      const faultAcks = currentEvidence.filter(({ kind, fault, caseId }) =>
-        kind === 'fault-ack' && fault === fixture.name && caseId === label);
+      const injection = schedulerInjection(fixture.name);
+      const faultAcks = currentEvidence.filter(({ kind, phase }) => kind === 'schedule' && phase === 'injection-ack');
+      const ack = faultAcks[0];
+      const faultAck = faultAcks.length === 1 && injection && ack.fault === injection.fault &&
+        ack.point === injection.point && ack.language === fixture.language &&
+        !!attachment.binding && scopeMatches(ack, attachment.binding) &&
+        (ack.point === 'prepare' ? ack.caseId === undefined && ack.attemptToken === undefined
+          : ack.caseId === label && typeof ack.attemptToken === 'string' && currentEvidence.some((event) =>
+            event.kind === 'schedule' && event.phase === 'attachment-bind' && event.caseId === label &&
+            event.attemptToken === ack.attemptToken && scopeMatches(event, ack) && event.sequence > ack.sequence));
       if (fixture.name === 'step-cap' || fixture.name === 'byte-cap') {
         const step = fixture.name === 'step-cap';
         const reason = attachment.modern ? (step ? 'step-budget' : 'byte-budget')
           : (step ? 'trace-limit' : 'trace-byte-limit');
         assert(`${label}/attachment-status`, bound && attachment.status === 'truncated' &&
           attachment.cause === reason, attachment);
-        if (step && replies.length) {
+        const referenceRow = sample.prefixReference?.evaluation?.cases?.find(({ caseId }) => caseId === label);
+        const referenceReplies = wire.filter(({ kind, request, caseId }) =>
+          kind === 'observer-reply' && request === `${route}:reference` && caseId === label);
+        if (step && replies.length && referenceReplies.length) {
+          const reference = rawAttachment(referenceRow);
+          const actual = attachment.events?.map(eventProjection);
+          const longer = reference.events?.map(eventProjection);
           assert(`${label}/real-prefix`, recorder && attachment.status === 'truncated' &&
-            attachment.cause === reason && attachment.events.length > 0 &&
-            attachment.events.length <= fixture.traceOptions.maxTraceSteps &&
-            attachment.attemptedEventCount > attachment.events.length, { attachment, replies });
+            attachment.cause === reason && referenceReplies.length === 1 &&
+            reference.modern && validBinding(reference, referenceRow, {
+              retainedWorkspaceDigest: sample.prefixReference?.bundleDigest,
+            }) && checkRecorder(fixture, reference, referenceReplies[0]) &&
+            actual.length > 0 && longer.length > actual.length &&
+            attachment.attemptedEventCount > actual.length &&
+            isDeepStrictEqual(actual, longer.slice(0, actual.length)), { attachment, reference, replies, referenceReplies });
         }
         if (!step && (replies.length || (!attachment.modern && attachment.attemptedEventCount !== undefined))) {
           assert(`${label}/attempted-events`, (!attachment.modern || recorder) &&
@@ -403,12 +424,10 @@ function check(fixture, route, sample, assert) {
         assert(`${label}/attachment-status`, bound && accepted, attachment);
         if (refusedFault && (faultAcks.length || !attachment.modern)) {
           assert('A/provenance', bound && validRefusal && attachment.cause === reason &&
-            (!attachment.modern || (faultAcks.length === 1 && faultAcks[0].reason === reason &&
-              scopeMatches(faultAcks[0], attachment.binding))), { attachment, faultAcks });
+            (!attachment.modern || faultAck), { attachment, faultAcks });
         }
         if (refusedFault && faultAcks.length) {
-          assert('A/injection-ack', faultAcks.length === 1 && faultAcks[0].reason === reason &&
-            !!attachment.binding && scopeMatches(faultAcks[0], attachment.binding), faultAcks);
+          assert('A/injection-ack', faultAck, faultAcks);
         }
       }
       if (fixture.anchor && !refusedFault) {
@@ -418,11 +437,14 @@ function check(fixture, route, sample, assert) {
         assert(`${label}/anchor`, allowedEncoderRefusal || matchesAnchor(fixture, expected, attachment), attachment.events);
       }
       if ((fixture.anchor && !refusedFault) || (fixture.name === 'observer-encoder-fault' && refusedFault)) {
-        if (replies.length || faultAcks.some(({ reason }) => reason === 'observer-encode')) {
-          assert(`${label}/recorder-boundary`, replies.length ? recorder
-            : bound && attachment.status === 'refused' && attachment.cause === 'observer-encode' &&
-              attachment.events?.length === 0 && faultAcks.length === 1 &&
-              scopeMatches(faultAcks[0], attachment.binding), { attachment, replies, faultAcks });
+        const injectedEncoder = refusedFault && injection?.fault === 'encode' && faultAcks.length > 0;
+        if (replies.length || injectedEncoder) {
+          // A scheduler encode ACK is emitted only at the drawable-return
+          // boundary. Native encoder certification belongs to worker evidence.
+          assert(`${label}/recorder-boundary`, injectedEncoder
+            ? faultAck && bound && attachment.status === 'refused' && attachment.cause === injection.reason &&
+              attachment.events?.length === 0
+            : recorder, { attachment, replies, faultAcks });
         }
       }
     }

@@ -5,6 +5,7 @@ import {
   judgeCompileExecutionOutcome,
 } from '@tracecode/harness/judge';
 import { installJournal } from './gb-transport.mjs';
+import { installJudgeBridge, schedulerInjection } from './gb-probe.mjs';
 
 const transportRoutes = new Set([
   'cut-keep', 'cut-stop', 'during-keep', 'during-stop',
@@ -28,10 +29,41 @@ function convert(conversion, row, options) {
   }
 }
 
+function fixtureBundle(fixture, route, rows, trace, traceOptions = fixture.traceOptions) {
+  return createAlgorithmJudgeBundle({
+    id: [fixture.gate, fixture.language, fixture.name, route].join('-'),
+    language: fixture.language,
+    code: fixture.code,
+    functionName: fixture.functionName,
+    executionStyle: fixture.executionStyle,
+    trace,
+    cases: rows.map(({ id, input, expected }) => ({ id, input: structuredClone(input), expected })),
+    ...(fixture.limits ? { limits: fixture.limits } : {}),
+    ...(route === 'timeout-fanout' ? { limits: { wallClockMs: 4000 } } : {}),
+    traceOptions,
+    comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+  });
+}
+
+async function observeLongerPrefix(fixture, host, route, rows) {
+  try {
+    const bundle = await fixtureBundle(fixture, route, rows, true, {
+      ...fixture.traceOptions,
+      maxTraceSteps: 12,
+    });
+    const result = await host.execute({ bundle, interactive: true, tracing: { caseIds: [rows[0].id] } });
+    if (result.executionId) await host.disposeExecution(result.executionId);
+    return { bundleDigest: bundle.workspaceDigest, evaluation: result.evaluation };
+  } finally {
+    host.dispose();
+  }
+}
+
 export async function runFixture(fixture, options, onReceipt) {
   const journal = installJournal(fixture);
   const faultFixture = fixture.name === 'transport';
-  const observerFault = ['no-recorder', 'observer-compile-fault', 'observer-encoder-fault'].includes(fixture.name);
+  const bridge = installJudgeBridge(fixture, journal);
+  const schedulerFault = schedulerInjection(fixture.name);
   const createHost = (mux) => createBrowserJudgeHost({
     assetBaseUrl: '/workers',
     providers: [fixture.language],
@@ -62,8 +94,12 @@ export async function runFixture(fixture, options, onReceipt) {
       let currentExecutionId;
       let record;
       try {
-        if (observerFault || route.startsWith('deadline-') || (fixture.language === 'java' && (route.endsWith('-stop') || route.startsWith('during-')) && faultFixture)) {
-          record = { unavailable: 'Required producer or coordinator barrier is absent on the frozen candidate' };
+        if (fixture.name === 'no-recorder') {
+          record = { unavailable: 'No installed trusted recorder-disable probe is connected' };
+        } else if (faultFixture && route.startsWith('deadline-')) {
+          record = { unavailable: 'Requires an ordinary commit barrier and a coordinator service-deadline ACK' };
+        } else if (fixture.language === 'java' && (route.endsWith('-stop') || route.startsWith('during-')) && faultFixture) {
+          record = { unavailable: 'No Java worker case-start ACK for the required transport barrier' };
         } else if (continuation && !executionId) {
           record = { unavailable: 'The first Run returned no continuation handle', retainedCompile };
         } else {
@@ -73,6 +109,7 @@ export async function runFixture(fixture, options, onReceipt) {
           }
           const setupMs = performance.now() - start;
           journal.track(route, faultFixture && transportRoutes.has(route) ? route : undefined);
+          bridge.track(route);
           if (continuation) {
             const result = await host.execute({ executionId, tracing: { caseIds: [route.at(-1)] } });
             record = {
@@ -82,24 +119,13 @@ export async function runFixture(fixture, options, onReceipt) {
           } else {
             const rows = rowsFor(fixture, route);
             const trace = interactive || route === 'submit-traced';
-            const bundle = await createAlgorithmJudgeBundle({
-              id: [fixture.gate, fixture.language, fixture.name, route].join('-'),
-              language: fixture.language,
-              code: fixture.code,
-              functionName: fixture.functionName,
-              executionStyle: fixture.executionStyle,
-              trace,
-              cases: rows.map(({ id, input, expected }) => ({ id, input: structuredClone(input), expected })),
-              ...(fixture.limits ? { limits: fixture.limits } : {}),
-              ...(route === 'timeout-fanout' ? { limits: { wallClockMs: 4000 } } : {}),
-              traceOptions: fixture.traceOptions,
-              comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
-            });
+            const bundle = await fixtureBundle(fixture, route, rows, trace);
             if (interactive) {
               const ids = route === 'run-first' ? [rows[0].id] : route === 'run-all' ? rows.map((row) => row.id) : [];
+              record = { setupMs, stimulus: { bundle, interactive: true, caseIds: ids } };
               const result = await host.execute({ bundle, interactive: true, tracing: { caseIds: ids } });
               currentExecutionId = result.executionId;
-              record = { result, setupMs, stimulus: { bundle, interactive: true, caseIds: ids } };
+              record.result = result;
               if (usesRetainedHost) {
                 retained = host;
                 executionId = result.executionId;
@@ -117,6 +143,24 @@ export async function runFixture(fixture, options, onReceipt) {
               const row = record.result.evaluation.cases[0];
               if (row?.failure?.origin === 'limit') singletonGuard = row.failure.reason;
             }
+            }
+          }
+          if (fixture.name === 'step-cap' && route === 'run-first' &&
+              record.result?.evaluation?.cases[0]?.attachment?.status === 'truncated' &&
+              journal.since(from).some(({ kind, request }) => kind === 'observer-reply' && request === route)) {
+            // Use a separate execution with a larger source-step budget to
+            // witness the recorder stream beyond the cutoff. Its work never
+            // contributes starts, scheduling evidence, or grades to Run.
+            const referenceRoute = `${route}:reference`;
+            journal.track(referenceRoute);
+            bridge.track(referenceRoute);
+            try {
+              record.prefixReference = await observeLongerPrefix(fixture, createHost(false), referenceRoute, rowsFor(fixture, route));
+            } catch (error) {
+              record.prefixReference = { rejection: describe(error) };
+            } finally {
+              journal.track(route);
+              bridge.track(route);
             }
           }
           const evaluation = record.result?.evaluation;
@@ -141,6 +185,9 @@ export async function runFixture(fixture, options, onReceipt) {
         }
       }
       const transcript = journal.since(from);
+      if (schedulerFault && !transcript.some(({ kind, request }) => kind === 'schedule' && request === route)) {
+        record = { unavailable: 'The installed Judge did not emit the trusted schedule journal' };
+      }
       if ((usesRetainedHost || continuation) && record.result?.evaluation) {
         retainedEvidence.push(...transcript.filter(({ kind, request }) =>
           request === route && (kind === 'schedule' || kind === 'observer-reply')));
@@ -156,6 +203,7 @@ export async function runFixture(fixture, options, onReceipt) {
     } finally {
       retained?.dispose();
       reusable?.dispose();
+      bridge.restore();
       journal.restore();
     }
   }

@@ -237,8 +237,18 @@ test('G5 rejects a chopped prefix and an empty byte cut with no recorder attempt
   const step = fixture('python', 'step-cap');
   const events = [1, 2].map((line) => ({ kind: 'line', line, file: 'solution.py' }));
   const stepReceipt = observedReceipt(step, { status: 'truncated', reason: 'step-budget', attemptedEvents: 3, events });
+  const extended = [...events, { kind: 'line', line: 3, file: 'solution.py' }];
+  const reference = observedReceipt(step, { route: 'run-first:reference', events: extended });
+  stepReceipt.prefixReference = { evaluation: reference.result.evaluation };
+  stepReceipt.transcript.push(reference.transcript.find(({ kind }) => kind === 'observer-reply'));
   requireDetected(step, 'run-first', stepReceipt, 'A/real-prefix', (sample) => {
     sample.result.evaluation.cases[0].attachment.trace.events.shift();
+    return 1;
+  });
+  requireDetected(step, 'run-first', stepReceipt, 'A/real-prefix', (sample) => {
+    // The observer and attachment agree but both lost the first event.
+    sample.result.evaluation.cases[0].attachment.trace.events.shift();
+    sample.transcript.find(({ kind }) => kind === 'observer-reply').events.shift();
     return 1;
   });
   const byte = fixture('python', 'byte-cap');
@@ -284,5 +294,50 @@ test('the runner refuses stale worker assets even when the old tarball was remov
     }
   } finally {
     await rm(job, { recursive: true, force: true });
+  }
+});
+
+test('the bridge arms only the intended observer phase, language, and route', async () => {
+  const { installJudgeBridge } = await import('./gb-probe.mjs');
+  const spec = fixture('javascript', 'observer-encoder-fault');
+  const key = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+  const events = [];
+  const bridge = installJudgeBridge(spec, { record: (kind, event) => events.push([kind, event]) });
+  try {
+    const { value, enumerable } = Object.getOwnPropertyDescriptor(globalThis, key);
+    assert.equal(enumerable, false);
+    bridge.track('run-first');
+    assert.equal(value.faultAt({ language: spec.language, point: 'encode', caseId: 'A' }), 'encode');
+    assert.equal(value.faultAt({ language: spec.language, point: 'encode', caseId: 'B' }), undefined);
+    assert.equal(value.faultAt({ language: 'typescript', point: 'encode', caseId: 'A' }), undefined);
+    assert.equal(value.faultAt({ language: spec.language, point: 'observe', caseId: 'A' }), undefined);
+    assert.deepEqual(events, []);
+    const ack = { phase: 'injection-ack', caseId: 'A', point: 'encode', fault: 'encode' };
+    value.onEvent(ack);
+    assert.deepEqual(events, [['schedule', ack]]);
+    bridge.track('continue-B');
+    assert.equal(value.faultAt({ language: spec.language, point: 'encode', caseId: 'A' }), undefined);
+  } finally {
+    bridge.restore();
+  }
+  assert.equal(Object.hasOwn(globalThis, key), false);
+});
+
+test('the G5 scheduler codec rejects a deadline ACK from a stale observation attempt', () => {
+  const spec = { ...fixture('python', 'stdout'), name: 'observer-deadline' };
+  const sample = observedReceipt(spec);
+  const row = sample.result.evaluation.cases[0];
+  const { evaluationId, workspaceDigest, generation, caseId } = row.attachment;
+  row.attachment = { evaluationId, workspaceDigest, generation, caseId, status: 'refused', reason: 'observer-timeout' };
+  sample.transcript.find(({ phase }) => phase === 'attachment-bind').attemptToken = 'attempt-a';
+  sample.transcript.push({
+    kind: 'schedule', phase: 'injection-ack', fault: 'deadline', point: 'observe', language: spec.language,
+    evaluationId, workspaceDigest, generation, caseId, attemptToken: 'attempt-a', request: 'run-first', sequence: 6.5,
+  });
+  for (const assertion of ['A/injection-ack', 'A/provenance']) {
+    requireDetected(spec, 'run-first', sample, assertion, (mutant) => {
+      mutant.transcript.at(-1).attemptToken = 'stale-attempt';
+      return 1;
+    });
   }
 });

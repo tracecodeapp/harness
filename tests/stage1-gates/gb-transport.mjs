@@ -137,7 +137,7 @@ export function installJournal(fixture) {
       if (fixture.language !== 'python') return;
       const prepared = message.type === 'execute-prepared-program';
       const ordinary = (prepared || message.type === 'execute-prepared-program-batch') &&
-        payload.mode === 'code' && payload.artifact?.mode === 'code';
+        payload.mode === 'code';
       const observation = prepared && payload.mode === 'trace' && payload.artifact?.observationOnly === true;
       if (!ordinary && !observation) return;
       this.#judgeWire.set(message.id, { correlated, rows, ordinary, token: message.protocolToken });

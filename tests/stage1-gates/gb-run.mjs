@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { ledgerFor, ordinaryProjection } from './gb-oracle.mjs';
+import { schedulerInjection } from './gb-probe.mjs';
 import { summarize } from './checks.mjs';
 
 const gates = dirname(fileURLToPath(import.meta.url));
@@ -34,7 +35,16 @@ const select = (variable) => process.env[variable]?.split(',').filter(Boolean);
 const languages = select('GB_LANGUAGES');
 const names = select('GB_FIXTURES');
 const routeFilter = select('GB_ROUTES');
-const inventory = fixtures.fixtures.flatMap((fixture) => fixture.routes.map((route) => ({ fixture, route })));
+// Additional scheduler-only fault routes are opt-in so the frozen
+// qualification inventory remains byte-for-byte comparable.
+const probes = select('GB_PROBES') ?? [];
+for (const probe of probes) assert(schedulerInjection(probe), `Unknown scheduler probe ${probe}`);
+const optionalFixtures = fixtures.fixtures.filter(({ name }) => name === 'stdout').flatMap((fixture) =>
+  [...new Set(probes)].filter((name) => !fixtures.fixtures.some((existing) =>
+    existing.language === fixture.language && existing.name === name))
+    .map((name) => ({ ...fixture, name, routes: ['run-first'] })));
+const inventory = [...fixtures.fixtures, ...optionalFixtures].flatMap((fixture) =>
+  fixture.routes.map((route) => ({ fixture, route })));
 const requested = inventory.filter(({ fixture, route }) =>
   (!languages || languages.includes(fixture.language)) && (!names || names.includes(fixture.name)) &&
   (!routeFilter || routeFilter.includes(route)));
@@ -122,6 +132,7 @@ async function prepareSite() {
   const resolvedJudge = realpathSync(resolve(consumer, judgeEntry));
   assert.equal(resolvedJudge, process.env.TRACECODE_STAGE1_VERIFIED_JUDGE, 'Browser bundle must use the byte-verified ESM Judge');
   const [sha256] = (await readFile(join(output, 'tarball.sha256'), 'utf8')).split(/\s+/u);
+  assert.match(sha256, /^[0-9a-f]{64}$/u);
   const browserBundleSha256 = createHash('sha256').update(await readFile(join(site, 'gate.mjs'))).digest('hex');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   return { head, candidate, sha256, browserBundleSha256, publicExport: judgeEntry, setupMs: performance.now() - timer };
@@ -142,8 +153,9 @@ function summarizeSample(sample) {
 
 function controls(samples) {
   const out = [];
+  const requestedKeys = new Set(requested.map(({ fixture, route }) => key(fixture, route)));
   const seed = (fixture, route, sample, name, assertion, mutate) => {
-    if (!fixture || !sample) return out.push({ name, status: 'unavailable', reason: 'Missing control baseline' });
+    if (!sample) return out.push({ name, status: 'unavailable', reason: 'Missing control baseline' });
     const id = `${key(fixture, route)}/${assertion}`;
     const state = (value) => ledgerFor(fixture, route, value).receipts.find((receipt) => receipt.id === id);
     const before = state(sample);
@@ -154,7 +166,7 @@ function controls(samples) {
     out.push({ name, status, id, hits, before, after });
   };
   const g4 = fixtures.fixtures.find(({ gate, language, name }) => gate === 'G4' && language === 'python' && name === 'three-rows');
-  seed(g4, 'submit-omitted-A', samples.get(key(g4, 'submit-omitted-A')), 'timeout overwrites completed A', 'A/status', (sample) => {
+  if (requestedKeys.has(key(g4, 'submit-omitted-A'))) seed(g4, 'submit-omitted-A', samples.get(key(g4, 'submit-omitted-A')), 'timeout overwrites completed A', 'A/status', (sample) => {
     const row = sample.result?.evaluation.cases[0];
     if (!row) return 0;
     row.status = 'timed-out';
@@ -165,7 +177,7 @@ function controls(samples) {
 
   const transport = fixtures.fixtures.find(({ language, name }) => language === 'python' && name === 'transport');
   const clock = samples.get(key(transport, 'clock-virtual'));
-  seed(transport, 'clock-virtual', clock, 'restart A in a fresh generation', 'A/ordinary-start-count', (sample) => {
+  if (requestedKeys.has(key(transport, 'clock-virtual'))) seed(transport, 'clock-virtual', clock, 'restart A in a fresh generation', 'A/ordinary-start-count', (sample) => {
     const start = sample.transcript.find((event) => event.kind === 'worker-started' && event.caseId === 'A');
     if (!start) return 0;
     sample.transcript.push({ ...start, generation: start.generation + 1 });
@@ -173,7 +185,7 @@ function controls(samples) {
   });
 
   const g5 = fixtures.fixtures.find(({ gate, language, name }) => gate === 'G5' && language === 'javascript' && name === 'stdout');
-  seed(g5, 'submit-omitted', samples.get(key(g5, 'submit-omitted')), 'observer output replaces judged value', 'A/value', (sample) => {
+  if (requestedKeys.has(key(g5, 'submit-omitted'))) seed(g5, 'submit-omitted', samples.get(key(g5, 'submit-omitted')), 'observer output replaces judged value', 'A/value', (sample) => {
     const row = sample.result?.evaluation.cases[0];
     if (!row) return 0;
     row.value = 999;
@@ -181,8 +193,7 @@ function controls(samples) {
   });
 
   const refused = fixtures.fixtures.find(({ name }) => name === 'no-recorder');
-  // A checker-level control for the proposed attachment envelope. C lacks
-  // the observer injection hook, so this receipt is a reference envelope.
+  // A checker-level control using a reference envelope.
   const carrier = samples.get(key(g5, 'submit-omitted'));
   if (carrier?.result?.evaluation?.cases?.[0]) {
     const reference = structuredClone(carrier);
@@ -193,6 +204,8 @@ function controls(samples) {
       sample.result.evaluation.cases[0].attachment = { status: 'complete', events: [] };
       return 1;
     });
+  } else if (requestedKeys.has(key(g5, 'submit-omitted'))) {
+    out.push({ name: 'empty synthetic success replaces typed refusal', status: 'unavailable', reason: 'Missing control baseline' });
   }
   return out;
 }
@@ -287,7 +300,7 @@ async function main() {
   console.log(`${basename(filename)} ${JSON.stringify(report.checks)} chromium=${meta.browser} browserMs=${Math.round(report.browserMs)}`);
   for (const control of report.controls) console.log(`control ${control.name} ${control.status}`);
   if (report.checks.failed || report.checks.missing || report.notes.some((note) => note.error) ||
-    report.controls.length !== 4 || report.controls.some((control) => control.status !== 'caught')) process.exitCode = 1;
+    report.controls.some((control) => control.status !== 'caught')) process.exitCode = 1;
 }
 
 await main();
