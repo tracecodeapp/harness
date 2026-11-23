@@ -76,6 +76,9 @@ async function evaluate(
     traces: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.trace)
       : [],
+    attachmentStatuses: receipt.evaluation.cases.map(({ attachment }) =>
+      attachment && ('reason' in attachment ? attachment.reason : attachment.status)
+    ),
     caseVerdicts: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
       : [],

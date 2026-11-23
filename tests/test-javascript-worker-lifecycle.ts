@@ -169,6 +169,7 @@ for (const language of ['javascript', 'typescript'] as const) {
     const descriptor = { code, functionName: 'solve' };
     try {
       const call = { mode: 'code' as const, ...descriptor };
+      const observing = client.prepareObservation(call, undefined);
       const prepared = await client.prepareProgram(call, language);
       assert(prepared.kind === 'prepared' && prepared.program.mode === 'code');
       const ordinary = await prepared.program.executeIsolated({ inputs: { n: 4 } });
@@ -176,7 +177,7 @@ for (const language of ['javascript', 'typescript'] as const) {
       if (ordinary.kind === 'completed') assert.equal(ordinary.output, 5);
       assert.deepEqual([...ordinary.consoleOutput], ['case 4']);
 
-      const full = await client.prepareObservation(call, undefined);
+      const full = await observing;
       const options = { maxTraceBytes: 1 };
       const tiny = await client.prepareObservation(call, options);
       try {

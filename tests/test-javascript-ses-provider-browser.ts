@@ -325,24 +325,24 @@ async function main(): Promise<void> {
       assertCondition(
         fastTrace?.traces.length === fastTrace.totalCount &&
         fastTrace.traces.every((trace) =>
-          Array.isArray(trace.events) &&
+          Array.isArray(trace?.events) &&
           (trace.lineEventCount ?? 0) > 0 &&
           (trace.traceStepCount ?? 0) >= (trace.lineEventCount ?? 0) &&
           trace.events.some((event) => event.kind === 'call') &&
           trace.events.some((event) => event.kind === 'return')
         ),
         `SES fast trace did not preserve call/line/return events: ${JSON.stringify(
-          fastTrace?.traces
+          { traces: fastTrace?.traces, attachments: fastTrace?.attachmentStatuses }
         )}`
       );
       assertCondition(
         result.typescriptTraceFast?.traces.every((trace) =>
-          Array.isArray(trace.events) &&
+          Array.isArray(trace?.events) &&
           trace.events.some((event) => event.kind === 'line') &&
           trace.events.some((event) => event.kind === 'return')
         ),
         `SES TypeScript fast trace was empty: ${JSON.stringify(
-          result.typescriptTraceFast?.traces
+          { traces: result.typescriptTraceFast?.traces, attachments: result.typescriptTraceFast?.attachmentStatuses }
         )}`
       );
       const nodeReference = result.nodeReferenceParity?.values[0] as {

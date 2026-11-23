@@ -77,6 +77,12 @@ interface OrdinaryArtifact {
 
 type ObservationOptions = RuntimeObservationCall['traceOptions'];
 type ObservationArtifact = RuntimeObservationProvider & { dispose(): void };
+type ObservationPreparation = (options: ObservationOptions, signal?: AbortSignal) => Promise<ObservationArtifact>;
+
+interface ObservationPreparationSlot {
+  readonly ready: Promise<ObservationPreparation>;
+  readonly bind: (prepare: ObservationPreparation) => void;
+}
 
 const OBSERVATION_REFUSALS = new Set([
   'recorder-unavailable', 'unsupported-program', 'unsupported-option',
@@ -394,10 +400,7 @@ export class JavaScriptWorkerClient {
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
-  private readonly observationPreparations = new WeakMap<object, (
-    options: ObservationOptions,
-    signal?: AbortSignal,
-  ) => Promise<ObservationArtifact>>();
+  private readonly observationPreparations = new WeakMap<object, ObservationPreparationSlot>();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
   private readonly leasedExecutionWorkers =
     new Set<JavaScriptWorkerConnection>();
@@ -983,7 +986,7 @@ export class JavaScriptWorkerClient {
       return reply;
     })();
     if (preparation.mode === 'code') {
-      this.observationPreparations.set(call, async (options, signal) => {
+      this.observationSlot(call).bind(async (options, signal) => {
         const reply = await trusted;
         signal?.throwIfAborted();
         return this.prepareObservationArtifact({
@@ -1203,13 +1206,33 @@ export class JavaScriptWorkerClient {
     }
   }
 
-  prepareObservation(
+  private observationSlot(key: object): ObservationPreparationSlot {
+    const existing = this.observationPreparations.get(key);
+    if (existing) return existing;
+    let bind!: ObservationPreparationSlot['bind'];
+    const ready = new Promise<ObservationPreparation>((resolve) => { bind = resolve; });
+    const slot = { ready, bind };
+    this.observationPreparations.set(key, slot);
+    return slot;
+  }
+
+  async prepareObservation(
     ordinaryPreparationKey: object,
     traceOptions: ObservationOptions,
     signal?: AbortSignal,
   ): Promise<ObservationArtifact> {
-    const prepare = this.observationPreparations.get(ordinaryPreparationKey);
-    if (!prepare) throw new Error('Missing JavaScript ordinary artifact for observation.');
+    signal?.throwIfAborted();
+    // Browser runtime preflight can defer entry to the ordinary provider.
+    const { ready } = this.observationSlot(ordinaryPreparationKey);
+    const prepare = await new Promise<ObservationPreparation>((resolve, reject) => {
+      const abort = () => reject(signal?.reason);
+      signal?.addEventListener('abort', abort, { once: true });
+      void ready.then((value) => {
+        signal?.removeEventListener('abort', abort);
+        resolve(value);
+      });
+    });
+    signal?.throwIfAborted();
     return prepare(traceOptions, signal);
   }
 
