@@ -210,6 +210,15 @@ export function projectReceipt(receipt, language, selected) {
   };
 }
 
+let appTraceCapture;
+export async function archiveAppObservation(observation) {
+  if (!appTraceCapture) {
+    const { createAppTraceCapture } = await import(/* @vite-ignore */ '/gate-app-trace-wire.mjs');
+    appTraceCapture = createAppTraceCapture(jsonWire, (...part) => globalThis.recordGateTraceChunk(...part));
+  }
+  return appTraceCapture(observation);
+}
+
 export async function runFixture(fixture, requests, nonce, mutation) {
   installJudgeJournal();
   const handles = new Map();
@@ -280,7 +289,7 @@ export async function runFixture(fixture, requests, nonce, mutation) {
           }
         }
         const projected = reported && projectReceipt(reported, fixture.language, request.selected);
-        await globalThis.recordGateObservation(jsonWire({
+        const observation = {
           nonce, request: request.id, reported, ...projected, skip, seedHits,
           workspaceDigest: bundle?.workspaceDigest ?? retained?.workspaceDigest,
           retainedExecutionId: retained?.id, retainedEvaluation: retained?.evaluation, retainedJournal: retained?.journal,
@@ -293,7 +302,9 @@ export async function runFixture(fixture, requests, nonce, mutation) {
             ...(fixture.playgroundScript ? { execution: bundle.execution } : {}),
           },
           worker: transcript, wallMs: performance.now() - start,
-        }));
+        };
+        await globalThis.recordGateObservation(jsonWire(fixture.archiveAppTraces
+          ? await archiveAppObservation(observation) : observation));
         if (request.id === 'draw-b' && reported) drawn = { evaluation: reported.evaluation, journal: journal.slice(journalStart) };
       } catch (error) {
         await globalThis.recordGateObservation(jsonWire({

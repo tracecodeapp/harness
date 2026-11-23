@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
+import { installAppTraceArchive } from './app-trace-archive.mjs';
 import { muxRequests } from './requests.mjs';
 
 const muxPin = '82888fb7bc95272e43477ab5ae62b95cc28e9008';
@@ -19,8 +20,9 @@ export async function loadMux(directory, output) {
 
 // Run the pinned adapter's exact expressions and projection. Playwright
 // supplies its private slot for this PR-level check.
-export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, onResult) {
+export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, onResult, evidence) {
   let page;
+  let disposeArchive;
   let rawReceipt;
   let receiptProjections;
   let selected;
@@ -29,6 +31,7 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
     browser: {
       async createSlot() {
         page = await browser.newPage();
+        if (fixture.archiveAppTraces) disposeArchive = await installAppTraceArchive(page, evidence);
         return {
           async navigate(url) {
             await page.goto(url);
@@ -38,12 +41,17 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
             });
           },
           async evaluate(expression) {
-            const { result, projected } = await page.evaluate(async ({ source, language, selected }) => {
+            const { result, projected } = await page.evaluate(async ({ source, language, selected, archive }) => {
               const result = await (0, eval)(source);
               if (result?.schema !== 'tracecode.judge.algorithm-receipt.v1') return { result };
-              const { projectReceipt } = await import('/gate-browser.mjs');
-              return { result, projected: projectReceipt(result, language, selected) };
-            }, { source: expression, language: fixture.language, selected });
+              const { projectReceipt, archiveAppObservation } = await import('/gate-browser.mjs');
+              const projected = projectReceipt(result, language, selected);
+              if (!archive) return { result, projected };
+              // The mux slot consumes the original grade fields. Trace events
+              // travel separately before the receipt crosses Playwright.
+              const { reported, ...captured } = await archiveAppObservation({ reported: result, ...projected });
+              return { result: reported, projected: captured };
+            }, { source: expression, language: fixture.language, selected, archive: fixture.archiveAppTraces });
             if (projected) {
               rawReceipt = result;
               receiptProjections = projected;
@@ -115,6 +123,6 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
       }
     }
   } finally {
-    await slot.dispose();
+    try { await slot.dispose(); } finally { await disposeArchive?.(); }
   }
 }

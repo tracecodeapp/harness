@@ -1,14 +1,24 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { appFixtureName, appSpec } from './requests.mjs';
 
 const [appPath, outputPath] = process.argv.slice(2);
-if (!appPath || !outputPath) throw new Error('Usage: app-cases.mjs READ_ONLY_APP_REPO OUTPUT_OUTSIDE_GIT');
-assert(!resolve(outputPath).startsWith(process.cwd() + sep), 'App inputs must stay outside the Harness checkout');
-const revision = 'fcea04982d5c0aa3d2112e188cff7ef9b22d5753';
-const app = (path) => execFileSync('git', ['-C', appPath, 'show', `${revision}:${path}`], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+if (!appPath || !outputPath) throw new Error('Usage: app-cases.mjs READ_ONLY_APP_REPO OUTPUT_OUTSIDE_GIT_OR_IGNORED');
+assert(!resolve(outputPath).startsWith(resolve(appPath) + sep), 'App inputs must stay outside the app checkout');
+if (resolve(outputPath).startsWith(process.cwd() + sep)) {
+  execFileSync('git', ['check-ignore', '--quiet', '--', resolve(outputPath)]);
+}
+const head = () => execFileSync('git', ['-C', appPath, 'show', '-s', '--format=%H', 'origin/main'], { encoding: 'utf8' }).trim();
+const revision = head();
+const sources = {};
+function app(path) {
+  const bytes = execFileSync('git', ['-C', appPath, 'show', `origin/main:${path}`], { maxBuffer: 32 * 1024 * 1024 });
+  sources[path] = createHash('sha256').update(bytes).digest('hex');
+  return bytes.toString('utf8');
+}
 const appJson = (path) => JSON.parse(app(path));
 
 function blastOracle({ n, edges, updates }) {
@@ -50,12 +60,16 @@ function searchOracle({ operations, k }) {
 }
 
 const oracles = { 'blast-radius-analysis': blastOracle, 'search-autocomplete': searchOracle };
-const fixtures = appSpec.map(({ name, stage, candidateFile, cases: wanted }) => {
+const fixtures = appSpec.map(({ name, stage, candidateFile, cases: pinnedCases }) => {
   const published = appJson(`data/interviews/${name}.json`);
   const candidate = appJson(`data/interview-private/candidates/${candidateFile}.unpublished.json`).problems[name].stages[stage - 1];
-  const indexed = new Map([
-    ...published.stages[stage - 1].sampleTests, ...candidate.correctness, ...candidate.performance,
-  ].map((row) => [row.id, row]));
+  const samples = published.stages[stage - 1].sampleTests;
+  const indexed = new Map([...samples, ...candidate.correctness, ...candidate.performance].map((row) => [row.id, row]));
+  // Keep the original sample and exercise the expanded stage with its current
+  // public samples and one correctness case from the same app revision.
+  const wanted = name === 'blast-radius-analysis'
+    ? [...samples.map(({ id }) => id), candidate.correctness[0].id]
+    : pinnedCases;
   const cases = wanted.map((id) => {
     const { input, expected } = indexed.get(id);
     const actual = oracles[name](input);
@@ -69,4 +83,5 @@ const fixtures = appSpec.map(({ name, stage, candidateFile, cases: wanted }) => 
     limits: { wallClockMs: candidate.judge.wallTimeMs }, cases,
   };
 });
-writeFileSync(outputPath, JSON.stringify({ revision, fixtures }) + '\n');
+assert.equal(head(), revision, 'App origin/main moved while reading fixture files');
+writeFileSync(outputPath, JSON.stringify({ revision, sources, fixtures }) + '\n', { flag: 'wx', mode: 0o600 });

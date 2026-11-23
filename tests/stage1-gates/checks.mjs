@@ -312,7 +312,7 @@ export function checkObservation(fixture, request, observation, record, register
       assert.equal(consumer.kind, kind);
       if (registered) {
         checkPresentation(row, consumer, observation.tracedProjections[index],
-          request.selected.includes(expected.id), observation.workspaceDigest);
+          request.selected.includes(expected.id), observation.workspaceDigest, fixture.archiveAppTraces);
         assert.equal(observation.traceAliases[index], true, 'Trace does not share the frozen attachment trace');
       }
     });

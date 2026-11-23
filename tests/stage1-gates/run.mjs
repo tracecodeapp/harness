@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, realpathSync, statSync } from 'node:fs';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
 import { runInNewContext } from 'node:vm';
@@ -9,7 +9,8 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObservation, compileDifferentialId, summarize } from './checks.mjs';
 import { runGraphControls } from './graph.mjs';
-import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
+import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
+import { installAppTraceArchive } from './app-trace-archive.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 
@@ -59,7 +60,7 @@ try {
       sourcefile: 'stage1-browser.mjs',
     },
     outfile: bundlePath, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
-    external: ['/gate-routes.mjs'],
+    external: ['/gate-routes.mjs', '/gate-app-trace-wire.mjs'],
     metafile: true,
     define: { 'process.env.NODE_ENV': '"production"' },
   });
@@ -108,11 +109,41 @@ try {
   if (appInput) {
     try {
       const app = JSON.parse(readFileSync(appInput, 'utf8'));
-      assert.equal(app.revision, 'fcea04982d5c0aa3d2112e188cff7ef9b22d5753');
-      assert.deepEqual(app.fixtures.map((fixture) => ({ name: fixture.name, cases: fixture.cases.map(({ id }) => id) })),
-        appSpec.map((fixture) => ({ name: appFixtureName(fixture), cases: fixture.cases })));
-      record('identity.jsonl', { app: app.revision, appInputSha256: checksum(appInput) });
-      appFixtures = app.fixtures;
+      assert.deepEqual(app.fixtures.map(({ name, language, gate }) => ({ name, language, gate })),
+        appSpec.map((spec) => ({ name: appFixtureName(spec), language: 'cpp', gate: 'G6' })));
+      if (app.sources) {
+        assert.match(app.revision, /^[a-f0-9]{40}$/);
+        const paths = appSpec.flatMap(({ name, stage, candidateFile }) => [
+          `data/interviews/${name}.json`,
+          `data/interview-private/candidates/${candidateFile}.unpublished.json`,
+          `data/reference-solutions/cpp/interviews/${name}/stage-${stage}.cpp`,
+        ]);
+        assert.deepEqual(Object.keys(app.sources).sort(), paths.sort());
+        for (const digest of Object.values(app.sources)) assert.match(digest, /^[a-f0-9]{64}$/);
+        for (const [index, fixture] of app.fixtures.entries()) {
+          const { name, stage } = appSpec[index];
+          const source = `data/reference-solutions/cpp/interviews/${name}/stage-${stage}.cpp`;
+          assert.equal(createHash('sha256').update(fixture.code).digest('hex'), app.sources[source]);
+          const ids = fixture.cases.map(({ id }) => id);
+          assert.equal(new Set(ids).size, ids.length);
+          if (name === 'blast-radius-analysis') assert.equal(ids.length, 6);
+          else assert.deepEqual(ids, appSpec[index].cases);
+        }
+      } else {
+        assert.equal(app.revision, 'fcea04982d5c0aa3d2112e188cff7ef9b22d5753');
+        assert.deepEqual(app.fixtures.map(({ cases }) => cases.map(({ id }) => id)), appSpec.map(({ cases }) => cases));
+      }
+      copyFileSync(new URL('app-trace-wire.mjs', import.meta.url), join(evidence, 'gate-app-trace-wire.mjs'));
+      record('identity.jsonl', { app: app.revision, appInputSha256: checksum(appInput), appSources: app.sources });
+      appFixtures = app.fixtures.map((fixture) => ({ ...fixture, archiveAppTraces: true }));
+      for (const fixture of appFixtures.filter(matches)) {
+        const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/`;
+        for (const id of inventory) if (id.startsWith(prefix)) inventory.delete(id);
+        for (const id of appFixtureAssertionIds(fixture)) {
+          assert(!inventory.has(id), `Duplicate app assertion ID ${id}`);
+          inventory.add(id);
+        }
+      }
     } catch (error) {
       record('browser.jsonl', { route: 'app-fixtures', setupError: error.message });
     }
@@ -177,7 +208,9 @@ try {
     const started = performance.now();
     const nonce = randomUUID();
     const observed = [];
+    let disposeArchive;
     try {
+      if (fixture.archiveAppTraces) disposeArchive = await installAppTraceArchive(page, evidence);
       await page.exposeFunction('recordGateObservation', (wire) => {
         const observation = JSON.parse(wire);
         assert.equal(observation.nonce, nonce, 'Browser observation nonce');
@@ -209,7 +242,7 @@ try {
       record('browser.jsonl', { fixture: key, setupError: error.message });
     } finally {
       runtime.fixtureMs[options.control ? `control/${options.control}` : `${key}/${options.route ?? 'default'}`] = performance.now() - started;
-      await page.close();
+      try { await page.close(); } finally { await disposeArchive?.(); }
       console.log(`${key} ${options.control ?? 'baseline'} ${Math.round(performance.now() - started)}ms`);
     }
     const registered = judgePath(fixture, requests, observed, options);
@@ -266,7 +299,7 @@ try {
           observed.push({ ...observation, request: request.id });
           runtime.requests++;
           runtime.requestMs[`${key}/mux/${request.id}`] = observation.wallMs;
-        });
+        }, evidence);
         runtime.fixtureMs[`${key}/mux`] = performance.now() - started;
       } catch (error) {
         record('browser.jsonl', { fixture: key, route: 'mux', setupError: error.message });

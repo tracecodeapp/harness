@@ -35,7 +35,7 @@ export function assertNoLegacyRefusal(result) {
   }
 }
 
-export function checkPresentation(row, ordinary, traced, selected, workspaceDigest) {
+export function checkPresentation(row, ordinary, traced, selected, workspaceDigest, archiveAppTraces = false) {
   for (const result of [row, ordinary, traced]) assertNoLegacyRefusal(result);
   for (const field of ['trace', 'traceTruncated', 'executionTimeMs']) {
     assert(!Object.hasOwn(ordinary, field), `Ordinary converter returned ${field}`);
@@ -70,19 +70,22 @@ export function checkPresentation(row, ordinary, traced, selected, workspaceDige
     return;
   }
 
-  assert(Array.isArray(attachment.trace?.events), 'Missing recorded events');
+  const events = attachment.trace?.events;
+  const archived = archiveAppTraces && events?.archive === 'ga-app-trace-jsonl-v1';
+  assert(Array.isArray(events) || (archived && Number.isSafeInteger(events.count) && events.count >= 0 &&
+    /^[a-f0-9]{64}$/.test(events.sha256)), 'Missing recorded events');
+  const retained = archived ? events.count : events.length;
   assert.deepEqual(row.trace, attachment.trace, 'Compatibility trace differs from attachment');
   const duration = typeof row.timings?.totalMs === 'number' ? row.timings.totalMs
     : typeof row.startedAt === 'number' && typeof row.endedAt === 'number' ? Math.max(0, row.endedAt - row.startedAt) : 0;
   const presentation = { trace: attachment.trace, executionTimeMs: duration };
   if (attachment.status === 'truncated') {
     assert(cutCodes.has(attachment.reason), 'Unknown cutoff reason');
-    const retained = attachment.trace.events.length;
     assert(Number.isSafeInteger(attachment.attemptedEvents) && attachment.attemptedEvents >= retained);
     assert(retained > 0 || (attachment.reason === 'byte-budget' && attachment.attemptedEvents > 0));
     presentation.traceTruncated = cutCodes.get(attachment.reason);
   } else {
-    assert(attachment.trace.events.length > 0, 'Drawing has no recorded events');
+    assert(retained > 0, 'Drawing has no recorded events');
     assert(!Object.hasOwn(attachment, 'reason'));
     assert(!Object.hasOwn(attachment, 'attemptedEvents'));
   }

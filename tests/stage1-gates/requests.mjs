@@ -59,6 +59,23 @@ export function muxRequests(fixture) {
   return requests;
 }
 
+export function appFixtureAssertionIds(fixture) {
+  const requests = [...requestMatrix(fixture.cases.map(({ id }) => id), fixture), ...muxRequests(fixture)];
+  return requests.flatMap((request) => {
+    const checks = ['order', 'compile', 'compile-footprint', 'correlation'];
+    if (request.mode === 'submit') checks.push('aggregate');
+    if (request.id.startsWith('legacy-')) checks.push('legacy-projection');
+    if (!request.route) checks.push('worker-ack');
+    const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}`;
+    return [
+      ...checks.map((check) => `${prefix}/@request/${check}`),
+      ...request.cases.flatMap((id) =>
+        ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics']
+          .map((check) => `${prefix}/${id}/${check}`)),
+    ];
+  });
+}
+
 export function jsRouteRequests(fixture) {
   if (!['javascript', 'typescript'].includes(fixture.language)) return [];
   if (!['stdout', 'ses-constructor-key', 'print-then-throw'].includes(fixture.name)) return [];
