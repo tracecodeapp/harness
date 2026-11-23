@@ -558,6 +558,7 @@ function certifyPythonDrawing(result: PythonRawTraceResult, lineCount: number): 
           : 'recorder-unavailable',
     };
   }
+  if (evidence.encodeFailed === true) return { status: 'refused', reason: 'observer-encode' };
   const raw = result.trace as Record<string, unknown> | undefined;
   const attemptedEvents = evidence.attemptedEvents;
   const cut = evidence.cut;
@@ -603,8 +604,17 @@ export interface PythonPreparedExecutionProviderOptions {
   readonly replenishStandbyAfterUse?: boolean;
 }
 
+interface PythonObservationLease extends RuntimeObservationProvider {
+  dispose(): Promise<void>;
+}
+
 export interface PythonPreparedExecutionProviderController
   extends RuntimePreparedExecutionProvider, RuntimeObservationProvider {
+  prepareObservation(
+    program: RuntimeObservationCall['program'],
+    signal?: AbortSignal,
+    traceOptions?: RuntimeObservationCall['traceOptions']
+  ): Promise<PythonObservationLease | Extract<Drawing, { status: 'refused' }>>;
   /** Release current programs and workers while keeping the provider reusable. */
   reset(): void;
   /**
@@ -865,6 +875,29 @@ class PreparedPythonProgramLifetime {
         }
       },
       useFastProfile ? pythonTraceResultKeepsFastWorker : undefined
+    );
+  }
+
+  executeObservation(call: RuntimeObservationCall): Promise<Drawing> {
+    return this.executeSerial(
+      call.signal,
+      async (client, signal) => {
+        let result: PythonRawTraceResult;
+        try {
+          result = await client.executePreparedTrace(this.handle, {
+            inputs: call.inputs,
+            signal,
+            limits: { wallClockMs: 10_000 },
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return { status: 'refused', reason: 'observer-runtime' };
+        }
+        return certifyPythonDrawing(result, this.handle.artifact.code.split('\n').length);
+      },
+      (drawing) =>
+        this.handle.artifact.isolationProfile.tier === 'algorithm-fast' &&
+        drawing.status === 'drawn'
     );
   }
 
@@ -1335,45 +1368,66 @@ class PythonPreparedExecutionProvider
   }
 
   async observe(call: RuntimeObservationCall): Promise<Drawing> {
+    const lease = await this.prepareObservation(call.program, call.signal, call.traceOptions);
+    if ('status' in lease) return lease;
+    try {
+      return await lease.observe(call);
+    } finally {
+      await lease.dispose();
+    }
+  }
+
+  async prepareObservation(
+    program: RuntimeObservationCall['program'],
+    callerSignal?: AbortSignal,
+    traceOptions?: RuntimeObservationCall['traceOptions']
+  ): Promise<PythonObservationLease | Extract<Drawing, { status: 'refused' }>> {
     this.assertActive();
-    call.signal?.throwIfAborted();
+    callerSignal?.throwIfAborted();
     try {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
         request: 'trace',
-        executionStyle: call.program.executionStyle ?? 'function',
-        functionName: call.program.functionName,
-        traceOptions: call.traceOptions,
+        executionStyle: program.executionStyle ?? 'function',
+        functionName: program.functionName,
+        traceOptions,
       });
     } catch {
       return { status: 'refused', reason: 'unsupported-option' };
     }
 
-    // Keep the ordinary warm worker and its command queue out of observation.
+    // This factory belongs to the original browser host and uses its image
+    // factory and custom assets. A fresh worker keeps the ordinary command
+    // queue and interpreter outside the observer's lifetime.
     const worker = this.options.createWorkerClient();
     this.preparationWorkers.add(worker);
     const controller = new AbortController();
-    const unlink = linkAbortSignal(call.signal, controller);
+    const unlink = linkAbortSignal(callerSignal, controller);
     this.preparationControllers.add(controller);
     const { signal } = controller;
-    let failure: Refusal = 'observer-prepare';
     try {
+      const warmup = await raceWithAbort(worker.warmup(), signal);
       const prepared = await raceWithAbort(
-        worker.prepareProgram({ ...call.program, mode: 'trace', traceOptions: call.traceOptions, signal }, true),
+        worker.prepareProgram({ ...program, mode: 'trace', traceOptions, signal }, true),
         signal
       );
       signal.throwIfAborted();
-      if (!prepared.success) return { status: 'refused', reason: failure };
+      if (!prepared.success) return { status: 'refused', reason: 'observer-prepare' };
 
-      failure = 'observer-runtime';
-      const result = await raceWithAbort(
-        worker.executePreparedTrace(prepared, { inputs: call.inputs, signal }),
-        signal
+      this.preparationWorkers.delete(worker);
+      const lifetime = new PreparedPythonProgramLifetime(
+        prepared,
+        this.options.createWorkerClient,
+        (released) => { this.programs.delete(released); },
+        { client: worker, warmup }
       );
-      signal.throwIfAborted();
-      return certifyPythonDrawing(result, call.program.code.split('\n').length);
+      this.programs.add(lifetime);
+      return {
+        observe: (call) => lifetime.executeObservation(call),
+        dispose: lifetime.dispose,
+      };
     } catch (error) {
-      if (signal.aborted) throw abortReason(signal, 'Python observation was aborted.');
-      return { status: 'refused', reason: failure };
+      if (signal.aborted) throw abortReason(signal, 'Python observation preparation was aborted.');
+      return { status: 'refused', reason: 'observer-prepare' };
     } finally {
       unlink();
       this.preparationControllers.delete(controller);

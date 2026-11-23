@@ -811,6 +811,9 @@ export class PythonWorkerClient {
     call: RuntimePreparedTraceCall
   ): Promise<PythonRawTraceResult> {
     const wallClockMs = call.limits?.wallClockMs ?? TRACING_TIMEOUT_MS;
+    const clientDeadline = handle.artifact.observationOnly
+      ? wallClockMs + STOPPING_BATCH_CASE_HEADROOM_MS
+      : wallClockMs;
     const guestLimits = pickGuestLimits({
       ...call.limits,
       wallClockMs,
@@ -830,7 +833,7 @@ export class PythonWorkerClient {
         },
         null
       ),
-      wallClockMs
+      clientDeadline
     );
     try {
       return await this.core.runClientEffect(program, call.signal);

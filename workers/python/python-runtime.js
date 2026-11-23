@@ -2847,6 +2847,7 @@ _trace_events = []
 _TC_NATIVE = None
 _trace_line_event_count = 0
 _tracecode_store_budget_exhausted = False
+_tracecode_observer_encode_failed = False
 from time import perf_counter as _tracecode_perf_counter
 
 # PEP 669 tracing: sys.monitoring keeps the specializing interpreter, which
@@ -3789,10 +3790,12 @@ def __tracecode_append_runtime_event(event):
     # already-recorded events and the final export embeds these strings
     # without re-serializing the whole trace.
     global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _tracecode_store_budget_exhausted, _trace_line_event_count
+    global _tracecode_observer_encode_failed
     if _TC_NATIVE is not None:
         try:
             event_json = _TC_JSON_ENCODER.encode(event)
         except Exception:
+            _tracecode_observer_encode_failed = True
             _TC_NATIVE.mark_limit_exceeded('trace-byte-limit')
             _tc_native_sync_limit()
             return False
@@ -3816,6 +3819,7 @@ def __tracecode_append_runtime_event(event):
             len(event_json) if event_json.isascii() else len(event_json.encode('utf-8'))
         ) + (1 if len(_trace_events) > 0 else 0)
     except Exception:
+        _tracecode_observer_encode_failed = True
         event_json = None
         event_bytes = _max_trace_bytes + 1
     if (
@@ -7104,6 +7108,7 @@ __tracecode_execution_result_json = (
 ${observationOnly ? `
     + ',"observation":' + json.dumps({
         'recorderCompleted': True,
+        'encodeFailed': _tracecode_observer_encode_failed,
         'attemptedEvents': (
             (_TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events))
             + int(_trace_limit_exceeded)
@@ -7654,6 +7659,7 @@ async function executeWithTracing(
         ? {
             observation: {
               recorderCompleted: result.observation.recorderCompleted,
+              encodeFailed: result.observation.encodeFailed,
               attemptedEvents: result.observation.attemptedEvents,
               cut: {
                 'trace-limit': result.observation.storedEventBudgetExhausted
@@ -8787,6 +8793,7 @@ async function executePreparedProgram(
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
     const isolationTier =
       artifact.isolationProfile.tier === 'algorithm-fast' &&
+      artifact.observationOnly !== true &&
       !pythonInputsRequireCustomMaterialization(inputs)
         ? 'algorithm-fast'
         : 'compatibility';

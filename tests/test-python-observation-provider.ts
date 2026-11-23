@@ -19,7 +19,7 @@ function fixture(workerTrace: unknown) {
         warmup: async () => ({ success: true, loadTimeMs: 0 }),
         prepareProgram: async ({ mode }: { mode: string }) => {
           calls.push([id, `prepare:${mode}`]);
-          return { success: true, mode, artifact: { mode, isolationProfile: { tier: 'algorithm-fast' } }, consoleOutput: [] };
+          return { success: true, mode, artifact: { mode, code, isolationProfile: { tier: 'algorithm-fast' } }, consoleOutput: [] };
         },
         executePreparedCodeBatch: async () => {
           calls.push([id, 'batch:code']);

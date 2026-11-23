@@ -112,10 +112,11 @@ try {
           observe({}),
         ]);
         const byte = await observe({ maxTraceBytes: 1 });
-        const compatible = await prepare(ordinary, { code: 'import ast\n' + code, mode: 'code', functionName });
+        const compatibleCode = code.replace('    print(value)', '    ast.literal_eval("1")\n    print(value)');
+        const compatible = await prepare(ordinary, { code: compatibleCode, mode: 'code', functionName });
         const compat = await batch(ordinary, compatible, [{ value: 1 }, { value: 6 }]);
         const scriptArtifact = await prepare(ordinary, {
-          code: 'print("before")\nraise RuntimeError("oops")',
+          code: 'import ast\nprint("before")\nraise RuntimeError("oops")',
           mode: 'code',
           functionName: null,
         });
@@ -146,7 +147,7 @@ try {
     }
   }
   assert.equal(results.script.type, 'execute-result');
-  assert.equal(results.script.payload.error, 'RuntimeError on line 2: oops');
+  assert.equal(results.script.payload.error, 'RuntimeError on line 3: oops');
   assert.deepEqual(results.script.payload.consoleOutput, ['before']);
   assert.equal(results.drawn.type, 'execute-result');
   assert.equal(results.drawn.payload.observation.recorderCompleted, true);
