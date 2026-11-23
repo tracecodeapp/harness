@@ -15,7 +15,6 @@ import type {
 import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import {
   createEmptyRuntimeTrace,
-  isTraceUnavailableError,
   liftTraceOutcome,
   traceUnavailableOutcome,
 } from '@tracecode/runtime-contracts';
@@ -34,8 +33,8 @@ export interface JavaPreparedExecutionProviderOptions {
   /**
    * Creates one warm compiler Worker client owned by this provider.
    *
-   * A prepared program leases that client while the runtime replaces the inner
-   * runner JVM and TraceKernel process for every case. A hard Worker failure
+   * A prepared program leases that client while the runtime isolates case
+   * state and retires any unclean runner JVM. A hard Worker failure
    * restores only the immutable compiled snapshot into a new generation.
    */
   readonly createWorkerClient: () => JavaWorkerClient;
@@ -115,10 +114,10 @@ abstract class JavaPreparedProgramBase {
           ? 'fast' as const
           : 'compatibility' as const,
       caseIsolation: 'fresh-case-state' as const,
-      // A case owns a fresh JavaWorkerClient, but the program intentionally
-      // serializes admission so disposal and backpressure have one lifecycle
-      // authority and no caller can accidentally overlap heavyweight VMs.
+      // The program leases one worker and serializes requests so disposal
+      // and runner lifetimes share a single owner.
       maxConcurrency: 1,
+      stopsAtFirstRunaway: true as const,
     });
     this.restoredGeneration = client.sessionGeneration;
   }
@@ -149,7 +148,7 @@ abstract class JavaPreparedProgramBase {
     signal?: AbortSignal
   ): Promise<Result> {
     const execution = this.operationTail.then(() =>
-      this.executeInFreshProcess(operation, signal)
+      this.executeInSession(operation, signal)
     );
     this.operationTail = execution.then(
       () => undefined,
@@ -158,7 +157,7 @@ abstract class JavaPreparedProgramBase {
     return execution;
   }
 
-  private async executeInFreshProcess<Result>(
+  private async executeInSession<Result>(
     operation: (client: JavaWorkerClient) => Promise<Result>,
     signal?: AbortSignal
   ): Promise<Result> {
@@ -235,17 +234,7 @@ class JavaPreparedCodeProgramImpl
       (client) =>
         client.executePreparedCodeBatch(this.programId, call),
       call.signal
-    ).catch((error: unknown) => {
-      // The whole batch outran its transport deadline: every case is out of
-      // time, which is the learner's limit, not a provider failure.
-      if (!isExecutionTimeoutError(error)) throw error;
-      return call.inputBatch.map((): CodeExecutionResult => ({
-        kind: 'limit',
-        reason: 'client-timeout',
-        error: error.message,
-        consoleOutput: [],
-      }));
-    });
+    );
   }
 }
 
@@ -303,33 +292,22 @@ class JavaPreparedTraceProgramImpl
     );
   }
 
-  /**
-   * Traced cases run one at a time through the per-case path, which owns the
-   * per-case deadline. The traced batch transport only has a whole-batch
-   * deadline, so a runaway case could hold it for minutes.
-   */
   async executeBatchIsolated(
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
-    const results: ExecutionResult[] = [];
-    for (const [index, inputs] of call.inputBatch.entries()) {
-      try {
-        results.push(await this.executeIsolated({
-          inputs,
-          ...(call.traceEnabledBatch === undefined
-            ? {}
-            : { recordTrace: call.traceEnabledBatch[index] }),
-          ...(call.signal ? { signal: call.signal } : {}),
-          ...(call.limits ? { limits: call.limits } : {}),
-        }));
-      } catch (error) {
-        // A case the tracer could not trace is refused on its own; the
-        // batch's other cases run and keep their results.
-        if (!isTraceUnavailableError(error)) throw error;
-        results.push(traceUnavailableOutcome(error as Error, 'java'));
-      }
-    }
-    return results;
+    const results = await this.executeWithClient(
+      (client) => client.executePreparedTraceBatch(
+        this.programId,
+        call,
+        this.traceCall.traceOptions
+      ),
+      call.signal
+    );
+    return results.map((result) =>
+      result.traceUnavailable
+        ? traceUnavailableOutcome(new Error(result.error), 'java')
+        : liftTraceOutcome(result, result.trace, 'Java prepared tracing failed')
+    );
   }
 }
 
