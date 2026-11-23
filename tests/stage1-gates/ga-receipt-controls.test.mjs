@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { checkDifferential, checkObservation } from './checks.mjs';
+import { checkCppDirect, checkDifferential, checkObservation } from './checks.mjs';
 import { runGraphControls } from './graph.mjs';
 import { requestMatrix } from './requests.mjs';
 import { checkPresentation, hasReceiptEvidence } from './receipt.mjs';
@@ -366,4 +366,23 @@ test('C++ drawable continuation requires the worker to echo the requested attemp
   assert.equal(check([observe, { ...terminal, recorder: { attemptToken: 'stale' } }]), 'fail');
   assert.equal(check([observe, { ...terminal, recorder: undefined }]), 'fail');
   assert.equal(check([observe, { ...terminal, cppTerminal: false }]), 'fail');
+});
+
+
+test('C++ combined compile/run ACK preserves a compile failure with no ordinary start', () => {
+  const cpp = { ...fixture, language: 'cpp', cases: [{ ...fixture.cases[0], input: { n: 7 } }] };
+  const execute = { ...command, type: 'compile-run', cppProtocol: true, reportsStarts: true, inputs: { n: 7 } };
+  const terminal = { ...execute, action: 'response', cppTerminal: true };
+  const result = { kind: 'failed', diagnosticStage: 'compile', consoleOutput: [] };
+  const check = (worker) => {
+    const assertions = [];
+    checkCppDirect(cpp, 'ordinary-single', { worker, results: [result] }, (item) => assertions.push(item));
+    return new Map(assertions.map(({ id, status }) => [id.split('/').at(-1), status]));
+  };
+  const actual = check([execute, terminal]);
+  assert.equal(actual.get('worker-ack'), 'pass');
+  assert.equal(actual.get('status'), 'fail');
+  assert.equal(actual.get('value'), 'fail');
+  const start = { ...execute, action: 'ordinary-start', caseIndex: 0 };
+  assert.equal(check([execute, start, terminal]).get('worker-ack'), 'fail');
 });

@@ -423,7 +423,11 @@ export function checkCppDirect(fixture, route, observation, record) {
       assert(observation.worker.some((item) => item.id === command.id && item.generation === command.generation &&
         item.action === 'response' && (!command.cppProtocol || item.cppTerminal)));
     }
-    checkCppStarts(observation.worker, fixture.cases.map(({ input }) => input));
+    const admittedInputs = fixture.cases.flatMap(({ input }, index) => {
+      const result = observation.results[index];
+      return result && !(result.kind === 'failed' && result.diagnosticStage === 'compile') ? [input] : [];
+    });
+    checkCppStarts(observation.worker, admittedInputs);
   });
   check('@request', 'cardinality', () => assert.equal(observation.results.length, fixture.cases.length));
   for (const [index, expected] of fixture.cases.entries()) {
