@@ -1070,6 +1070,29 @@ function batchCaseOutput(
   });
 }
 
+function interruptedCodeBatchOutcome(
+  runtime: string,
+  cases: ReturnType<typeof runtimeBatchCases>,
+  error: InterruptedCodeBatchError
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  if (error.prefix.length > cases.length) {
+    return Effect.fail(new RuntimeProviderError('Prepared runtime returned too many batch outcomes.', {
+      reason: 'protocol',
+    }));
+  }
+  const unavailable = providerFailure(runtime, error.message);
+  const batch = Object.freeze(cases.map(({ caseId }, index) => {
+    const outcome = error.prefix[index];
+    if (outcome) return batchCaseOutput(caseId, mappedCodeOutcome(runtime, outcome));
+    // Transport diagnostics belong to the provider failure. Learner stderr is empty.
+    return Object.freeze({ ...batchCaseOutput(caseId, unavailable), stderr: '' });
+  }));
+  return Effect.succeed(Object.freeze({
+    output: Object.freeze({ batch }),
+    process: Object.freeze({ exitCode: 0, stdout: '', stderr: '' }),
+  }));
+}
+
 function executePreparedProviderBatch(
   options: RuntimeJudgeProviderOptions,
   programs: RuntimePreparedProgramRegistry,
@@ -1112,9 +1135,11 @@ function executePreparedProviderBatch(
         ? Effect.succeed(error)
         : Effect.fail(error)
     ));
-    const interrupted = reply instanceof InterruptedCodeBatchError;
-    const outcomes = interrupted ? reply.prefix : reply;
-    if (outcomes.length > cases.length || (!interrupted && outcomes.length !== cases.length)) {
+    if (reply instanceof InterruptedCodeBatchError) {
+      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    }
+    const outcomes = reply;
+    if (outcomes.length !== cases.length) {
       return yield* Effect.fail(
         new Error(
           `Prepared runtime returned ${outcomes.length} batch outcomes for ` +
@@ -1122,20 +1147,14 @@ function executePreparedProviderBatch(
         )
       );
     }
-    const batch = Object.freeze(cases.map(({ caseId }, index) => {
-      if (interrupted && index >= outcomes.length) {
-        // Transport diagnostics describe the provider and are not learner stderr.
-        const row = batchCaseOutput(caseId, providerFailure(options.runtime, reply.message));
-        return Object.freeze({ ...row, stderr: '' });
-      }
-      const outcome = outcomes[index]!;
-      return batchCaseOutput(
-        caseId,
+    const batch = Object.freeze(outcomes.map((outcome, index) =>
+      batchCaseOutput(
+        cases[index]!.caseId,
         isTraceBinding(options.binding)
           ? mappedTraceOutcome(options.runtime, outcome as ExecutionResult)
           : mappedCodeOutcome(options.runtime, outcome as CodeExecutionResult)
-      );
-    }));
+      )
+    ));
     return Object.freeze({
       output: Object.freeze({ batch }),
       process: Object.freeze({
@@ -1185,7 +1204,7 @@ function executeProviderStoppingBatch(
   cases: ReturnType<typeof runtimeBatchCases>
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
-    const outcomes: readonly (CodeExecutionResult | ExecutionResult)[] = yield* Effect.tryPromise({
+    const reply = yield* Effect.tryPromise({
       try: (signal) =>
         isTraceBinding(options.binding)
           ? programs.executeTraceBatch(evaluationId(invocation), {
@@ -1203,7 +1222,15 @@ function executeProviderStoppingBatch(
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
               options.owned?.acknowledgeStoppingBatchStarts),
       catch: errorFromUnknown,
-    });
+    }).pipe(Effect.catchAll((error) =>
+      !isTraceBinding(options.binding) && error instanceof InterruptedCodeBatchError
+        ? Effect.succeed(error)
+        : Effect.fail(error)
+    ));
+    if (reply instanceof InterruptedCodeBatchError) {
+      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    }
+    const outcomes = reply;
     const runawayIndex = outcomes.findIndex((outcome) =>
       outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)
     );

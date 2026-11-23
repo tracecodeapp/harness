@@ -66,6 +66,7 @@ interface WorkerLog {
   batchWorkerTerminated: Array<() => boolean>;
   /** Batch requests that reached a worker which never received `init`. */
   unwarmedBatchRequests?: number;
+  singleCaseRequests?: number;
   deliveringInvalidProgress?: boolean;
 }
 
@@ -124,6 +125,7 @@ class StuckCaseWorker {
       );
     }
     if (type === 'execute-prepared-program') {
+      this.log.singleCaseRequests = (this.log.singleCaseRequests ?? 0) + 1;
       // One case per request: the provider's per-case recovery path.
       const value = (payload?.inputs as { value: number }).value;
       if (value - 1 === this.crashCase) return queueMicrotask(() => this.crash());
@@ -568,8 +570,14 @@ test('Python stopping batch whose worker stalls between cases reaches the Judge 
 });
 
 
-for (const cut of ['between cases', 'during case B'] as const) {
-  test(`Python Submit retains the delivered result when the worker is lost ${cut}`, async () => {
+for (const [cut, stopAtFirstRunaway] of [
+  ['between cases', false],
+  ['between cases', true],
+  ['during case B', false],
+  ['during case B', true],
+] as const) {
+  const mode = stopAtFirstRunaway ? 'stopping' : 'non-stopping';
+  test(`Python ${mode} Submit retains the delivered result when the worker is lost ${cut}`, async () => {
     const log = newLog();
     const provider = createPythonPreparedExecutionProvider({
       createWorkerClient: () => new PythonWorkerClient({
@@ -596,6 +604,7 @@ for (const cut of ['between cases', 'during case B'] as const) {
                 observationLease: 'separate' as const,
                 observationDeadlineMs: 1_000,
                 nonStoppingBatchAdmission: 'worker-start' as const,
+                stoppingBatchAdmission: 'worker-start' as const,
               },
               async prepareObservation() {
                 throw new Error('Submit should not prepare an observer');
@@ -626,7 +635,7 @@ for (const cut of ['between cases', 'during case B'] as const) {
           id, input: { value: index + 1 }, expected: index + 1,
         })),
       });
-      const { evaluation, passedCount } = await host.evaluateAlgorithm({ bundle });
+      const { evaluation, passedCount } = await host.evaluateAlgorithm({ bundle, stopAtFirstRunaway });
       assert.equal(evaluation.status, 'completed');
       const [a, b, c] = evaluation.cases;
       assert.equal(a?.status, 'completed');
@@ -646,6 +655,8 @@ for (const cut of ['between cases', 'during case B'] as const) {
         assert.throws(() => judgeCaseExecutionOutcome(row, { language: 'python' }), isRuntimeProviderError);
       }
       assert.equal(log.batchRequests.length, 1);
+      assert.equal(log.singleCaseRequests ?? 0, 0);
+      assert.equal(log.batchRequests[0]?.stopAtFirstRunaway === true, stopAtFirstRunaway);
       assert.equal(log.batchWorkerTerminated[0]?.(), true);
     } finally {
       host.dispose();

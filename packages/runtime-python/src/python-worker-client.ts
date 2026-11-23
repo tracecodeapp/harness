@@ -317,6 +317,20 @@ function restoreStreamedBatchReply<R extends { results?: unknown[]; resultsStrea
   return { ...reply, results: progress.finished } as unknown as R;
 }
 
+function interruptedCodeBatch(
+  error: unknown,
+  progress: BatchCaseProgress,
+  signal?: AbortSignal
+): InterruptedCodeBatchError | undefined {
+  if (!(error instanceof WorkerCrashedError) || signal?.aborted
+    || progress.invalid || progress.finished.length === 0) {
+    return undefined;
+  }
+  return new InterruptedCodeBatchError(progress.finished.map((entry) =>
+    liftCodeOutcome(entry as RawExecutionPayload, 'Prepared Python batch execution failed')
+  ), error);
+}
+
 /** Raw worker reasons after which a stopping batch runs no further case. */
 const PYTHON_RUNAWAY_TIMEOUT_REASONS: ReadonlySet<string> = new Set([
   'client-timeout',
@@ -809,13 +823,7 @@ export class PythonWorkerClient {
       try {
         result = restoreStreamedBatchReply(await this.core.runClientEffect(program, call.signal), progress);
       } catch (error) {
-        if (!(error instanceof WorkerCrashedError) || call.signal?.aborted
-          || progress.invalid || progress.finished.length === 0) {
-          throw error;
-        }
-        throw new InterruptedCodeBatchError(progress.finished.map((entry) =>
-          liftCodeOutcome(entry as RawExecutionPayload, 'Prepared Python batch execution failed')
-        ), error);
+        throw interruptedCodeBatch(error, progress, call.signal) ?? error;
       }
     }
     if (result.algorithmFastBatchUnavailable === true) {
@@ -1100,7 +1108,18 @@ export class PythonWorkerClient {
       const result = await this.core.runClientEffect(program, signal);
       return { kind: 'reply', reply: restoreStreamedBatchReply(result, progress) };
     } catch (error) {
-      if (!isExecutionTimeoutError(error)) throw error;
+      if (!isExecutionTimeoutError(error)) {
+        // The registered ordinary path can publish authenticated case results
+        // even if the worker never sends its final batch reply.
+        const interrupted = request.mode === 'code' && onCaseStarted
+          ? interruptedCodeBatch(error, progress, signal)
+          : undefined;
+        if (!interrupted) throw error;
+        if (progress.stoppedAtLimit()) {
+          return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
+        }
+        throw interrupted;
+      }
       if (progress.invalid) {
         throw new RuntimeProviderError(
           'The Python worker streamed a batch case result that could not be decoded.',
