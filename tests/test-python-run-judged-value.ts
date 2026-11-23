@@ -454,3 +454,52 @@ class Solution:
   });
   assert.equal(compat[1]!.ok, true, JSON.stringify(compat[1]));
 });
+
+test('a node-input case whose clock runs out while its value is serialized: client-timeout on Run as on Submit', async () => {
+  // Node inputs put the case on the compatibility path, where Submit
+  // serializes under its interview guard's clock.
+  const { submit: submitted, differing } = await differencesFromSubmit(`
+class Solution:
+    def solve(self, head: ListNode | None, kind: str):
+        if kind == 'slow-to-serialize':
+            return list(map(list, zip(range(240000))))
+        return head
+`, [
+    { label: 'a value slower to serialize than its clock', inputs: { head: HEAD, kind: 'slow-to-serialize' } },
+    { label: 'the input list', inputs: { head: HEAD, kind: 'input' } },
+  ], { guest: { ...LIMITS.guest, wallClockMs: 150 } });
+  assert.equal(submitted[0]!.timeoutReason, 'client-timeout', JSON.stringify(submitted[0]).slice(0, 200));
+  assert.equal(submitted[1]!.ok, true, JSON.stringify(submitted[1]).slice(0, 200));
+  assert.deepEqual(differing, []);
+});
+
+test('learner code that assigns the harness-class names cannot change how the unguarded executeCode path serializes', async () => {
+  await setup();
+  // The inputs are converted to harness nodes before the call; the learner
+  // then defines its own ListNode under that name, and has replaced the
+  // globals the harness classes were once kept in.
+  const own = `
+__tracecode_harness_tree_node = None
+__tracecode_harness_list_node = None
+
+class Solution:
+    def solve(self, head):
+        global ListNode
+        class ListNode:
+            def __init__(self, val=0, next=None):
+                self.val = val
+                self.next = next
+        return head
+`;
+  const control = `
+class Solution:
+    def solve(self, head):
+        return head
+`;
+  // No limits and no preparation: the inlined, unguarded executeCode path.
+  const run = async (code: string) =>
+    outcome(await runtime.executeCode!(deps, code, 'solve', { head: HEAD }, 'solution-method', {}));
+  const [ownResult, controlResult] = [await run(own), await run(control)];
+  assert.equal(controlResult.ok, true, JSON.stringify(controlResult));
+  assert.deepEqual(JSON.parse(JSON.stringify(ownResult)), JSON.parse(JSON.stringify(controlResult)));
+});

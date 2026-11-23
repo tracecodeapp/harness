@@ -7127,11 +7127,16 @@ try:
         }
         __tracecode_judged_entry_checkpoint = __tracecode_judged_checkpoint
     else:
+        # Submit serializes inside its interview guard, which checks the
+        # case's clock on every call (the serializer's own frames included)
+        # and once more after serializing; its encode runs after the guard.
         __tracecode_judged_value = __tracecode_judged_serialize(
             _result,
+            checkpoint=__tracecode_judged_checkpoint,
             tree_node_root=_globals_dict.get('TreeNode', TreeNode),
             list_node_root=_globals_dict.get('ListNode', ListNode),
         )
+        __tracecode_judged_checkpoint()
         __tracecode_judged_entry = {
             'guardTriggered': False,
             'console': _console_output,
@@ -7921,9 +7926,10 @@ import traceback as _tracecode_execution_traceback
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
 # The harness node classes, kept before learner code can define its own:
-# the finalizer serializes them as nodes alongside the learner's.
-__tracecode_harness_tree_node = TreeNode
-__tracecode_harness_list_node = ListNode
+# the finalizer serializes them as nodes alongside the learner's. Held as
+# defaults, so learner code that assigns a global cannot replace them.
+def __tracecode_harness_node_types(_tree_node=TreeNode, _list_node=ListNode):
+    return _tree_node, _list_node
 ${PYTHON_DEFAULT_IMPORT_PRELUDE}
 ${preparedInputPrelude}
 pow = _builtins.pow
@@ -8335,8 +8341,8 @@ _tracecode_raw_result = {
     "console": _console_output,
     "treeNodeType": TreeNode,
     "listNodeType": ListNode,
-    "harnessTreeNodeType": __tracecode_harness_tree_node,
-    "harnessListNodeType": __tracecode_harness_list_node,
+    "harnessTreeNodeType": __tracecode_harness_node_types.__defaults__[0],
+    "harnessListNodeType": __tracecode_harness_node_types.__defaults__[1],
 }
 _tracecode_raw_result
 `;
