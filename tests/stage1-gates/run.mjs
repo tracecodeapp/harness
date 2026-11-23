@@ -78,7 +78,10 @@ try {
       define: { 'process.env.NODE_ENV': '"production"' },
     });
   }
-  record('identity.jsonl', { candidate: manifest.candidate, installedJudge, browserBundleSha256: checksum(bundlePath), node: process.version });
+  record('identity.jsonl', {
+    candidate: process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate,
+    installedJudge, browserBundleSha256: checksum(bundlePath), node: process.version,
+  });
   writeFileSync(join(evidence, 'index.html'), '<!doctype html><meta charset="utf-8">');
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   browser = await chromium.launch({ channel: 'chromium', headless: true });
