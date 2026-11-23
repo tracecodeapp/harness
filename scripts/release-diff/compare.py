@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Normalize and diff two release-diff raw report sets (tests/test-release-diff-catalog.ts).
 
-usage: compare.py <dir> <base-label> <target-label> [--rerun <dir>] [--out <dir>]
+usage: compare.py <dir> <base-label> <target-label> [--rerun <dir>] [--out <dir>] [--base-current]
 
 <dir> holds <label>-<language>.json for both labels. Writes, into --out (default <dir>):
   normalized-<label>.json   one record per (language, fixture, mode, case)
@@ -304,13 +304,16 @@ def main(argv):
     rerun = None
     if '--out' in args:
         i = args.index('--out'); out = args[i + 1]; del args[i:i + 2]
+    legacy = True
+    if '--base-current' in args:  # base is a 0.20.x report too (e.g. target-nostop vs target)
+        legacy = False; args.remove('--base-current')
     if '--rerun' in args:
         i = args.index('--rerun'); rerun = args[i + 1]; del args[i:i + 2]
     dirpath, base, target = args
     out = out or dirpath
-    norm, counts, diffs, not_compared = compare(dirpath, base, target)
+    norm, counts, diffs, not_compared = compare(dirpath, base, target, legacy)
     if rerun:
-        _, _, rdiffs, _ = compare(rerun, base, target)
+        _, _, rdiffs, _ = compare(rerun, base, target, legacy)
         rkeys = {(d['language'], d['fixture'], d['mode'], d['case'], tuple(d['fields'])) for d in rdiffs}
         rfixtures = set()
         for lang in LANGS:
