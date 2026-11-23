@@ -5773,8 +5773,8 @@ function assertAdmittedModules(source) {
     }
   }
 }
-function reply(id, value) {
-  postMessage({ id, ok: true, value });
+function reply(id, value, protocolToken) {
+  postMessage({ id, ok: true, value, ...protocolToken === void 0 ? {} : { protocolToken } });
 }
 function safeErrorText(error) {
   const truncate = (text) => text.length <= 8192 ? text : `${text.slice(0, 8179)}\u2026[truncated]`;
@@ -6990,14 +6990,23 @@ var init_ses_algorithm_worker = __esm({
               throw new Error("SES trace selection must contain one boolean per batch case.");
             }
             const results = [];
+            const protocolToken = program.mode === "code" && request.reportCaseProgress === true ? request.protocolToken : void 0;
             for (let index = 0; index < request.inputBatch.length; index += 1) {
+              if (typeof protocolToken === "string" && protocolToken) {
+                postMessage({
+                  id: request.id,
+                  protocolToken,
+                  type: "runtime-progress",
+                  payload: { stage: "ordinary-case-started", detail: { caseIndex: index } }
+                });
+              }
               results.push(await executeCase(
                 program,
                 request.inputBatch[index],
                 traceSelection[index]
               ));
             }
-            reply(request.id, results);
+            reply(request.id, results, protocolToken);
             return;
           }
           case "ping":

@@ -11,6 +11,7 @@ import type {
   BrowserWorkerFactory,
   BrowserWorkerLike,
 } from '@tracecode/runtime-browser/internal';
+import { createWorkerProtocolToken } from '@tracecode/runtime-browser/internal';
 import { isJavaScriptRuntimeSourceAllowed } from './javascript-runtime-source-policy';
 import {
   isAdmittedJavaScriptModule,
@@ -971,6 +972,9 @@ class SesAlgorithmWorkerLane {
     this.workerGeneration += 1;
     worker.onmessage = (event: MessageEvent) => {
       if (this.worker !== worker) return;
+      // Start evidence is a nonterminal message. The pending case still owns
+      // its original response and execution deadline.
+      if (event.data?.type === 'runtime-progress') return;
       const response = parseWorkerResponse(event.data);
       if (!response) {
         this.retire(new Error('SES algorithm Worker returned an invalid control response.'));
@@ -1175,7 +1179,7 @@ class SesAlgorithmWorkerLane {
             inputBatch: [inputs],
             ...(source.mode === 'trace'
               ? { traceEnabledBatch: [tracingEnabled ?? true] }
-              : {}),
+              : { reportCaseProgress: true, protocolToken: createWorkerProtocolToken() }),
           },
           signal,
           executionDeadlineMs

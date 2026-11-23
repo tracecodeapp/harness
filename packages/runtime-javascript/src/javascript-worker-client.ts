@@ -22,7 +22,6 @@ import type {
   RuntimeCodeCall,
   RuntimeExecutionTimings,
   RuntimeObservationCall,
-  RuntimeObservationProvider,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedProgram,
@@ -56,6 +55,7 @@ import {
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
+import type { JudgeObservationLease } from '../../runtime-browser/src/browser-runtime-host-internal';
 import { createJavaScriptPreparedProgram } from './javascript-prepared-program';
 import type {
   SesAlgorithmWorkerPool,
@@ -76,7 +76,7 @@ interface OrdinaryArtifact {
 }
 
 type ObservationOptions = RuntimeObservationCall['traceOptions'];
-type ObservationArtifact = RuntimeObservationProvider & { dispose(): void };
+type ObservationArtifact = JudgeObservationLease & { dispose(): void };
 type ObservationPreparation = (options: ObservationOptions, signal?: AbortSignal) => Promise<ObservationArtifact>;
 
 interface ObservationPreparationSlot {
@@ -98,11 +98,14 @@ function certifyObservation(
   reply: unknown,
   attemptToken: string,
   language: JavaScriptWorkerLanguage,
+  requireDisabledRecorder: boolean,
 ): Drawing {
   const protocol: Drawing = { status: 'refused', reason: 'observer-protocol' };
-  const envelope = reply as { attemptToken?: unknown; drawing?: unknown } | null;
+  const envelope = reply as { attemptToken?: unknown; drawing?: unknown; recorderDisabled?: unknown } | null;
   if (envelope?.attemptToken !== attemptToken) return protocol;
   const drawing = envelope.drawing as Drawing | null;
+  if (requireDisabledRecorder && (envelope.recorderDisabled !== true || drawing?.status !== 'refused' ||
+    drawing.reason !== 'recorder-unavailable')) return protocol;
   if (drawing?.status === 'refused') {
     return OBSERVATION_REFUSALS.has(drawing.reason)
       ? { status: 'refused', reason: drawing.reason }
@@ -361,6 +364,7 @@ class JavaScriptWorkerConnection {
         }
       },
       decodeReply: (payload) => restoreTransferredTraceEvents(payload),
+      onCommandMessage: (_id, type) => type === 'runtime-progress',
       closeSessionOnWorkerError: true,
     });
     // Connections are single-use: any session close (crash, timeout, explicit
@@ -1256,50 +1260,55 @@ export class JavaScriptWorkerClient {
       if (signal?.aborted) throw error;
     }
     const lifetime = new AbortController();
+    const observe = async (call: RuntimeObservationCall, disableRecorderForTest: boolean): Promise<Drawing> => {
+      const signal = call.signal ? AbortSignal.any([lifetime.signal, call.signal]) : lifetime.signal;
+      signal.throwIfAborted();
+      if (!preparedExecution) return { status: 'refused', reason: 'observer-prepare' };
+      this.assertActive(generation);
+      const worker = this.createExecutionWorker();
+      this.leasedExecutionWorkers.add(worker);
+      const terminate = () => worker.terminate();
+      signal.addEventListener('abort', terminate, { once: true });
+      try {
+        await worker.prewarm(this.executionRuntimeAssetsPayload());
+        signal.throwIfAborted();
+        const result = await this.runExecution(
+          worker,
+          this.dispatchPreparedExecutionEffect<unknown>(worker, 'observe-execution', {
+            ...payload,
+            language,
+            preparedExecution,
+            options: traceOptions,
+            inputs: call.inputs,
+            attemptToken: call.attemptToken,
+            ...(disableRecorderForTest ? { disableRecorderForTest: true } : {}),
+          }),
+          TRACING_TIMEOUT_MS,
+          signal,
+        );
+        signal.throwIfAborted();
+        return certifyObservation(result, call.attemptToken, language, disableRecorderForTest);
+      } catch (error) {
+        signal.throwIfAborted();
+        return {
+          status: 'refused',
+          reason: isExecutionTimeoutError(error) ? 'observer-timeout' : 'observer-runtime',
+        };
+      } finally {
+        signal.removeEventListener('abort', terminate);
+        this.leasedExecutionWorkers.delete(worker);
+        worker.terminate();
+      }
+    };
     return {
       dispose: () => {
         preparedExecution = undefined;
         lifetime.abort();
       },
-      observe: async (call) => {
-        const signal = call.signal ? AbortSignal.any([lifetime.signal, call.signal]) : lifetime.signal;
-        signal.throwIfAborted();
-        if (!preparedExecution) return { status: 'refused', reason: 'observer-prepare' };
-        this.assertActive(generation);
-        const worker = this.createExecutionWorker();
-        this.leasedExecutionWorkers.add(worker);
-        const terminate = () => worker.terminate();
-        signal.addEventListener('abort', terminate, { once: true });
-        try {
-          await worker.prewarm(this.executionRuntimeAssetsPayload());
-          signal.throwIfAborted();
-          const result = await this.runExecution(
-            worker,
-            this.dispatchPreparedExecutionEffect<unknown>(worker, 'observe-execution', {
-              ...payload,
-              language,
-              preparedExecution,
-              options: traceOptions,
-              inputs: call.inputs,
-              attemptToken: call.attemptToken,
-            }),
-            TRACING_TIMEOUT_MS,
-            signal,
-          );
-          signal.throwIfAborted();
-          return certifyObservation(result, call.attemptToken, language);
-        } catch (error) {
-          signal.throwIfAborted();
-          return {
-            status: 'refused',
-            reason: isExecutionTimeoutError(error) ? 'observer-timeout' : 'observer-runtime',
-          };
-        } finally {
-          signal.removeEventListener('abort', terminate);
-          this.leasedExecutionWorkers.delete(worker);
-          worker.terminate();
-        }
-      },
+      observe: (call) => observe(call, false),
+      ...(language === 'javascript' ? {
+        observeWithoutRecorderForTest: (call: RuntimeObservationCall) => observe(call, true),
+      } : {}),
     };
   }
 
@@ -1352,6 +1361,7 @@ export class JavaScriptWorkerClient {
             executionStyle: preparation.executionStyle,
             language,
             preparedExecution,
+            reportCaseProgress: true,
           }
         ),
         wallClockMs,

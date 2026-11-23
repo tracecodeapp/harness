@@ -53,6 +53,8 @@ interface WorkerRequest {
   readonly programId?: string;
   readonly source?: PreparedSource;
   readonly inputBatch?: readonly Record<string, unknown>[];
+  readonly reportCaseProgress?: boolean;
+  readonly protocolToken?: string;
   readonly traceEnabledBatch?: readonly boolean[];
   readonly javascriptLibrariesUrl?: string;
   readonly javascriptLibrariesIntegrity?: string;
@@ -217,8 +219,8 @@ function assertAdmittedModules(source: PreparedSource): void {
   }
 }
 
-function reply(id: number, value: unknown): void {
-  postMessage({ id, ok: true, value });
+function reply(id: number, value: unknown, protocolToken?: string): void {
+  postMessage({ id, ok: true, value, ...(protocolToken === undefined ? {} : { protocolToken }) });
 }
 
 function safeErrorText(error: unknown): string {
@@ -1523,14 +1525,25 @@ self.onmessage = (event: MessageEvent<unknown>) => {
           throw new Error('SES trace selection must contain one boolean per batch case.');
         }
         const results = [];
+        const protocolToken = program.mode === 'code' && request.reportCaseProgress === true
+          ? request.protocolToken
+          : undefined;
         for (let index = 0; index < request.inputBatch.length; index += 1) {
+          if (typeof protocolToken === 'string' && protocolToken) {
+            postMessage({
+              id: request.id,
+              protocolToken,
+              type: 'runtime-progress',
+              payload: { stage: 'ordinary-case-started', detail: { caseIndex: index } },
+            });
+          }
           results.push(await executeCase(
             program,
             request.inputBatch[index]!,
             traceSelection[index]
           ));
         }
-        reply(request.id, results);
+        reply(request.id, results, protocolToken);
         return;
       }
       case 'ping':

@@ -36,6 +36,8 @@ export interface JudgeObservationLease extends RuntimeObservationProvider {
    * that state before the adapter admits a subsequent case on the lease.
    */
   observe(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
+  /** Only the captured Judge test bridge can request this observer control. */
+  observeWithoutRecorderForTest?(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
   dispose(): void | Promise<void>;
 }
 

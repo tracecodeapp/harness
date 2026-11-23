@@ -7312,7 +7312,7 @@ async function executeWithTracing(payload) {
   const traceFunctionName = hasNamedFunction ? targetName : '<module>';
   const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
   const statementSourceMap = typeof code === 'string' ? buildRuntimeStatementSourceMap(code) : new Map();
-  if (observation && typeof createTraceRecorder !== 'function') {
+  if (observation && (payload.disableRecorderForTest === true || typeof createTraceRecorder !== 'function')) {
     return { status: 'refused', reason: 'recorder-unavailable' };
   }
   const traceRecorder = createTraceRecorder({
@@ -7653,7 +7653,13 @@ async function processMessage(data) {
           drawing = { status: 'refused', reason: 'observer-runtime' };
         }
         try {
-          postProtocolMessage(id, protocolToken, 'execute-result', { attemptToken: payload.attemptToken, drawing });
+          postProtocolMessage(id, protocolToken, 'execute-result', {
+            attemptToken: payload.attemptToken, drawing,
+            ...(payload.disableRecorderForTest === true &&
+              drawing.status === 'refused' && drawing.reason === 'recorder-unavailable'
+              ? { recorderDisabled: true }
+              : {}),
+          });
         } catch (_error) {
           postProtocolMessage(id, protocolToken, 'execute-result', {
             attemptToken: payload.attemptToken,
@@ -7690,6 +7696,12 @@ async function processMessage(data) {
       case 'execute-code': {
         if (WORKER_ROLE === 'coordinator') {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
+        if (payload?.reportCaseProgress === true) {
+          postProtocolMessage(id, protocolToken, 'runtime-progress', {
+            stage: 'ordinary-case-started',
+            detail: { caseIndex: 0 },
+          });
         }
         const result = await executeCode(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);

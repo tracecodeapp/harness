@@ -34,6 +34,7 @@ For an accepted injection, `onEvent` receives `phase: 'injection-ack'` with the 
 | `prepare` | `prepare` | Refuse at the adapter preparation boundary before allocating an observer lease. |
 | `observe` | `runtime` | Refuse at the observer invocation boundary before dispatch. |
 | `observe` | `deadline` | Invoke the observer, then immediately abort its own deadline controller with `TimeoutError`. The scheduler takes its normal `observer-timeout` path. |
+| `observe` | `no-recorder` | For JavaScript, disable recorder construction on the observer worker. ACK only after the authenticated worker reply confirms the disabled recorder and returns `recorder-unavailable`. |
 | `encode` | `encode` | Replace a drawable reply at the observation return boundary with `observer-encode`. An existing refusal cannot ACK this injection. |
 
-These ACKs attest scheduler-boundary faults. Use provider-side evidence for claims about a language's own encoder or worker fault handling.
+Except for the worker-confirmed `no-recorder` control, these ACKs attest scheduler-boundary faults. Use provider-side evidence for claims about a language's own encoder or worker fault handling.
