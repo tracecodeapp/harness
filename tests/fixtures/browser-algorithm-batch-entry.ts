@@ -130,10 +130,12 @@ function trustedTracePrime(
   }
 }
 
-function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
+type AlgorithmReceipt = Awaited<ReturnType<ReturnType<
   typeof createBrowserJudgeHost
->['evaluateAlgorithm']>>): {
-  verdict: string;
+>['evaluateAlgorithm']>>;
+
+function receiptSummary(receipt: Pick<AlgorithmReceipt, 'evaluation'> & { verdict?: string }): {
+  verdict: string | undefined;
   evaluationStatus: string;
   caseVerdicts: string[];
   sessionIds: string[];
@@ -175,6 +177,67 @@ function receiptSummary(receipt: Awaited<ReturnType<ReturnType<
 function traceEventCount(trace: unknown): number {
   const events = (trace as { readonly events?: unknown } | undefined)?.events;
   return Array.isArray(events) ? events.length : -1;
+}
+
+const graphOutputPrograms = {
+  javascript: 'function solve(root) {\n  return root;\n}\n',
+  typescript: 'function solve(root: TreeNode | null): TreeNode | null {\n  return root;\n}\n',
+  cpp: 'TreeNode* solve(TreeNode* root) {\n  return root;\n}\n',
+} as const;
+
+export async function runBrowserGraphOutput(
+  assetBaseUrl: string,
+  selectedLanguages: readonly BatchLanguage[],
+  workerLifecycle: BatchWorkerLifecycle
+) {
+  // G6 graph-output: A has a back edge and two edges to the same child.
+  // B has two independent children with equal values.
+  const cases = [true, false].map((cyclic) => {
+    const left = { __id__: 'c', val: 2, left: cyclic ? { __ref__: 'r' } : null, right: null };
+    const child = { val: 2, left: null, right: null };
+    const root = { __id__: 'r', val: 1, left, right: cyclic ? { __ref__: 'c' } : child };
+    const expected = {
+      ...root,
+      __type__: 'TreeNode',
+      left: { ...left, __type__: 'TreeNode' },
+      right: cyclic ? root.right : { ...child, __type__: 'TreeNode' },
+    };
+    return { id: cyclic ? 'A' : 'B', input: { root }, expected };
+  });
+  const results = [];
+  for (const language of ['javascript', 'typescript', 'cpp'] as const) {
+    if (!selectedLanguages.includes(language)) continue;
+    for (const mode of ['run', 'submit'] as const) {
+      const host = createBrowserJudgeHost({
+        providers: [language],
+        assetBaseUrl,
+        safeExecution: { workerLifecycle },
+      });
+      try {
+        const bundle = await createAlgorithmJudgeBundle({
+          id: `g6-graph-output-${language}-${mode}`,
+          language,
+          code: graphOutputPrograms[language],
+          functionName: 'solve',
+          executionStyle: 'function',
+          cases,
+          trace: mode === 'run',
+          limits: { wallClockMs: 10_000 },
+          comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+        });
+        const receipt = mode === 'run'
+          ? await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+          : await host.evaluateAlgorithm({ bundle });
+        results.push({ language, mode, ...receiptSummary(receipt) });
+        if ('executionId' in receipt && typeof receipt.executionId === 'string') {
+          await host.disposeExecution(receipt.executionId);
+        }
+      } finally {
+        host.dispose();
+      }
+    }
+  }
+  return results;
 }
 
 export async function runBrowserAlgorithmBatch(

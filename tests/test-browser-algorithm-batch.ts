@@ -123,13 +123,14 @@ assertCondition(
   warmMode === 'cold' || warmMode === 'runtime' || warmMode === 'trace-prime',
   'TRACECODE_ALGORITHM_BATCH_WARM_MODE must be cold, runtime, or trace-prime.'
 );
-const workerLifecycle =
+const requestedWorkerLifecycle =
   process.env.TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE ??
   'warm-and-retire';
 assertCondition(
-  workerLifecycle === 'warm-and-retire' || workerLifecycle === 'retire-only',
+  requestedWorkerLifecycle === 'warm-and-retire' || requestedWorkerLifecycle === 'retire-only',
   'TRACECODE_ALGORITHM_BATCH_WORKER_LIFECYCLE must be warm-and-retire or retire-only.'
 );
+const workerLifecycle = requestedWorkerLifecycle;
 const selectedBrowserType =
   browserEngine === 'chromium'
     ? chromium
@@ -296,6 +297,7 @@ async function main(): Promise<void> {
         resolve('tests/fixtures/browser-algorithm-batch-entry.ts'),
       ],
       outfile: join(tempRoot, 'algorithm-batch.mjs'),
+      tsconfig: resolve('tsconfig.base.json'),
       bundle: true,
       format: 'esm',
       platform: 'browser',
@@ -341,6 +343,29 @@ async function main(): Promise<void> {
         });
       }
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
+      const graphResults = await page.evaluate(async ({ languages, lifecycle }) => {
+        const moduleUrl: string = '/algorithm-batch.mjs';
+        const module = await import(moduleUrl) as typeof import('./fixtures/browser-algorithm-batch-entry');
+        return module.runBrowserGraphOutput('/workers', languages, lifecycle);
+      }, { languages: LANGUAGES, lifecycle: workerLifecycle } as const);
+      const graphLanguages = LANGUAGES.filter((language) =>
+        language === 'javascript' || language === 'typescript' || language === 'cpp'
+      );
+      assertCondition(graphResults.length === graphLanguages.length * 2, 'Missing G6 graph-output receipts.');
+      for (const receipt of graphResults) {
+        console.log(JSON.stringify({ fixture: 'G6 graph-output', ...receipt }));
+      }
+      assertCondition(
+        graphResults.every((receipt) =>
+          (receipt.mode === 'run' || receipt.verdict === 'passed') &&
+          receipt.evaluationStatus === 'completed' &&
+          receipt.caseVerdicts.length === 2 &&
+          receipt.caseVerdicts.every((verdict) => verdict === 'passed')
+        ),
+        'G6 graph-output did not pass both cases through Run and Submit.'
+      );
+      if (process.argv.includes('--graph-output')) return;
+
       const result = await page.evaluate(async (languages) => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);
