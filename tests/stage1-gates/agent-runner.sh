@@ -46,6 +46,7 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   printf '%s\n' "$subject" >"$job_root/gate-package.ready"
 fi
 [ "$(cat "$job_root/gate-package.ready")" = "$subject" ] || { echo 'Use a fresh host job for a different subject.' >&2; exit 2; }
+sha256sum --check --status "$job_root/gate-package/tarball.sha256"
 if [ ! -f "$consumer/.installed" ]; then
   read -r _ tarball <"$job_root/gate-package/tarball.sha256"
   mkdir -p "$consumer"
@@ -60,7 +61,6 @@ fi
 cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
-consumer="$job_root/gate-consumer-isolated"
 set +e
 if [ "$subject" = "$candidate" ]; then
   export TRACECODE_STAGE1_CANDIDATE_SOURCE="$job_root/gate-candidate"
