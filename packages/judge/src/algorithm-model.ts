@@ -105,6 +105,7 @@ export interface JudgeAlgorithmReceipt<
   readonly schema: typeof ALGORITHM_RECEIPT_SCHEMA;
   readonly bundleId: string;
   readonly workspaceDigest: string;
+  /** Selected observations may be attached to cases without changing policy or counts. */
   readonly evaluation: JudgeEvaluationResult<Result, Expected>;
   readonly policy: JudgePolicyEvaluation;
   readonly verdict: JudgeAlgorithmVerdict;

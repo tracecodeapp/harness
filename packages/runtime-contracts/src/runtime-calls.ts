@@ -10,6 +10,52 @@ import type {
   RuntimeExecutionStyle,
   TraceExecutionOptions,
 } from './runtime-capabilities';
+import type { RuntimeTrace } from './runtime-trace';
+
+/** Reasons stamped at the observation boundary when recording is cut short. */
+export type Cut =
+  | 'step-budget'
+  | 'line-budget'
+  | 'single-line-budget'
+  | 'stored-event-budget'
+  | 'byte-budget'
+  | 'observer-deadline'
+  | 'depth-budget';
+
+/** A refusal is an observation outcome, separate from execution. */
+export type Refusal =
+  | 'recorder-unavailable'
+  | 'unsupported-program'
+  | 'unsupported-option'
+  | 'observer-prepare'
+  | 'observer-encode'
+  | 'observer-runtime'
+  | 'observer-protocol'
+  | 'observer-timeout'
+  | 'uncertified-drawing'
+  | 'case-not-run';
+
+/** The trusted adapter certifies the trace before returning a drawing. */
+export type Drawing =
+  | { status: 'drawn'; trace: RuntimeTrace }
+  | { status: 'truncated'; reason: Cut; trace: RuntimeTrace; attemptedEvents: number }
+  | { status: 'refused'; reason: Refusal };
+
+/** @internal The observer receives its own materialized input and cancellation. */
+export interface RuntimeObservationCall {
+  readonly program: Readonly<
+    Pick<RuntimeProgramPreparationCall, 'code' | 'functionName' | 'executionStyle'>
+  >;
+  readonly inputs: Record<string, unknown>;
+  readonly traceOptions?: Readonly<TraceExecutionOptions>;
+  readonly attemptToken: string;
+  readonly signal?: AbortSignal;
+}
+
+/** @internal Observation runs on a separate lease from ordinary execution. */
+export interface RuntimeObservationProvider {
+  observe(call: RuntimeObservationCall): Promise<Drawing>;
+}
 
 /** A single non-tracing execution call (one case). */
 export interface RuntimeCodeCall {

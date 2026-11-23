@@ -24,6 +24,7 @@ export {
   judgeCompileExecutionOutcome,
   type JudgeExecutionOutcomeOptions,
   type JudgeNotRunOutcome,
+  type JudgeTraceRefusedOutcome,
 } from './internal/judge-execution-outcome';
 export {
   isRuntimeProviderError,
@@ -113,6 +114,10 @@ export {
 } from '../packages/judge/src/index';
 
 export type {
+  Attachment,
+  Cut,
+  Drawing,
+  Refusal,
   JudgeAlgorithmBundle,
   JudgeAlgorithmLanguage,
   JudgeAlgorithmSourceCase,

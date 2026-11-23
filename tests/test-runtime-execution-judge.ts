@@ -2402,10 +2402,13 @@ test('every Judge case states its origin and converts totally to the outcome a l
     assert.equal(failedOutcome.error, 'runtime exploded');
     assert.equal(failedOutcome.errorLine, 7);
   }
-  const limitedTrace = judgeCaseExecutionOutcome(limited!, { language: 'javascript', trace: true });
-  assert.equal(limitedTrace.kind, 'limit');
-  assert.equal(limitedTrace.kind === 'limit' ? limitedTrace.reason : undefined, 'line-limit');
-  assert.equal(limitedTrace.trace.language, 'javascript');
+  const limitedCode = judgeCaseExecutionOutcome(limited!, { language: 'javascript' });
+  assert.equal(limitedCode.kind, 'limit');
+  assert.equal(limitedCode.reason, 'line-limit');
+  assert.deepEqual(
+    judgeCaseExecutionOutcome(limited!, { language: 'javascript', trace: true }),
+    { kind: 'trace-refused' },
+  );
   for (const providerCase of [provider!, unstaged!, bogusLimit!, unknownStage!, malformedReply!]) {
     assert.throws(
       () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
