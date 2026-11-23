@@ -66,12 +66,12 @@ run_lang() {
     run_side "$lang" target & local t=$!
     wait $b || status=1
     wait $t || status=1
-    # Separates Harness changes from the app's Submit option (main sends stopAtFirstRunaway).
-    if [ "${RD_NOSTOP_SIDE:-0}" = 1 ]; then run_side "$lang" target-nostop || status=1; fi
   else
     run_side "$lang" base || status=1
     run_side "$lang" target || status=1
   fi
+  # Separates Harness changes from the app's Submit option (main sends stopAtFirstRunaway).
+  if [ "${RD_NOSTOP_SIDE:-0}" = 1 ]; then run_side "$lang" target-nostop || status=1; fi
 }
 if [ -n "${RD_RERUN_FILE:-}" ]; then
   while read -r lang ids; do
