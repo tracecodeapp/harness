@@ -5773,8 +5773,8 @@ function assertAdmittedModules(source) {
     }
   }
 }
-function reply(id, value, protocolToken) {
-  postMessage({ id, ok: true, value, ...protocolToken === void 0 ? {} : { protocolToken } });
+function reply(id, value) {
+  postMessage({ id, ok: true, value });
 }
 function safeErrorText(error) {
   const truncate = (text) => text.length <= 8192 ? text : `${text.slice(0, 8179)}\u2026[truncated]`;
@@ -7006,7 +7006,7 @@ var init_ses_algorithm_worker = __esm({
                 traceSelection[index]
               ));
             }
-            reply(request.id, results, protocolToken);
+            reply(request.id, results);
             return;
           }
           case "ping":

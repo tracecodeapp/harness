@@ -219,8 +219,8 @@ function assertAdmittedModules(source: PreparedSource): void {
   }
 }
 
-function reply(id: number, value: unknown, protocolToken?: string): void {
-  postMessage({ id, ok: true, value, ...(protocolToken === undefined ? {} : { protocolToken }) });
+function reply(id: number, value: unknown): void {
+  postMessage({ id, ok: true, value });
 }
 
 function safeErrorText(error: unknown): string {
@@ -1543,7 +1543,7 @@ self.onmessage = (event: MessageEvent<unknown>) => {
             traceSelection[index]
           ));
         }
-        reply(request.id, results, protocolToken);
+        reply(request.id, results);
         return;
       }
       case 'ping':
