@@ -1,3 +1,4 @@
+export { runHooks } from './b4-hooks-browser.mjs';
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,

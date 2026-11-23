@@ -11,6 +11,7 @@ import { chromium } from 'playwright';
 const reportPath = resolve(process.env.TRACECODE_B4_REPORT ?? 'b4-installed-report.json');
 const [, , tarball, digest] = process.argv;
 assert(tarball && /^[0-9a-f]{64}$/u.test(digest ?? ''), 'Provide the canonical tarball path and SHA-256');
+const hooksOnly = process.env.TRACECODE_B4_HOOKS_ONLY === '1';
 const fixtures = JSON.parse(await readFile(new URL('./b4-fixtures.json', import.meta.url), 'utf8'));
 assert.equal(fixtures.length, 6, 'two languages with stdout, step and byte cap fixtures');
 const sandbox = await mkdtemp(join(tmpdir(), 'tracecode-b4-installed-'));
@@ -114,7 +115,7 @@ try {
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   const report = { identity, browser: browser.version(), receipts: [] };
-  for (const fixture of fixtures) {
+  for (const fixture of hooksOnly ? [] : fixtures) {
     const faults = fixture.name === 'stdout' ? [null, ...Object.keys(identity.controls)] : [null];
     for (const fault of faults) {
       const page = await browser.newPage();
@@ -124,6 +125,26 @@ try {
           const { runFixture } = await import('/gate.mjs');
           return runFixture(fixture, fault);
         }, { fixture, fault });
+        report.receipts.push(receipt);
+        for (const { id, pass } of receipt.assertions) console.log(`${pass ? 'PASS' : 'FAIL'} ${id}`);
+        if (receipt.error) console.error(receipt.fixture.join('/'), receipt.error);
+        await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n');
+      } finally {
+        await page.close();
+      }
+    }
+  }
+  for (const language of ['javascript', 'typescript']) {
+    const routes = ['run-first', 'disposable', 'submit-stop'];
+    if (language === 'javascript') routes.push('no-recorder', 'observer-compile-fault', 'observer-encoder-fault');
+    for (const route of routes) {
+      const page = await browser.newPage();
+      try {
+        await page.goto(`http://127.0.0.1:${server.address().port}`);
+        const receipt = await page.evaluate(async ({ language, route }) => {
+          const { runHooks } = await import('/gate.mjs');
+          return runHooks(language, route);
+        }, { language, route });
         report.receipts.push(receipt);
         for (const { id, pass } of receipt.assertions) console.log(`${pass ? 'PASS' : 'FAIL'} ${id}`);
         if (receipt.error) console.error(receipt.fixture.join('/'), receipt.error);
