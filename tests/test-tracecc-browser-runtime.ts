@@ -622,23 +622,46 @@ async function main(): Promise<void> {
             noRecorder.observation?.attemptedEvents !== 0 || noRecorder.trace.events.length !== 0) {
           throw new Error('native recorder disable ACK was missing or invalid: ' + JSON.stringify(noRecorder));
         }
-        const standalone = await ackClient.executeCodeBatch({
+        const standaloneProgram = {
           code: 'class Solution { public: int add(int a) { return a + 1; } };',
           functionName: 'add',
+        };
+        const one = await ackClient.executeCode({ ...standaloneProgram, inputs: { a: 1 } });
+        if (one.output !== 2) throw new Error('ordinary single ACK fixture failed');
+        const standalone = await ackClient.executeCodeBatch({
+          ...standaloneProgram,
           inputBatch: [{ a: 1 }, { a: 2 }],
         });
         if (standalone.results.map((row) => row.output).join(',') !== '2,3') {
           throw new Error('ordinary batch ACK fixture failed: ' + JSON.stringify(standalone));
         }
+        const ops = await ackClient.prepareRuntimeProgram({
+          mode: 'code',
+          executionStyle: 'ops-class',
+          code: 'struct Store {\\n Store() = default;\\n int get() { return 7; }\\n};',
+          functionName: 'Store',
+        });
+        if (!ops.success) throw new Error('prepared ops ACK fixture failed to compile: ' + JSON.stringify(ops));
+        const args = { operations: ['Store', 'get'], arguments: [[], []] };
+        const opsResults = await ackClient.executePreparedCodeBatch(ops.handle, { inputBatch: [args, args] });
+        if (JSON.stringify(opsResults.map((row) => row.output)) !== '[[null,7],[null,7]]') {
+          throw new Error('prepared ops ACK fixture failed: ' + JSON.stringify(opsResults));
+        }
       } finally {
         ackClient.terminate();
       }
-      const standaloneStarts = ordinaryStarts.filter(({ type }) => type === 'compile-run-batch');
-      if (standaloneStarts.map(({ caseIndex }) => caseIndex).join(',') !== '0,1' ||
+      const startsFor = (command) => ordinaryStarts
+        .filter(({ type }) => type === command).map(({ caseIndex }) => caseIndex);
+      const starts = {
+        single: startsFor('compile-run'),
+        batch: startsFor('compile-run-batch'),
+        preparedBatch: startsFor('execute-prepared-runtime-program-batch'),
+      };
+      if (!starts.single.includes(0) || starts.batch.join(',') !== '0,1' ||
+          starts.preparedBatch.join(',') !== '0,1' ||
           !ordinaryStarts.some(({ type, mode }) => type === 'execute-prepared-runtime-program' && mode === 'code') ||
-          !ordinaryStarts.some(({ type, mode }) => type === 'execute-prepared-runtime-program-batch' && mode === 'code') ||
           ordinaryStarts.some(({ mode }) => mode === 'trace')) {
-        throw new Error('ordinary worker starts did not match the request modes: ' + JSON.stringify(ordinaryStarts));
+        throw new Error('ordinary worker starts did not match the request modes: ' + JSON.stringify(starts));
       }
       if (!recorderReplies.some(({ cut, attemptedEvents }) => cut === 'byte-budget' && attemptedEvents > 0) ||
           !recorderReplies.some(({ recorderCompleted, cut }) => recorderCompleted && !cut) ||
