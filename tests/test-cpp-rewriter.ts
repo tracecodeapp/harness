@@ -581,6 +581,28 @@ for (const tracing of [false, true]) {
     !privateDeleteKeyDriver.includes('__tc_operation_name == "delete"'),
     `prepared ops-class driver (tracing ${tracing}) should not dispatch "delete" to a private deleteKey`
   );
+  // A method the parser records as `delete` (written through a macro) is
+  // dispatched by its exact name only: no alias branch is added, so the
+  // operation runs exactly once.
+  const deleteMethodDriver = rewriter.buildPreparedOpsClassDriverSource(
+    [
+      '#include <string>',
+      '#define delete removeKey',
+      'class KeyValueStore {',
+      'public:',
+      '  bool delete(std::string key) { return true; }',
+      '  bool deleteKey(std::string key) { return false; }',
+      '};',
+    ].join('\n'),
+    'KeyValueStore',
+    { tracing }
+  );
+  assertCondition(
+    deleteMethodDriver.split('__tc_operation_name == "delete"').length - 1 === 1 &&
+      deleteAliasDispatch(deleteMethodDriver, 'delete') &&
+      !deleteAliasDispatch(deleteMethodDriver, 'deleteKey'),
+    `prepared ops-class driver (tracing ${tracing}) should dispatch a parsed "delete" method once, by name, with no deleteKey alias`
+  );
   // Single-case keeps main's first-#define resolution (a known limit: it does
   // not see #undef or #if); this checks only that it is unchanged.
   const singleMacroDriver = rewriter.buildOpsClassDriverSource(
