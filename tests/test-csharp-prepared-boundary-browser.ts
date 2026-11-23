@@ -3,6 +3,7 @@
 import { createServer } from 'node:http';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, normalize, sep } from 'node:path';
+import { build } from 'esbuild';
 import { chromium, firefox, webkit, type BrowserType } from 'playwright';
 import {
   CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER,
@@ -55,8 +56,28 @@ async function main(): Promise<void> {
     'Expected explicit C# compiler and runner bundles; run pnpm update:csharp-runtime.'
   );
 
+  const { outputFiles: [historyEntry] } = await build({
+    entryPoints: [join(ROOT, 'tests/fixtures/csharp-warm-resubmit-entry.ts')],
+    tsconfig: join(ROOT, 'tsconfig.base.json'),
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    write: false,
+    define: { 'process.env.NODE_ENV': '"production"' },
+    alias: {
+      zlib: join(ROOT, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+      'node:zlib': join(ROOT, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+    },
+  });
+
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (url.pathname === '/csharp-warm-resubmit.mjs') {
+      response.writeHead(200, { 'Content-Type': contentType(url.pathname) });
+      response.end(historyEntry.contents);
+      return;
+    }
     const candidate = normalize(join(ROOT, decodeURIComponent(url.pathname)));
     if (candidate !== ROOT && !candidate.startsWith(`${ROOT}${sep}`)) {
       response.writeHead(403).end('Forbidden');
@@ -96,6 +117,12 @@ async function main(): Promise<void> {
   try {
     const page = await browser.newPage();
     await page.goto(`${origin}/tests/fixtures/csharp-worker/blank.html`);
+    await page.evaluate(async () => {
+      const moduleUrl: string = '/csharp-warm-resubmit.mjs';
+      const { assertCSharpWarmResubmit } = await import(moduleUrl);
+      await assertCSharpWarmResubmit('/workers/csharp/csharp-worker.js');
+    });
+    console.log('C# warm resubmit history test passed.');
     await page.evaluate('globalThis.__name = (fn) => fn');
     const result = await page.evaluate(async ({
       origin,

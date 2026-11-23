@@ -292,12 +292,10 @@ async function main(): Promise<void> {
       process.cwd()
     );
     await build({
-      entryPoints: {
-        'algorithm-batch': resolve('tests/fixtures/browser-algorithm-batch-entry.ts'),
-        'csharp-warm-resubmit': resolve('tests/fixtures/csharp-warm-resubmit-entry.ts'),
-      },
-      outdir: tempRoot,
-      outExtension: { '.js': '.mjs' },
+      entryPoints: [
+        resolve('tests/fixtures/browser-algorithm-batch-entry.ts'),
+      ],
+      outfile: join(tempRoot, 'algorithm-batch.mjs'),
       bundle: true,
       format: 'esm',
       platform: 'browser',
@@ -343,14 +341,6 @@ async function main(): Promise<void> {
         });
       }
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      if (LANGUAGES.includes('csharp') && workerLifecycle === 'warm-and-retire') {
-        await page.evaluate(async () => {
-          const moduleUrl: string = '/csharp-warm-resubmit.mjs';
-          const { assertCSharpWarmResubmit } = await import(moduleUrl);
-          await assertCSharpWarmResubmit();
-        });
-        console.log('C# warm resubmit history test passed.');
-      }
       const result = await page.evaluate(async (languages) => {
         const moduleUrl: string = '/algorithm-batch.mjs';
         const module = await import(moduleUrl);

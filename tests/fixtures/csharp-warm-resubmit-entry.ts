@@ -35,10 +35,12 @@ interface WorkerCommand {
   completedAt?: number;
 }
 
-export async function assertCSharpWarmResubmit(): Promise<void> {
+export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<void> {
   const NativeWorker = globalThis.Worker;
   const commands: WorkerCommand[] = [];
+  const replacementPrime = Promise.withResolvers<WorkerCommand>();
   let workerId = 0;
+  let initialRunnerId: number | undefined;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
@@ -51,6 +53,15 @@ export async function assertCSharpWarmResubmit(): Promise<void> {
         command.success = data.payload?.success;
         command.tier = data.payload?.timings?.preparedRunnerTier;
         command.completedAt = performance.now();
+        if (
+          initialRunnerId !== undefined &&
+          command.workerId !== initialRunnerId &&
+          command.mode === 'trace' &&
+          command.functionName === 'Add' &&
+          command.success === true
+        ) {
+          replacementPrime.resolve(command);
+        }
       });
       const post = this.postMessage.bind(this);
       this.postMessage = ((message, transfer) => {
@@ -62,6 +73,9 @@ export async function assertCSharpWarmResubmit(): Promise<void> {
             functionName: prepared.functionName,
             sentAt: performance.now(),
           };
+          if (command.mode === 'code' && command.functionName === 'Search') {
+            initialRunnerId ??= id;
+          }
           commands.push(command);
           pending.set(message.id, command);
         }
@@ -74,6 +88,7 @@ export async function assertCSharpWarmResubmit(): Promise<void> {
     const host = createBrowserJudgeHost({
       providers: ['csharp'],
       assetBaseUrl: '/workers',
+      ...(csharpWorker ? { assets: { csharpWorker } } : {}),
       safeExecution: { workerLifecycle: 'warm-and-retire' },
     });
     try {
@@ -109,23 +124,32 @@ export async function assertCSharpWarmResubmit(): Promise<void> {
       }
       await submit('initial-submit');
 
-      // The old managed sink armed a two-second deadline at the end of the prime.
+      // The initial Submit releases its runner and starts warming a standby.
+      // Start the idle interval only after that replacement's trusted prime.
+      let primeTimeout: ReturnType<typeof setTimeout> | undefined;
+      const prime = await Promise.race([
+        replacementPrime.promise,
+        new Promise<never>((_, reject) => {
+          primeTimeout = setTimeout(() => {
+            reject(new Error(`C# replacement runner did not acknowledge its prime: ${JSON.stringify(commands)}`));
+          }, 30_000);
+        }),
+      ]).finally(() => clearTimeout(primeTimeout));
+
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
       const beforeResubmit = commands.length;
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
       await submit('submit-after-idle');
 
       const firstCase = commands.slice(beforeResubmit).find(
         (command) => command.mode === 'code' && command.functionName === 'Search'
       );
-      const stalePrime = commands.find(
-        (command) =>
-          command.mode === 'trace' && command.functionName === 'Add' &&
-          command.workerId === firstCase?.workerId && command.success === true &&
-          command.completedAt !== undefined &&
-          (firstCase?.sentAt ?? 0) - command.completedAt > 2_000
-      );
-      if (firstCase?.tier !== 'algorithm-fast' || !stalePrime) {
-        throw new Error(`C# resubmit did not reach a retained, aged algorithm-fast runner: ${JSON.stringify(commands)}`);
+      if (
+        firstCase?.tier !== 'algorithm-fast' ||
+        firstCase.workerId !== prime.workerId ||
+        prime.completedAt === undefined ||
+        firstCase.sentAt - prime.completedAt <= 2_000
+      ) {
+        throw new Error(`C# resubmit did not use the aged replacement runner: ${JSON.stringify({ prime, firstCase })}`);
       }
     } finally {
       await host.dispose();
