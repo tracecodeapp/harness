@@ -8,6 +8,7 @@ import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import ts from 'typescript';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
 import {
   RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
@@ -1552,9 +1553,17 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
     queueMicrotask,
     TextEncoder,
     TextDecoder,
+    // Allowed: the runtime policy, and the TypeScript compiler, whose parser
+    // instruments the traced program (this request has no prepared build, so
+    // the worker instruments it itself). Without the compiler the run is a
+    // provider fault and nothing is traced. Anything else still throws.
     importScripts: (...urls: string[]) => {
       if (urls.every((url) => url.includes('runtime-kernel-policy-classic.js'))) {
         vm.runInContext(policySource, context, { filename: 'runtime-kernel-policy-classic.js' });
+        return;
+      }
+      if (urls.length === 1 && urls[0] === './vendor/typescript.js') {
+        (workerScope as { ts?: unknown }).ts = ts;
         return;
       }
       throw new Error(`Unexpected importScripts in destructured iterable test: ${urls.join(',')}`);
@@ -1566,7 +1575,12 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
 
   const id = 'destructured-iterable';
   const token = 'destructured-iterable-token';
-  const response = new Promise<{ success?: boolean; output?: unknown; error?: string }>((resolve, reject) => {
+  const response = new Promise<{
+    success?: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: Array<{ target?: { variable?: string } }> };
+  }>((resolve, reject) => {
     pending.set(id, { token, resolve: resolve as (value: unknown) => void, reject });
   });
   workerScope.onmessage?.({
@@ -1632,6 +1646,11 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
   assertCondition(
     JSON.stringify(result.output) === JSON.stringify({ total: 23, pulls: 2, first: 5, setPulls: 1 }),
     `destructured iterable tracing should not pre-consume yielded iterables: ${JSON.stringify(result.output)}`
+  );
+  // The instrumented program ran: the trace records the learner's own locals.
+  assertCondition(
+    result.trace?.events?.some((event) => event.target?.variable === 'total') === true,
+    'destructured iterable test should run the instrumented program, not an untraced fallback'
   );
 }
 
