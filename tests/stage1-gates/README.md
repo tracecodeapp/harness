@@ -2,7 +2,7 @@
 
 The default matrix resolves `@tracecode/harness/judge` from an isolated tarball installation and runs in full Chromium. `manifest.json` contains the exact programs, expected answers, comparator targets and assertion IDs. It is reproducible with `node tests/stage1-gates/build-manifest.mjs` from a checkout that can read the pinned fixture commits. The manifest contains 18 default row observations and 144 ordinary row assertions for each two-case stdout fixture.
 
-Script invocation leaves the selector and execution style unset. The script's oracle is its stdout and a null result. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The true app stages use their own budgets and remain external to this checkout.
+Script invocation uses the function style with the selector omitted. Each script assigns the `result` variable and prints it. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The app stages use their own budgets and remain external to this checkout.
 
 ```bash
 node tests/stage1-gates/app-cases.mjs /path/to/read-only/algoflow /outside/git/app-stage-manifest.json

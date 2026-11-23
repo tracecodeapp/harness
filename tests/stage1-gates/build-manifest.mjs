@@ -173,12 +173,12 @@ public:
 }
 
 const scriptSources = {
-  js: 'console.log(7);',
-  ts: 'const n: number = 7; console.log(n);',
-  py: 'print(7)\n',
-  java: 'class Main { public static void main(String[] args) { System.out.println(7); } }',
-  cs: 'System.Console.WriteLine(7);',
-  cpp: '#include <cstdio>\nint main() { std::printf("7\\n"); }',
+  js: 'const result = 7;\nconsole.log(result);',
+  ts: 'const result: number = 7;\nconsole.log(result);',
+  py: 'result = 7\nprint(result)\n',
+  java: 'int result = 7;\nSystem.out.println(result);',
+  cs: 'int result = 7;\nSystem.Console.WriteLine(result);',
+  cpp: '#include <cstdio>\nint result = 7;\nstd::printf("%d\\n", result);',
 };
 const methodSources = {
   ...wideSources,
@@ -195,8 +195,8 @@ const opsSources = {
   cpp: 'class Counter { public: int add(int n) { return n + 1; } };',
 };
 for (const ext of Object.keys(languages)) {
-  add('G6', 'invocation-script', ext, scriptSources[ext], rows([{}, {}], [null, null]).map((row) => ({ ...row, stdout: '7\n' })),
-    { functionName: undefined, executionStyle: undefined, untracedOnly: true });
+  add('G6', 'invocation-script', ext, scriptSources[ext], rows([{}, {}], [7, 7]).map((row) => ({ ...row, stdout: '7\n' })),
+    { functionName: undefined, untracedOnly: true });
   add('G6', 'invocation-method', ext, methodSources[ext], rows([{ nums: [7] }, { nums: [11] }], [[7], [11]]),
     { executionStyle: 'solution-method', untracedOnly: true });
   const inputs = [7, 11].map((n) => ({ operations: ['Counter', 'add'], arguments: [[], [n]] }));
