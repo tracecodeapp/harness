@@ -424,3 +424,67 @@ test('C++ collects only correlated ordinary starts and observer attempts', async
     globalThis.Worker = originalWorker;
   }
 });
+
+test('G4 B console preserves the ordinary limit line and same-guard singleton text', () => {
+  const spec = fixture('javascript', 'three-rows');
+  const sample = referenceReceipt(spec);
+  const row = sample.result.evaluation.cases[1];
+  const message = 'SES algorithm execution exceeded 4000ms.';
+  const reason = 'client-timeout';
+  row.status = 'timed-out';
+  row.failure = { origin: 'limit', reason };
+  row.stderr = message + '\n';
+  row.diagnostics = [{ severity: 'error', code: reason, message }];
+  sample.singletonGuard = reason;
+  sample.singletonStderr = row.stderr;
+
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    mutant.result.evaluation.cases[1].stderr = '';
+    return 1;
+  });
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    const other = mutant.result.evaluation.cases[1];
+    other.diagnostics[0].message = 'A different timeout message.';
+    other.stderr = other.diagnostics[0].message + '\n';
+    return 1;
+  });
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    mutant.result.evaluation.cases[1].stdout = 'Unexpected learner output\n';
+    return 1;
+  });
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    mutant.result.evaluation.cases[1].diagnostics[0].code = 'single-line-limit';
+    return 1;
+  });
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    const other = mutant.result.evaluation.cases[1];
+    other.diagnostics[0].message += '\nUnexpected second line.';
+    other.stderr = other.diagnostics[0].message + '\n';
+    mutant.singletonStderr = other.stderr;
+    return 1;
+  });
+});
+
+test('G4 rejects a matching singleton guard without its stderr', () => {
+  const spec = fixture('python', 'three-rows-single-line');
+  const sample = referenceReceipt(spec);
+  const row = sample.result.evaluation.cases[1];
+  const reason = 'single-line-limit';
+  const message = 'Execution stopped: resource limit exceeded (single-line-limit).';
+  row.status = 'runtime-error';
+  row.failure = { origin: 'limit', reason };
+  row.stderr = message + '\n';
+  row.diagnostics = [{ severity: 'error', code: reason, message }];
+  sample.singletonGuard = reason;
+  sample.singletonStderr = row.stderr;
+  sample.transcript.push({ kind: 'worker-started', caseId: 'B', mode: 'code' });
+
+  requireDetected(spec, 'submit-omitted', sample, 'B/console', (mutant) => {
+    delete mutant.singletonStderr;
+    return 1;
+  });
+  requireDetected(spec, 'submit-omitted', sample, 'B/learner-guard', (mutant) => {
+    delete mutant.singletonGuard;
+    return 1;
+  });
+});

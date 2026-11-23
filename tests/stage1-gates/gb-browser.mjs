@@ -80,6 +80,7 @@ export async function runFixture(fixture, options, onReceipt) {
   const retainedEvidence = [];
   let registeredReceiptPath = false;
   let singletonGuard;
+  let singletonStderr;
   try {
     for (const route of fixture.routes) {
       if (options.routes && !options.routes.includes(route)) continue;
@@ -139,10 +140,13 @@ export async function runFixture(fixture, options, onReceipt) {
               const stimulus = { bundle, ...stopFlag };
               record = { stimulus, setupMs };
               record.result = await host.evaluateAlgorithm(stimulus);
-            if (route === 'submit-omitted-B') {
-              const row = record.result.evaluation.cases[0];
-              if (row?.failure?.origin === 'limit') singletonGuard = row.failure.reason;
-            }
+              if (route === 'submit-omitted-B') {
+                const row = record.result.evaluation.cases[0];
+                if (row?.failure?.origin === 'limit') {
+                  singletonGuard = row.failure.reason;
+                  singletonStderr = row.stderr;
+                }
+              }
             }
           }
           if (fixture.name === 'step-cap' && route === 'run-first' &&
@@ -193,7 +197,7 @@ export async function runFixture(fixture, options, onReceipt) {
           request === route && (kind === 'schedule' || kind === 'observer-reply')));
       }
       await onReceipt({
-        ...record, route, singletonGuard, transcript, registeredReceiptPath, durationMs: performance.now() - start,
+        ...record, route, singletonGuard, singletonStderr, transcript, registeredReceiptPath, durationMs: performance.now() - start,
         crossOriginIsolated: globalThis.crossOriginIsolated,
       });
     }

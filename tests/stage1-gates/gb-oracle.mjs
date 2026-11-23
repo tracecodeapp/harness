@@ -4,6 +4,7 @@ import { schedulerInjection } from './gb-probe.mjs';
 const healthyChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics', 'conversion'];
 const transportChecks = ['injection-ack', 'A/ordinary-start-count', 'A/worker-finish', 'A/coordinator-commit'];
 const observationChecks = ['ordinary-start-count', 'ordinary-before-observer', 'observer-grade-writes'];
+const singleLineFixture = 'three-rows-single-line';
 const stopRoute = (route) => route.startsWith('run-') || route === 'submit-stop';
 const continuation = (route) => route.startsWith('continue-') || route.startsWith('repeat-');
 const faultNames = ['no-recorder', 'observer-compile-fault', 'observer-encoder-fault', 'observer-deadline'];
@@ -316,7 +317,7 @@ function check(fixture, route, sample, assert) {
     const row = published.find(({ caseId }) => caseId === expected.id);
     const status = desiredRow(fixture, route, expected);
     if (row) {
-      checkRow(fixture, expected, row, status, published, sample.conversions?.cases?.[published.indexOf(row)], assert);
+      checkRow(fixture, expected, row, status, published, sample.conversions?.cases?.[published.indexOf(row)], assert, sample);
     }
     if (expected.limitReasons && row) {
       const reason = row.failure?.reason;
@@ -324,8 +325,10 @@ function check(fixture, route, sample, assert) {
       const isClockProbe = fixture.noInterruptBuffer === true;
       const delivered = wire.some((event) => event.kind === 'dispatch' && event.rows.includes(expected.id));
       if (hasStart || (isClockProbe && delivered)) {
+        const matchesSingleton = reason === sample.singletonGuard ||
+          (fixture.name !== singleLineFixture && !sample.singletonGuard);
         assert(`${expected.id}/learner-guard`, row.failure?.origin === 'limit' &&
-          expected.limitReasons.includes(reason) && (!sample.singletonGuard || reason === sample.singletonGuard),
+          expected.limitReasons.includes(reason) && matchesSingleton,
         { reason, singleton: sample.singletonGuard, hasStart });
       }
     }
@@ -457,7 +460,7 @@ function check(fixture, route, sample, assert) {
   }
 }
 
-function checkRow(fixture, oracle, row, status, published, converted, assert) {
+function checkRow(fixture, oracle, row, status, published, converted, assert, { singletonGuard, singletonStderr }) {
   const same = (attribute, actual, expected) => assert(`${oracle.id}/${attribute}`, isDeepStrictEqual(actual, expected), actual);
   const complete = status === 'completed';
   const limit = status === 'limit';
@@ -469,8 +472,22 @@ function checkRow(fixture, oracle, row, status, published, converted, assert) {
     : service ? row.status === 'unavailable' || row.status === 'runtime-error' || row.status === 'protocol-error'
     : row.status === status, row.status);
   same('value', [Object.hasOwn(row, 'value'), row.value], [complete, complete ? oracle.actual : undefined]);
-  same('console', [row.stdout, row.stderr], [oracle.stdout, '']);
   const sameLimit = row.failure?.origin === 'limit' && oracle.limitReasons?.includes(row.failure.reason);
+  const threeRowFixture = fixture.name === 'three-rows' || fixture.name === singleLineFixture;
+  if (fixture.gate === 'G4' && threeRowFixture && limit) {
+    const diagnostics = Array.isArray(row.diagnostics) ? row.diagnostics : [];
+    const messages = diagnostics.filter(({ code, severity }) =>
+      code === row.failure?.reason && severity === 'error');
+    const message = messages[0]?.message;
+    const text = typeof message === 'string' ? message.replace(/\n$/u, '') : '';
+    const limitLine = messages.length === 1 && text.trim() && !/[\r\n]/u.test(text) ? text + '\n' : undefined;
+    const matchesSingleton = singletonGuard !== row.failure?.reason ||
+      row.stderr === singletonStderr;
+    assert(`${oracle.id}/console`, sameLimit && row.stdout === oracle.stdout &&
+      limitLine !== undefined && row.stderr === limitLine && matchesSingleton, [row.stdout, row.stderr]);
+  } else {
+    same('console', [row.stdout, row.stderr], [oracle.stdout, '']);
+  }
   const stoppedBy = published.find((candidate) => candidate.caseId === 'B');
   const notRun = { reason: 'run-stopped-after-limit', stoppedByCaseId: 'B', limit: stoppedBy?.failure?.reason };
   assert(`${oracle.id}/failure`, limit ? sameLimit && row.notRun === undefined
