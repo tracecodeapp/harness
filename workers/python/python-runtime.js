@@ -8633,7 +8633,7 @@ async function prepareProgram(
       throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
     }
 
-    if (isolationProfile.tier === 'algorithm-fast' && !observationOnly) {
+    if (isolationProfile.tier === 'algorithm-fast' && mode === 'code') {
       const batchDriverCompileStartedAt = deps.performanceNow();
       algorithmFastBatchCode = await compilePythonProgram(
         deps,
@@ -8729,8 +8729,7 @@ function assertPythonPreparedArtifact(deps, artifact) {
       artifact.isolationProfile.tier !== 'judge-compatible' &&
       artifact.isolationProfile.tier !== 'hard-isolated') ||
     !Array.isArray(artifact.isolationProfile.reasons) ||
-    (artifact.isolationProfile.tier === 'algorithm-fast' &&
-      artifact.observationOnly !== true &&
+    (artifact.mode === 'code' && artifact.isolationProfile.tier === 'algorithm-fast' &&
       typeof artifact.algorithmFastBatchCode !== 'string')
   ) {
     throw new Error(
@@ -8775,6 +8774,19 @@ function pythonCodeResultAsEmptyTraceResult(result) {
   };
 }
 
+async function prepareOrdinaryVariant(deps, traceArtifact) {
+  const ordinary = await prepareProgram(deps, {
+    mode: 'code',
+    code: traceArtifact.code,
+    functionName: traceArtifact.functionName,
+    executionStyle: traceArtifact.executionStyle,
+  });
+  if (!ordinary.success) {
+    throw new Error('An already prepared Python program failed ordinary compilation: ' + ordinary.error);
+  }
+  return ordinary.artifact;
+}
+
 async function executePreparedProgram(
   deps,
   artifact,
@@ -8786,6 +8798,13 @@ async function executePreparedProgram(
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();
   assertPythonPreparedArtifact(deps, artifact);
+  if (artifact.mode === 'trace' && tracingEnabled === false) {
+    if (artifact.observationOnly) throw new Error('An observer artifact requires recording.');
+    const ordinary = await prepareOrdinaryVariant(deps, artifact);
+    return pythonCodeResultAsEmptyTraceResult(
+      await executePreparedProgram(deps, ordinary, inputs, limits, false, beforeLearnerCode)
+    );
+  }
   let userCodeObject;
   let executorCode;
   try {
@@ -8797,15 +8816,6 @@ async function executePreparedProgram(
       !pythonInputsRequireCustomMaterialization(inputs)
         ? 'algorithm-fast'
         : 'compatibility';
-    if (
-      artifact.mode === 'trace' &&
-      tracingEnabled === false &&
-      artifact.onDemandTracing !== true
-    ) {
-      throw new Error(
-        'Prepared Python artifact does not support on-demand trace selection.'
-      );
-    }
     const result = artifact.mode === 'trace'
       ? await executeWithTracing(
           deps,
@@ -8818,7 +8828,7 @@ async function executePreparedProgram(
             executorCode,
             userCodeObject,
             limits,
-            tracingEnabled: tracingEnabled !== false,
+            tracingEnabled: true,
             observationOnly: artifact.observationOnly === true,
             isolationTier,
           }
@@ -8839,13 +8849,10 @@ async function executePreparedProgram(
           }
         );
     const runMs = deps.performanceNow() - startedAt;
-    const normalizedResult = artifact.mode === 'trace' && tracingEnabled === false
-      ? pythonCodeResultAsEmptyTraceResult(result)
-      : result;
     return {
-      ...normalizedResult,
+      ...result,
       timings: {
-        ...(normalizedResult.timings ?? {}),
+        ...(result.timings ?? {}),
         totalMs: runMs,
         runMs,
         compileCacheHit: true,
@@ -8954,9 +8961,28 @@ async function executePreparedProgramBatch(
     );
   }
 
+  if (artifact.mode === 'trace' && traceEnabledBatch?.every((enabled) => !enabled)) {
+    const ordinary = await prepareOrdinaryVariant(deps, artifact);
+    const raw = await executePreparedProgramBatch(
+      deps,
+      ordinary,
+      cases,
+      limits,
+      undefined,
+      forceJudgeCompatible,
+      stopAtFirstRunaway,
+      caseProgress && {
+        started: (index) => caseProgress.started(index),
+        finished: (index, result) => caseProgress.finished(index, pythonCodeResultAsEmptyTraceResult(result)),
+      }
+    );
+    return { ...raw, results: raw.results.map(pythonCodeResultAsEmptyTraceResult) };
+  }
+
   let userCodeObject;
   let executorCode;
   let algorithmFastBatchCode;
+  let ordinaryVariant;
   try {
     // Deserialize only the immutable artifacts used by the selected path.
     // The fast batch has its own lease driver and uses the same compiled
@@ -9006,7 +9032,7 @@ async function executePreparedProgramBatch(
     }
     const canSplitMixedTraceBatch =
       artifact.mode === 'trace' &&
-      isAlgorithmFastArtifact &&
+      !artifact.observationOnly &&
       forceJudgeCompatible !== true &&
       currentIsolationProfile.tier === 'algorithm-fast' &&
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs)) &&
@@ -9113,12 +9139,9 @@ async function executePreparedProgramBatch(
         },
       };
     }
-    const traceSelectionUsesFastBatch =
-      artifact.mode === 'code' ||
-      traceEnabledBatch?.every((enabled) => enabled === false) === true;
     const useAlgorithmFastBatch =
       isAlgorithmFastArtifact &&
-      traceSelectionUsesFastBatch &&
+      artifact.mode === 'code' &&
       forceJudgeCompatible !== true &&
       currentIsolationProfile.tier === 'algorithm-fast' &&
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
@@ -9128,16 +9151,14 @@ async function executePreparedProgramBatch(
           deps,
           artifact.algorithmFastBatchCode
         );
-        if (artifact.mode === 'code') {
-          userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
-        }
+        userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
         const resultJson = await runCompiledPythonInFreshExecutionScope(
           deps,
           algorithmFastBatchCode,
           '_json_out',
           {
             __tracecode_prepared_user_source: artifact.code,
-            ...(userCodeObject ? { __tracecode_prepared_user_code: userCodeObject } : {}),
+            __tracecode_prepared_user_code: userCodeObject,
             __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
             __tracecode_limits_literal: preparedPythonLiteral(
               deps,
@@ -9161,10 +9182,7 @@ async function executePreparedProgramBatch(
           undefined,
           'algorithm-fast'
         );
-        const rawResults = JSON.parse(resultJson);
-        const results = artifact.mode === 'trace'
-          ? rawResults.map(pythonCodeResultAsEmptyTraceResult)
-          : rawResults;
+        const results = JSON.parse(resultJson);
         const resultsHaveTrustedShape =
           isPythonBatchResultPrefix(results, cases.length, stopAtFirstRunaway) &&
           results.every((result) =>
@@ -9273,7 +9291,10 @@ async function executePreparedProgramBatch(
         deps.performanceNow() - filesystemBeginStartedAt;
       let result;
       try {
-        result = artifact.mode === 'trace'
+        if (artifact.mode === 'trace' && !tracingEnabled) {
+          ordinaryVariant ??= await prepareOrdinaryVariant(deps, artifact);
+          result = await executePreparedProgram(deps, ordinaryVariant, inputs, limits, false, startCase);
+        } else result = artifact.mode === 'trace'
           ? await executeWithTracing(
                 deps,
                 artifact.code,
@@ -9285,7 +9306,7 @@ async function executePreparedProgramBatch(
                   executorCode,
                   userCodeObject,
                   limits,
-                tracingEnabled,
+                  tracingEnabled: true,
                   scopeTimings,
                   beforeLearnerCode: startCase,
                   isolationTier: useAlgorithmFastScopes
