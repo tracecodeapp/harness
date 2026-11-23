@@ -15771,25 +15771,19 @@ async function handlePrepareRuntimeProgram(payload) {
   }
 
   const driverStartedAt = now();
+  // A prepared executable has one input and return framing regardless of
+  // whether the host submits a singleton or schedules a batch of cases.
+  // Only the observation variant gets recorder settings or a rewritten body.
+  const variant = tracing
+    ? { executionStyle, tracing: true, traceOptions: payload?.traceOptions || {} }
+    : { executionStyle };
   let preparedDriverSource;
   try {
     preparedDriverSource = executionStyle === 'ops-class'
-      ? buildPreparedOpsClassDriverSource(source, functionName, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
+      ? buildPreparedOpsClassDriverSource(source, functionName, variant)
       : scriptRequest
-      ? buildScriptDriverSource(source, {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        })
-      : buildBatchDriverSource(source, functionName, [{}], {
-          executionStyle,
-          tracing,
-          traceOptions: payload?.traceOptions || {},
-        });
+      ? buildScriptDriverSource(source, variant)
+      : buildBatchDriverSource(source, functionName, [{}], variant);
   } catch (error) {
     // The driver generator could not bind the learner's source (no matching
     // class or method, an unsupported signature): the learner's compile stage.
@@ -15806,9 +15800,7 @@ async function handlePrepareRuntimeProgram(payload) {
   }
 
   const result = await compileAndRun(source, functionName, {}, {
-    executionStyle,
-    tracing,
-    traceOptions: payload?.traceOptions || {},
+    ...variant,
     preparedDriverSource,
     preparedScriptRequest: scriptRequest,
     preparedInputMode: scriptRequest ? 'script' : 'named-batch',

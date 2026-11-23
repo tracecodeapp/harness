@@ -8,7 +8,7 @@ import {
 } from '../packages/runtime-cpp/src/cpp-observation';
 import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-contracts/src/runtime-trace';
 
-const source = 'int f() { int x = 0; return x; }';
+const source = 'int f() { return 0 && 1; }';
 const program = { code: source, functionName: 'f', executionStyle: 'function' } as const;
 const request = { program, inputs: {}, attemptToken: 'test' };
 const wasm = Uint8Array.of(
@@ -18,7 +18,7 @@ const wasm = Uint8Array.of(
   10, 6, 1, 4, 0, 65, 0, 11, // CODE; i32.const 0; end
 );
 const sha = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex');
-const offset = source.indexOf('x');
+const offset = source.indexOf('&&');
 
 function siteMap() {
   return {
@@ -26,13 +26,13 @@ function siteMap() {
     pch: 'narrow',
     sourceSha256: sha(source),
     moduleSha256: sha(wasm),
-    codeSha256: sha(wasm.subarray(20)),
+    codeSha256: sha(wasm.subarray(21)),
     files: ['learner.cpp'],
     functions: [{ name: 'f', lo: 2, hi: 6, frameBaseLocal: null }],
     sites: [{
-      id: 'decl/x', kind: 'local.begin', detail: 'x', file: 0, fn: 0, pc: 3,
+      id: 'edge/fold', kind: 'edge.fold.skip', detail: '&&', file: 0, fn: 0, pc: 3,
       line: 1, column: offset + 1, offset, translationUnitOffset: offset,
-      labelOrdinal: 0, scalar: 'i32', frameOffset: 0,
+      labelOrdinal: 0,
     }],
   };
 }
@@ -96,7 +96,7 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
 test('observation projection reads only Drawing fields and drops a late result after disposal', async () => {
   const trace = {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION, language: 'cpp' as const, runId: 'test',
-    events: [{ kind: 'line' as const, line: 1 }], lineEventCount: 1, traceStepCount: 1,
+    events: [{ kind: 'line' as const, runId: 'test', line: 1 }], lineEventCount: 1, traceStepCount: 1,
   };
   const reply = { status: 'drawn' as const, trace, get output(): never { throw new Error('poisoned'); } };
   const started = Promise.withResolvers<void>();
