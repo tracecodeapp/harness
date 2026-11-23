@@ -34,32 +34,30 @@ def canon(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 
 
-def without_node_ids(value):
-    """Canonical JSON with every node `__id__` (and any string equal to one) renumbered by
-    first appearance, so a change of id scheme alone does not read as a different value."""
+def node_normal(value):
+    """The app's proposed "same returned value" rule (harness-artifacts/trace-parity/
+    compare-values-rule.py): renumber `__id__`/`__ref__` by first appearance, then drop `__id__`.
+    A difference this rule removes is counted (nodeIdsOnly), not reported."""
     ids = {}
 
-    def collect(v):
-        if isinstance(v, dict):
-            if isinstance(v.get('__id__'), str) and v['__id__'] not in ids:
-                ids[v['__id__']] = '#%d' % len(ids)
-            for k in sorted(v):
-                collect(v[k])
-        elif isinstance(v, list):
-            for x in v:
-                collect(x)
+    def number(x):
+        return ids.setdefault(x, '#%d' % len(ids))
 
-    def rewrite(v):
-        if isinstance(v, dict):
-            return {k: rewrite(x) for k, x in v.items()}
-        if isinstance(v, list):
-            return [rewrite(x) for x in v]
-        if isinstance(v, str) and v in ids:
-            return ids[v]
-        return v
+    def go(x):
+        if isinstance(x, list):
+            return [go(i) for i in x]
+        if isinstance(x, dict):
+            if isinstance(x.get('__id__'), str):
+                number(x['__id__'])
+            out = {}
+            for k, v in x.items():
+                if k == '__id__':
+                    continue
+                out[k] = number(v) if k == '__ref__' and isinstance(v, str) else go(v)
+            return out
+        return x
 
-    collect(value)
-    return canon(rewrite(value)) if ids else None
+    return go(value)
 
 
 def diag_codes(diagnostics):
@@ -142,8 +140,8 @@ def case_record(case, legacy):
     record = {
         'status': case.get('status'),
         'verdict': verdict.get('kind'),
-        'value': canon(case.get('value')) if case.get('hasValue') else None,
-        'valueNoIds': without_node_ids(case.get('value')) if case.get('hasValue') else None,
+        'value': canon(node_normal(case.get('value'))) if case.get('hasValue') else None,
+        'valueRaw': canon(case.get('value')) if case.get('hasValue') else None,
         'origin': origin,
         'detail': detail,
         'message': (case.get('failure') or {}).get('message', '')[:300] or first_error(case.get('diagnostics'), case.get('stderr')),
@@ -224,9 +222,6 @@ PRIMARY = ['status', 'verdict', 'value', 'origin']
 
 def diff_fields(a, b):
     fields = [k for k in PRIMARY if a.get(k) != b.get(k)]
-    # Node ids renamed, structure and values equal: its own field, not a value difference.
-    if 'value' in fields and a.get('valueNoIds') is not None and a.get('valueNoIds') == b.get('valueNoIds'):
-        fields[fields.index('value')] = 'node-ids'
     # A finer failure label only counts when both sides fail with the same origin.
     if (not fields and a.get('origin') == b.get('origin') and a.get('origin') != 'none'
             and a.get('detail') is not None and a.get('detail') != b.get('detail')):
@@ -240,7 +235,7 @@ def diff_fields(a, b):
 def group_key(lang, mode, fields, a, b):
     sig = []
     for f in fields:
-        if f in ('value', 'node-ids'):
+        if f == 'value':
             sig.append(f)
         elif f == 'codes':
             sig.append(f'codes:{",".join(a.get("codes") or []) or "-"}->{",".join(b.get("codes") or []) or "-"}')
@@ -279,12 +274,14 @@ def compare(dirpath, base, target, legacy_base=True):
                 a, b = nb.get(key), nt.get(key)
                 norm[base].setdefault(lang, {}).setdefault(fid, {})[f'{mode}/{cid}'] = a
                 norm[target].setdefault(lang, {}).setdefault(fid, {})[f'{mode}/{cid}'] = b
-                c = counts.setdefault((lang, catalog, mode), {'cases': 0, 'differ': 0})
+                c = counts.setdefault((lang, catalog, mode), {'cases': 0, 'differ': 0, 'nodeIdsOnly': 0})
                 c['cases'] += 1
                 if a is None or b is None:
                     not_compared.append({'language': lang, 'fixture': fid, 'mode': mode, 'case': cid, 'reason': 'case on one side only'})
                     continue
                 fields = diff_fields(a, b)
+                if not fields and a.get('valueRaw') != b.get('valueRaw'):
+                    c['nodeIdsOnly'] += 1
                 trace_note = mode == 'run-trace' and a.get('hasTrace') != b.get('hasTrace')
                 if fields or trace_note:
                     if fields:
@@ -336,9 +333,9 @@ def main(argv):
             json.dump(norm[label], f, indent=1, sort_keys=True)
     with open(os.path.join(out, 'differences.json'), 'w') as f:
         json.dump({'base': base, 'target': target, 'differences': diffs, 'notCompared': not_compared}, f, indent=1)
-    lines = [f'# Release diff {base} -> {target} (automatic summary)', '', '| language | catalog | mode | cases | differ |', '|---|---|---|---:|---:|']
+    lines = [f'# Release diff {base} -> {target} (automatic summary)', '', '| language | catalog | mode | cases | differ | node-ids only (not reported) |', '|---|---|---|---:|---:|---:|']
     for (lang, catalog, mode), c in sorted(counts.items()):
-        lines.append(f'| {lang} | {catalog} | {mode} | {c["cases"]} | {c["differ"]} |')
+        lines.append(f'| {lang} | {catalog} | {mode} | {c["cases"]} | {c["differ"]} | {c["nodeIdsOnly"]} |')
     groups = defaultdict(list)
     for d in diffs:
         groups[(d['language'], d['group'])].append(d)
