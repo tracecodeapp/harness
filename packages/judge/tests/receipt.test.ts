@@ -5,6 +5,7 @@ import { serialize } from 'node:v8';
 import { MessageChannel, Worker } from 'node:worker_threads';
 import { judgeCaseExecutionOutcome, judgeCompileExecutionOutcome } from '../../../src/internal/judge-execution-outcome';
 import type { Attachment, Cut, Drawing, Refusal } from '../../../src/judge';
+import type { ExecutionLimitReason } from '../../runtime-contracts/src/runtime-execution';
 import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../../runtime-contracts/src/runtime-trace';
 import { allCasesPassPolicy, createAlgorithmJudgeReceipt } from '../src/algorithm-evaluate';
 import { ALGORITHM_BUNDLE_SCHEMA, type JudgeAlgorithmBundle } from '../src/algorithm-model';
@@ -274,6 +275,14 @@ test('selected rows always project an outcome, including a missing reply and a s
   const projection = store.projectEvaluation(['A', 'B']);
   assert.deepEqual(projection.cases[0]?.attachment, { ...a, status: 'refused', reason: 'observer-protocol' });
   assert.deepEqual(projection.cases[1]?.attachment, { ...b, status: 'refused', reason: 'case-not-run' });
+  const skippedOutcome = judgeCaseExecutionOutcome(projection.cases[1]!, { language: 'javascript', trace: true });
+  assert.deepEqual(skippedOutcome, {
+    kind: 'not-run',
+    reason: 'run-stopped-after-limit',
+    stoppedByCaseId: 'A',
+    limit: 'line-limit',
+    consoleOutput: [],
+  });
   for (const row of projection.cases) assert.equal('trace' in row, false);
   for (const row of projection.cases) {
     for (const legacyField of ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun', 'providerFailure']) {
@@ -410,6 +419,36 @@ test('an observer deadline requires a retained prefix to count as truncated', ()
       assert.equal(outcome.kind, 'completed');
       assert.notEqual(outcome.traceTruncated, 'client-timeout');
     }
+  }
+});
+
+test('attachment cuts map to the app-compatible traceTruncated codes', async (t) => {
+  const expected: Record<Cut, ExecutionLimitReason> = {
+    'step-budget': 'trace-limit',
+    'stored-event-budget': 'trace-limit',
+    'byte-budget': 'trace-byte-limit',
+    'line-budget': 'line-limit',
+    'single-line-budget': 'single-line-limit',
+    'depth-budget': 'recursion-limit',
+    'observer-deadline': 'trace-limit',
+  };
+
+  for (const [reason, legacyCode] of Object.entries(expected)) {
+    await t.test(reason, () => {
+      const store = owner();
+      const attempt = store.beginObservation('A');
+      store.commitOrdinary(a, ordinary());
+      store.seal({ status: 'completed' }, evaluatedAt);
+      assert.equal(store.publishDrawing(attempt, a, {
+        status: 'truncated', reason, trace, attemptedEvents: 1,
+      }), true);
+      const row = store.projectEvaluation(['A']).cases[0]!;
+      assert.equal(row.attachment?.status, 'truncated');
+      assert.equal(row.attachment.reason, reason);
+      const outcome = judgeCaseExecutionOutcome(row, { language: 'javascript', trace: true });
+      assert.equal(outcome.kind, 'completed');
+      assert.equal(outcome.traceTruncated, legacyCode);
+    });
   }
 });
 
