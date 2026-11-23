@@ -83,10 +83,11 @@ def unique(entries, name):
     return table
 
 
-def check(manifest, before, after, pins):
+def classify(manifest, before, after, pins):
     planned = unique(((tuple(row["key"]), row) for row in manifest["rows"]), "manifest")
     reviewed = unique(((tuple(pin["key"]), pin) for pin in pins), "pins")
     outstanding = []
+    changes = []
     used = set()
     for key in sorted(planned.keys() | before.keys() | after.keys()):
         label = "/".join(key)
@@ -114,11 +115,18 @@ def check(manifest, before, after, pins):
             used.add(key)
         else:
             outstanding.append(f"release-diff/unreviewed/{label}")
+        changes.append({
+            "key": key,
+            "before": before[key],
+            "after": after[key],
+            "decision": "approved" if key in used else "unreviewed",
+            "review": pin if key in used else None,
+        })
     outstanding.extend(f"release-diff/stale-pin/{'/'.join(key)}" for key in sorted(reviewed.keys() - used))
-    return outstanding
+    return changes, outstanding
 
 
-def records(directory, label, manifest):
+def records(directory, label, manifest, digest):
     results = []
     time_bases = set()
     for path in sorted(Path(directory).glob(f"{label}-*.json")):
@@ -127,6 +135,8 @@ def records(directory, label, manifest):
             raise ValueError(f"release-diff/incomplete/{path.name}")
         if report.get("appDataSha") != manifest["appDataSha"]:
             raise ValueError(f"release-diff/app-data/{path.name}")
+        if report.get("harnessSha256") != digest:
+            raise ValueError(f"release-diff/pack-digest/{path.name}")
         time_bases.add((report["browserVersion"], canonical(report["appOptions"]["hostOptions"])))
         for fixture in report["problems"]:
             language, fid = fixture["language"], fixture["id"]
@@ -169,14 +179,24 @@ def main():
     parser.add_argument("candidate")
     parser.add_argument("manifest")
     parser.add_argument("pins")
+    parser.add_argument("--baseline-digest", required=True)
+    parser.add_argument("--candidate-digest", required=True)
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
     pins = json.loads(Path(args.pins).read_text())
-    before, base_environment = records(args.directory, args.baseline, manifest)
-    after, target_environment = records(args.directory, args.candidate, manifest)
+    before, base_environment = records(args.directory, args.baseline, manifest, args.baseline_digest)
+    after, target_environment = records(args.directory, args.candidate, manifest, args.candidate_digest)
     if base_environment != target_environment:
         raise ValueError("release-diff/unequal-browser-or-host-configuration")
-    problems = check(manifest, before, after, pins)
+    changes, problems = classify(manifest, before, after, pins)
+    receipt = {
+        "appDataSha": manifest["appDataSha"],
+        "baseline": {"sha256": args.baseline_digest, "rows": len(before)},
+        "candidate": {"sha256": args.candidate_digest, "rows": len(after)},
+        "changes": changes,
+        "outstanding": problems,
+    }
+    Path(args.directory, "qualification.json").write_text(json.dumps(receipt, indent=2) + "\n")
     for problem in problems:
         print(problem)
     print(f"release-diff: {len(before)} baseline, {len(after)} candidate, {len(problems)} outstanding")

@@ -234,6 +234,7 @@ async function main() {
     schema: 'tracecode.release-diff.raw.v1',
     label,
     harnessVersion: harnessPackage.version,
+    harnessSha256: process.env.RD_HARNESS_SHA256,
     harnessRoot,
     appOptions: {
       submit: 'host.evaluateAlgorithm, untraced' + (stopSubmit ? ', stopAtFirstRunaway for non-Python' : ''),

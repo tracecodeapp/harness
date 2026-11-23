@@ -61,6 +61,7 @@ npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install
   { echo "baseline deps missing"; exit 15; }
 cd "$ROOT" || exit 10
 sha256sum "$BASE/tracecode-harness-$BASE_VERSION.tgz" >"$OUT/base-package.sha256"
+read -r base_digest _ <"$OUT/base-package.sha256"
 (cd "$BASE/package" && npm ls --omit=dev --depth=0 >"$OUT/base-deps.txt" 2>&1)
 
 git rev-parse HEAD >"$OUT/test-harness-head.txt"
@@ -71,12 +72,13 @@ status=0
 # RD_PARALLEL=1 runs both versions of a language side by side (two browser processes, within
 # the host's four-workers-per-job rule), so both see the same host load.
 run_side() {
-  local lang=$1 side=$2 root label stop
-  if [ "$side" = base ]; then root="$BASE/package"; label="v$BASE_VERSION"; stop="${RD_STOP_POLICY:-0}"
+  local lang=$1 side=$2 root label stop pack_digest
+  pack_digest=$digest
+  if [ "$side" = base ]; then root="$BASE/package"; label="v$BASE_VERSION"; stop="${RD_STOP_POLICY:-0}"; pack_digest=$base_digest
   elif [ "$side" = target-nostop ]; then root="$TARGET"; label=target-nostop; stop=0
   else root="$TARGET"; label=target; stop="${RD_STOP_POLICY:-0}"; fi
   echo "== $label $lang start $(date -u +%H:%M:%SZ)"
-  RD_HARNESS_ROOT="$root" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
+  RD_HARNESS_ROOT="$root" RD_HARNESS_SHA256="$pack_digest" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
     RD_CATALOG="${RD_CATALOG:-all}" RD_LANGUAGES="$lang" RD_PROBLEMS="${RD_PROBLEMS:-}" \
     RD_REPORT="$OUT/$label-$lang${RUN_TAG:+-$RUN_TAG}.json" \
     corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-release-diff-catalog.ts \
@@ -131,7 +133,8 @@ for lang in "${LANG_LIST[@]}"; do
 done
 echo "done $(date -u +%H:%M:%SZ)"
 if [ "$status" = 0 ] && [ -z "${RD_SIDES:-}" ]; then
-  python3 scripts/release-diff/compare.py "$OUT" "v$BASE_VERSION" target "$RD_MANIFEST" "$RD_PINS" || status=$?
+  python3 scripts/release-diff/compare.py "$OUT" "v$BASE_VERSION" target "$RD_MANIFEST" "$RD_PINS" \
+    --baseline-digest "$base_digest" --candidate-digest "$digest" || status=$?
 fi
 node scripts/stage1/clean-pack.mjs --verify "$candidate/candidate.tgz" "$digest" || exit 16
 exit "$status"
