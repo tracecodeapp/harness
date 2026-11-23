@@ -27,6 +27,8 @@ export interface LostWorkerObservation {
    */
   readonly outcome: readonly string[];
   readonly threw?: string;
+  /** Each case's (or the compile's) failure message, when it has one. */
+  readonly messages?: readonly string[];
   /** Message types the injection answered by losing the worker. */
   readonly lostAfter: readonly string[];
   readonly elapsedMs: number;
@@ -173,7 +175,7 @@ async function evaluate(
   program: Program,
   mode: LostWorkerMode,
   limits?: { readonly wallClockMs: number }
-): Promise<{ outcome: string[]; threw?: string }> {
+): Promise<{ outcome: string[]; threw?: string; messages?: string[] }> {
   sequence += 1;
   const caseCount = mode === 'code' || mode === 'trace' ? 1 : 2;
   const bundle = await createAlgorithmJudgeBundle({
@@ -199,12 +201,14 @@ async function evaluate(
     if (evaluation.status === 'compile-failed') {
       return {
         outcome: [`compile:${evaluation.compile.status}:${evaluation.compile.failure?.origin ?? 'none'}`],
+        messages: [evaluation.compile.failure?.message?.slice(0, 300) ?? ''],
       };
     }
     return {
       outcome: evaluation.cases.map((testCase) =>
         `case:${testCase.status}:${testCase.failure?.origin ?? 'none'}`
       ),
+      messages: evaluation.cases.map((testCase) => testCase.failure?.message?.slice(0, 300) ?? ''),
     };
   } catch (error) {
     const text = error instanceof Error

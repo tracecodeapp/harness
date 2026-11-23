@@ -196,7 +196,13 @@ async function main(): Promise<void> {
               (observation.lostAfter.length ? ` [lost after ${[...new Set(observation.lostAfter)].join(',')}]` : '') +
               ` (${observation.elapsedMs} ms)`
             );
-            if (problem) problems.push(`${language} ${observation.mode} ${observation.probe}: ${problem}`);
+            if (problem) {
+              const messages = [...new Set(observation.messages ?? [])].filter(Boolean);
+              problems.push(
+                `${language} ${observation.mode} ${observation.probe}: ${problem}` +
+                (messages.length ? ` messages=${JSON.stringify(messages)}` : '')
+              );
+            }
           }
         } catch (error) {
           problems.push(`${language}: run failed: ${error instanceof Error ? error.message : String(error)}`);

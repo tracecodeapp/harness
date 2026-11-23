@@ -323,19 +323,24 @@ test('Python stopping batch whose cases all finish returns every streamed result
   }
 });
 
-test('Python stopping batch whose worker dies mid-batch reports a crash, not a time limit', async () => {
+test('Python stopping batch whose worker is lost mid-batch is a provider failure, not a time limit', async () => {
   const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
   const { provider, program } = await preparedProgram('code', -1, log, 2);
-  const results = await program.executeBatchIsolated!({
-    inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
-    limits: { wallClockMs: PER_CASE_MS },
-    stopAtFirstRunaway: true,
-  } as never) as readonly CodeExecutionResult[];
-  // As before: each case re-runs in a fresh worker so it gets its own outcome.
-  assert.equal(results.length, CASES);
-  assert.ok(results.every((result) => result.kind !== 'limit'), 'A crash is never a time limit');
-  assert.equal(results[2]!.kind, 'failed');
-  assert.ok(results.every((result, index) => index === 2 || result.kind === 'completed'));
+  // The cases re-run once, each in a fresh worker; the worker running case 3
+  // is lost again. A lost worker is the provider's failure (the learner's own
+  // failures come back from the worker as classified replies), and never a
+  // time limit on the case that was running.
+  await assert.rejects(
+    program.executeBatchIsolated!({
+      inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
+      limits: { wallClockMs: PER_CASE_MS },
+      stopAtFirstRunaway: true,
+    } as never),
+    (error: Error) => {
+      assert.equal((error as { _tag?: unknown })._tag, 'WorkerCrashedError', `${error.name}: ${error.message}`);
+      return true;
+    }
+  );
   await program.dispose();
   provider.terminate();
   assert.equal(log.terminated, log.created, 'Every worker is terminated');
