@@ -15,7 +15,7 @@ bash tests/stage1-gates/stage-mux.sh /path/to/multiplexer /outside/git/mux
 bash tests/stage1-gates/agent-runner.sh baseline ".*" /external/app-stage-manifest.json /external/mux
 ```
 
-The host job packs and installs `b025fdb8`, stages assets with the installed CLI and archives the tarball digest, candidate build diff, runner SHA, raw observations and assertion receipts. `summary.json` reports exact missing IDs, failures and duplicate IDs. A filter produces a partial run. A build, browser or worker setup failure leaves required IDs missing. `controls.jsonl` records the original verdict checks, injected values and whether each seed reached its designated assertion. Keep the first run's evidence when retrying with a new run ID.
+The host job copies and verifies the canonical `b025fdb8` tarball, installs it in an isolated consumer and stages assets with the installed CLI. It archives the packed and installed Judge digests, the runner SHA, raw observations and assertion receipts. `summary.json` reports exact missing IDs, failures and duplicate IDs. A filter produces a partial run. A build, browser or worker setup failure leaves required IDs missing. `controls.jsonl` records the original verdict checks, injected values and whether each seed reached its designated assertion. Keep the first run's evidence when retrying with a new run ID.
 
 The pinned mux adapter runs against a Playwright-supplied private slot and checks both raw and legacy projections. Release qualification also needs the real mux worker's result writer and reader. Provider companions compile from the frozen candidate's source and serve assets from the installed artifact, with separate route IDs for the selectable JS/TS routes and C++ direct execution.
 
