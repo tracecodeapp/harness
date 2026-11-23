@@ -2,6 +2,7 @@ import type {
   JudgeCaseVerdict,
   JudgeComparator,
 } from './comparison';
+import type { Attachment } from './internal/receipt-types';
 
 export type JudgeFileVisibility = 'submission' | 'judge-private';
 
@@ -248,6 +249,8 @@ interface JudgeCaseResultFields<Result, Expected>
   readonly caseId: string;
   readonly value?: Result;
   readonly trace?: unknown;
+  /** Observation for this case, when explicitly selected. */
+  readonly attachment?: Attachment;
   readonly expected?: Expected;
   readonly verdict: JudgeCaseVerdict;
   readonly protocolError?: string;
