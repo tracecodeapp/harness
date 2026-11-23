@@ -198,3 +198,18 @@ test('cache receipt keeps reported ordinary and observer flags', () => {
     ],
   });
 });
+
+test('observer reply may omit timings but must keep its prepared artifact identity', () => {
+  const capturedShape = runResult(2, 3, 10);
+  const observer = capturedShape.csharp.phases.find(({ role, type }) =>
+    role === 'observer' && type === 'execute-prepared-trace');
+  delete observer.timings;
+  assert.equal(csharpCandidateOutcome(capturedShape, 'run', 10, 'selected'), undefined);
+  assert.deepEqual(csharpCandidateCacheReceipt(capturedShape).observer, [
+    { type: 'prepare-program', worker: 1, compileCacheHit: false, artifactCacheHit: false },
+  ]);
+
+  observer.artifactKey = 'another-observer-artifact';
+  assert.equal(csharpCandidateOutcome(capturedShape, 'run', 10, 'selected'),
+    'C# assembly, reset or observer witness differs');
+});

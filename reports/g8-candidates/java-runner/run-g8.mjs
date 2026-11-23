@@ -9,7 +9,13 @@ import { extname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { aaControlPlan, aaLanguages, aaVersions } from './aa-control.mjs';
+import {
+  aaClosingControlPlan,
+  aaClosingVersions,
+  aaControlPlan,
+  aaLanguages,
+  aaVersions,
+} from './aa-control.mjs';
 import { csharpCandidateCacheReceipt, csharpCandidateOutcome } from './csharp-candidate-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
@@ -29,10 +35,13 @@ const groupSelector = process.env.SPEED_GROUP_SELECTOR;
 const candidateScope = process.env.SPEED_JAVA_SCOPE;
 const releaseVersion = process.env.SPEED_G8_RELEASE;
 const aaControl = process.env.SPEED_G8_AA === '1';
+const aaClosing = process.env.SPEED_G8_AA_CLOSING === '1';
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
 assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
 assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the pinned 0.17.3 release');
+assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
+assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 const staged = candidateScope ? await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
 async function jsonCandidate() {
@@ -57,14 +66,14 @@ const appRefs = {
   '0.17.1': '083bf3f4aec34a353dd6da749d691ca29ed601e8',
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
-const versions = aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = aaClosing ? aaClosingVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? ['candidate-main', 'candidate-deploy'] : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -340,7 +349,7 @@ function plan() {
   const groups = [];
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
   const spotExcluded = releaseVersion ? new Set(['csharp', 'python']) : new Set([testedLanguage]);
-  const cheapFirst = aaControl ? aaLanguages : candidateScope === 'spot' ? windowLanguages.phone.filter((lang) => !spotExcluded.has(lang)) :
+  const cheapFirst = aaControl || aaClosing ? aaLanguages : candidateScope === 'spot' ? windowLanguages.phone.filter((lang) => !spotExcluded.has(lang)) :
     staged ? [testedLanguage] : mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
   for (const language of cheapFirst) {
     for (const cpu of cpuRates) {
@@ -367,6 +376,7 @@ function plan() {
       problem === 'binary-search' && state === 'warm' && journey === 'run')
       .map((group) => ({ ...group, versions: [releaseVersion ? 'release-deploy' : 'candidate-main'], continuation: false }));
   }
+  if (aaClosing) return aaClosingControlPlan(groups);
   if (aaControl) return aaControlPlan(groups);
   if (mode !== 'smoke') {
     const decide = g => testedLanguage === 'java' && candidateScope === 'desktop' &&
@@ -417,6 +427,9 @@ const report = {
     encoding: 'utf8',
   }).trim() }),
   ...(aaControl && { aaControl: { languages: aaLanguages, versions: aaVersions, interleavedPerRound: true } }),
+  ...(aaClosing && { aaClosing: {
+    languages: aaLanguages, versions: aaClosingVersions, fixedOrderPerRound: true,
+  } }),
   ...(groupSelector !== undefined && {
     groupSelector,
     runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -456,7 +469,8 @@ try {
     const groupStarted = Date.now();
     try {
       for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
-        for (const [position, version] of shuffled(group.versions).entries()) {
+        const roundVersions = aaClosing ? group.versions : shuffled(group.versions);
+        for (const [position, version] of roundVersions.entries()) {
           const count = counts[version];
           if (count.kept >= target || count.invalid >= maxInvalid) continue;
           await waitForQuiet();

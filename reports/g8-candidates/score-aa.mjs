@@ -4,9 +4,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { metricEndpoints, relative, sampleCounts, stats } from './aa-score-lib.mjs';
 
-const [archive, raw] = process.argv.slice(2);
+const [archive, raw, mode = 'full'] = process.argv.slice(2);
 assert.ok(archive && raw);
-const versions = ['0.17.1', 'release-deploy'];
+assert.ok(['full', 'closing'].includes(mode));
+const closing = mode === 'closing';
+const versions = closing ? ['release-deploy', '0.17.1'] : ['0.17.1', 'release-deploy'];
 
 const baselineReceipt = readFileSync(new URL('./baseline-results.sha256', import.meta.url), 'utf8')
   .trim().split('\n').map((line) => line.split(/\s+/, 2));
@@ -55,10 +57,18 @@ const desktopA = collect(archive, 'speed-desktop-a-with-topup');
 const desktopB = collect(archive, 'speed-desktop-b');
 const summary = { incomplete: [] };
 
-const observed = collect(raw, 'aa-release');
-assert.deepEqual(observed.metadata.aaControl, {
-  languages: ['csharp', 'python'], versions, interleavedPerRound: true,
-});
+const observed = collect(raw, closing ? 'aa-release-closing' : 'aa-release');
+if (closing) {
+  assert.deepEqual(observed.metadata.aaClosing, {
+    languages: ['csharp', 'python'], versions, fixedOrderPerRound: true,
+  });
+  assert.ok(observed.samples.every(({ position, version }) =>
+    position === versions.indexOf(version)), 'Closing order must stay fixed in every round');
+} else {
+  assert.deepEqual(observed.metadata.aaControl, {
+    languages: ['csharp', 'python'], versions, interleavedPerRound: true,
+  });
+}
 assert.equal(observed.metadata.releaseVersion, '0.17.3');
 assert.deepEqual(Object.keys(observed.metadata.packages), versions);
 assert.deepEqual(observed.metadata.packages['0.17.1'].dependencies,
@@ -96,6 +106,16 @@ for (const language of ['csharp', 'python']) {
         release,
         todayVsFrozen: relative(today, frozen),
         releaseVsToday: relative(release, today),
+        ...(closing && { distribution: Object.fromEntries(versions.map((version) => [version,
+          observed.samples.filter((sample) => sample.groupIndex ===
+            observed.metadata.schedule.indexOf(group) && sample.version === version && sample.kept)
+            .map((sample) => ({
+              round: sample.round,
+              position: sample.position,
+              value: sample.metrics[endpoint],
+              compileCacheHit: sample.initial?.evaluation?.compile?.compileCacheHit,
+              artifactCacheHit: sample.initial?.evaluation?.compile?.artifactCacheHit,
+            }))])) }),
         complete,
       }));
     }

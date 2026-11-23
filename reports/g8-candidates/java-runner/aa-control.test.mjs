@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { aaControlPlan, aaVersions } from './aa-control.mjs';
+import {
+  aaClosingControlPlan,
+  aaClosingVersions,
+  aaControlPlan,
+  aaVersions,
+} from './aa-control.mjs';
 
 const problems = ['binary-search', 'permutations'];
 const states = ['warm', 'cold', 'switched'];
@@ -51,4 +56,24 @@ test('rejects an incomplete source plan instead of silently dropping a control',
     !(group.language === 'python' && group.problem === 'permutations' &&
       group.state === 'cold' && group.journey === 'run'));
   assert.throws(() => aaControlPlan(missingCold), /six groups per language/);
+});
+
+test('closing control swaps release first and selects only the unresolved cells', () => {
+  const plan = aaClosingControlPlan(fullPlan());
+  assert.deepEqual(plan.map(({ language, problem, state, journey }) =>
+    [language, problem, state, journey]), [
+    ['python', 'binary-search', 'warm', 'submit'],
+    ['python', 'permutations', 'warm', 'submit'],
+    ['csharp', 'permutations', 'cold', 'run'],
+    ['python', 'permutations', 'cold', 'run'],
+  ]);
+  for (const group of plan) assert.deepEqual(group.versions, aaClosingVersions);
+  assert.deepEqual(aaClosingVersions, ['release-deploy', '0.17.1']);
+});
+
+test('closing control rejects a missing unresolved cell', () => {
+  const missing = fullPlan().filter((group) =>
+    !(group.language === 'python' && group.problem === 'binary-search' &&
+      group.state === 'warm' && group.journey === 'submit'));
+  assert.throws(() => aaClosingControlPlan(missing), /Closing A\/A control/);
 });

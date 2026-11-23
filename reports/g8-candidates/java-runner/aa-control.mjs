@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 
 export const aaVersions = ['0.17.1', 'release-deploy'];
+export const aaClosingVersions = ['release-deploy', '0.17.1'];
 export const aaLanguages = ['csharp', 'python'];
 
 export function aaControlPlan(groups) {
@@ -27,5 +28,27 @@ export function aaControlPlan(groups) {
         journeyOrder[a.journey] - journeyOrder[b.journey] ||
         a.problem.localeCompare(b.problem) ||
         a.language.localeCompare(b.language);
+    });
+}
+
+export function aaClosingControlPlan(groups) {
+  const selected = groups.filter(({ language, cpu, problem, state, journey }) =>
+    cpu === 1 && (
+      language === 'python' && state === 'warm' && journey === 'submit' ||
+      ['csharp', 'python'].includes(language) && problem === 'permutations' &&
+        state === 'cold' && journey === 'run'
+    ));
+
+  assert.equal(selected.length, 4,
+    'Closing A/A control must contain two Python Submit and two cold Permutations groups');
+  assert.equal(selected.filter(({ language }) => language === 'python').length, 3);
+  assert.equal(selected.filter(({ language }) => language === 'csharp').length, 1);
+
+  return selected
+    .map((group) => ({ ...group, versions: [...aaClosingVersions] }))
+    .sort((a, b) => {
+      const stateOrder = { warm: 0, cold: 1 };
+      return stateOrder[a.state] - stateOrder[b.state] ||
+        a.problem.localeCompare(b.problem) || a.language.localeCompare(b.language);
     });
 }

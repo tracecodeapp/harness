@@ -78,8 +78,11 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId) {
     (expectedObserver === 0 || isSingleWorker(observerExecutions)) &&
     observerExecutions.every((phase) =>
       phase.workerKind === 'runner' && phase.observation === true &&
+      (expectedObserverPrepares ? phase.artifactKey === observerKey :
+        typeof phase.artifactKey === 'string' && phase.artifactKey.length > 0) &&
       phase.tier === 'algorithm-fast' &&
-      phase.timings?.executionRealm === 'retained-worker-collectible-context') &&
+      (phase.timings === undefined ||
+        phase.timings.executionRealm === 'retained-worker-collectible-context')) &&
     observerDisposals.length <= 1 &&
     observerDisposals.every(({ artifactKey }) => artifactKey === observerKey);
   const ordinaryWorkers = workerSet(ordinaryExecutions);
