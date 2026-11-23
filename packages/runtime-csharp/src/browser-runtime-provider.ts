@@ -345,7 +345,6 @@ export function createCSharpBrowserRuntimeProvider(
         capabilities: {
           observationLease: 'separate',
           observationDeadlineMs: 35_000,
-          observationPrepareDeadlineMs: 120_000,
         },
         prepareObservation: (program, signal, traceOptions) =>
           preparedProvider.prepareObservation(program, signal, traceOptions),

@@ -868,6 +868,7 @@ test('C# observation prepares a companion and uses a dedicated runner during ord
   try {
     const observer = await provider.prepareObservation(program, undefined, { maxTraceBytes: 1 });
     assert.ok(!('status' in observer));
+    assert.deepEqual(compiler.prepareCalls.map(({ mode }) => mode), ['code'], 'ordinary compilation has priority');
     try {
       const drawing = await observer.observe({
         program, inputs: { value: 7 }, attemptToken: 'observation-attempt',

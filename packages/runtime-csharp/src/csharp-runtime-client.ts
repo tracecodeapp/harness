@@ -223,20 +223,13 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         (maxTraceBytes !== undefined && (!Number.isSafeInteger(maxTraceBytes) || maxTraceBytes < 0))) {
       return { status: 'refused', reason: 'unsupported-option' };
     }
-    const preparation = await this.prepareArtifact({
-      ...program,
-      mode: 'trace',
-      traceOptions: compilerOptions,
-      signal,
-    });
-    if (preparation.kind === 'failed') {
-      return { status: 'refused', reason: 'observer-prepare' };
-    }
+    signal?.throwIfAborted();
+    const create = authority?.createObserverRunner?.bind(authority);
+    if (!create) return { status: 'refused', reason: 'recorder-unavailable' };
 
-    const { artifact } = preparation;
     const compiler = this.preparedCompiler;
     const lifetime = new AbortController();
-    const active = new Set<Promise<Drawing>>();
+    let artifact: CSharpPreparedProgramArtifact | undefined;
     let retainedRunner: CSharpWorkerClient | undefined;
     let retainedCases = 0;
     let tail = Promise.resolve();
@@ -249,54 +242,69 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       runner.terminate();
       authority?.releaseObserverRunner?.(runner);
     };
+
+    // The façade can acquire this lease before Roslyn has started on a cold
+    // host. Submit the companion to the shared compiler only after Judge
+    // admits a case from the successfully prepared ordinary assembly.
+    const prepareCompanion = async () => {
+      const prepared = await this.prepareArtifact({
+        ...program,
+        mode: 'trace',
+        traceOptions: compilerOptions,
+        signal: lifetime.signal,
+      });
+      return prepared.kind === 'artifact' ? prepared.artifact : undefined;
+    };
+    let companion: ReturnType<typeof prepareCompanion> | undefined;
+    const observe = async (call: RuntimeObservationCall): Promise<Drawing> => {
+      const signal = call.signal
+        ? AbortSignal.any([call.signal, lifetime.signal])
+        : lifetime.signal;
+      signal.throwIfAborted();
+      try {
+        artifact = await (companion ??= prepareCompanion());
+      } catch {
+        signal.throwIfAborted();
+        return { status: 'refused', reason: 'observer-prepare' };
+      }
+      signal.throwIfAborted();
+      if (!artifact) return { status: 'refused', reason: 'observer-prepare' };
+
+      const fast = artifact.preparedRunnerTier === 'algorithm-fast';
+      const runner = retainedRunner ?? create();
+      try {
+        const drawing = await runner.observePrepared(artifact, {
+          ...call,
+          traceOptions: traceOptions ?? call.traceOptions,
+          signal,
+        });
+        signal.throwIfAborted();
+        if (fast && drawing.status !== 'refused' &&
+            ++retainedCases < CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER) {
+          retainedRunner = runner;
+        } else {
+          release(runner);
+        }
+        return drawing;
+      } catch (error) {
+        release(runner);
+        throw error;
+      }
+    };
+
     return {
       observe(call): Promise<Drawing> {
-        if (lifetime.signal.aborted) {
-          return Promise.reject(lifetime.signal.reason);
-        }
-        const create = authority?.createObserverRunner;
-        if (!create) {
-          return Promise.resolve({ status: 'refused', reason: 'recorder-unavailable' });
-        }
-        const signal = call.signal
-          ? AbortSignal.any([call.signal, lifetime.signal])
-          : lifetime.signal;
-        const fast = artifact.preparedRunnerTier === 'algorithm-fast';
-        const execute = async (): Promise<Drawing> => {
-          signal.throwIfAborted();
-          const runner = retainedRunner ?? create.call(authority);
-          try {
-            const drawing = await runner.observePrepared(artifact, {
-              ...call,
-              traceOptions: traceOptions ?? call.traceOptions,
-              signal,
-            });
-            signal.throwIfAborted();
-            if (fast && drawing.status !== 'refused' &&
-                ++retainedCases < CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER) {
-              retainedRunner = runner;
-            } else {
-              release(runner);
-            }
-            return drawing;
-          } catch (error) {
-            release(runner);
-            throw error;
-          }
-        };
-        const execution = (fast ? tail.then(execute) : execute()).finally(() => {
-          active.delete(execution);
-        });
-        if (fast) tail = execution.then(() => undefined, () => undefined);
-        active.add(execution);
+        if (lifetime.signal.aborted) return Promise.reject(lifetime.signal.reason);
+        const execution = tail.then(() => observe(call));
+        tail = execution.then(() => undefined, () => undefined);
         return execution;
       },
       dispose() {
         if (disposal) return disposal;
         lifetime.abort();
-        disposal = Promise.allSettled(active).then(async () => {
+        disposal = tail.then(async () => {
           if (retainedRunner) release(retainedRunner);
-          await compiler.disposePreparedProgram(artifact);
+          if (artifact) await compiler.disposePreparedProgram(artifact);
         });
         return disposal;
       },
