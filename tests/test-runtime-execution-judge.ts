@@ -3020,6 +3020,7 @@ function receiptFixture(options: {
   nativeAdmission?: boolean;
   prepareObserver?: () => Promise<void>;
   workerAcks?: boolean;
+  providerMarks?: boolean;
 } = {}) {
   const state = makePreparedState({
     failPreparation: options.compileFailure ?? false,
@@ -3164,7 +3165,9 @@ function receiptFixture(options: {
         dispose() { observerReleases += 1; notify(); },
       };
     },
-    mark(marker: (typeof markers)[number]) { markers.push(marker); notify(); },
+    ...(options.providerMarks !== false ? {
+      mark(marker: (typeof markers)[number]) { markers.push(marker); notify(); },
+    } : {}),
   };
   const host = createBrowserJudgeHostFromRuntimeHost(browserHostFor(provider, () => registration), {
     interactiveExecutionIdleTimeoutMs: options.idleMs,
@@ -3816,4 +3819,155 @@ test('Judge observation adapters bind once to each runtime host and its selected
     first.dispose();
     second.dispose();
   }
+});
+
+const judgeTestBridgeSymbol = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+type TestBridge = import('../src/internal/judge-test-bridge').JudgeTestBridge;
+type TestBridgeEvent = Parameters<TestBridge['onEvent']>[0];
+
+function installJudgeTestGlobals(t: import('node:test').TestContext, windowRealm = true) {
+  const properties: PropertyKey[] = ['window', 'document', judgeTestBridgeSymbol];
+  for (const key of properties) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
+  if (windowRealm) {
+    Object.defineProperty(globalThis, 'window', { value: globalThis, configurable: true });
+    Object.defineProperty(globalThis, 'document', { value: { defaultView: globalThis }, configurable: true });
+  }
+  return (bridge: TestBridge, enumerable = false) => {
+    Object.defineProperty(globalThis, judgeTestBridgeSymbol, {
+      value: bridge, configurable: true, enumerable,
+    });
+  };
+}
+
+test('trusted Judge bridge observes the complete journal with no provider mark callback', async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const baseline = receiptFixture({ providerMarks: false });
+  t.after(() => baseline.host.dispose());
+  const events: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => events.push(event) });
+  const observed = receiptFixture({ providerMarks: false });
+  t.after(() => observed.host.dispose());
+  const bundle = await receiptBundle();
+
+  function receiptBytes(result: Awaited<ReturnType<typeof baseline.host.evaluateAlgorithm>>) {
+    // The two genuine runs have distinct IDs and clock values. Preserve every
+    // other field byte-for-byte, including the verdict and trace payload.
+    return JSON.stringify(result, (key, value: unknown) =>
+      ['evaluationId', 'sessionId', 'pid', 'runId', 'startedAt', 'endedAt', 'evaluatedAt'].includes(key)
+        ? undefined
+        : value);
+  }
+  const ordinary = await baseline.host.evaluateAlgorithm({ bundle });
+  assert.equal(events.length, 0);
+  assert.equal(receiptBytes(await observed.host.evaluateAlgorithm({ bundle })), receiptBytes(ordinary));
+
+  events.length = 0;
+  const initial = await observed.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+  assert.ok(initial.executionId);
+  const request = { executionId: initial.executionId, tracing: { caseIds: ['A'] } };
+  const cached = await observed.host.execute(request);
+  assert.equal(cached.evaluation.cases[0]?.attachment, initial.evaluation.cases[0]?.attachment);
+  assert.deepEqual(new Set(events.map(({ phase }) => phase)), new Set([
+    'ordinary-write-attempt', 'ordinary-commit', 'observer-start', 'observer-end',
+    'attachment-bind', 'public-resolve', 'observation-cache-hit',
+  ]));
+  const phase = (name: string) => events.findIndex(({ phase }) => phase === name);
+  assert.ok(phase('observer-start') < phase('observer-end'));
+  assert.ok(phase('ordinary-write-attempt') < phase('ordinary-commit'));
+  assert.ok(phase('ordinary-commit') < phase('attachment-bind'));
+  assert.ok(phase('attachment-bind') < phase('public-resolve'));
+  assert.ok(phase('public-resolve') < phase('observation-cache-hit'));
+  assert.deepEqual(events.filter(({ phase }) => phase === 'ordinary-write-attempt').map(({ caseId }) => caseId), ['A', 'B', 'C']);
+  assert.equal(events.filter(({ phase }) => phase === 'attachment-bind').length, 1);
+  const token = events[phase('observer-start')]?.attemptToken;
+  assert.ok(token);
+  for (const event of events) {
+    assert.equal(event.workspaceDigest, bundle.workspaceDigest);
+    assert.equal(event.evaluationId, events[0]?.evaluationId);
+    assert.equal(event.generation, 1);
+    if (['observer-end', 'attachment-bind', 'observation-cache-hit'].includes(event.phase)) {
+      assert.equal(event.caseId, 'A');
+      assert.equal(event.attemptToken, token);
+    }
+  }
+});
+
+test('trusted Judge bridge ACKs only faults applied at the observation boundary', async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bundle = await receiptBundle();
+  for (const [point, fault, reason, preparations, observations] of [
+    ['prepare', 'prepare', 'observer-prepare', 0, 0],
+    ['observe', 'runtime', 'observer-runtime', 1, 0],
+    ['observe', 'deadline', 'observer-timeout', 1, 1],
+    ['encode', 'encode', 'observer-encode', 1, 1],
+  ] as const) {
+    const events: TestBridgeEvent[] = [];
+    install({
+      onEvent: (event) => events.push(event),
+      faultAt: (context) => context.point === point ? fault : undefined,
+    });
+    const f = receiptFixture({ providerMarks: false });
+    try {
+      const result = await f.host.execute({ bundle, tracing: { caseIds: ['A'] } });
+      assert.equal(f.observerCounts()[0], preparations);
+      assert.equal(f.observerCalls.length, observations);
+      const row = result.evaluation.cases[0]!;
+      assert.equal(row.status, 'completed');
+      assert.equal(row.value, 'A');
+      assert.equal(row.attachment?.status === 'refused' && row.attachment.reason, reason);
+      const acks = events.filter((event) => event.phase === 'injection-ack');
+      assert.equal(acks.length, 1);
+      assert.deepEqual(acks[0], {
+        phase: 'injection-ack', point, fault, language: 'javascript',
+        evaluationId: row.attachment?.evaluationId, workspaceDigest: bundle.workspaceDigest,
+        generation: 1, caseId: point === 'prepare' ? undefined : 'A',
+        attemptToken: f.observerCalls[0]?.attemptToken ??
+          events.find(({ phase }) => phase === 'observer-start')?.attemptToken, at: acks[0]?.at,
+      });
+      assert.ok(events.indexOf(acks[0]!) < events.findIndex(({ phase }) => phase === 'attachment-bind'));
+      if (fault === 'deadline') assert.equal(f.observerCalls[0]?.signal?.reason?.name, 'TimeoutError');
+    } finally {
+      f.host.dispose();
+    }
+  }
+});
+
+test('a Judge host ignores a bridge installed after host creation or on an enumerable property', async (t) => {
+  const install = installJudgeTestGlobals(t);
+  let touched = false;
+  const bridge: TestBridge = {
+    onEvent: () => { touched = true; },
+    faultAt: () => { touched = true; return 'prepare'; },
+  };
+  const earlier = receiptFixture();
+  t.after(() => earlier.host.dispose());
+  install(bridge, true);
+  const enumerable = receiptFixture();
+  t.after(() => enumerable.host.dispose());
+  install(bridge);
+  for (const fixture of [earlier, enumerable]) {
+    const result = await fixture.host.execute({ bundle: await receiptBundle(), tracing: { caseIds: ['A'] } });
+    assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
+  }
+  assert.equal(touched, false);
+});
+
+test('a Judge host outside a Window ignores even a non-enumerable injection bridge', async (t) => {
+  const install = installJudgeTestGlobals(t, false);
+  let touched = false;
+  install({
+    onEvent: () => { touched = true; },
+    faultAt: () => { touched = true; return 'prepare'; },
+  });
+  const f = receiptFixture();
+  t.after(() => f.host.dispose());
+  const result = await f.host.execute({ bundle: await receiptBundle(), tracing: { caseIds: ['A'] } });
+  assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
+  assert.equal(touched, false);
 });

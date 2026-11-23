@@ -113,6 +113,7 @@ import {
   RuntimePreparedProgramRegistry,
   judgeAbortError,
 } from './judge-prepared-program';
+import { readJudgeTestBridge, type JudgeTestBridge } from './judge-test-bridge';
 import {
   createBrowserProjectJudge,
   type BrowserProjectJudge,
@@ -237,6 +238,7 @@ interface CreateRuntimeJudgeOptions {
   readonly runtimeControl?: JudgeRuntimeControlPort;
   readonly receiptProvider?: JudgeReceiptProvider;
   readonly receiptHostLifetime?: AbortSignal;
+  readonly testBridge?: JudgeTestBridge;
 }
 
 export interface CreateBrowserJudgeOptions {
@@ -1751,7 +1753,8 @@ class RuntimeJudgeComposition
     private readonly binding: RuntimeJudgeBinding,
     private readonly lifecycleAllowanceMs: number,
     private readonly receiptProvider?: JudgeReceiptProvider,
-    private readonly receiptHostLifetime?: AbortSignal
+    private readonly receiptHostLifetime?: AbortSignal,
+    private readonly testBridge?: JudgeTestBridge
   ) {}
 
   activeSessionIds(): readonly string[] {
@@ -1894,7 +1897,8 @@ class RuntimeJudgeComposition
       const evaluationId = this.nextOpaqueExecutionId('evaluation');
       const schedule = new JudgeObservationSchedule(
         evaluationId, bundle, this.receiptProvider!, selected ?? new Set(),
-        traceOptions && Object.freeze({ ...traceOptions })
+        traceOptions && Object.freeze({ ...traceOptions }),
+        this.testBridge, this.runtime as Language
       );
       const plan = preparedEvaluationPlan(request.plan, true, this.lifecycleAllowanceMs, true);
       const port = new TraceKernelJudgePort({
@@ -2300,7 +2304,8 @@ function createRuntimeJudge(
         options.binding,
         options.provider.lifecycleAllowanceMs ?? DEFAULT_LIFECYCLE_ALLOWANCE_MS,
         options.receiptProvider,
-        options.receiptHostLifetime
+        options.receiptHostLifetime,
+        options.testBridge
       );
       const lifetime = options.receiptHostLifetime;
       const dispose = () => { Effect.runFork(judge.disposeRetainedExecutions()); };
@@ -2321,14 +2326,16 @@ export function createBrowserRuntimeJudge(
   Scope.Scope
 > {
   return composeBrowserRuntimeJudge(
-    options, getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language)
+    options, getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language),
+    undefined, readJudgeTestBridge()
   );
 }
 
 function composeBrowserRuntimeJudge(
   options: CreateBrowserRuntimeJudgeOptions,
   receiptProvider: JudgeReceiptProvider | undefined,
-  receiptHostLifetime?: AbortSignal
+  receiptHostLifetime?: AbortSignal,
+  testBridge?: JudgeTestBridge
 ) {
   // This is the last shared boundary that sees both the selected runtime
   // profile and every requested execution/tracing control. Validate before
@@ -2344,6 +2351,7 @@ function composeBrowserRuntimeJudge(
     runtimeControl: options.runtimeControl,
     receiptProvider,
     receiptHostLifetime,
+    testBridge,
   });
 }
 
@@ -2430,6 +2438,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     );
   const retainedExecutions = new Map<string, RetainedBrowserJudgeExecution>();
   const lifetime = new AbortController();
+  const testBridge = readJudgeTestBridge();
 
   const clearIdleTimer = (retained: RetainedBrowserJudgeExecution): void => {
     if (retained.idleTimer === undefined) return;
@@ -2561,7 +2570,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
         'judge-create',
         () => Effect.runPromise(
           Scope.extend(
-            composeBrowserRuntimeJudge({ host, language, binding }, registration),
+            composeBrowserRuntimeJudge({ host, language, binding }, registration, undefined, testBridge),
             scope
           )
         )
@@ -2623,7 +2632,8 @@ export function createBrowserJudgeHostFromRuntimeHost(
       return composeBrowserRuntimeJudge(
         { host, ...judgeOptions },
         registration,
-        registration ? lifetime.signal : undefined
+        registration ? lifetime.signal : undefined,
+        testBridge
       );
     },
     execute,

@@ -1,5 +1,6 @@
 import type {
   CodeExecutionResult,
+  Language,
   ExecutionResult,
   TraceExecutionOptions,
   RuntimePreparedCodeCall,
@@ -32,6 +33,8 @@ import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../../packages
 import type { Binding } from '../../packages/judge/src/internal/receipt-types';
 import type { JudgeEvaluationResult } from '../../packages/judge/src/model';
 import { VerdictReceiptStore } from '../../packages/judge/src/internal/receipt-store';
+
+import type { JudgeTestBridge } from './judge-test-bridge';
 
 type ObservationRefusal = Extract<Drawing, { status: 'refused' }>;
 type ObservationPreparation = JudgeObservationLease | ObservationRefusal;
@@ -81,14 +84,16 @@ export class JudgeObservationSchedule<Result, Expected> {
     bundle: JudgeAlgorithmBundle<Record<string, unknown>, Expected, Result>,
     private readonly registration: JudgeReceiptProvider,
     private readonly selected: ReadonlySet<string>,
-    private readonly traceOptions: Readonly<TraceExecutionOptions> | undefined
+    private readonly traceOptions: Readonly<TraceExecutionOptions> | undefined,
+    private readonly testBridge: JudgeTestBridge | undefined,
+    private readonly language: Language
   ) {
     this.binding = { evaluationId, workspaceDigest: bundle.workspaceDigest, generation: 1 };
     this.inputs = new Map(bundle.plan.cases.map(({ id, input }) => [id, input]));
-    this.receipt = new VerdictReceiptStore(this.binding, bundle, registration.mark
+    this.receipt = new VerdictReceiptStore(this.binding, bundle, registration.mark || testBridge
       ? ({ event, binding }) => {
           if (event === 'attachment-bind' || event === 'ordinary-write-attempt') {
-            this.mark(event, binding.caseId);
+            this.mark(event, binding.caseId, this.attempts.get(binding.caseId)?.token.token);
           }
         }
       : undefined);
@@ -137,13 +142,30 @@ export class JudgeObservationSchedule<Result, Expected> {
   }
 
   mark(phase: JudgeSchedulePhase, caseId?: string, attemptToken?: string): void {
-    this.registration.mark?.({
+    if (!this.registration.mark && !this.testBridge) return;
+    const marker = {
       phase,
       ...this.binding,
       caseId,
       attemptToken,
       at: globalThis.performance.now(),
-    });
+    };
+    this.testBridge?.onEvent(Object.freeze(marker));
+    this.registration.mark?.(marker);
+  }
+
+  private faultContext(caseId?: string, attemptToken?: string) {
+    return { ...this.binding, language: this.language, caseId, attemptToken };
+  }
+
+  private ack(
+    context: ReturnType<JudgeObservationSchedule<Result, Expected>['faultContext']>,
+    point: 'prepare' | 'observe' | 'encode',
+    fault: 'prepare' | 'runtime' | 'deadline' | 'encode'
+  ): void {
+    this.testBridge?.onEvent(Object.freeze({
+      ...context, phase: 'injection-ack', point, fault, at: globalThis.performance.now(),
+    }));
   }
 
   async dispose(reason: Error = judgeAbortError()): Promise<void> {
@@ -170,6 +192,13 @@ export class JudgeObservationSchedule<Result, Expected> {
         this.registration.capabilities.observationPrepareDeadlineMs ?? 30_000
       );
       try {
+        if (this.testBridge?.faultAt) {
+          const context = this.faultContext();
+          if (this.testBridge.faultAt({ ...context, point: 'prepare' }) === 'prepare') {
+            this.ack(context, 'prepare', 'prepare');
+            return observationRefused('observer-prepare');
+          }
+        }
         const prepared = this.registration.prepareObservation(program, signal, this.traceOptions).then(async (artifact) => {
           if ('status' in artifact) return artifact;
           if (signal.aborted) await artifact.dispose();
@@ -259,13 +288,30 @@ export class JudgeObservationSchedule<Result, Expected> {
         const attemptToken = attempt.token.token;
         this.mark('observer-start', caseId, attemptToken);
         try {
-          return await waitForSignal(lease.observe({
+          const context = this.testBridge?.faultAt && this.faultContext(caseId, attemptToken);
+          const fault = context && this.testBridge?.faultAt?.({ ...context, point: 'observe' });
+          if (context && fault === 'runtime') {
+            this.ack(context, 'observe', fault);
+            return observationRefused('observer-runtime');
+          }
+          const work = waitForSignal(lease.observe({
             program: this.program!,
             inputs: structuredClone(this.inputs.get(caseId)!),
             traceOptions: this.traceOptions,
             attemptToken,
             signal: observationSignal,
           }), observationSignal);
+          if (context && fault === 'deadline') {
+            deadline.abort(new DOMException('Observation timed out.', 'TimeoutError'));
+            this.ack(context, 'observe', fault);
+          }
+          const drawing = await work;
+          if (context && (drawing?.status === 'drawn' || drawing?.status === 'truncated') &&
+            this.testBridge?.faultAt?.({ ...context, point: 'encode' }) === 'encode') {
+            this.ack(context, 'encode', 'encode');
+            return observationRefused('observer-encode');
+          }
+          return drawing;
         } catch (cause) {
           if (deadline.signal.aborted) return observationRefused('observer-timeout');
           return observationRefused(isTraceUnavailableError(cause) ? 'unsupported-program' : 'observer-runtime');
