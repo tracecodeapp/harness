@@ -1,4 +1,5 @@
 import { isDeepStrictEqual as equal } from 'node:util';
+import { refusedDrawing } from './producer.mjs';
 
 export function inspect(witness, receipt) {
   const { request, expected } = witness;
@@ -21,11 +22,26 @@ export function inspect(witness, receipt) {
       typeof diagnostic.message === 'string' && diagnostic.message.trim()));
   }
 
+  const producerOnly = request.mode === 'producer-only';
+  if (producerOnly) {
+    const supported = Object.entries(request.supportedSites).flatMap(([site, kinds]) =>
+      kinds.map(kind => ({ range: request.sites[site], kind })));
+    const matchesSite = (event, site) => event?.kind === site.kind && equal(event.range, site.range);
+    const { events, refusals } = receipt.attachment ?? {};
+    check('producer/unsupported-events', [], Array.isArray(events)
+      ? events.filter(event => !supported.some(site => matchesSite(event, site))) : undefined);
+    check('producer/supported-refusals', [], Array.isArray(refusals)
+      ? refusals.filter(refusal => supported.some(site => matchesSite(refusal, site))) : undefined);
+    const expectedRefusals = expected.attachment.refusals;
+    check('producer/refusals', true, Array.isArray(refusals) && refusals.length === expectedRefusals.length &&
+      expectedRefusals.every(expected => refusals.filter(actual => equal(expected, actual)).length === 1));
+    check('producer/no-drawing', true, receipt.drawing === undefined || equal(receipt.drawing, refusedDrawing));
+  }
   // A renderer that changes the referent of a displayed step must fail
   // even if its own IDs are internally consistent.
   const actualIdentities = new Map();
   const expectedIdentities = new Map();
-  for (const layer of ['attachment', 'drawing']) {
+  for (const layer of producerOnly ? ['attachment'] : ['attachment', 'drawing']) {
     const actual = receipt[layer];
     const oracle = expected.attachment;
     check(layer + '/status', oracle.status, actual?.status);
@@ -57,6 +73,7 @@ export function inspect(witness, receipt) {
 
   const { status } = receipt.attachment ?? {};
   const passed = assertions.every(a => a.pass);
+  if (producerOnly && passed) return { status: 'producer-complete', assertions };
   if (passed) return { status: { complete: 'complete', prefix: 'exact-prefix', refused: 'authorized-refusal' }[status], assertions };
   if (status === 'refused' && expected.attachment.status !== 'refused' &&
       receipt.attachment?.events?.length === 0 && receipt.drawing?.events?.length === 0) {
@@ -71,9 +88,11 @@ export function inspect(witness, receipt) {
 
 export function knownGood(witness) {
   const { request, expected } = witness;
-  const attachment = { ...expected.attachment, events: expected.attachment.events.map(({ site, ...event }) => ({
-    ...event, range: request.sites[site],
-  })) };
+  const attachment = structuredClone({ ...expected.attachment,
+    events: expected.attachment.events.map(({ site, ...event }) => ({
+      ...event, range: request.sites[site],
+    })),
+  });
   const ordinary = expected.ordinary.kind === 'completed'
     ? { ...expected.ordinary, console: [] }
     : { kind: 'compile-error', diagnostic: {
@@ -81,8 +100,8 @@ export function knownGood(witness) {
     } };
   return {
     caseId: request.id, sourceSha256: request.sourceSha256, ordinary,
-    attachment, drawing: structuredClone(attachment),
+    attachment, ...(request.mode === 'producer-only' ? {} : { drawing: structuredClone(attachment) }),
   };
 }
 
-export const passingStatuses = new Set(['complete', 'exact-prefix', 'authorized-refusal']);
+export const passingStatuses = new Set(['complete', 'exact-prefix', 'authorized-refusal', 'producer-complete']);

@@ -7,14 +7,19 @@ import { pathToFileURL } from 'node:url';
 import { catalogWitnesses, syntheticWitnesses } from './cases.mjs';
 import { controls } from './controls.mjs';
 import { inspect, knownGood, passingStatuses } from './oracle.mjs';
+import { producerWitnesses } from './producer.mjs';
+import { qualifyProducerControls } from './producer-controls.mjs';
+import { gradeProducerHistory } from './producer-history.mjs';
 
 const [command, catalog, argument, receiptPath] = process.argv.slice(2);
-if (!catalog || !['candidate', 'controls', 'prototype', 'receipt'].includes(command)) {
-  throw new Error('Usage: run.mjs <candidate|controls|prototype|receipt> <catalog-root> ' +
-    '[adapter.mjs|replay.json|case-id|-] [report.json]');
+const producer = ['producer-only', 'producer-controls', 'producer-receipt',
+  'producer-inputs', 'producer-legacy', 'producer-prototype'].includes(command);
+if (!catalog || (!producer && !['candidate', 'controls', 'prototype', 'receipt'].includes(command))) {
+  throw new Error('Usage: run.mjs <command> <catalog-root> [adapter.mjs|replay.json|case-id|-] [report.json]');
 }
 const references = catalogWitnesses(catalog);
-const witnesses = [...syntheticWitnesses, ...references];
+const fullWitnesses = [...syntheticWitnesses, ...references];
+const witnesses = producer ? producerWitnesses(fullWitnesses) : fullWitnesses;
 const manifestSha256 = createHash('sha256').update(JSON.stringify(witnesses)).digest('hex');
 const rows = [];
 const candidateCase = async (adapter, witness) => {
@@ -26,17 +31,34 @@ const candidateCase = async (adapter, witness) => {
   }
 };
 
-if (command === 'receipt') {
+const assertExit = (id, receipt, exit) => {
+  const child = spawnSync(process.execPath, [process.argv[1], producer ? 'producer-receipt' : 'receipt', catalog, id], {
+    input: JSON.stringify(receipt), encoding: 'utf8', timeout: 10000,
+  });
+  assert.equal(child.status, exit, child.stderr || child.error?.message || child.stdout);
+  return child.status;
+};
+if (command === 'producer-inputs') {
+  const json = JSON.stringify(witnesses.map(w => w.request), null, 2) + '\n';
+  if (argument) writeFileSync(argument, json);
+  else process.stdout.write(json);
+  process.exit(0);
+}
+if (command === 'receipt' || command === 'producer-receipt') {
   const witness = witnesses.find(w => w.request.id === argument);
   if (!witness) throw new Error('Unknown fixture ' + argument);
   const raw = JSON.parse(readFileSync(0, 'utf8'));
   rows.push({ id: argument, ...inspect(witness, raw), raw });
-} else if (command === 'candidate') {
+} else if (command === 'candidate' || command === 'producer-only') {
   const adapter = await import(pathToFileURL(resolve(argument)).href);
   if (typeof adapter.runCase !== 'function') throw new Error('Adapter must export runCase(request)');
   for (const witness of witnesses) {
     rows.push({ id: witness.request.id, ...await candidateCase(adapter, witness) });
   }
+} else if (command === 'producer-controls') {
+  rows.push(...qualifyProducerControls(witnesses, assertExit));
+} else if (command === 'producer-legacy' || command === 'producer-prototype') {
+  rows.push(...gradeProducerHistory(command, witnesses, JSON.parse(readFileSync(argument, 'utf8'))));
 } else if (command === 'prototype') {
   const data = JSON.parse(readFileSync(argument, 'utf8'));
   for (const witness of references) {
@@ -72,13 +94,6 @@ if (command === 'receipt') {
   }
 } else {
   const good = new Map(witnesses.map(witness => [witness.request.id, knownGood(witness)]));
-  const assertExit = (id, receipt, exit) => {
-    const child = spawnSync(process.execPath, [process.argv[1], 'receipt', catalog, id], {
-      input: JSON.stringify(receipt), encoding: 'utf8', timeout: 10000,
-    });
-    assert.equal(child.status, exit, child.stderr || child.error?.message || child.stdout);
-    return child.status;
-  };
   const { chromium } = await import('playwright');
   const browser = await chromium.launch({ channel: 'chromium' });
   try {
@@ -144,8 +159,8 @@ for (const row of rows) {
   const failed = row.assertions.filter(a => !a.pass);
   console.log(row.id, row.status, failed.length ? JSON.stringify(failed[0]) : '', row.error ?? '');
 }
-const report = { command, manifestSha256, rows, counts: Object.fromEntries([...new Set(rows.map(row => row.status))].map(status =>
+const report = { command, mode: producer ? 'producer-only' : 'full-drawing', manifestSha256, rows, counts: Object.fromEntries([...new Set(rows.map(row => row.status))].map(status =>
   [status, rows.filter(row => row.status === status).length])) };
 console.log(JSON.stringify(report.counts));
 if (receiptPath) writeFileSync(receiptPath, JSON.stringify(report, null, 2) + '\n');
-if (command !== 'controls' && rows.some(row => !passingStatuses.has(row.status))) process.exitCode = 1;
+if (command !== 'controls' && command !== 'producer-controls' && rows.some(row => !passingStatuses.has(row.status))) process.exitCode = 1;

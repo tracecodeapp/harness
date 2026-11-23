@@ -9,6 +9,7 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { legacyCases, lineOf } from './legacy-cases.mjs';
 
+const producerRequests = process.argv[3] && JSON.parse(await readFile(process.argv[3], 'utf8'));
 const sha256 = (data) => createHash('sha256').update(data).digest('hex');
 const work = await mkdtemp(join(tmpdir(), 'cpp-step-gate-'));
 let browser;
@@ -96,7 +97,11 @@ try {
   }, { assetRoot, compilerAssets });
 
   const rows = [];
-  for (const c of legacyCases) {
+  const cases = producerRequests
+    ? [...producerRequests.map(request => ({ ...request, code: request.source })),
+      legacyCases.find(c => c.id === 'short-skipped-field')]
+    : legacyCases;
+  for (const c of cases) {
     const assertions = [];
     const check = (key, expected, actual) => assertions.push({
       id: c.id + '/' + key, expected, actual, pass: equal(expected, actual),
@@ -104,6 +109,11 @@ try {
     let raw;
     try {
       raw = await page.evaluate(c => window.runWitness(c), c);
+      if (producerRequests) {
+        rows.push({ id: c.id, sourceSha256: sha256(c.code), raw });
+        console.log(c.id, raw.ordinary.kind, raw.traced.kind);
+        continue;
+      }
       if (c.invalid) {
         check('ordinary-compile-diagnostic', ['failed', 'compile', true],
           [raw.ordinary.kind, raw.ordinary.diagnosticStage, Boolean(raw.ordinary.error)]);
@@ -140,7 +150,7 @@ try {
     head, subject, workerSha256, compiler: lock.releaseId, browser: browser.version(), rows,
   }, null, 2) + '\n');
   // An expected historical red must still exit red.
-  if (rows.some(row => row.status !== 'pass')) process.exitCode = 1;
+  if (rows.some(row => producerRequests ? !!row.raw.setupError : row.status !== 'pass')) process.exitCode = 1;
 } finally {
   await browser?.close();
   if (server) await new Promise(ready => server.close(ready));
