@@ -2,8 +2,8 @@
   "schema": "tracecode.runtime-assets-lock.v1",
   "harness": {
     "name": "@tracecode/harness",
-    "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.40876e6350d8aa3056fc87440cefb008c24d216a281f7aa56291174e0673ab03"
+    "version": "0.20.4",
+    "releaseId": "@tracecode/harness@0.20.4+sha256.40876e6350d8aa3056fc87440cefb008c24d216a281f7aa56291174e0673ab03"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
   "packageTreeSha256": "40876e6350d8aa3056fc87440cefb008c24d216a281f7aa56291174e0673ab03",
