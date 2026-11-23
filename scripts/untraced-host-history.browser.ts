@@ -106,16 +106,36 @@ function traceEvidence(evaluation: JudgeEvaluationResult) {
     status: evaluation.status,
     compileFailure: evaluation.compile?.failure,
     cases: evaluation.cases.map((item) => ({
+      caseId: item.caseId,
       status: item.status,
       verdict: item.verdict.kind,
       value: item.value,
       failure: item.failure,
       traceSteps: (item.trace as { traceStepCount?: number } | undefined)?.traceStepCount,
-      attachment: item.attachment && { status: item.attachment.status, reason: 'reason' in item.attachment ? item.attachment.reason : undefined },
+      attachment: item.attachment && {
+        caseId: item.attachment.caseId,
+        status: item.attachment.status,
+        reason: 'reason' in item.attachment ? item.attachment.reason : undefined,
+      },
+      hasTrace: item.trace !== undefined,
       hasReturnEvent: (item.trace as { events?: { kind: string }[] } | undefined)?.events?.some(({ kind }) => kind === 'return'),
       diagnostics: item.diagnostics.map(({ code, severity, message }) => ({ code, severity, message })),
     })),
   };
+}
+
+type TraceEvidence = ReturnType<typeof traceEvidence>;
+
+function witnessedTerminalObservation(row: TraceEvidence['cases'][number] | undefined, caseId: string): boolean {
+  const attachment = row?.attachment;
+  if (row?.caseId !== caseId || attachment?.caseId !== caseId) return false;
+  if (attachment.status === 'refused') return Boolean(attachment.reason) && !row.hasTrace;
+  return row.hasTrace && (row.traceSteps ?? 0) > 0;
+}
+
+function witnessedCompileRejection(evidence: TraceEvidence): boolean {
+  return evidence.status === 'compile-failed' && evidence.cases.length === 0 &&
+    evidence.compileFailure?.origin === 'program' && evidence.compileFailure.stage === 'compile';
 }
 
 function errorText(error: unknown) {
@@ -212,8 +232,9 @@ function jsRouteCanaries(language: 'javascript' | 'typescript') {
     simple(language, 'top-level-process', `function process() {}\nfunction solve(${arg}) { return n; }`),
     simple(language, 'raw-import-text', 'const text = String.raw`import(x)`;\n' +
       `function solve(${arg}) { return text.length + n; }`),
-  ].map((program) => ({
+  ].map((program): Program => ({
     ...program,
+    expectedStatus: program.id === 'raw-import-text' ? 'compile-failed' : 'passed',
     cases: program.cases.map((item) => ({
       ...item,
       expected: (item.expected as number) + (program.id === 'raw-import-text' ? 9 : 0),
@@ -367,6 +388,7 @@ type PreparedCases = {
   plain: Awaited<ReturnType<typeof bundle>>;
   firstCase?: Awaited<ReturnType<typeof bundle>>;
   stopAtFirstRunaway: boolean;
+  expectedStatus?: Program['expectedStatus'];
 };
 
 let state: {
@@ -391,6 +413,7 @@ export async function setup(language: Language, references: Program[]) {
   for (const program of programs) {
     bundles.set(program.id, {
       plain: await bundle(language, program),
+      expectedStatus: program.expectedStatus,
       stopAtFirstRunaway: program.stopAtFirstRunaway ?? language !== 'python',
       ...(program.stopAtFirstRunaway ? { firstCase: await bundle(language, {
         ...program, cases: program.cases.slice(0, 1),
@@ -439,7 +462,9 @@ export async function history(
   const host = flavor === 'ios'
     ? currentState.iosHost ??= createHost(language)
     : currentState.host;
-  const original = id ? programs.get(id)?.plain : undefined;
+  const prepared = id ? programs.get(id) : undefined;
+  const original = prepared?.plain;
+  const expectCompileRejection = receiptObserver && prepared?.expectedStatus === 'compile-failed';
   let program = simple(language, 'drawing');
   if (kind === 'trace-limit') program = traceLimitProgram(language);
   if (kind === 'runaway') program = fixture(language, 'infinite-loop', 'runaway-drawing');
@@ -475,7 +500,10 @@ export async function history(
           first.status === 'compile-failed'
           ? 'Compilation failed before a continuation could exist. The traced-only failure is covered separately.'
           : undefined;
-        return { kind, initial: first, witnessed: false, excluded };
+        return {
+          kind, initial: first, retained: false, excluded,
+          witnessed: expectCompileRejection && witnessedCompileRejection(first),
+        };
       }
       if (kind === 'abandoned') {
         currentState.abandoned[flavor] = executionId;
@@ -486,12 +514,13 @@ export async function history(
           const continuation = await host.execute({ executionId, tracing: { caseIds: caseIds.slice(1) } });
           const drawing = traceEvidence(continuation.evaluation);
           return {
-            kind, initial: first, continuation: drawing,
+            kind, initial: first, retained: true, continuation: drawing,
             witnessed: !receiptObserver || (
+              !expectCompileRejection &&
               continuation.executionId === executionId &&
-              first.cases[0]?.attachment !== undefined &&
+              witnessedTerminalObservation(first.cases[0], caseIds[0]!) &&
               drawing.cases.length === caseIds.length - 1 &&
-              drawing.cases.every((row) => row.attachment !== undefined || row.status === 'not-run')
+              drawing.cases.every((row, index) => witnessedTerminalObservation(row, caseIds[index + 1]!))
             ),
           };
         }
@@ -544,8 +573,13 @@ export async function history(
       : kind === 'trace-limit' ? hasLimit(traceLimits) || cppSoftCutoff ||
         result.cases.some(({ attachment, traceSteps }) => attachment?.status === 'truncated' && (traceSteps ?? 0) > 0)
       : kind === 'runaway' ? hasLimit(runawayLimits)
-      : kind === 'all' ? result.cases.some((item) => (item.traceSteps ?? 0) > 0) || tracedCompileFailure ||
-        (tracedFailure && (id === 'runtime-error' || id === 'recursive-limit'))
+      : kind === 'all' ? receiptObserver
+        ? expectCompileRejection
+          ? witnessedCompileRejection(result)
+          : result.cases.length === caseIds.length &&
+            result.cases.every((row, index) => witnessedTerminalObservation(row, caseIds[index]!))
+        : result.cases.some((item) => (item.traceSteps ?? 0) > 0) || tracedCompileFailure ||
+          (tracedFailure && (id === 'runtime-error' || id === 'recursive-limit'))
       : kind === 'first-drawing' ? result.cases.some((item) =>
         (item.traceSteps ?? 0) > 0 && (!receiptObserver || item.hasReturnEvent === true))
       : result.cases.some((item) => item.status === 'completed');

@@ -359,7 +359,8 @@ async function runLanguage(browser, url, language, result) {
           const evidence = await call(page, 'history', kind, id, flavor);
           result.histories[name] = evidence;
           if (evidence.excluded) result.exclusions.push({ history: name, reason: evidence.excluded });
-          else if (!evidence.witnessed && expectedStatus !== 'compile-failed') {
+          else if (!evidence.witnessed && (expectedStatus !== 'compile-failed' ||
+              language === 'javascript' || language === 'typescript')) {
             result.coverageGaps.push(`${name}: required trace/continuation not observed`);
           }
           await compare(id, name, target);
