@@ -92,37 +92,92 @@ function submitPolicy(fixture: Fixture, main: boolean) {
   };
 }
 
-function measureJavaRequests() {
+function measureCandidateRequests(language: string) {
   type Request = {
     worker: number; type: string; role?: string; sent: number; received?: number;
-    cases?: number; tier?: string; timings?: Record<string, unknown>;
+    workerKind?: string; mode?: string; observation?: boolean; artifactKey?: string;
+    cases?: number; tier?: string; stopAtFirstRunaway?: boolean;
+    timings?: Record<string, unknown>;
   };
   let nextWorker = 0;
   let requests: Request[] = [];
+  const artifactRoles = new Map<string, string>();
   const NativeWorker = globalThis.Worker;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
-      if (!/\/java-runtime-worker\.js$/.test(new URL(url, location.href).pathname)) return;
+      const parsed = new URL(url, location.href);
+      const monitored = language === 'java'
+        ? /\/java-runtime-worker\.js$/.test(parsed.pathname)
+        : language === 'csharp'
+          ? /\/csharp-worker\.js$/.test(parsed.pathname)
+          : /\/python-worker\.js$/.test(parsed.pathname) &&
+            parsed.searchParams.get('tracecodePythonRole') !== 'runtime-image';
+      if (!monitored) return;
       const worker = ++nextWorker;
       let role: string | undefined;
+      let workerKind: string | undefined;
       const pending = new Map<string, Request>();
       this.addEventListener('message', ({ data }) => {
         const request = pending.get(data?.id);
-        if (!request || (data.type !== request.type && data.type !== 'error')) return;
+        if (!request || data.type === 'batch-case-progress') return;
+        const expected = language === 'python'
+          ? request.type === 'prepare-program' ? 'prepare-result' : 'execute-result'
+          : request.type;
+        if (data.type !== expected && data.type !== 'error') return;
         pending.delete(data.id);
         request.received = performance.now();
-        request.timings = javaWorkerPhaseTimings(data.payload);
-        request.tier = data.payload?.results?.[0]?.algorithmIsolationProfile?.tier;
+        request.timings = language === 'java'
+          ? javaWorkerPhaseTimings(data.payload)
+          : data.payload?.timings;
+        request.tier ??= language === 'java'
+          ? data.payload?.results?.[0]?.algorithmIsolationProfile?.tier
+          : data.payload?.artifact?.isolationProfile?.tier ?? data.payload?.preparedRunnerTier;
+        request.artifactKey ??= data.payload?.compiledArtifactKey;
+        if (request.type === 'prepare-program' && request.artifactKey && request.role) {
+          artifactRoles.set(request.artifactKey, request.role);
+        }
       });
       this.postMessage = (message, options?) => {
-        if (message.id && /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program|execute-prepared-runtime-program-batch)$/.test(message.type)) {
-          const payload = message.payload;
-          if (message.type === 'prepare-runtime-program') {
-            role = payload?.observerOnly ? 'observer' : payload?.mode === 'code' ? 'ordinary' : 'legacy-trace';
+        const typePattern = language === 'java'
+          ? /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program|execute-prepared-runtime-program-batch)$/
+          : language === 'csharp'
+            ? /^(init|warmup|prepare-program|execute-prepared-code|execute-prepared-trace|dispose-prepared-program)$/
+            : /^(prepare-program|execute-prepared-program|execute-prepared-program-batch)$/;
+        if (message.id && typePattern.test(message.type)) {
+          const payload = message.payload ?? {};
+          if (language === 'java' && message.type === 'prepare-runtime-program') {
+            role = payload.observerOnly ? 'observer' : payload.mode === 'code' ? 'ordinary' : 'legacy-trace';
+          } else if (language === 'csharp') {
+            workerKind = payload.runtimeRole ?? workerKind;
+            const artifactKey = payload.prepared?.compiledArtifactKey ?? payload.compiledArtifactKey;
+            role = message.type === 'prepare-program'
+              ? payload.mode === 'code' ? 'ordinary' : 'observer'
+              : message.type === 'execute-prepared-code'
+                ? 'ordinary'
+                : message.type === 'execute-prepared-trace' && payload.observation !== undefined
+                  ? 'observer'
+                  : message.type === 'dispose-prepared-program'
+                    ? artifactRoles.get(artifactKey) ?? role
+                  : role;
+          } else if (language === 'python') {
+            const observation = payload.observationOnly === true || payload.artifact?.observationOnly === true;
+            role = observation ? 'observer' : payload.mode === 'code' ? 'ordinary' : 'legacy-trace';
           }
-          const request = {
-            worker, role, type: message.type, sent: performance.now(), cases: payload?.inputBatch?.length,
+          const request: Request = {
+            worker,
+            workerKind,
+            role,
+            type: message.type,
+            sent: performance.now(),
+            mode: payload.mode,
+            observation: payload.observation !== undefined || payload.observationOnly === true ||
+              payload.artifact?.observationOnly === true,
+            artifactKey: payload.prepared?.compiledArtifactKey ?? payload.artifact?.compiledArtifactKey ??
+              payload.compiledArtifactKey,
+            cases: payload.inputBatch?.length,
+            tier: payload.prepared?.preparedRunnerTier ?? payload.artifact?.isolationProfile?.tier,
+            stopAtFirstRunaway: payload.stopAtFirstRunaway,
           };
           pending.set(message.id, request);
           requests.push(request);
@@ -157,7 +212,10 @@ function measureJavaRequests() {
 export function createSession(language: string, stopSubmit: boolean, candidate = false) {
   if (crossOriginIsolated) throw new Error('Practice requires a non-isolated document');
   const assetBaseUrl = '/workers';
-  const java = candidate && language === 'java' ? measureJavaRequests() : undefined;
+  const measured = candidate && ['java', 'csharp', 'python'].includes(language)
+    ? measureCandidateRequests(language)
+    : undefined;
+  const java = language === 'java' ? measured : undefined;
   const { pythonWorker, javascriptWorker, javascriptAlgorithmWorker, javaWorker, csharpWorker, cppWorker } =
     resolveBrowserRuntimeAssets();
   const host: any = createBrowserJudgeHost({
@@ -209,7 +267,9 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
       try {
         const started = performance.now();
         const warm = await host.warmLanguage(language);
-        return java && collect ? { ...warm, java: java.read(started, performance.now()) } : warm;
+        return measured && collect
+          ? { ...warm, [language]: measured.read(started, performance.now()) }
+          : warm;
       } catch (error) {
         return { error: errorDetails(error) };
       }
@@ -243,7 +303,7 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
         return {
           elapsedMs, builtMs, evaluation, verdict: result.verdict, firstTraceMs: firstTrace?.traceEvents ? elapsedMs : null,
           executionId: Boolean(executionId), warm: await warm, timing: result.timings,
-          ...(java && { java: java.read(started, received) }),
+          ...(measured && { [language]: measured.read(started, received) }),
         };
       } catch (error) {
         return { error: errorDetails(error), warm: await warm };
@@ -264,7 +324,7 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
           dispatchToClickMs: clicked - requestOut,
           evaluation: summarize(result.evaluation),
           timing: result.timings,
-          ...(java && { java: java.read(requestOut, received) }),
+          ...(measured && { [language]: measured.read(requestOut, received) }),
         };
       } catch (error) {
         return { error: errorDetails(error) };

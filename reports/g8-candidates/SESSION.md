@@ -4,19 +4,27 @@ The exclusive timing windows require the coordinator's go after W and the
 TraceCC check clear the host. The staging job only installs, builds, and
 verifies packages. It launches no browser.
 
+Python has a replacement candidate pin,
+`9e2afce5186c62e60a685e937099e51b6814c3dc`, at
+`/root/ci/coord-artifacts/feat-b3-python-9e2afce5186c.tgz` with SHA-256
+`d80eda2b50640065d3b8d62190828e93e548a20d55768b42ca15079bed8a6a6f`.
+Do not stage or time it until the coordinator gives a separate go after its GB
+recheck and Grok read. The withdrawn `1ff364128765` pin must not be used.
+
 ## Scope and time
 
-Plan three exclusive language windows. Start with Java. Estimated time under
-the locks is 70–115 minutes in total, with load pauses as the largest variable.
-These bounds use the archived per-attempt wall times, 20 kept candidate attempts
-per policy, the previous Java warm probe, and the quiet-gate delays from the
-baseline. Staging and time in the host queue are outside these estimates.
+Plan three exclusive language windows. The first Java candidate window showed
+that load pauses, not sample execution, set the deadline: its first eight groups
+spent 6.38 minutes in recorded attempts and 38.93 minutes waiting for the load
+gate. The revised C# and Python bounds add that observed wait to the full
+language schedule cost and retain another 12 to 15 minutes for later groups.
+Staging and time in the host queue are outside these estimates.
 
 | Window | Work | Estimated lock time | Deadline |
 | --- | --- | ---: | ---: |
 | Java step 5 | 25 desktop endpoints, eight phone-class endpoints, five spot cells | 22–42 min | 55 min |
-| C# step 6 | 25 desktop endpoints, eight phone-class endpoints, five spot cells | 25–38 min | 45 min |
-| Python step 3 | 25 desktop endpoints, eight phone-class endpoints for each policy, five spot cells | 23–35 min | 45 min |
+| C# step 6 | 25 desktop endpoints, eight phone-class endpoints, five spot cells | 74 to 82 min | 90 min |
+| Python step 3 | 25 desktop endpoints, eight phone-class endpoints for each policy, five spot cells | 57 to 65 min | 75 min |
 
 Java's warm Binary Search Run is first within the Java window. Its limits are
 830.4 ms median and 944.1 ms p90. It records the worker phases from the Java
@@ -54,8 +62,8 @@ wt=/Users/obinnanwachukwu/.t3/worktrees/harness/t3-df2808a1-af3ae7dd551a2a6c
 stage=/root/ci/g8-candidates.qHpuBwkE
 
 "$ar" "$wt" speed-g8-java "true && bash $stage/session-and-score.sh java 55"
-"$ar" "$wt" speed-g8-csharp "true && bash $stage/session-and-score.sh csharp 45"
-"$ar" "$wt" speed-g8-python "true && bash $stage/session-and-score.sh python 45"
+"$ar" "$wt" speed-g8-csharp "true && bash $stage/session-and-score.sh csharp 90"
+"$ar" "$wt" speed-g8-python "true && bash $stage/session-and-score.sh python 75"
 ```
 
 The staging directory contains the verified installs, the six frozen baseline

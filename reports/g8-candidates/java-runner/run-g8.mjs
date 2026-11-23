@@ -9,7 +9,9 @@ import { extname, join, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { csharpCandidateCacheReceipt, csharpCandidateOutcome } from './csharp-candidate-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
+import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -249,13 +251,26 @@ async function openPage(context, version, url, group) {
   }, {
     language: group.language,
     stopSubmit: version === '0.20.1' || version === 'candidate-main',
-    candidate: version.startsWith('candidate-') && testedLanguage === 'java',
+    candidate: version.startsWith('candidate-') && group.language === testedLanguage,
   });
     return page;
   } catch (error) {
     await page.close().catch(() => {});
     throw error;
   }
+}
+
+function candidateOutcome(result, role, caseCount, caseId, version) {
+  if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
+  if (testedLanguage === 'csharp') return csharpCandidateOutcome(result, role, caseCount, caseId);
+  return pythonCandidateOutcome(result, role, caseCount,
+    role === 'run' || version === 'candidate-main');
+}
+
+function candidateCacheReceipt(result) {
+  if (testedLanguage === 'java') return javaCandidateCacheReceipt(result);
+  if (testedLanguage === 'csharp') return csharpCandidateCacheReceipt(result);
+  return pythonCandidateCacheReceipt(result);
 }
 
 function initial(page, fixture, journey, cold) {
@@ -469,10 +484,10 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if (group.language === 'java' && testedLanguage === 'java' && candidate && !sample.invalid && !sample.refusal) {
+              if (group.language === testedLanguage && candidate && !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
-                sample.invalid = javaCandidateOutcome(sample.initial, role, fixture.cases.length,
-                  role === 'run' ? fixture.cases[0].id : undefined);
+                sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
+                  role === 'run' ? fixture.cases[0].id : undefined, version);
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
@@ -483,8 +498,8 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if (group.language === 'java' && testedLanguage === 'java' && candidate && !sample.invalid && !sample.refusal) {
-                    sample.invalid = javaCandidateOutcome(sample.second, 'click', 1, fixture.cases[1].id);
+                  if (group.language === testedLanguage && candidate && !sample.invalid && !sample.refusal) {
+                    sample.invalid = candidateOutcome(sample.second, 'click', 1, fixture.cases[1].id, version);
                   }
                 }
               }
@@ -500,10 +515,10 @@ try {
             }
           }
 
-          if (group.language === 'java' && candidate) {
+          if (group.language === testedLanguage && candidate) {
             sample.cache = {
-              initial: javaCandidateCacheReceipt(sample.initial),
-              ...(sample.second && { second: javaCandidateCacheReceipt(sample.second) }),
+              initial: candidateCacheReceipt(sample.initial),
+              ...(sample.second && { second: candidateCacheReceipt(sample.second) }),
             };
           }
           sample.wallMs = Date.now() - attemptStarted;
