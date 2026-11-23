@@ -192,7 +192,8 @@ function checkObservation(fixture, route, sample, rows, published, assert) {
   const wrongStart = starts.some((event) => !expectedStarts.includes(event.caseId)) ||
     new Set(starts.map(({ caseId }) => caseId)).size !== starts.length;
   const startCoverage = dispatch.length > 0 && dispatch.every(({ reportsStarts }) => reportsStarts === true);
-  const observableContinuation = fixture.language === 'python';
+  const observableContinuation = fixture.language === 'python' ||
+    (fixture.language === 'cpp' && (observerReply || prior.some(({ kind }) => kind === 'observer-reply')));
   if (wrongStart || startCoverage || (continuation(route) &&
       (dispatch.length > 0 || (observableContinuation && (observerReply || cacheHit))))) {
     assert('ordinary-start-count', !wrongStart && (!continuation(route) || dispatch.length === 0) &&

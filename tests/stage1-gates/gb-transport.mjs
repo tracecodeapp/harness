@@ -124,9 +124,25 @@ export function installJournal(fixture) {
     }
 
     #trackJudgeWorker(message, payload, rows) {
-      if (fixture.gate !== 'G5' || !request || typeof message.protocolToken !== 'string' ||
+      const cpp = fixture.language === 'cpp';
+      if ((!cpp && fixture.gate !== 'G5') || !request || typeof message.protocolToken !== 'string' ||
           !message.protocolToken) return;
       const correlated = { request, generation: this.#generation, commandId: message.id };
+      if (cpp) {
+        const single = message.type === 'execute-prepared-runtime-program';
+        if (!single && message.type !== 'execute-prepared-runtime-program-batch') return;
+        const ordinary = payload.mode === 'code';
+        const attemptToken = single && payload.mode === 'trace' ? payload.attemptToken : undefined;
+        if (!ordinary && typeof attemptToken !== 'string') return;
+        this.#judgeWire.set(message.id, {
+          correlated, rows, ordinary, token: message.protocolToken, attemptToken,
+          terminal: message.type, cpp: true,
+        });
+        if (ordinary && fixture.gate === 'G5') {
+          record('ordinary-dispatch', { ...correlated, rows, reportsStarts: payload.reportCaseProgress === true });
+        }
+        return;
+      }
       if (['javascript', 'typescript'].includes(fixture.language) && message.type === 'observe-execution' &&
           typeof payload.attemptToken === 'string') {
         this.#judgeWire.set(message.id, {
@@ -153,14 +169,22 @@ export function installJournal(fixture) {
       if (wire.ordinary && type === 'batch-case-progress' && payload?.phase === 'started') {
         record('ordinary-start', { ...wire.correlated, caseId: wire.rows[payload.index], index: payload.index });
       }
-      if (type !== 'execute-result' && type !== 'error') return;
+      if (wire.cpp && wire.ordinary && type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
+        const index = payload.detail?.caseIndex;
+        record(fixture.gate === 'G4' ? 'worker-started' : 'ordinary-start', {
+          ...wire.correlated, caseId: wire.rows[index], index, mode: 'code',
+        });
+      }
+      const terminal = wire.terminal ?? 'execute-result';
+      if (type !== terminal && type !== 'error') return;
       this.#judgeWire.delete(id);
-      if (!wire.ordinary && type === 'execute-result') {
+      if (wire.cpp && payload?.observation?.attemptToken !== wire.attemptToken) return;
+      if (!wire.ordinary && type === terminal) {
         record('observer-reply', {
           ...wire.correlated,
           caseId: wire.rows[0],
-          ...(wire.attemptToken === undefined ? {} : {
-            attemptToken: wire.attemptToken,
+          ...(wire.attemptToken === undefined ? {} : { attemptToken: wire.attemptToken }),
+          ...(wire.attemptToken === undefined || wire.cpp ? {} : {
             drawing: payload?.attemptToken === wire.attemptToken ? payload.drawing : null,
           }),
           recorder: payload?.observation,

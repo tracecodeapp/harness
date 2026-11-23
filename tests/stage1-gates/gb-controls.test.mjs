@@ -368,3 +368,59 @@ test('an encoder injection ACK needs a preceding anchored recorder reply for the
   assert(report.missing.includes('G5/javascript/observer-encoder-fault/run-first/A/recorder-boundary'));
   assert(report.receipts.some(({ id, status }) => id.endsWith('/A/injection-ack') && status === 'passed'));
 });
+
+test('C++ collects only correlated ordinary starts and observer attempts', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const originalWorker = globalThis.Worker;
+  globalThis.Worker = class FixtureWorker {
+    addEventListener(_, listener) { this.listener = listener; }
+    postMessage() {}
+    reply(data, isTrusted = true) { this.listener({ data, isTrusted }); }
+  };
+  const journal = installJournal(fixture('cpp', 'stdout'));
+  try {
+    journal.track('run-all');
+    const worker = new Worker('fixture-worker.js');
+    const batch = {
+      id: 'batch', protocolToken: 'batch-token', type: 'execute-prepared-runtime-program-batch',
+      payload: { mode: 'code', reportCaseProgress: true, inputBatch: [{ n: 7 }, { n: 11 }] },
+    };
+    worker.postMessage(batch);
+    const start = {
+      id: batch.id, protocolToken: batch.protocolToken, type: 'runtime-progress',
+      payload: { stage: 'ordinary-case-started', detail: { caseIndex: 0 } },
+    };
+    worker.reply({ ...start, protocolToken: 'wrong-token' });
+    worker.reply(start, false);
+    worker.reply(start);
+    worker.reply({ ...start, payload: { ...start.payload, detail: { caseIndex: 1 } } });
+    worker.reply({ id: batch.id, protocolToken: batch.protocolToken, type: batch.type, payload: {} });
+    worker.reply(start); // A progress packet after the command is closed cannot count.
+    assert.deepEqual(journal.since(0).filter(({ kind }) => kind === 'ordinary-start').map(({ caseId }) => caseId), ['A', 'B']);
+
+    const observe = {
+      id: 'draw', protocolToken: 'draw-token', type: 'execute-prepared-runtime-program',
+      payload: { mode: 'trace', inputs: { n: 7 }, attemptToken: 'attempt-1' },
+    };
+    const reply = {
+      id: observe.id, protocolToken: observe.protocolToken, type: observe.type,
+      payload: {
+        trace: { schemaVersion: 'runtime-trace-2026-04-28', events: [] },
+        observation: { attemptToken: 'attempt-1', recorderCompleted: true, cut: 'byte-budget', attemptedEvents: 1 },
+      },
+    };
+    worker.postMessage(observe);
+    worker.reply({ ...reply, payload: { ...reply.payload, observation: { ...reply.payload.observation, attemptToken: 'wrong-attempt' } } });
+    assert.equal(journal.since(0).filter(({ kind }) => kind === 'observer-reply').length, 0);
+    worker.postMessage(observe);
+    worker.reply(reply);
+    const receipts = journal.since(0).filter(({ kind }) => kind === 'observer-reply');
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].caseId, 'A');
+    assert.deepEqual(receipts[0].recorder, reply.payload.observation);
+    assert.deepEqual(receipts[0].events, []);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+  }
+});
