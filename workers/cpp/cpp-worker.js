@@ -6319,6 +6319,29 @@ function resolveCppObjectMethodMacro(source, operation) {
   return operation;
 }
 
+// Operation names that resolveCppObjectMethodMacro can map to a different
+// method: every `#define NAME target` macro name, and `delete` (a C++ keyword,
+// so a learner names the method `deleteKey`). The prepared ops-class driver
+// reads operation names at run time, so it dispatches these aliases up front
+// and they must resolve exactly as the single-case drivers resolve them.
+function resolveCppObjectMethodAliases(source, methodNames) {
+  const cleaned = stripComments(source);
+  const candidates = new Set(['delete']);
+  const macroPattern = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*$/gm;
+  let macroMatch;
+  while ((macroMatch = macroPattern.exec(cleaned))) {
+    candidates.add(macroMatch[1]);
+  }
+  const aliases = new Map();
+  for (const operation of candidates) {
+    // A method literally named as the operation is dispatched by name and wins.
+    if (methodNames.has(operation)) continue;
+    const target = resolveCppObjectMethodMacro(source, operation);
+    if (target !== operation && methodNames.has(target)) aliases.set(operation, target);
+  }
+  return aliases;
+}
+
 function cleanCppReturnType(returnType) {
   return String(returnType || '')
     .split(/\r?\n/)
@@ -11704,6 +11727,12 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   for (const [methodName] of groupedMethods) {
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(methodName)}) {`);
+    lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
+    lines.push('      }');
+  }
+  for (const [operationName, methodName] of resolveCppObjectMethodAliases(userCode, groupedMethods)) {
+    const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
+    lines.push(`      if (__tc_operation_name == ${cppStringLiteral(operationName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
     lines.push('      }');
   }
