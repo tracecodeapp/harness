@@ -5,9 +5,19 @@ set -euo pipefail
 candidate=b025fdb8220694cdfe96b136a0b8bb82843f7371
 canonical_sha=7669429b3c0937853eb06e3afb5c51f4f9715be86d7564e4fca4e925832f5460
 subject=${TRACECODE_STAGE1_SUBJECT:-$candidate}
+# A carried-forward step candidate: an exact commit plus its packed tarball and
+# independently pinned SHA-256 (G7: never rebuild to compare; install the carried bytes).
+carried_tarball=${TRACECODE_STAGE1_SUBJECT_TARBALL:-}
+carried_sha=${TRACECODE_STAGE1_SUBJECT_SHA256:-}
+carried=0
 case "$subject" in
   "$candidate"|e13bf6ec1b67681eede99c8dea1df951b424eb91|15ebff79943cf991ed5f4921fd9609c3b48f33d3|published-0.17.1) ;;
-  *) echo "Unrecognized gate subject $subject" >&2; exit 2 ;;
+  *)
+    if [[ "$subject" =~ ^[0-9a-f]{40}$ && -n "$carried_tarball" && "$carried_sha" =~ ^[0-9a-f]{64}$ ]]; then
+      carried=1
+    else
+      echo "Unrecognized gate subject $subject (a step candidate needs a 40-hex SHA plus TRACECODE_STAGE1_SUBJECT_TARBALL and TRACECODE_STAGE1_SUBJECT_SHA256)" >&2; exit 2
+    fi ;;
 esac
 job_root=$PWD
 run_id=${1:-baseline}
@@ -36,6 +46,15 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
     git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/companion-source.sha"
     corepack pnpm --dir "$job_root/gate-candidate" install --frozen-lockfile --prefer-offline \
       >"$evidence/companion-install.log" 2>&1 || { tail -40 "$evidence/companion-install.log"; exit 1; }
+  elif [ "$carried" = 1 ]; then
+    printf '%s  %s\n' "$carried_sha" "$carried_tarball" | sha256sum --check
+    cp "$carried_tarball" "$job_root/gate-package/tracecode-harness-candidate.tgz"
+    git clone --quiet --no-checkout /root/ci/harness.git "$job_root/gate-candidate"
+    git -C "$job_root/gate-candidate" checkout --quiet --detach "$subject"
+    git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/companion-source.sha"
+    [ "$(cat "$evidence/companion-source.sha")" = "$subject" ]
+    corepack pnpm --dir "$job_root/gate-candidate" install --frozen-lockfile --prefer-offline \
+      >"$evidence/companion-install.log" 2>&1 || { tail -40 "$evidence/companion-install.log"; exit 1; }
   elif [ "$subject" = published-0.17.1 ]; then
     npm pack @tracecode/harness@0.17.1 --ignore-scripts --pack-destination "$job_root/gate-package" >"$evidence/build.log" 2>&1 || { tail -60 "$evidence/build.log"; exit 1; }
   else
@@ -57,6 +76,9 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   if [ "$subject" = "$candidate" ]; then
     printf '%s  %s\n' "$canonical_sha" "$tarball" | sha256sum --check
   fi
+  if [ "$carried" = 1 ]; then
+    printf '%s  %s\n' "$carried_sha" "$tarball" | sha256sum --check
+  fi
   sha256sum "$tarball" >"$job_root/gate-package/tarball.sha256"
   printf '%s\n' "$subject" >"$job_root/gate-package.ready"
 fi
@@ -65,6 +87,9 @@ sha256sum --check --status "$job_root/gate-package/tarball.sha256"
 read -r _ tarball <"$job_root/gate-package/tarball.sha256"
 if [ "$subject" = "$candidate" ]; then
   printf '%s  %s\n' "$canonical_sha" "$tarball" | sha256sum --check --status
+fi
+if [ "$carried" = 1 ]; then
+  printf '%s  %s\n' "$carried_sha" "$tarball" | sha256sum --check --status
 fi
 if [ ! -f "$consumer/.installed" ]; then
   mkdir -p "$consumer"
@@ -88,7 +113,7 @@ cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
 set +e
-if [ "$subject" = "$candidate" ]; then
+if [ "$subject" = "$candidate" ] || [ "$carried" = 1 ]; then
   export TRACECODE_STAGE1_CANDIDATE_SOURCE="$job_root/gate-candidate"
 fi
 TRACECODE_STAGE1_VERIFIED_JUDGE="$installed_judge" TRACECODE_STAGE1_SUBJECT="$subject" TRACECODE_STAGE1_FILTER="$filter" TRACECODE_STAGE1_APP_INPUT="$app_input" TRACECODE_STAGE1_MUX_INPUT="$mux_input" \
