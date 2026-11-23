@@ -123,7 +123,7 @@ test('the selected legacy producer draws its recorded events and refuses an empt
           assert.equal(call.attemptToken, request.attemptToken);
           const base = {
             trace, executionTimeMs: 1, consoleOutput: ['one', 'two\n', ''],
-            observation: { attemptToken: request.attemptToken, recorderCompleted: true, attemptedEvents: 1 },
+            observation: { attemptToken: request.attemptToken, recorderEnabled: true, recorderCompleted: true, attemptedEvents: 1 },
           };
           if (variant === 'trapped') {
             return { ...base, kind: 'failed', error: 'trap', diagnosticStage: 'runtime' };

@@ -595,6 +595,33 @@ async function main(): Promise<void> {
       const productReceiptPaths = await assertCppProductReceiptPaths();
       const ackClient = new CppWorkerClient(workerOptions);
       try {
+        // The public legacy trace binding still uses the guest's historical
+        // hard line cap. The observation-only build above is where it changed.
+        const hardBudget = await ackClient.prepareRuntimeProgram({
+          mode: 'trace',
+          code: 'class Solution { public:\\n int solve(int n) {\\n int total = 0;\\n for (int i = 0; i < 20000; ++i) {\\n total += i;\\n }\\n return n;\\n }\\n};',
+          functionName: 'solve',
+          traceOptions: { maxTraceSteps: 2, maxLineEvents: 12000, maxSingleLineHits: 1000, maxStoredEvents: 16000 },
+        });
+        if (!hardBudget.success) throw new Error('legacy budget control failed to prepare ' + JSON.stringify(hardBudget));
+        const stopped = await ackClient.executePreparedTrace(hardBudget.handle, { inputs: { n: 3 } });
+        if (stopped.kind !== 'limit' || stopped.reason !== 'single-line-limit') {
+          throw new Error('legacy budget control did not report a single-line cutoff: ' + JSON.stringify(stopped));
+        }
+        const disabled = await ackClient.prepareRuntimeProgram({
+          mode: 'trace',
+          code: 'class Solution { public:\\n int solve(int n) {\\n return n;\\n }\\n};',
+          functionName: 'solve',
+          observationOnly: true,
+        });
+        if (!disabled.success) throw new Error('recorder disable control failed to prepare');
+        const noRecorder = await ackClient.executePreparedTrace(disabled.handle, {
+          inputs: { n: 3 }, recordTrace: false, attemptToken: 'disabled-recorder',
+        });
+        if (noRecorder.observation?.recorderEnabled !== false || noRecorder.observation?.recorderCompleted ||
+            noRecorder.observation?.attemptedEvents !== 0 || noRecorder.trace.events.length !== 0) {
+          throw new Error('native recorder disable ACK was missing or invalid: ' + JSON.stringify(noRecorder));
+        }
         const standalone = await ackClient.executeCodeBatch({
           code: 'class Solution { public: int add(int a) { return a + 1; } };',
           functionName: 'add',

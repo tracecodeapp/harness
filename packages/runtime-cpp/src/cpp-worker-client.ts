@@ -52,6 +52,7 @@ export type {
 /** Raw wire payload from the tracing commands; lifted into the outcome union here. */
 export interface CppRecorderEvidence {
   readonly attemptToken: string;
+  readonly recorderEnabled: boolean;
   readonly recorderCompleted: boolean;
   readonly attemptedEvents: number;
   readonly cut?: Cut;

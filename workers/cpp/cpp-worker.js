@@ -12451,7 +12451,7 @@ function cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timing
 
 // Observation retains recorder events only. The legacy UI path still uses
 // finalizeRuntimeTrace's historical presentation and timeout markers.
-function finalizePreparedObservation(parsed, prepared, attemptToken) {
+function finalizePreparedObservation(parsed, prepared, attemptToken, recorderEnabled = true) {
   const status = parsed.traceStatus;
   const events = (prepared.inputMode === 'named-batch'
     ? splitCppBatchTraceEvents(parsed.events, 1)[0] ?? []
@@ -12496,7 +12496,8 @@ function finalizePreparedObservation(parsed, prepared, attemptToken) {
     },
     observation: {
       attemptToken,
-      recorderCompleted: parsed.foundResult && status !== null && typeof status?.traceLimitExceeded === 'boolean',
+      recorderEnabled,
+      recorderCompleted: recorderEnabled && parsed.foundResult && typeof status?.traceLimitExceeded === 'boolean',
       attemptedEvents,
       ...(cut && { cut }),
     },
@@ -16010,7 +16011,11 @@ async function runPreparedRuntimeProgram(
     ];
 
     if (preparedProgram.observationOnly) {
-      const { trace, observation } = finalizePreparedObservation(parsed, preparedProgram, attemptToken);
+      const { trace, observation } = finalizePreparedObservation(parsed, preparedProgram, attemptToken, tracingEnabled);
+      // A guest may exit with status 124 itself. Only the recorder's budget
+      // sentinel distinguishes its hard stop from an unrelated abnormal exit.
+      const budgetStop = programTimedOut && !program.trap && parsed.events.some((event) =>
+        event.kind === 'timeout' && isTraceTimeoutReason(event.reason));
       const named = preparedProgram.inputMode === 'named-batch';
       const foundResult = parsed.foundResult &&
         (!named || (Array.isArray(parsed.output) && parsed.output.length === 1));
@@ -16020,7 +16025,7 @@ async function runPreparedRuntimeProgram(
         ...(success
           ? { output: named ? parsed.output[0] : parsed.output }
           : { error: cppProgramExitMessage(program) || 'C++ observer did not return a result.', ...cppProgramExitFields(program) }),
-        ...(programTimedOut && !program.trap && { timeoutReason: 'client-timeout' }),
+        ...(budgetStop && { timeoutReason: 'client-timeout' }),
         trace,
         observation,
         consoleOutput,
