@@ -3932,6 +3932,33 @@ test('trusted Judge bridge observes the complete journal with no provider mark c
   }
 });
 
+test('trusted Judge bridge records reuse of a stopped row refusal without an observer attempt', async (t) => {
+  const events: TestBridgeEvent[] = [];
+  installJudgeTestGlobals(t)({ onEvent: (event) => events.push(event) });
+  const fixture = receiptFixture({ nativeStop: true, providerMarks: false });
+  t.after(() => fixture.host.dispose());
+  const bundle = await receiptBundle([
+    { id: 'A', input: { label: 'A', mode: 'limit' }, expected: 'A' },
+    { id: 'B', input: { label: 'B' }, expected: 'B' },
+  ]);
+  const initial = await fixture.host.execute({ bundle, interactive: true, tracing: { caseIds: [] } });
+  assert.ok(initial.executionId);
+  assert.equal(initial.evaluation.cases[1]?.attachment, undefined);
+  const request = { executionId: initial.executionId, tracing: { caseIds: ['B'] } };
+  const first = await fixture.host.execute(request);
+  const refusal = first.evaluation.cases[0]?.attachment;
+  assert.equal(refusal?.status === 'refused' && refusal.reason, 'case-not-run');
+  assert.equal(events.filter(({ phase }) => phase === 'observation-cache-hit').length, 0);
+
+  const redraw = await fixture.host.execute(request);
+  assert.equal(redraw.evaluation.cases[0]?.attachment, refusal);
+  const hits = events.filter(({ phase }) => phase === 'observation-cache-hit');
+  assert.deepEqual(hits.map(({ caseId, attemptToken }) => [caseId, attemptToken]), [['B', undefined]]);
+  assert.equal(hits[0]?.evaluationId, refusal?.evaluationId);
+  assert.equal(fixture.observerCalls.length, 0);
+  assert.deepEqual(fixture.ordinaryStarts, ['A']);
+});
+
 test('trusted Judge bridge ACKs only faults applied at the observation boundary', async (t) => {
   const install = installJudgeTestGlobals(t);
   const bundle = await receiptBundle();

@@ -600,6 +600,7 @@ def _tracecode_make_execute_serializer(
     builtin_float = builtins_module.float
     builtin_str = builtins_module.str
     builtin_type = builtins_module.type
+    builtin_id = builtins_module.id
     builtin_none_type = builtin_type(None)
     builtin_list = builtins_module.list
     builtin_tuple = builtins_module.tuple
@@ -668,6 +669,31 @@ def _tracecode_make_execute_serializer(
             return repr_str
         return {"__type__": class_name, "__class__": class_name}
 
+    def serialize_node(obj, depth, state, node_type):
+        references = state["node_references"]
+        identity = builtin_id(obj)
+        if identity in references:
+            _original, payload = references[identity]
+            if "__id__" not in payload:
+                payload["__id__"] = "ref-" + builtin_str(state["next_reference"])
+                state["next_reference"] += 1
+            return {"__ref__": payload["__id__"]}
+
+        # Register before descending so cycles and shared children are emitted
+        # once. Hold the object alive because a descriptor can return a temporary
+        # node. Add a label only if this definition is actually referenced.
+        result = {"__type__": node_type}
+        references[identity] = (obj, result)
+        result["val"] = serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)
+        if node_type == "ListNode":
+            result["next"] = serialize_value(obj.next, depth + 1, state)
+        else:
+            if builtin_hasattr(obj, 'left'):
+                result["left"] = serialize_value(obj.left, depth + 1, state)
+            if builtin_hasattr(obj, 'right'):
+                result["right"] = serialize_value(obj.right, depth + 1, state)
+        return result
+
     def serialize_value(obj, depth, state):
         serialize_checkpoint(state)
         if builtin_isinstance(
@@ -708,16 +734,9 @@ def _tracecode_make_execute_serializer(
                 pass
             return {"__type__": "set", "values": values}
         elif serialize_inherits_from(obj, state["tree_node_type"]):
-            result = {"__type__": "TreeNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
-            if builtin_hasattr(obj, 'left'):
-                result["left"] = serialize_value(obj.left, depth + 1, state)
-            if builtin_hasattr(obj, 'right'):
-                result["right"] = serialize_value(obj.right, depth + 1, state)
-            return result
+            return serialize_node(obj, depth, state, "TreeNode")
         elif serialize_inherits_from(obj, state["list_node_type"]):
-            result = {"__type__": "ListNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
-            result["next"] = serialize_value(obj.next, depth + 1, state)
-            return result
+            return serialize_node(obj, depth, state, "ListNode")
         elif builtin_callable(obj):
             return None
         elif builtin_hasattr(obj, '__dict__'):
@@ -753,6 +772,8 @@ def _tracecode_make_execute_serializer(
             state = {
                 "nodes": 0,
                 "checkpoint": checkpoint,
+                "node_references": {},
+                "next_reference": 0,
                 "tree_node_type": serialize_node_roots(tree_node_root, tree_node_type),
                 "list_node_type": serialize_node_roots(list_node_root, list_node_type),
             }

@@ -239,7 +239,10 @@ export class JudgeObservationSchedule<Result, Expected> {
 
   private async waitForDrawing(caseId: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    if (!this.admitted.has(caseId)) return;
+    if (!this.admitted.has(caseId)) {
+      if (this.receipt.hasCachedNotRunAttachment(caseId)) this.mark('observation-cache-hit', caseId);
+      return;
+    }
     const attempt = this.attempt(caseId);
     if (attempt.settled) {
       this.mark('observation-cache-hit', caseId, attempt.token.token);

@@ -4121,6 +4121,28 @@ async function assertKeylessTreeAndListNodesHaveNoneLinks(): Promise<void> {
     graph.kind === 'success-serialized' && graph.output === 112,
     `Prepared inputs must resolve case-wide forward references and back-edges, received ${JSON.stringify(graph)}`
   );
+  // G6 graph-output returns the input graph itself. The ordinary value must
+  // preserve both the shared child and its back-edge as references.
+  const returnedGraph = await runPrepared('def solve(root):\n    return root', {
+    root: {
+      __id__: 'r',
+      val: 1,
+      left: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null },
+      right: { __ref__: 'c' },
+    },
+  });
+  assertCondition(
+    returnedGraph.kind === 'success-serialized' && returnedGraph.output?.__type__ === 'TreeNode',
+    `Ordinary graph output must finish, received ${JSON.stringify(returnedGraph)}`
+  );
+  const root = returnedGraph.output;
+  assertCondition(
+    root.val === 1 && root.left?.val === 2 && root.left?.right === null &&
+    typeof root.__id__ === 'string' && typeof root.left?.__id__ === 'string' &&
+    root.__id__ !== root.left.__id__ &&
+    root.right?.__ref__ === root.left.__id__ && root.left.left?.__ref__ === root.__id__,
+    `Ordinary graph output must preserve identity, received ${JSON.stringify(root)}`
+  );
   const plain = await runtime.executeCode(deps, 'def solve(point):\n    return sorted(point.keys())\n', 'solve', { point: { val: 3, label: 'a' } }, 'function', {});
   assertCondition(
     plain.success === true && JSON.stringify(plain.output) === JSON.stringify(['label', 'val']),
