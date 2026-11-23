@@ -2,7 +2,7 @@
 
 The default matrix resolves `@tracecode/harness/judge` from an isolated tarball installation and runs in full Chromium. `manifest.json` contains the exact programs, expected answers, comparator targets and assertion IDs. It is reproducible with `node tests/stage1-gates/build-manifest.mjs` from a checkout that can read the pinned fixture commits. The core request matrix contains 18 row observations and 144 ordinary row assertions for each two-case stdout fixture. G1 adds four one-shot `execute` observations for each pair, one traced and one untraced request per case. The runner projects the requested trace options against the installed package's published capabilities before calling Judge or the mux adapter.
 
-Script invocation uses the function style with the selector omitted. Each script assigns the `result` variable and prints it. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The app stages use their own budgets and remain external to this checkout.
+Script invocation uses the function style without a named selector. The invocation fixtures assign the `result` variable and print it. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The app stages use their own budgets and remain external to this checkout.
 
 ```bash
 node tests/stage1-gates/app-cases.mjs /path/to/read-only/algoflow /outside/git/app-stage-manifest.json
@@ -23,7 +23,9 @@ The cap dispositions are part of the assertion inventory. Python tests its exist
 
 The print-then-throw fixture checks for both messages and the deliberate runtime error in every receipt. For Java, Python, C# and C++, its text oracle allows one trailing LF per captured message. JS and TS use their line-oriented console and must match its LF framing. Judge paths within each language must agree byte for byte. `console-framing.jsonl` records byte differences from program writes and indicates whether framing alone accounts for each difference.
 
-The Java Playground companions use selector-free script source and reproduce the app's two Judge requests: traced with `functionName: null` and no app limit override, then untraced with `functionName: ''` and `wallClockMs: 60000`. Both require prints made before the runtime error to remain in stdout.
+The Java and Python Playground fixtures use selector-free script source. They call `evaluateAlgorithm` with `functionName: null` and no limit override for tracing, and with `functionName: ''` and `wallClockMs: 60000` for untraced execution. The Python fixture also calls `execute` with both shapes. All requests must preserve the prints before the runtime error.
+
+The Python tier fixtures run the untraced submit matrix with the same print and error oracle. The plain function selects `algorithm-fast`, a positional-only argument selects `judge-compatible`, and `try` with `finally` selects `hard-isolated`. The `submit-default-AB` assertion checks the prepared artifact and execution replies. The first two tiers must answer a two-case batch with the matching fast-batch or filesystem-scope timing markers. Hard isolation must answer each case in a separate worker generation.
 
 The C++ terminator failure needs the index read on its own source line. The one-line sibling is a passing regression guard. The Java graph seed copies the second edge on the worker request, and the Python output seeds change scoped worker replies before Judge sees them.
 

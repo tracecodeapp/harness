@@ -1,6 +1,6 @@
-export function requestMatrix(cases, { gate, untracedOnly = false, playgroundScript = false } = {}) {
+export function requestMatrix(cases, { gate, language, untracedOnly = false, playgroundScript = false } = {}) {
   if (playgroundScript) {
-    return [
+    const submits = [
       {
         id: 'execute-traced', mode: 'submit', cases, selected: cases,
         functionName: null, trace: true,
@@ -10,6 +10,10 @@ export function requestMatrix(cases, { gate, untracedOnly = false, playgroundScr
         functionName: '', trace: false, limits: { wallClockMs: 60000 },
       },
     ];
+    if (language !== 'python') return submits;
+    return [...submits, ...submits.map((request) => ({
+      ...request, id: `host-${request.id}`, mode: 'execute',
+    }))];
   }
   const second = cases.slice(1, 2);
   const requests = [
@@ -45,7 +49,7 @@ export function appFixtureName({ name, stage }) {
 }
 
 export function muxRequests(fixture) {
-  if (fixture.playgroundScript) return [];
+  if (fixture.playgroundScript || fixture.mux === false) return [];
   const cases = fixture.cases.map(({ id }) => id);
   const requests = [{ id: 'algorithm', route: 'mux', mode: 'submit', selected: [], cases }];
   if (fixture.name !== 'queens') {

@@ -125,6 +125,32 @@ export function checkObservation(fixture, request, observation, record) {
         }
       } else if (fixture.language === 'java') {
         assert(commands.some(({ type }) => type === 'execute-prepared-runtime-program-batch'));
+      } else if (fixture.gate === 'G1' && fixture.language === 'python') {
+        const executions = commands.map((command) => ({
+          command,
+          reply: observation.worker.find((event) => event.action === 'response'
+            && event.type === 'execute-result' && event.generation === command.generation && event.id === command.id),
+        }));
+        assert(executions.every(({ command, reply }) => command.tier === fixture.expectedTier && reply),
+          `Missing execution reply for ${fixture.expectedTier}`);
+        if (fixture.expectedTier === 'hard-isolated') {
+          assert.deepEqual(executions.map(({ command }) => command.inputs), rows.map(({ input }) => input));
+          assert.equal(new Set(commands.map(({ generation }) => generation)).size, rows.length);
+          assert(commands.every(({ type }) => type === 'execute-prepared-program'));
+        } else {
+          assert.equal(executions.length, 1);
+          const [{ command, reply }] = executions;
+          assert.equal(command.type, 'execute-prepared-program-batch');
+          assert.deepEqual(command.inputs, rows.map(({ input }) => input));
+          assert.equal(reply.rows, rows.length);
+          for (const row of evaluation.cases) {
+            if (fixture.expectedTier === 'algorithm-fast') assert.equal(row.timings?.algorithmFastBatch, true);
+            else {
+              assert.notEqual(row.timings?.algorithmFastBatch, true);
+              assert.equal(typeof row.timings?.filesystemBeginMs, 'number');
+            }
+          }
+        }
       } else if (fixture.expectedTier === 'hard-isolated') {
         assert.equal(new Set(commands.map(({ generation }) => generation)).size, 2);
         assert(commands.every(({ type }) => type === 'execute-prepared-program'));
@@ -253,7 +279,8 @@ export function checkConsoleAcrossPaths(fixture, observations, record, framing) 
     }
     if (stdout.length !== planned.length) continue;
     const id = `${fixture.gate}/${fixture.language}/${fixture.name}/all-routes/console-paths/${expected.id}/stdout-bytes`;
-    const baseline = stdout.find((row) => row.route === 'default' && row.request === `submit-default-${expected.id}`);
+    const baselineRequest = fixture.playgroundScript ? 'execute-untraced' : `submit-default-${expected.id}`;
+    const baseline = stdout.find((row) => row.route === 'default' && row.request === baselineRequest);
     const difference = stdout.find((row) => row.bytes !== baseline.bytes);
     record(difference ? { id, status: 'fail', message: 'Path console bytes differ', baseline, difference } : { id, status: 'pass' });
   }

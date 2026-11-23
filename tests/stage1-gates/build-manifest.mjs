@@ -155,6 +155,33 @@ for (const ext of Object.keys(languages)) {
     rows(expectedLists.map((values) => ({ head: list(values) })), expectedLists.map((values) => list(values, true))), { graph: true });
 }
 
+const pythonRaisingRows = fixtures.find(({ language, name }) => language === 'python' && name === 'print-then-throw').cases;
+const pythonRaisingBody = `    print(f"first {n}")
+    print(f"second {n}", end="", flush=True)
+`;
+for (const [suffix, expectedTier, code] of [
+  ['fast', 'algorithm-fast', `def solve(n):\n${pythonRaisingBody}    raise ValueError(f"gate throw {n}")\n`],
+  ['compatible', 'judge-compatible', `def solve(n, /):\n${pythonRaisingBody}    raise ValueError(f"gate throw {n}")\n`],
+  ['isolated', 'hard-isolated', `def solve(n):\n${pythonRaisingBody}    try:\n        raise ValueError(f"gate throw {n}")\n    finally:\n        pass\n`],
+]) {
+  add('G1', `print-then-raise-${suffix}`, 'py', code, pythonRaisingRows, {
+    untracedOnly: true, mux: false, expectedTier, nativeError: 'ValueError',
+    consolePolicy: 'one-optional-trailing-lf-per-message', partialWrite: 'real-partial-write',
+  });
+}
+
+fixtures.push({
+  gate: 'G1', name: 'script-print-then-raise', language: 'python', executionStyle: 'function',
+  code: 'print("script first")\nprint("script second", end="", flush=True)\nraise ValueError("gate script raise")\n',
+  traceOptions: null, playgroundScript: true, nativeError: 'ValueError',
+  consolePolicy: 'one-optional-trailing-lf-per-message', partialWrite: 'real-partial-write',
+  cases: [{
+    id: 'A', input: {}, status: 'runtime-error', verdict: 'not-evaluated',
+    stdout: 'script first\nscript second', stderr: '', failure: { origin: 'program', stage: 'runtime' },
+    errorMarker: 'gate script raise', diagnostics: [],
+  }],
+});
+
 for (const [name, code, stdout, errorMarker] of [
   [
     'playground-array-print-then-throw',
