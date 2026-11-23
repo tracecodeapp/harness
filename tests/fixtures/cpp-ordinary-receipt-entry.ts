@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import type { BrowserRuntimeJudgeReceiptLease } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/browser-runtime-host';
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
@@ -250,6 +251,18 @@ export async function assertCppProductReceiptPaths() {
       trace: true,
       cases: [{ id: 'A', input: { n: 1 }, expected: 2 }],
     });
+    const direct = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const judge = yield* host.createJudge({
+        language: 'cpp',
+        binding: { ...healthy.execution, trace: true },
+      });
+      return yield* judge.evaluate(healthy.plan);
+    })));
+    check(direct.status === 'completed' && direct.cases[0]?.status === 'completed' &&
+      direct.cases[0].value === 2 && direct.cases[0].stdout === 'learner output\n' &&
+      Boolean(direct.cases[0].trace) && !Object.hasOwn(direct.cases[0], 'attachment'),
+    'direct trace binding lost its legacy result');
+
     const receipt = await host.evaluateAlgorithm({ bundle: healthy });
     check(receipt.evaluation.status === 'completed', 'product C++ healthy compile');
     const [row] = receipt.evaluation.cases;
@@ -273,6 +286,30 @@ export async function assertCppProductReceiptPaths() {
       'product C++ mismatch contaminated the verdict');
     check(mismatching.attachment?.status === 'refused' && mismatching.attachment.reason === 'uncertified-drawing' &&
       !Object.hasOwn(mismatching, 'trace'), 'product C++ mismatched legacy trace was published');
+    const budget = fixtures.find(({ id }) => id === 'G5/cpp/step-cap')!;
+    for (const [traceOptions, reason] of [
+      [{ maxTraceSteps: 2 }, 'step-budget'],
+      [{ maxTraceBytes: 1 }, 'byte-budget'],
+    ] as const) {
+      const bundle = await createAlgorithmJudgeBundle({
+        id: reason,
+        language: 'cpp',
+        code: budget.code,
+        functionName: 'solve',
+        executionStyle: 'solution-method',
+        traceOptions,
+        trace: true,
+        cases: [{ id: 'A', input: { n: 3 }, expected: 3 }],
+      });
+      const capped = await host.evaluateAlgorithm({ bundle });
+      check(capped.evaluation.status === 'completed', reason + '/ordinary compile');
+      const [row] = capped.evaluation.cases;
+      check(row?.status === 'completed' && row.value === 3 && row.verdict.kind === 'passed', reason + '/ordinary verdict');
+      check(row.attachment?.status === 'truncated' && row.attachment.reason === reason &&
+        row.attachment.attemptedEvents > row.attachment.trace.events.length &&
+        (reason !== 'byte-budget' || row.attachment.trace.events.length === 0),
+      reason + '/boundary ' + JSON.stringify(row.attachment));
+    }
     return true;
   } finally {
     await host.dispose();

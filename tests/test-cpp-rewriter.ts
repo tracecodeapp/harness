@@ -47,6 +47,7 @@ const isRuntimeProcPath = isRuntimeKernelProcPath;
 ${workerSource}
 globalThis.__tracecodeCppRewriter = {
   buildBatchDriverSource,
+  finalizePreparedObservation,
   buildDriverSource,
   buildOpsClassDriverSource,
   buildPreparedOpsClassDriverSource,
@@ -58,6 +59,9 @@ globalThis.__tracecodeCppRewriter = {
 );
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
+  finalizePreparedObservation: (
+    parsed: Record<string, unknown>, prepared: Record<string, unknown>, attemptToken: string
+  ) => { trace: { events: unknown[] }; observation: { cut?: string; attemptedEvents: number } };
   buildBatchDriverSource: (
     source: string,
     functionName: string,
@@ -732,3 +736,16 @@ assertCondition(
 );
 
 console.log('PASS: C++ rewriter source snapshots');
+
+
+const nativeBudget = rewriter.finalizePreparedObservation({
+  foundResult: true,
+  traceStatus: { traceLimitExceeded: true, timeoutReason: 'single-line-limit', droppedEventCount: 4 },
+  events: [
+    { kind: 'call', function: '__tracecode_batch_case', line: 1, args: { index: 0 } },
+    { kind: 'line', line: 2 },
+  ],
+}, { inputMode: 'named-batch', source: '', traceOptions: { maxTraceBytes: 1 } }, 'budget-test');
+assertCondition(nativeBudget.observation.cut === 'byte-budget' &&
+  nativeBudget.observation.attemptedEvents === 5 && nativeBudget.trace.events.length === 0,
+'Byte retention must retain an empty prefix with a positive native attempt count.');
