@@ -2,12 +2,33 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { build } from 'esbuild';
 import { createServer } from 'node:http';
 import { extname, resolve, sep } from 'node:path';
 import { chromium } from 'playwright';
 
 assert.ok(process.argv[2], 'Supply the unpacked Harness package directory');
 const root = resolve(process.argv[2]);
+const withPublicJudge = process.argv.includes('--public');
+if (withPublicJudge) {
+  execFileSync(process.execPath, [
+    resolve(root, 'dist/cli.cjs'), 'sync-assets', resolve(root, 'staged/workers'), '--languages', 'python',
+  ], { stdio: 'inherit' });
+  await build({
+    entryPoints: ['tests/fixtures/python-ordinary-public-installed-entry.mjs'],
+    outfile: resolve(root, 'staged/public-entry.js'),
+    bundle: true,
+    platform: 'browser',
+    format: 'esm',
+    nodePaths: [resolve('node_modules')],
+    alias: {
+      'tracecode-harness-under-test/judge': resolve(root, 'dist/judge.js'),
+      zlib: resolve(root, 'dist/zlib-browser-shim.js'),
+      'node:zlib': resolve(root, 'dist/zlib-browser-shim.js'),
+    },
+  });
+}
 const contentTypes = {
   '.js': 'text/javascript',
   '.wasm': 'application/wasm',
@@ -21,7 +42,7 @@ const server = createServer(async (request, response) => {
     return;
   }
   const path = resolve(root, '.' + pathname);
-  if (!path.startsWith(root + sep) || !pathname.startsWith('/workers/')) {
+  if (!path.startsWith(root + sep) || !(pathname.startsWith('/workers/') || pathname.startsWith('/staged/'))) {
     response.writeHead(404).end();
     return;
   }
@@ -156,6 +177,36 @@ try {
   assert.equal(results.byte.payload.observation.cut, 'byte-budget');
   assert.ok(results.byte.payload.observation.attemptedEvents > 0);
   assert.deepEqual(results.byte.payload.trace.events, []);
+  if (withPublicJudge) {
+    const result = await page.evaluate(async () => {
+      const { run } = await import('/staged/public-entry.js');
+      return run();
+    });
+    assert.deepEqual(result.initial, result.submit);
+    assert.deepEqual(result.continuation, [result.initial[1]]);
+    assert.deepEqual(result.redraw, result.continuation);
+    assert.deepEqual(result.initial[0].outcome.consoleOutput, ['7']);
+    assert.equal(result.initial[0].outcome.kind, 'failed');
+    assert.equal(result.initial[0].outcome.error, 'ValueError on line 4: bad seven');
+    assert.equal(result.initial[1].outcome.output, 12);
+    assert.equal(result.drawing.status, 'drawn');
+    assert.ok(result.drawing.trace.events.some((event) => event.line === 2));
+    assert.equal(result.continuationDrawing.status, 'drawn');
+    assert.equal(result.byte.status, 'truncated');
+    assert.equal(result.byte.reason, 'byte-budget');
+    assert.deepEqual(result.byte.trace.events, []);
+    assert.equal(result.unselectedHasAttachment, false);
+    assert.deepEqual(result.legacyRefusalFields, []);
+    const dispatches = result.watchedTraffic.filter(({ phase }) => phase === 'dispatch');
+    const ordinary = dispatches.filter(({ mode }) => mode === 'code');
+    const observer = dispatches.filter(({ observer }) => observer);
+    assert.equal(ordinary.length, 1);
+    assert.equal(ordinary[0].count, 2);
+    assert.equal(observer.length, 2);
+    assert.ok(observer.every(({ worker }) => worker !== ordinary[0].worker));
+    assert.deepEqual(result.watchedTraffic.filter(({ phase }) => phase === 'admit').map(({ index }) => index), [0, 1]);
+    console.log(JSON.stringify({ witness: 'installed-python-public-judge', traffic: result.watchedTraffic }));
+  }
   console.log(JSON.stringify({ witness: 'installed-python-ordinary-worker', tiers: results.tiers, assets: Object.fromEntries(assets) }));
 } finally {
   clearTimeout(watchdog);
