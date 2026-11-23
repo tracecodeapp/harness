@@ -138,6 +138,12 @@ failures. The Harness retires the affected worker, engine, or runner and runs
 the next case in a fresh one; recovering the session is the Harness's job, not
 the consumer's.
 
+Each runtime reports these from inside its worker as classified replies. A
+worker that is lost while it runs a case without such a reply (the host
+terminated it and its `error` event fired) failed for a reason the program
+did not cause: every runtime reports it as `runtime-provider-error`, never as
+the program's failure.
+
 Whether a session survived is not encoded in the classification. Consumers do
 not need to rebuild a host after a learner failure; they may rebuild after a
 `runtime-provider-error`.
@@ -152,8 +158,9 @@ not need to rebuild a host after a learner failure; they may rebuild after a
   stop reports their limit (`client-timeout`, `line-limit`), with the
   recorded trace kept. A guard's stop is the case's limit even if the
   learner's code catches it (`except BaseException:`, `finally: return`).
-  A worker crash during a case is `runtime`; the fast batch
-  re-runs the affected cases one per fresh worker.
+  A worker lost during a case is `runtime-provider-error`; the fast batch
+  first re-runs the cases one per fresh worker, and a worker lost again is
+  the provider's failure.
 - JavaScript and TypeScript: syntax errors are `compile`; anything the
   program throws is `runtime`.
 - Java: a failed run of a compiled program is `runtime`, including

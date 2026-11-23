@@ -177,21 +177,14 @@ function taggedError(error: unknown, tag: string): error is Error {
 
 /**
  * Classify a transport error raised while a learner's case was executing in
- * an already-warm worker. The worker crashing mid-case was the program taking
- * it down (unbounded recursion, memory exhaustion, a Wasm trap): the learner's
- * runtime failure. The worker is retired after every failed case, so the next
- * case runs in a fresh one. A request that never answered is the time limit.
- * Anything else is the provider's and is rethrown.
+ * an already-warm worker. A request that never answered is the time limit.
+ * Anything else is the provider's and is rethrown, including a worker lost
+ * mid-case (`WorkerCrashedError`: terminated by the host, its `error` event
+ * fired), as every other runtime reports it. The learner's own failures
+ * (exceptions, `SystemExit`, `os._exit`, recursion and memory exhaustion) come
+ * back from the worker as classified replies, never as a lost worker.
  */
 function pythonCaseTransportOutcome(error: unknown): CodeExecutionResult {
-  if (taggedError(error, 'WorkerCrashedError')) {
-    return {
-      kind: 'failed',
-      error: `The program crashed the Python runtime: ${error.message}`,
-      diagnosticStage: 'runtime',
-      consoleOutput: [],
-    };
-  }
   if (taggedError(error, 'WorkerRequestTimeoutError') || isExecutionTimeoutError(error)) {
     return {
       kind: 'limit',
@@ -830,8 +823,8 @@ class PreparedPythonProgramLifetime {
         }));
       }
       if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
-        // One case took the shared batch worker down. Re-run the cases each in
-        // a fresh worker so every case gets its own truthful outcome.
+        // The shared batch worker was lost. Re-run the cases each in a fresh
+        // worker; a worker lost again rejects as the provider's failure.
         return this.executeCompatibilityCodeBatch(call, budget);
       }
       if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
@@ -883,7 +876,8 @@ class PreparedPythonProgramLifetime {
         (results) => results.every(pythonTraceResultKeepsFastWorker)
       ).catch((error: unknown) => {
         if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
-          // One case took the shared worker down: give each case a fresh one.
+          // The shared worker was lost: give each case a fresh one. A worker
+          // lost again rejects as the provider's failure.
           return this.executeCompatibilityTraceBatch(call);
         }
         if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {

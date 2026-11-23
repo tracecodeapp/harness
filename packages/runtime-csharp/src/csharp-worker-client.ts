@@ -693,14 +693,10 @@ export class CSharpWorkerClient {
         result = await this.core.runClientEffect(program, call.signal);
       } catch (error) {
         if (call.signal?.aborted) throw error;
-        if (taggedError(error, 'WorkerCrashedError')) {
-          return {
-            kind: 'failed',
-            error: `The program crashed the C# runtime: ${error instanceof Error ? error.message : String(error)}`,
-            diagnosticStage: 'runtime',
-            consoleOutput: [],
-          };
-        }
+        // A runner lost mid-case (`WorkerCrashedError`) is rethrown below as
+        // the provider's failure: Environment.Exit and fatal stack overflow
+        // come back from the worker as classified replies, never as a lost
+        // worker.
         if (taggedError(error, 'ExecutionTimeoutError') || taggedError(error, 'WorkerRequestTimeoutError')) {
           return {
             kind: 'limit',
@@ -929,24 +925,13 @@ export class CSharpWorkerClient {
     executionTimeMs: number
   ): ExecutionResult {
     const message = error instanceof Error ? error.message : String(error);
-    if (taggedError(error, 'WorkerCrashedError')) {
-      // The learner's program took the runner down; the runner is retired
-      // after any case that did not complete.
-      return {
-        kind: 'failed',
-        error: `The program crashed the C# runtime: ${message}`,
-        diagnosticStage: 'runtime',
-        trace: this.createTrace([]),
-        executionTimeMs,
-        consoleOutput: [],
-        timings: { totalMs: executionTimeMs },
-      };
-    }
     if (
       !taggedError(error, 'ExecutionTimeoutError') &&
       !taggedError(error, 'WorkerRequestTimeoutError')
     ) {
-      // Anything else is the runtime's own failure, never a time limit.
+      // Anything else is the runtime's own failure, never a time limit,
+      // including a runner lost mid-case (`WorkerCrashedError`). The
+      // program's own exits come back from the worker as classified replies.
       throw error;
     }
     const trace = this.createTrace([

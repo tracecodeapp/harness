@@ -36,6 +36,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- A Python or C# browser worker lost while it ran a learner's case (the host
+  terminated it and its `error` event fired) is now the provider's failure:
+  each case reports `failure.origin: "provider"` (`runtime-provider-error`),
+  as JavaScript, TypeScript, Java and C++ already did, in run and trace modes,
+  single case and batch. It used to be reported as the learner's runtime
+  failure ("The program crashed the Python runtime" / "... the C# runtime").
+  Programs that raise, exit (`sys.exit`, `os._exit`, `Environment.Exit`),
+  recurse too deep, exhaust memory or run out of time are unchanged: their
+  worker reports them, and they stay the program's or their limit's.
 - A traced Python Run whose trace stopped recording at a budget (trace bytes,
   stored events, steps) no longer leaves the learner's code unguarded. The
   tracer used to be removed, so a loop that never ended ran until the client's
