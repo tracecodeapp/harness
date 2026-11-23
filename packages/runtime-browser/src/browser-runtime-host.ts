@@ -28,7 +28,10 @@ import {
   type BrowserRuntimeExecutionHostSlot,
 } from './browser-runtime-lifecycle';
 import {
+  registerBrowserRuntimeHostJudgeReceiptProviders,
   registerBrowserRuntimeHostPreparedProviderResolver,
+  type BrowserRuntimeJudgeReceiptLease,
+  type JudgeReceiptProvider,
 } from './browser-runtime-host-internal';
 import type {
   BrowserSafeExecutionOptions,
@@ -283,6 +286,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
       this.#executionHostSlot
     );
 
+    let receiptProviders: Map<Language, JudgeReceiptProvider> | undefined;
     try {
       for (const provider of context.providerRegistry.providers) {
         const selectedLanguages = provider.languages.filter((language) =>
@@ -290,7 +294,7 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
         );
         if (selectedLanguages.length === 0) continue;
 
-        const lease = provider.create(providerContext);
+        const lease: BrowserRuntimeJudgeReceiptLease = provider.create(providerContext);
         // Track first so malformed providers cannot leak partially acquired
         // runtime resources.
         this.#leases.push(lease);
@@ -304,6 +308,21 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
             );
           }
           assertPreparedProviderShape(provider.id, language, preparedProvider);
+        }
+
+        if (lease.judgeReceiptProviders) {
+          for (const [language, adapter] of lease.judgeReceiptProviders) {
+            if (!provider.languages.includes(language)) {
+              throw new Error(
+                `Browser runtime provider ${JSON.stringify(provider.id)} returned an unowned ` +
+                  `Judge observation adapter for ${JSON.stringify(language)}.`
+              );
+            }
+            if (selectedLanguages.includes(language)) {
+              receiptProviders ??= new Map();
+              receiptProviders.set(language, adapter);
+            }
+          }
         }
 
         for (const language of selectedLanguages) {
@@ -365,6 +384,9 @@ class BrowserRuntimeHostImplementation implements BrowserRuntimeHost {
           return provider;
         }
       );
+      if (receiptProviders) {
+        registerBrowserRuntimeHostJudgeReceiptProviders(this, receiptProviders);
+      }
     } catch (error) {
       try {
         disposeBrowserRuntimeProviderLeases(

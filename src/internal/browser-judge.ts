@@ -36,7 +36,9 @@ import type {
   BrowserRuntimeAssets,
 } from '../../packages/runtime-browser/src/runtime-assets';
 import {
+  getBrowserRuntimeHostJudgeReceiptProvider,
   getBrowserRuntimeHostPreparedProvider,
+  type JudgeReceiptProvider,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import {
   createBrowserRuntimeHost,
@@ -70,6 +72,9 @@ import {
   type TraceKernelRuntimeResult,
 } from '@tracecode/tracekernel';
 import {
+  ALGORITHM_BUNDLE_SCHEMA,
+  algorithmWorkspaceDigest,
+  allCasesPassPolicy,
   createAlgorithmJudgeReceipt,
   createJudgeComparator,
   evaluateJudgePlan,
@@ -96,13 +101,18 @@ import {
   type JudgeRuntimeBatchCaseOutput,
   type JudgeRuntimeTimings,
   validateAlgorithmJudgeBundle,
+  validateJudgePlan,
 } from '../../packages/judge/src/index';
 import {
   JUDGE_INVOCATION_ID_ENV,
   TraceKernelJudgePort,
 } from '../../packages/judge/src/tracekernel';
-import { validateTraceSelection } from '../../packages/judge/src/internal/trace-selection';
-import { RuntimePreparedProgramRegistry } from './judge-prepared-program';
+import { validateTraceContinuation, validateTraceSelection } from '../../packages/judge/src/internal/trace-selection';
+import {
+  JudgeObservationSchedule,
+  RuntimePreparedProgramRegistry,
+  judgeAbortError,
+} from './judge-prepared-program';
 import {
   createBrowserProjectJudge,
   type BrowserProjectJudge,
@@ -200,11 +210,19 @@ export type RuntimeJudgeBinding =
   | RuntimeJudgeCodeBinding
   | RuntimeJudgeTraceBinding;
 
+interface OwnedRuntimeDispatch {
+  readonly binding: RuntimeJudgeCodeBinding;
+  readonly acknowledgeBatchStarts: boolean;
+  recordPrepare(call: RuntimeProgramPreparationCall): void;
+  admit(caseId: string): void;
+}
+
 interface RuntimeJudgeProviderOptions {
   readonly runtime: string;
   readonly provider: RuntimePreparedExecutionProvider;
   readonly runtimeControl: JudgeRuntimeControlPort;
   readonly binding: RuntimeJudgeBinding;
+  readonly owned?: OwnedRuntimeDispatch;
 }
 
 interface CreateRuntimeJudgeOptions {
@@ -217,6 +235,8 @@ interface CreateRuntimeJudgeOptions {
    * this contract without changing Judge or the runtime-provider adapter.
    */
   readonly runtimeControl?: JudgeRuntimeControlPort;
+  readonly receiptProvider?: JudgeReceiptProvider;
+  readonly receiptHostLifetime?: AbortSignal;
 }
 
 export interface CreateBrowserJudgeOptions {
@@ -416,6 +436,12 @@ export interface RuntimeJudgeExecutionTimings {
   readonly phases: readonly RuntimeJudgeExecutionPhaseTiming[];
 }
 
+function disposedExecutionError(executionId: string): JudgePlanError {
+  return new JudgePlanError({
+    message: `Unknown or disposed interactive execution ${JSON.stringify(executionId)}.`,
+  });
+}
+
 function errorFromUnknown(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
@@ -444,11 +470,7 @@ function assertRuntimeJudgeBindingSupported(
   const tracing = isTraceBinding(binding);
   assertRuntimeRequestSupported(getLanguageRuntimeProfile(language), {
     request: tracing ? 'trace' : 'execute',
-    executionStyle: binding.executionStyle ?? (
-      language === 'csharp' || language === 'cpp'
-        ? 'solution-method'
-        : 'function'
-    ),
+    executionStyle: judgeExecutionStyle(language, binding),
     functionName: binding.functionName,
     limits: binding.limits,
     ...(tracing && binding.traceOptions
@@ -456,6 +478,42 @@ function assertRuntimeJudgeBindingSupported(
       : {}),
   });
 }
+
+function judgeExecutionStyle(runtime: string, binding: RuntimeJudgeBinding): RuntimeExecutionStyle {
+  return binding.executionStyle ?? (
+    runtime === 'csharp' || runtime === 'cpp' ? 'solution-method' : 'function'
+  );
+}
+
+function ordinaryBinding(runtime: string, binding: RuntimeJudgeBinding): RuntimeJudgeCodeBinding {
+  return {
+    sourcePath: binding.sourcePath,
+    functionName: binding.functionName?.trim() ? binding.functionName : '',
+    executionStyle: judgeExecutionStyle(runtime, binding),
+    limits: binding.limits,
+  };
+}
+
+const OBSERVATION_OPTIONS = {
+  minimalTrace: true,
+  traceProfile: true,
+  maxPathDepth: true,
+  maxTraceSteps: true,
+  maxLineEvents: true,
+  maxSingleLineHits: true,
+  maxStoredEvents: true,
+  maxTraceBytes: true,
+} satisfies Record<keyof TraceExecutionOptions, true>;
+
+function assertObservationOptions(language: Language, options?: TraceExecutionOptions): void {
+  if (!options) return;
+  for (const option of Object.keys(options)) {
+    if (!Object.hasOwn(OBSERVATION_OPTIONS, option)) {
+      throw new Error(`Runtime "${language}" does not recognize the "${option}" tracing option.`);
+    }
+  }
+}
+
 
 function algorithmRuntimeBinding(
   execution: JudgeAlgorithmBundle['execution'],
@@ -876,11 +934,11 @@ function prepareProviderProgram(
         : {}),
     };
     const outcome = yield* Effect.tryPromise({
-      try: (signal) =>
-        programs.prepare(evaluationId(invocation), {
-          ...prepareCall,
-          signal,
-        }),
+      try: (signal) => {
+        const prepared = programs.prepare(evaluationId(invocation), { ...prepareCall, signal });
+        options.owned?.recordPrepare(prepareCall);
+        return prepared;
+      },
       catch: errorFromUnknown,
     });
     return mappedPreparationOutcome(options.runtime, outcome);
@@ -916,10 +974,10 @@ function executePreparedProviderCase(
     const outcome = yield* Effect.tryPromise({
       try: (signal) =>
         programs.executeCode(evaluationId(invocation), {
-          inputs,
+          inputs: options.owned ? structuredClone(inputs) : inputs,
           signal,
           limits: binding.limits,
-        }),
+        }, options.owned && (() => options.owned!.admit(invocation.caseId!))),
       catch: errorFromUnknown,
     });
     return mappedCodeOutcome(options.runtime, outcome);
@@ -927,7 +985,8 @@ function executePreparedProviderCase(
 }
 
 function runtimeBatchCases(
-  invocation: JudgeRuntimeInvocationInput
+  invocation: JudgeRuntimeInvocationInput,
+  owned = false
 ): readonly {
   readonly caseId: string;
   readonly inputs: Record<string, unknown>;
@@ -940,7 +999,10 @@ function runtimeBatchCases(
   }
   return invocation.cases.map((testCase) => ({
     caseId: testCase.caseId,
-    inputs: runtimeInputs({ ...invocation, value: testCase.value }),
+    inputs: runtimeInputs({
+      ...invocation,
+      value: owned ? structuredClone(testCase.value) : testCase.value,
+    }),
     ...(testCase.recordTrace === undefined
       ? {}
       : { recordTrace: testCase.recordTrace }),
@@ -985,7 +1047,7 @@ function executePreparedProviderBatch(
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
     const cases = yield* Effect.try({
-      try: () => runtimeBatchCases(invocation),
+      try: () => runtimeBatchCases(invocation, options.owned !== undefined),
       catch: errorFromUnknown,
     });
     if (invocation.stopAtFirstRunaway === true) {
@@ -1012,7 +1074,7 @@ function executePreparedProviderBatch(
               inputBatch: cases.map((testCase) => testCase.inputs),
               signal,
               limits: options.binding.limits,
-            }),
+            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId))),
       catch: errorFromUnknown,
     });
     if (outcomes.length !== cases.length) {
@@ -1095,7 +1157,8 @@ function executeProviderStoppingBatch(
               signal,
               limits: options.binding.limits,
               stopAtFirstRunaway: true,
-            }),
+            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
+              options.owned?.acknowledgeBatchStarts),
       catch: errorFromUnknown,
     });
     const runawayIndex = outcomes.findIndex((outcome) =>
@@ -1113,6 +1176,13 @@ function executeProviderStoppingBatch(
           `${cases.length} cases that is not a prefix ending at its first runaway.`,
         { reason: 'protocol' }
       ));
+    }
+    // Without admission ACKs the native stopping batch attests only its
+    // delivered prefix. A stopped suffix is never speculatively observed.
+    if (options.owned) {
+      for (let index = 0; index < outcomes.length; index++) {
+        options.owned.admit(cases[index]!.caseId);
+      }
     }
     const batch: JudgeRuntimeBatchCaseOutput[] = outcomes.map((outcome, index) =>
       batchCaseOutput(
@@ -1187,7 +1257,7 @@ function executeProviderBatchUntilRunaway(
                 inputBatch: [testCase.inputs],
                 signal,
                 limits: options.binding.limits,
-              }),
+              }, options.owned && (() => options.owned!.admit(testCase.caseId))),
         catch: errorFromUnknown,
       });
       const outcome = outcomes[0];
@@ -1222,8 +1292,8 @@ function executeProviderBatchUntilRunaway(
  * runtime could not trace the program (it runs untraced), otherwise
  * `runtime-provider-error`.
  */
-function providerFailureCode(error: unknown): string {
-  return isTraceUnavailableError(error) ? TRACE_UNAVAILABLE_CODE : PROVIDER_ERROR_CODE;
+function providerFailureCode(error: unknown, owned: OwnedRuntimeDispatch | undefined): string {
+  return !owned && isTraceUnavailableError(error) ? TRACE_UNAVAILABLE_CODE : PROVIDER_ERROR_CODE;
 }
 
 /** A broken result protocol is reported as such; anything else as the provider failing. */
@@ -1272,7 +1342,8 @@ function executeProviderProcess(
   options: RuntimeJudgeProviderOptions,
   programs: RuntimePreparedProgramRegistry,
   context: TraceKernelRuntimeProcessContext,
-  initialize: Effect.Effect<void, Error>
+  initialize: Effect.Effect<void, Error>,
+  ownedDispatches: ReadonlyMap<string, OwnedRuntimeDispatch>
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const invocationId = context.env[JUDGE_INVOCATION_ID_ENV];
   if (!invocationId) {
@@ -1282,122 +1353,28 @@ function executeProviderProcess(
       )
     );
   }
-  // Runtime initialization (asset, toolchain, and worker load) belongs to the
-  // provider. Its failure is published as a provider diagnostic on the process
-  // that needed the runtime, never as a process that silently failed to start
-  // (which a consumer would read as the learner's compile failure).
-  return initialize.pipe(
-    Effect.matchEffect({
-      onFailure: (error) => {
-        const mapped = providerFailure(
-          options.runtime,
-          error.message,
-          providerFailureCode(error),
-          providerFailureReason(error)
-        );
-        return options.runtimeControl.publish(
-          invocationId,
-          mapped.output
-        ).pipe(Effect.as(mapped.process));
-      },
-      onSuccess: () =>
-        executeInitializedProviderProcess(
-          options,
-          programs,
-          context,
-          invocationId
-        ),
-    })
-  );
-}
-
-function executeInitializedProviderProcess(
-  options: RuntimeJudgeProviderOptions,
-  programs: RuntimePreparedProgramRegistry,
-  context: TraceKernelRuntimeProcessContext,
-  invocationId: string
-): Effect.Effect<TraceKernelRuntimeResult, Error> {
   return options.runtimeControl.read(invocationId).pipe(
     Effect.flatMap((invocation) => {
-      if (invocation.phase === 'compile') {
-        return prepareProviderProgram(
-          options,
-          programs,
-          context,
-          invocation
-        ).pipe(
-          Effect.matchEffect({
-            onFailure: (error) => {
-              const mapped = providerFailure(
-                options.runtime,
-                error.message,
-                providerFailureCode(error),
-                providerFailureReason(error)
-              );
-              return options.runtimeControl.publish(
-                invocationId,
-                mapped.output
-              ).pipe(Effect.as(mapped.process));
-            },
-            onSuccess: (mapped) =>
-              options.runtimeControl.publish(
-                invocationId,
-                mapped.output
-              ).pipe(Effect.as(mapped.process)),
-          })
-        );
-      }
-      if (invocation.phase === 'batch') {
-        return executePreparedProviderBatch(
-          options,
-          programs,
-          invocation
-        ).pipe(
-          Effect.matchEffect({
-            onFailure: (error) => {
-              const mapped = providerFailure(
-          options.runtime,
+      const owned = invocation.evaluationId ? ownedDispatches.get(invocation.evaluationId) : undefined;
+      const dispatch = owned ? { ...options, owned, binding: owned.binding } : options;
+      // Initialization and preparation errors belong to the provider that
+      // needed the runtime. They use the same publication path as case errors.
+      const execute = invocation.phase === 'compile'
+        ? prepareProviderProgram(dispatch, programs, context, invocation)
+        : invocation.phase === 'batch'
+          ? executePreparedProviderBatch(dispatch, programs, invocation)
+          : executePreparedProviderCase(dispatch, programs, invocation);
+      return initialize.pipe(
+        Effect.andThen(execute),
+        Effect.catchAll((error) => Effect.succeed(providerFailure(
+          dispatch.runtime,
           error.message,
-          providerFailureCode(error),
+          providerFailureCode(error, owned),
           providerFailureReason(error)
-        );
-              return options.runtimeControl.publish(
-                invocationId,
-                mapped.output
-              ).pipe(Effect.as(mapped.process));
-            },
-            onSuccess: (mapped) =>
-              options.runtimeControl.publish(
-                invocationId,
-                mapped.output
-              ).pipe(Effect.as(mapped.process)),
-          })
-        );
-      }
-      return executePreparedProviderCase(
-        options,
-        programs,
-        invocation
-      ).pipe(
-        Effect.matchEffect({
-          onFailure: (error) => {
-            const mapped = providerFailure(
-          options.runtime,
-          error.message,
-          providerFailureCode(error),
-          providerFailureReason(error)
-        );
-            return options.runtimeControl.publish(
-              invocationId,
-              mapped.output
-            ).pipe(Effect.as(mapped.process));
-          },
-          onSuccess: (mapped) =>
-            options.runtimeControl.publish(
-              invocationId,
-              mapped.output
-            ).pipe(Effect.as(mapped.process)),
-        })
+        ))),
+        Effect.flatMap((mapped) =>
+          options.runtimeControl.publish(invocationId, mapped.output).pipe(Effect.as(mapped.process))
+        )
       );
     })
   );
@@ -1405,7 +1382,7 @@ function executeInitializedProviderProcess(
 
 interface RuntimeJudgeProviderBridge {
   readonly runtimeProvider: TraceKernelRuntimeProvider;
-  beginEvaluation(evaluationId: string): void;
+  beginEvaluation(evaluationId: string, owned?: OwnedRuntimeDispatch): void;
   disposeEvaluation(evaluationId: string): Effect.Effect<void, Error>;
 }
 
@@ -1442,6 +1419,7 @@ function makeRuntimeJudgeProvider(
   const programs = new RuntimePreparedProgramRegistry(
     providerOptions.provider
   );
+  const ownedDispatches = new Map<string, OwnedRuntimeDispatch>();
   let nextLeaseId = 1;
   // Successful initialization is memoized; a failed one is retried by the
   // next process so a repaired deployment recovers without a new host.
@@ -1477,7 +1455,8 @@ function makeRuntimeJudgeProvider(
             providerOptions,
             programs,
             context,
-            ensureInitialized
+            ensureInitialized,
+            ownedDispatches
           ),
         release: () => Effect.void,
       }),
@@ -1485,12 +1464,16 @@ function makeRuntimeJudgeProvider(
   });
   return Object.freeze({
     runtimeProvider,
-    beginEvaluation: (evaluationId: string) => {
+    beginEvaluation: (evaluationId: string, owned?: OwnedRuntimeDispatch) => {
       programs.begin(evaluationId);
+      if (owned) ownedDispatches.set(evaluationId, owned);
     },
     disposeEvaluation: (evaluationId: string) =>
       Effect.tryPromise({
-        try: () => programs.dispose(evaluationId),
+        try: () => {
+          ownedDispatches.delete(evaluationId);
+          return programs.dispose(evaluationId);
+        },
         catch: errorFromUnknown,
       }),
   });
@@ -1539,9 +1522,10 @@ class EvaluationJudgeRuntimeControl
 function preparedEvaluationPlan<Input, Expected>(
   plan: JudgeEvaluationPlan<Input, Expected>,
   useProviderBatch: boolean,
-  lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
+  lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS,
+  includeSingleton = false
 ): JudgeEvaluationPlan<Input, Expected> {
-  const batched = useProviderBatch && plan.cases.length > 1;
+  const batched = useProviderBatch && plan.cases.length >= (includeSingleton ? 1 : 2);
   const timeoutMs = preparedRunTimeoutMs(
     plan.run.timeoutMs,
     plan.cases.length,
@@ -1745,10 +1729,18 @@ interface RetainedJudgeExecution {
   readonly comparator?: JudgeComparator<unknown, unknown, unknown>;
 }
 
+interface RetainedReceiptExecution {
+  readonly manifest: JudgeAlgorithmBundle;
+  readonly schedule: JudgeObservationSchedule<unknown, unknown>;
+}
+
+let nextOpaqueId = 1;
+
 class RuntimeJudgeComposition
   implements RuntimeJudge {
   private nextEvaluationId = 1;
   private readonly executions = new Map<string, RetainedJudgeExecution>();
+  private readonly receiptExecutions = new Map<string, RetainedReceiptExecution>();
 
   constructor(
     readonly runtime: string,
@@ -1756,8 +1748,10 @@ class RuntimeJudgeComposition
     private readonly host: TraceKernelHost,
     private readonly bridge: RuntimeJudgeProviderBridge,
     private readonly traceCapable: boolean,
-    private readonly sourcePath: string,
-    private readonly lifecycleAllowanceMs: number = DEFAULT_LIFECYCLE_ALLOWANCE_MS
+    private readonly binding: RuntimeJudgeBinding,
+    private readonly lifecycleAllowanceMs: number,
+    private readonly receiptProvider?: JudgeReceiptProvider,
+    private readonly receiptHostLifetime?: AbortSignal
   ) {}
 
   activeSessionIds(): readonly string[] {
@@ -1774,8 +1768,11 @@ class RuntimeJudgeComposition
     RuntimeJudgeExecuteResult<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
   > {
-    return 'executionId' in request
-      ? this.continueExecution<Input, Result, Expected>(request)
+    if ('executionId' in request) {
+      return this.continueExecution<Input, Result, Expected>(request);
+    }
+    return this.receiptProvider
+      ? this.startDirectExecution(request)
       : this.startExecution(request);
   }
 
@@ -1783,6 +1780,11 @@ class RuntimeJudgeComposition
     executionId: string
   ): Effect.Effect<void, JudgeInfrastructureError> {
     return Effect.suspend(() => {
+      const owned = this.receiptExecutions.get(executionId);
+      if (owned) {
+        this.receiptExecutions.delete(executionId);
+        return this.disposeSchedule(owned.schedule, disposedExecutionError(executionId));
+      }
       const retained = this.executions.get(executionId);
       if (!retained) return Effect.void;
       this.executions.delete(executionId);
@@ -1792,12 +1794,182 @@ class RuntimeJudgeComposition
 
   disposeRetainedExecutions(): Effect.Effect<void> {
     return Effect.forEach(
-      [...this.executions.keys()],
+      [...this.executions.keys(), ...this.receiptExecutions.keys()],
       (executionId) => this.disposeExecution(executionId).pipe(
         Effect.catchAll(() => Effect.void)
       ),
       { concurrency: 1, discard: true }
     );
+  }
+
+  private untilHostDisposal<A, E>(operation: Effect.Effect<A, E>): Effect.Effect<A, E> {
+    const lifetime = this.receiptHostLifetime;
+    if (!lifetime) return operation;
+    return Effect.suspend(() => {
+      if (lifetime.aborted) return Effect.interrupt;
+      return Effect.raceFirst(operation, Effect.async<never>((resume) => {
+        const stop = () => resume(Effect.interrupt);
+        lifetime.addEventListener('abort', stop, { once: true });
+        return Effect.sync(() => lifetime.removeEventListener('abort', stop));
+      }));
+    });
+  }
+
+  startBundleExecution<Input extends Record<string, unknown>, Result, Expected>(
+    bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+    request: Pick<RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>,
+      'interactive' | 'tracing' | 'stopAtFirstRunaway'>
+  ) {
+    return this.startReceiptExecution<Input, Result, Expected>(
+      bundle,
+      {
+        ...request,
+        plan: bundle.plan,
+        comparator: bundle.comparison ? createJudgeComparator<Input>(bundle.comparison) : undefined,
+      },
+      algorithmRuntimeBinding(bundle.execution, true)
+    );
+  }
+
+  private startDirectExecution<Input, Result, Expected>(
+    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>
+  ): Effect.Effect<RuntimeJudgeExecuteResult<Result, Expected>, JudgePlanError | JudgeInfrastructureError> {
+    if (!this.traceCapable && (request.interactive === true || request.tracing !== undefined)) {
+      return Effect.fail(new JudgePlanError({
+        message: 'Interactive or traced execute requires a trace-capable Judge binding.',
+      }));
+    }
+    return Effect.gen(this, function* () {
+      // Low-level execute receives a plan without an algorithm policy. Use
+      // the same owner with the standard policy and a digest of the source.
+      const plan = structuredClone(request.plan);
+      const tracing = request.tracing && { caseIds: [...request.tracing.caseIds] };
+      const language = this.runtime as Language;
+      const cwd = plan.compile?.cwd ?? plan.workspace.cwd ?? '/';
+      const path = this.binding.sourcePath.startsWith('/')
+        ? this.binding.sourcePath
+        : `${cwd.replace(/\/$/u, '')}/${this.binding.sourcePath}`;
+      const workspaceDigest = yield* Effect.promise(() => algorithmWorkspaceDigest({
+        language,
+        sourcePath: path,
+        code: JSON.stringify([plan.workspace.files, plan.driver.files]),
+      }));
+      const bundle: JudgeAlgorithmBundle<Record<string, unknown>, Expected, Result> = {
+        schema: ALGORITHM_BUNDLE_SCHEMA,
+        id: plan.id,
+        workspaceDigest,
+        execution: { sourcePath: path },
+        plan: plan as JudgeEvaluationPlan<Record<string, unknown>, Expected>,
+        policy: allCasesPassPolicy(),
+      };
+      const owned = yield* this.startReceiptExecution<Input, Result, Expected>(
+        bundle, { ...request, plan, tracing }, this.binding
+      );
+      return owned.result;
+    });
+  }
+
+  private startReceiptExecution<Input, Result, Expected>(
+    bundle: JudgeAlgorithmBundle<Record<string, unknown>, Expected, Result>,
+    request: RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>,
+    binding: RuntimeJudgeBinding
+  ): Effect.Effect<{
+    result: RuntimeJudgeExecuteResult<Result, Expected>;
+    receipt: JudgeAlgorithmReceipt<Result, Expected>;
+  }, JudgePlanError | JudgeInfrastructureError> {
+    return this.untilHostDisposal(Effect.gen(this, function* () {
+      const selected = yield* validateTraceSelection(request.plan, request.tracing);
+      yield* validateJudgePlan(request.plan);
+      const codeBinding = ordinaryBinding(this.runtime, binding);
+      const traceOptions = isTraceBinding(binding) ? binding.traceOptions : undefined;
+      yield* Effect.try({
+        try: () => {
+          const language = this.runtime as Language;
+          assertRuntimeJudgeBindingSupported(language, codeBinding);
+          assertObservationOptions(language, traceOptions);
+        },
+        catch: (error) => new JudgePlanError({ message: errorFromUnknown(error).message }),
+      });
+
+      const evaluationId = this.nextOpaqueExecutionId('evaluation');
+      const schedule = new JudgeObservationSchedule(
+        evaluationId, bundle, this.receiptProvider!, selected ?? new Set(),
+        traceOptions && Object.freeze({ ...traceOptions })
+      );
+      const plan = preparedEvaluationPlan(request.plan, true, this.lifecycleAllowanceMs, true);
+      const port = new TraceKernelJudgePort({
+        host: this.host,
+        runtimeControl: new EvaluationJudgeRuntimeControl(this.runtimeControl, evaluationId),
+        readableFiles: [codeBinding.sourcePath],
+      });
+      const operation = Effect.gen(function* () {
+        const evaluation = yield* evaluateJudgePlan(port, plan, {
+          comparator: request.comparator,
+          stopAtFirstRunaway: request.interactive === true || request.stopAtFirstRunaway === true,
+        });
+        schedule.commit(evaluation);
+        return yield* Effect.tryPromise({
+          try: (signal) => schedule.initial(signal),
+          catch: (cause) => new JudgeInfrastructureError({
+            operation: 'join Judge observation',
+            message: errorFromUnknown(cause).message,
+            cause,
+          }),
+        });
+      });
+      return yield* Effect.uninterruptibleMask((restore) => Effect.gen(this, function* () {
+        this.bridge.beginEvaluation(evaluationId, {
+          binding: codeBinding,
+          acknowledgeBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          recordPrepare: (call) => schedule.recordPrepare(call),
+          admit: (caseId) => schedule.admit(caseId),
+        });
+        const outcome = yield* Effect.exit(restore(operation));
+        if (Exit.isFailure(outcome)) {
+          yield* Effect.all([
+            this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void)),
+            this.disposeEvaluation(evaluationId),
+          ], { concurrency: 2 });
+          return yield* Effect.failCause(outcome.cause);
+        }
+        const release = yield* Effect.exit(this.disposeEvaluation(evaluationId));
+        if (Exit.isFailure(release)) {
+          yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
+          return yield* Effect.failCause(release.cause);
+        }
+        const receipt = outcome.value;
+        let executionId: string | undefined;
+        if (request.interactive === true && receipt.evaluation.status === 'completed') {
+          executionId = this.nextOpaqueExecutionId('execution');
+          this.receiptExecutions.set(executionId, { manifest: bundle, schedule });
+        } else {
+          // A lease release fault is independent of an already joined receipt.
+          yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
+        }
+        schedule.mark('public-resolve');
+        return {
+          receipt,
+          result: Object.freeze({
+            ...(executionId ? { executionId } : {}),
+            evaluation: receipt.evaluation,
+          }),
+        };
+      }));
+    }));
+  }
+
+  private disposeSchedule(
+    schedule: JudgeObservationSchedule<unknown, unknown>,
+    reason?: Error
+  ): Effect.Effect<void, JudgeInfrastructureError> {
+    return Effect.tryPromise({
+      try: () => schedule.dispose(reason),
+      catch: (cause) => new JudgeInfrastructureError({
+        operation: 'dispose Judge observation',
+        message: errorFromUnknown(cause).message,
+        cause,
+      }),
+    });
   }
 
   private startExecution<
@@ -1829,7 +2001,7 @@ class RuntimeJudgeComposition
           this.runtimeControl,
           evaluationId
         ),
-        readableFiles: [this.sourcePath],
+        readableFiles: [this.binding.sourcePath],
       });
       const plan = preparedEvaluationPlan(request.plan, true, this.lifecycleAllowanceMs);
       let retained = false;
@@ -1904,59 +2076,54 @@ class RuntimeJudgeComposition
     JudgePlanError | JudgeInfrastructureError
   > {
     return Effect.suspend(() => {
+      const owned = this.receiptExecutions.get(request.executionId);
+      if (owned) {
+        return validateTraceContinuation(owned.manifest.plan, request.tracing).pipe(
+          Effect.flatMap((caseIds) => Effect.tryPromise({
+            try: (signal) => owned.schedule.continue(caseIds, signal),
+            catch: (cause) => cause instanceof JudgePlanError ? cause : new JudgeInfrastructureError({
+              operation: 'continue Judge observation',
+              message: errorFromUnknown(cause).message,
+              cause,
+            }),
+          })),
+          Effect.flatMap((evaluation) => {
+            if (this.receiptExecutions.get(request.executionId) !== owned) {
+              return Effect.fail(disposedExecutionError(request.executionId));
+            }
+            owned.schedule.mark('public-resolve');
+            return Effect.succeed(Object.freeze({
+              executionId: request.executionId,
+              evaluation: evaluation as JudgeEvaluationResult<Result, Expected>,
+            }));
+          })
+        );
+      }
       const retained = this.executions.get(request.executionId);
-      if (!retained) {
-        return Effect.fail(new JudgePlanError({
-          message:
-            `Unknown or disposed interactive execution ${JSON.stringify(request.executionId)}.`,
-        }));
-      }
-      const selected = new Set<string>();
-      const casesById = new Map(
-        retained.plan.cases.map((testCase) => [testCase.id, testCase])
-      );
-      for (const caseId of request.tracing.caseIds) {
-        if (selected.has(caseId)) {
-          return Effect.fail(new JudgePlanError({
-            message:
-              `Interactive tracing contains duplicate case id ${JSON.stringify(caseId)}.`,
-          }));
-        }
-        if (!casesById.has(caseId)) {
-          return Effect.fail(new JudgePlanError({
-            message:
-              `Interactive tracing references unknown case id ${JSON.stringify(caseId)}.`,
-          }));
-        }
-        selected.add(caseId);
-      }
-      if (selected.size === 0) {
-        return Effect.fail(new JudgePlanError({
-          message: 'Interactive tracing requires at least one retained case id.',
-        }));
-      }
-      const plan = traceTranchePlan(
-        retained.plan as JudgeEvaluationPlan<Input, Expected>,
-        request.tracing.caseIds,
-        retained.perCaseTimeoutMs,
-        this.lifecycleAllowanceMs
-      );
-      return evaluatePreparedJudgePlan<
-        TraceKernelFileSystemImage,
-        Input,
-        Result,
-        Expected
-      >(
-        retained.port,
-        plan,
-        retained.build,
-        {
-          comparator: retained.comparator as
-            | JudgeComparator<Input, Expected, Result>
-            | undefined,
-          tracing: request.tracing,
-        }
-      ).pipe(
+      if (!retained) return Effect.fail(disposedExecutionError(request.executionId));
+      return validateTraceContinuation(retained.plan, request.tracing).pipe(
+        Effect.flatMap((caseIds) => {
+          const plan = traceTranchePlan(
+            retained.plan as JudgeEvaluationPlan<Input, Expected>,
+            caseIds,
+            retained.perCaseTimeoutMs,
+            this.lifecycleAllowanceMs
+          );
+          return evaluatePreparedJudgePlan<
+            TraceKernelFileSystemImage,
+            Input,
+            Result,
+            Expected
+          >(
+            retained.port,
+            plan,
+            retained.build,
+            {
+              comparator: retained.comparator as JudgeComparator<Input, Expected, Result> | undefined,
+              tracing: { caseIds },
+            }
+          );
+        }),
         Effect.map((evaluation) => Object.freeze({
           executionId: retained.executionId,
           evaluation,
@@ -1981,7 +2148,7 @@ class RuntimeJudgeComposition
     const uuid = globalThis.crypto?.randomUUID?.();
     return uuid
       ? `${this.runtime}-${kind}-${uuid}`
-      : `${this.runtime}-${kind}-${this.nextEvaluationId++}`;
+      : `${this.runtime}-${kind}-${nextOpaqueId++}`;
   }
 
   evaluate<
@@ -1995,6 +2162,8 @@ class RuntimeJudgeComposition
     JudgeEvaluationResult<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
   > {
+    // Scoped evaluate keeps its legacy binding until the direct-entry migration.
+    if (this.receiptProvider) assertRuntimeJudgeBindingSupported(this.runtime as Language, this.binding);
     return this.evaluatePlan(plan, options, false);
   }
 
@@ -2021,7 +2190,7 @@ class RuntimeJudgeComposition
       const port = new TraceKernelJudgePort({
         host: this.host,
         runtimeControl: evaluationControl,
-        readableFiles: [this.sourcePath],
+        readableFiles: [this.binding.sourcePath],
       });
       const effectivePlan = preparedEvaluationPlan(
         plan,
@@ -2069,6 +2238,18 @@ class RuntimeJudgeComposition
     JudgeAlgorithmReceipt<Result, Expected>,
     JudgePlanError | JudgeInfrastructureError
   > {
+    if (this.receiptProvider) {
+      return Effect.gen(this, function* () {
+        const snapshot = structuredClone(bundle);
+        yield* validateAlgorithmJudgeBundle(snapshot);
+        const caseIds = snapshot.execution.trace === true ? snapshot.plan.cases.map(({ id }) => id) : undefined;
+        const { receipt } = yield* this.startBundleExecution<Input, Result, Expected>(snapshot, {
+          stopAtFirstRunaway: options.stopAtFirstRunaway,
+          ...(caseIds ? { tracing: { caseIds } } : {}),
+        });
+        return receipt;
+      });
+    }
     return validateAlgorithmJudgeBundle(bundle).pipe(
       Effect.flatMap(() =>
         this.evaluatePlan<Input, Result, Expected>(
@@ -2094,7 +2275,7 @@ class RuntimeJudgeComposition
 function createRuntimeJudge(
   options: CreateRuntimeJudgeOptions
 ): Effect.Effect<
-  RuntimeJudge,
+  RuntimeJudgeComposition,
   never,
   Scope.Scope
 > {
@@ -2116,12 +2297,18 @@ function createRuntimeJudge(
         host,
         bridge,
         isTraceBinding(options.binding),
-        options.binding.sourcePath,
-        options.provider.lifecycleAllowanceMs ?? DEFAULT_LIFECYCLE_ALLOWANCE_MS
+        options.binding,
+        options.provider.lifecycleAllowanceMs ?? DEFAULT_LIFECYCLE_ALLOWANCE_MS,
+        options.receiptProvider,
+        options.receiptHostLifetime
       );
-      return Effect.addFinalizer(() =>
-        judge.disposeRetainedExecutions()
-      ).pipe(Effect.as(judge));
+      const lifetime = options.receiptHostLifetime;
+      const dispose = () => { Effect.runFork(judge.disposeRetainedExecutions()); };
+      lifetime?.addEventListener('abort', dispose, { once: true });
+      return Effect.addFinalizer(() => {
+        lifetime?.removeEventListener('abort', dispose);
+        return judge.disposeRetainedExecutions();
+      }).pipe(Effect.as(judge));
     })
   );
 }
@@ -2133,18 +2320,30 @@ export function createBrowserRuntimeJudge(
   never,
   Scope.Scope
 > {
+  return composeBrowserRuntimeJudge(
+    options, getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language)
+  );
+}
+
+function composeBrowserRuntimeJudge(
+  options: CreateBrowserRuntimeJudgeOptions,
+  receiptProvider: JudgeReceiptProvider | undefined,
+  receiptHostLifetime?: AbortSignal
+) {
   // This is the last shared boundary that sees both the selected runtime
   // profile and every requested execution/tracing control. Validate before
   // acquiring or preparing a provider so unsupported controls cannot vanish.
-  assertRuntimeJudgeBindingSupported(options.language, options.binding);
+  if (!receiptProvider) assertRuntimeJudgeBindingSupported(options.language, options.binding);
   return createRuntimeJudge({
     runtime: options.language,
     provider: getBrowserRuntimeHostPreparedProvider(
       options.host,
       options.language
     ),
-    binding: options.binding,
+    binding: receiptProvider ? structuredClone(options.binding) : options.binding,
     runtimeControl: options.runtimeControl,
+    receiptProvider,
+    receiptHostLifetime,
   });
 }
 
@@ -2174,6 +2373,7 @@ interface RetainedBrowserJudgeExecution {
   readonly scope: Scope.CloseableScope;
   activeContinuations: number;
   idleTimer?: ReturnType<typeof globalThis.setTimeout>;
+  readonly abort?: AbortController;
 }
 
 function judgeTimingNow(): number {
@@ -2229,6 +2429,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
       options.interactiveExecutionIdleTimeoutMs
     );
   const retainedExecutions = new Map<string, RetainedBrowserJudgeExecution>();
+  const lifetime = new AbortController();
 
   const clearIdleTimer = (retained: RetainedBrowserJudgeExecution): void => {
     if (retained.idleTimer === undefined) return;
@@ -2265,6 +2466,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     const retained = retainedExecutions.get(executionId);
     if (!retained) return;
     retainedExecutions.delete(executionId);
+    retained.abort?.abort(disposedExecutionError(executionId));
     clearIdleTimer(retained);
     try {
       await Effect.runPromise(retained.judge.disposeExecution(executionId));
@@ -2280,52 +2482,72 @@ export function createBrowserJudgeHostFromRuntimeHost(
   >(
     request: BrowserJudgeExecuteRequest<Input, Expected, Result>
   ): Promise<RuntimeJudgeExecuteResult<Result, Expected>> => {
+    if (!('executionId' in request)) return (await executeInitial(request)).result;
     const requestStartedAt = judgeTimingNow();
     const phases: RuntimeJudgeExecutionPhaseTiming[] = [];
-    if ('executionId' in request) {
-      const retained = retainedExecutions.get(request.executionId);
-      if (!retained) {
-        throw new JudgePlanError({
-          message:
-            `Unknown or disposed interactive execution ${JSON.stringify(request.executionId)}.`,
-        });
-      }
-      clearIdleTimer(retained);
-      retained.activeContinuations += 1;
-      let result: RuntimeJudgeExecuteResult<Result, Expected>;
-      try {
-        result = await measureJudgeExecutionPhase(
-          phases,
-          'trace-continuation-execute',
-          () => runAbortable(
-            retained.judge.execute<Input, Result, Expected>({
-              executionId: request.executionId,
-              tracing: request.tracing,
-            }),
-            request.signal
-          )
-        );
-      } finally {
-        retained.activeContinuations -= 1;
-        armIdleTimer(request.executionId, retained);
-      }
+    const retained = retainedExecutions.get(request.executionId);
+    if (!retained) throw disposedExecutionError(request.executionId);
+    clearIdleTimer(retained);
+    retained.activeContinuations += 1;
+    const signal = retained.abort
+      ? AbortSignal.any(request.signal ? [retained.abort.signal, request.signal] : [retained.abort.signal])
+      : request.signal;
+    try {
+      const tracing = retained.abort ? { caseIds: [...request.tracing.caseIds] } : request.tracing;
+      const result = await measureJudgeExecutionPhase(
+        phases,
+        'trace-continuation-execute',
+        () => runAbortable(
+          retained.judge.execute<Input, Result, Expected>({
+            executionId: request.executionId,
+            tracing,
+          }),
+          signal
+        )
+      );
+      if (retained.abort && signal?.aborted) throw judgeAbortError();
       return withJudgeExecutionTimings(result, requestStartedAt, phases);
+    } catch (cause) {
+      if (retained.abort?.signal.aborted && signal?.reason === retained.abort.signal.reason) {
+        throw retained.abort.signal.reason;
+      }
+      throw cause;
+    } finally {
+      retained.activeContinuations -= 1;
+      armIdleTimer(request.executionId, retained);
     }
+  };
 
-    const { bundle } = request;
+  async function executeInitial<Input extends Record<string, unknown>, Result, Expected>(
+    request: BrowserJudgeInitialExecuteRequest<Input, Expected, Result>
+  ): Promise<{
+    result: RuntimeJudgeExecuteResult<Result, Expected>;
+    receipt?: JudgeAlgorithmReceipt<Result, Expected>;
+  }> {
+    const requestStartedAt = judgeTimingNow();
+    const phases: RuntimeJudgeExecutionPhaseTiming[] = [];
+    const language = request.bundle.plan.runtime as Language;
+    const registration = getBrowserRuntimeHostJudgeReceiptProvider(host, language);
+    const bundle = registration ? structuredClone(request.bundle) : request.bundle;
+    const tracing = registration && request.tracing
+      ? { caseIds: [...request.tracing.caseIds] }
+      : request.tracing;
+    const signal = registration
+      ? AbortSignal.any(request.signal ? [lifetime.signal, request.signal] : [lifetime.signal])
+      : request.signal;
     await measureJudgeExecutionPhase(
       phases,
       'bundle-validation',
       () => Effect.runPromise(validateAlgorithmJudgeBundle(bundle))
     );
-    const language = bundle.plan.runtime as Language;
+    if (registration && signal?.aborted) throw judgeAbortError();
     if (!host.isLanguageSupported(language)) {
       throw new Error(
         `Judge runtime ${JSON.stringify(bundle.plan.runtime)} is not supported by this browser authority.`
       );
     }
     const execution = bundle.execution;
-    const comparator = bundle.comparison
+    const comparator = !registration && bundle.comparison
       ? createJudgeComparator<Input>(bundle.comparison)
       : undefined;
 
@@ -2333,53 +2555,58 @@ export function createBrowserJudgeHostFromRuntimeHost(
       request.interactive === true || request.tracing !== undefined;
     const binding = algorithmRuntimeBinding(execution, traceCapable);
     const scope = Effect.runSync(Scope.make());
-    let judge: RuntimeJudge | undefined;
     try {
-      judge = await measureJudgeExecutionPhase(
+      const judge = await measureJudgeExecutionPhase(
         phases,
         'judge-create',
         () => Effect.runPromise(
           Scope.extend(
-            createBrowserRuntimeJudge({ host, language, binding }),
+            composeBrowserRuntimeJudge({ host, language, binding }, registration),
             scope
           )
         )
       );
-      const result = await measureJudgeExecutionPhase(
+      const controls = {
+        interactive: request.interactive,
+        tracing,
+        stopAtFirstRunaway: request.stopAtFirstRunaway,
+      };
+      const owned = await measureJudgeExecutionPhase<{
+        result: RuntimeJudgeExecuteResult<Result, Expected>;
+        receipt?: JudgeAlgorithmReceipt<Result, Expected>;
+      }>(
         phases,
         'initial-execute',
-        () => runAbortable(
-          judge!.execute<Input, Result, Expected>({
-            plan: bundle.plan,
-            interactive: request.interactive,
-            tracing: request.tracing,
-            comparator,
-            ...(request.stopAtFirstRunaway === true
-              ? { stopAtFirstRunaway: true }
-              : {}),
-          }),
-          request.signal
-        )
+        () => registration
+          ? runAbortable(judge.startBundleExecution<Input, Result, Expected>(bundle, controls), signal)
+          : runAbortable(judge.execute<Input, Result, Expected>({
+              ...controls,
+              plan: bundle.plan,
+              comparator,
+            }), signal).then((result) => ({ result, receipt: undefined }))
       );
+      if (registration && signal?.aborted) throw judgeAbortError();
+      const { result, receipt } = owned;
       if (result.executionId) {
         const retained: RetainedBrowserJudgeExecution = {
           judge,
           scope,
           activeContinuations: 0,
+          abort: registration ? new AbortController() : undefined,
         };
         retainedExecutions.set(result.executionId, retained);
         armIdleTimer(result.executionId, retained);
       } else {
         await Effect.runPromise(Scope.close(scope, Exit.void));
       }
-      return withJudgeExecutionTimings(result, requestStartedAt, phases);
+      return { result: withJudgeExecutionTimings(result, requestStartedAt, phases), receipt };
     } catch (error) {
       await Effect.runPromise(Scope.close(scope, Exit.fail(error))).catch(
         () => undefined
       );
       throw error;
     }
-  };
+  }
 
   return Object.freeze({
     assets: host.assets,
@@ -2391,11 +2618,14 @@ export function createBrowserJudgeHostFromRuntimeHost(
     prewarmLanguage: host.prewarmLanguage.bind(host),
     warmLanguage: host.warmLanguage.bind(host),
     disposeLanguage: host.disposeLanguage.bind(host),
-    createJudge: (judgeOptions: CreateBrowserJudgeOptions) =>
-      createBrowserRuntimeJudge({
-        host,
-        ...judgeOptions,
-      }),
+    createJudge: (judgeOptions: CreateBrowserJudgeOptions) => {
+      const registration = getBrowserRuntimeHostJudgeReceiptProvider(host, judgeOptions.language);
+      return composeBrowserRuntimeJudge(
+        { host, ...judgeOptions },
+        registration,
+        registration ? lifetime.signal : undefined
+      );
+    },
     execute,
     disposeExecution,
     evaluateAlgorithm: <
@@ -2417,13 +2647,13 @@ export function createBrowserJudgeHostFromRuntimeHost(
             ),
           }
         : undefined;
-      return execute({
+      return executeInitial({
         bundle,
         ...(tracing ? { tracing } : {}),
         ...(signal ? { signal } : {}),
         ...(stopAtFirstRunaway === true ? { stopAtFirstRunaway: true } : {}),
-      }).then(({ evaluation }) =>
-        createAlgorithmJudgeReceipt(bundle, evaluation)
+      }).then(({ result, receipt }) =>
+        receipt ?? createAlgorithmJudgeReceipt(bundle, result.evaluation)
       );
     },
     createProjectJudge: (projectOptions = {}) =>
@@ -2432,6 +2662,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
         workspace: options.project,
       }),
     dispose: () => {
+      lifetime.abort(judgeAbortError());
       for (const executionId of [...retainedExecutions.keys()]) {
         void disposeExecution(executionId).catch(() => undefined);
       }
