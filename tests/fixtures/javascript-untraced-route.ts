@@ -256,10 +256,30 @@ export async function runUntracedRouteChecks(
       functionName: 'solve',
     },
   } as const;
+  // Each needs the pool's console fallback in its noisy case (input 1) only;
+  // the quiet case's `localeCompare` answers differently on the two routes.
+  const witnessBody = (noisy: string) => ({
+    javascript: `function solve(n) {\n  if (n === 1) {\n    ${noisy}\n  }\n  return 'ä'.localeCompare('z');\n}`,
+    typescript: `function solve(n: number): number {\n  if (n === 1) {\n    ${noisy}\n  }\n  return 'ä'.localeCompare('z');\n}`,
+    functionName: 'solve',
+  });
+  const witnesses = {
+    // The learner's code fails after filling the console.
+    'fails after 100 lines': witnessBody("for (let i = 0; i < 100; i++) console.log(i);\n    throw new Error('boom');"),
+    // One short line that ends in the pool's truncation marker.
+    'logs the truncation marker': witnessBody("console.log('…[truncated]');"),
+  } as const;
+  // Known limit: a traced case that a limit stopped is never checked against
+  // the pool's console budget (a second run would cost a runaway one more
+  // clock), so the Run's untraced siblings stay on the pool here.
+  const pastTraceBudget = witnessBody('for (let i = 0; i < 1500; i++) console.log(i);');
   const isRefused = (result: any) => result.diagnostics?.some((entry: any) => entry.code === 'trace-unavailable');
   for (const language of LANGUAGES) {
-    for (const [name, source] of Object.entries(noisyPrograms)) {
-      for (const [order, ns] of [['noisy first', [100, 1]], ['noisy last', [1, 100]]] as const) {
+    for (const [name, source] of [...Object.entries(noisyPrograms), ...Object.entries(witnesses)]) {
+      const isWitness = Object.hasOwn(witnesses, name);
+      for (const [order, ns] of (isWitness
+        ? [['noisy first', [1, 2]], ['noisy last', [2, 1]]]
+        : [['noisy first', [100, 1]], ['noisy last', [1, 100]]]) as ReadonlyArray<readonly [string, readonly number[]]>) {
         const program = {
           code: source[language],
           functionName: source.functionName,
@@ -297,7 +317,12 @@ export async function runUntracedRouteChecks(
                   if (!same) consoleCheck.violations.push(`${label}: untraced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
                 } else if (expected?.failure?.stage === 'compile') {
                   if (!same) consoleCheck.violations.push(`${label}: traced case ${result.caseId} must show Submit's compile error, got ${JSON.stringify(answer(result)).slice(0, 200)}`);
-                } else if (!same && !isRefused(result)) {
+                } else if (isWitness && program.cases.find((entry) => entry.id === result.caseId)?.input.n !== 1) {
+                  // Known limit: a traced case off the pool runs where
+                  // `localeCompare` orders differently, so a witness's quiet
+                  // case may answer differently when it is the traced one.
+                  continue;
+                } else if (!same && !isRefused(result) && result.failure?.origin !== 'limit') {
                   consoleCheck.violations.push(`${label}: traced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
                 } else if (isRefused(result) && passes(expected) === false && expected?.failure?.stage === 'compile') {
                   consoleCheck.violations.push(`${label}: refused a compile error`);
@@ -310,16 +335,45 @@ export async function runUntracedRouteChecks(
     }
   }
 
+  const residual = named('known limit: a traced case stopped by a trace budget is not checked against the console budget');
+  for (const language of LANGUAGES) {
+    const program = {
+      code: pastTraceBudget[language],
+      functionName: pastTraceBudget.functionName,
+      executionStyle: 'function',
+      cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 2 }, expected: 2 }],
+      policy: allCasesPassPolicy(),
+    };
+    // One batch: an interactive Run would stop at the traced case's limit.
+    const stop = await onHost(async (host) =>
+      (await host.evaluateAlgorithm({ bundle: await bundle(language, program) })).evaluation as any);
+    const alone = await onHost(async (host) =>
+      (await host.evaluateAlgorithm({ bundle: await bundle(language, { ...program, cases: program.cases.slice(1) }) })).evaluation as any);
+    const run = await onHost(async (host) => {
+      return (await host.execute({ bundle: await bundle(language, program, budgets), tracing: { caseIds: ['1'] } })).evaluation as any;
+    });
+    residual.compared += 1;
+    const at = (evaluation: any, id: string) => JSON.stringify(answer(evaluation.cases.find((result: any) => result.caseId === id)));
+    if (run.cases.find((result: any) => result.caseId === '1')?.failure?.origin !== 'limit') {
+      residual.violations.push(`${language}: the traced case should stop at the trace budget`);
+    }
+    // Pinned as documented: the sibling keeps the pool's answer, which
+    // Submit of the same cases does not give.
+    if (at(run, '2') !== at(alone, '2')) residual.violations.push(`${language}: the untraced sibling left the pool: ${at(run, '2')}`);
+    if (at(stop, '2') === at(alone, '2')) residual.violations.push(`${language}: Submit no longer moves the sibling off the pool; update this known limit`);
+  }
+
   if (settings.runaway) {
     // A traced case that hit a limit already has its answer: no second run,
     // even with a console at the pool's budget.
-    const once = named('runaway: a traced runaway case in a budgeted Run is timed once');
+    const once = named('runaway: no traced case a limit stopped is asked of the pool, and each is timed once');
     const limitMs = 1500;
     const runaways = [
       // No line events inside the regex, so only the clock stops it.
       ['time limit', 'timed-out', 'for (let i = 0; i < 200; i++) console.log(i);\n  return /^(a+)+$/.test("a".repeat(40 + n) + "b") ? 1 : n;'],
-      // The app's single-line budget stops this one first.
+      // The app's single-line budget stops these first: never asked of the pool.
       ['step limit', undefined, 'for (let i = 0; i < 200; i++) console.log(i);\n  while (n > -1) { n += 1; }\n  return n;'],
+      ['printing loop', undefined, 'while (true) console.log(n);'],
     ] as const;
     for (const language of LANGUAGES) {
       for (const [kind, status, body] of runaways) {
@@ -342,6 +396,8 @@ export async function runUntracedRouteChecks(
           if (status && traced?.status !== status) once.violations.push(`${language}/${kind}: the traced case should be ${status}, got ${traced?.status}`);
           if (!status && traced?.status === 'completed') once.violations.push(`${language}/${kind}: the traced case should stop at a limit`);
           if (elapsed > limitMs * 1.8) once.violations.push(`${language}/${kind}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
+          // Stopped by a trace budget, not the clock: no clock at all.
+          if (!status && elapsed > limitMs * 0.9) once.violations.push(`${language}/${kind}: the Run took ${Math.round(elapsed)} ms; a probe ran to the clock`);
         });
       }
     }
