@@ -56,7 +56,12 @@ add('G1', 'queens', 'py', program, queensCases, queensOptions);
 add('G1', 'queens-legacy-budget', 'py', program, queensCases, {
   ...queensOptions, limits: { ...queensOptions.limits, maxLineEvents: 1000000 },
 });
-add('G1', 'end-character', 'cpp', '#include <string>\nclass Solution { public: int solve(std::string s) { return int(s[s.size()]); } };', rows([{ s: 'cat' }, { s: '' }], [0, 0]));
+const stringEndRows = rows([{ s: 'cat' }, { s: '' }], [0, 0]);
+add('G1', 'end-character-one-line', 'cpp', '#include <string>\nclass Solution { public: int solve(std::string s) { return int(s[s.size()]); } };', stringEndRows,
+  { candidatePrediction: 'Passes. This one-line regression guard does not exercise the traced index rewrite.' });
+add('G1', 'end-character', 'cpp', '#include <string>\nclass Solution {\npublic:\n int solve(std::string s) {\n   return int(s[s.size()]);\n }\n};',
+  stringEndRows.map((row) => ({ ...row, instrumentedLine: 5 })),
+  { candidatePrediction: 'Required baseline failure on both 0.17.1 and b025fdb8. The own-line read reaches trace instrumentation.' });
 const invalid = 'function solve() {\n  return 7;';
 add('G1', 'missing-closer', 'js', invalid, rows([{}, {}], [undefined, undefined], [7, 7]).map((row) => ({
   ...row, status: 'runtime-error', verdict: 'not-evaluated', failure: { origin: 'program', stage: 'compile' },
@@ -244,6 +249,7 @@ const compatible = fixtures.find((fixture) => fixture.name === 'invocation-ops' 
 compatible.expectedTier = 'judge-compatible';
 const nodeCompatible = fixtures.find((fixture) => fixture.name === 'graph-input' && fixture.language === 'python');
 nodeCompatible.nodeInputCompatibility = true;
+nodeCompatible.candidatePrediction = 'Required baseline failure on A. b025fdb8 reports 2 where the independent alias and cycle oracle requires 112.';
 const scalars = rows([{ n: 7 }, { n: 11 }], [7, 11]);
 add('G6', 'java-fast-scalar', 'java', 'class Solution { public int solve(int n) { return n; } }', scalars,
   { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'algorithm-fast' });
@@ -269,6 +275,7 @@ const inventory = [...fixtures, ...requiredAppFixtures].flatMap((fixture) => [
     ...request.cases.flatMap((caseId) => [
       ...rowChecks,
       ...(fixture.name === 'stdout' && request.selected.includes(caseId) ? ['source-event', 'case-binding'] : []),
+      ...(fixture.cases.find(({ id }) => id === caseId)?.instrumentedLine && request.selected.includes(caseId) ? ['instrumented-line'] : []),
     ].map((id) => `${prefix}/${caseId}/${id}`)),
   ];
 }));
@@ -301,10 +308,11 @@ for (const fixture of fixtures.filter(({ untracedOnly }) => !untracedOnly)) {
     inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/${row.id}/receipt`);
   }
 }
+const stdoutRequests = requestMatrix(['A', 'B'], { gate: 'G1' });
 const controls = [
   { seed: 'stdout-b', fixture: 'G1/python/stdout', requests: ['run-first'], keys: ['run-first/B/value'], unchanged: ['run-first/B/verdict'], hits: 1 },
-  { seed: 'stdout-all', fixture: 'G1/python/stdout', requests: requests.map(({ id }) => id), keys: requests.flatMap((request) => request.cases.map((id) => `${request.id}/${id}/value`)), hits: 18 },
-  { seed: 'split-second-edge', fixture: 'G6/python/graph-input', requests: ['submit-default-A'], keys: ['submit-default-A/A/value'], hits: 1 },
+  { seed: 'stdout-all', fixture: 'G1/python/stdout', requests: stdoutRequests.map(({ id }) => id), keys: stdoutRequests.flatMap((request) => request.cases.map((id) => `${request.id}/${id}/value`)), hits: 22 },
+  { seed: 'split-second-edge', fixture: 'G6/java/graph-input', requests: ['submit-default-A'], keys: ['submit-default-A/A/value'], hits: 1 },
   { seed: 'list-field', fixture: 'G1/python/builtin-class', requests: ['submit-default-A'], keys: ['submit-default-A/A/value'], hits: 1 },
 ];
 if (new Set(inventory).size !== inventory.length) throw new Error('Repeated assertion IDs');

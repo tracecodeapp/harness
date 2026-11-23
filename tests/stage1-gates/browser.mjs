@@ -5,8 +5,15 @@ import {
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
 } from '@tracecode/harness/judge';
+import { getLanguageRuntimeProfile } from '@tracecode/harness/tracekernel';
 export { resolveBuiltInTraceCCRuntimeManifest } from '@tracecode/harness/tracekernel';
 export { builtInProjectEvaluators, createAlgorithmJudgeBundle, createBrowserJudgeHost };
+
+export function supportedTraceOptions(language, options) {
+  if (!options) return undefined;
+  const controls = getLanguageRuntimeProfile(language).capabilities.tracing.controls;
+  return Object.fromEntries(Object.entries(options).filter(([key]) => controls[key]));
+}
 
 let transcript = [];
 let nextGeneration = 0;
@@ -18,6 +25,9 @@ class ObservedWorker extends NativeWorker {
     super(url, options);
     const generation = ++nextGeneration;
     const worker = String(url);
+    const pathname = new URL(url, location.href).pathname;
+    const pythonWorker = pathname.endsWith('/python-worker.js');
+    const javaWorker = /\/java(?:-runtime)?-worker\.js$/.test(pathname);
     const pending = new Map();
     const programs = new Map();
     this.addEventListener('message', (event) => {
@@ -39,7 +49,7 @@ class ObservedWorker extends NativeWorker {
             seedHits.push({ generation, input, field: 'value' });
           }
         };
-        if (worker.includes('/python/') && (Array.isArray(rows) || rows)) {
+        if (seed && pythonWorker && rows) {
           if (data.type === 'batch-case-progress' && data.payload?.phase === 'finished') {
             const index = data.payload.index;
             mutate(data.payload.result, rows[index], command.trace?.[index]);
@@ -76,7 +86,7 @@ class ObservedWorker extends NativeWorker {
         input.root.right = { val: input.root.left.val, left: structuredClone(input.root.left.left), right: null };
         seedHits.push({ generation, input });
       }
-      if (seed === 'split-second-edge' && worker.includes('/python/')) {
+      if (seed === 'split-second-edge' && javaWorker && /^execute-prepared-runtime-program(?:-batch)?$/.test(data?.type)) {
         if (payload?.inputBatch) {
           data = { ...data, payload: { ...payload, inputBatch: structuredClone(payload.inputBatch) } };
           data.payload.inputBatch.forEach(copySecondEdge);
@@ -185,11 +195,13 @@ export async function runFixture(fixture, requests, nonce, mutation) {
               return { id, input: structuredClone(input), ...(expected === undefined ? {} : { expected: structuredClone(expected) }) };
             }),
             limits: fixture.limits,
-            traceOptions: fixture.traceOptions,
+            traceOptions: supportedTraceOptions(fixture.language, fixture.traceOptions),
             comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
           });
           if (request.mode === 'submit') {
             reported = await host.evaluateAlgorithm({ bundle, ...(request.stop ? { stopAtFirstRunaway: true } : {}) });
+          } else if (request.mode === 'execute') {
+            reported = await host.execute({ bundle, ...(request.selected.length ? { tracing: { caseIds: request.selected } } : {}) });
           } else {
             reported = await host.execute({ bundle, interactive: true, tracing: { caseIds: request.selected } });
             if (reported.executionId) handles.set(request.id, { host, id: reported.executionId });
@@ -213,7 +225,7 @@ export async function runFixture(fixture, requests, nonce, mutation) {
         }
         await globalThis.recordGateObservation(jsonWire({
           nonce, request: request.id, reported, projections, compileProjection, skip, retainedExecutionId, seedHits,
-          submitted: bundle && { id: bundle.id, workspaceDigest: bundle.workspaceDigest },
+          submitted: bundle && { id: bundle.id, workspaceDigest: bundle.workspaceDigest, traceOptions: bundle.execution.traceOptions },
           worker: transcript, wallMs: performance.now() - start,
         }));
       } catch (error) {
@@ -222,7 +234,7 @@ export async function runFixture(fixture, requests, nonce, mutation) {
           wallMs: performance.now() - start,
         }));
       } finally {
-        if (request.mode === 'initial' && host) {
+        if ((request.mode === 'initial' || request.mode === 'execute') && host) {
           const handle = handles.get(request.id);
           if (request.id !== 'run-first' || !handle) {
             try {

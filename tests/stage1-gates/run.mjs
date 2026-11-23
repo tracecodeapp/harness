@@ -15,7 +15,7 @@ import { exerciseMux, loadMux } from './mux.mjs';
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url), 'utf8'));
 const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
 if (!installationArg || !assetsArg || !evidenceArg) throw new Error('Usage: run.mjs CONSUMER_ASSET_INSTALL ASSET_ROOT EVIDENCE');
-const installation = resolve(installationArg);
+const installation = realpathSync(installationArg);
 const assets = resolve(assetsArg);
 const evidence = resolve(evidenceArg);
 mkdirSync(evidence, { recursive: true });
@@ -63,8 +63,9 @@ try {
     define: { 'process.env.NODE_ENV': '"production"' },
   });
   const installedJudge = Object.keys(built.metafile.inputs).find((name) => name.endsWith('/dist/judge.js'));
-  assert(installedJudge && resolve(installedJudge).startsWith(installation + sep), 'Browser bundle must resolve installed /judge');
+  assert(installedJudge, 'Browser bundle must resolve installed /judge');
   const resolvedJudge = realpathSync(installedJudge);
+  assert(resolvedJudge.startsWith(installation + sep), 'Resolved /judge must be inside the isolated consumer');
   assert.equal(resolvedJudge, process.env.TRACECODE_STAGE1_VERIFIED_JUDGE, 'Browser bundle must load the byte-verified /judge');
   let candidateSource = process.env.TRACECODE_STAGE1_CANDIDATE_SOURCE;
   if (candidateSource) {
@@ -247,17 +248,32 @@ try {
     const unchanged = (control.unchanged ?? []).map(expectedKey);
     const controlResults = new Map();
     const hits = [];
-    await exercise(fixture, manifest.requests.filter((request) => control.requests.includes(request.id)), {
+    const observedValues = new Map();
+    const requests = requestMatrix(fixture.cases.map(({ id }) => id), fixture);
+    await exercise(fixture, requests.filter((request) => control.requests.includes(request.id)), {
       control: control.seed,
-      onObservation: (observation) => { if (Array.isArray(observation.seedHits)) hits.push(...observation.seedHits); },
+      onObservation: (observation) => {
+        if (Array.isArray(observation.seedHits)) hits.push(...observation.seedHits);
+        for (const row of observation.reported?.evaluation?.cases ?? []) {
+          observedValues.set(`${observation.request}/${row.caseId}/value`, row.value);
+        }
+      },
       record: (item) => controlResults.set(item.id, item.status),
     });
     const good = [...targets, ...unchanged].every((key) => baseline.get(key) === 'pass');
     const red = targets.every((key) => controlResults.get(key) === 'fail');
     const preserved = unchanged.every((key) => controlResults.get(key) === 'pass');
-    const pass = good && red && preserved && hits.length === control.hits;
+    const correctFault = control.keys.every((key) => {
+      const observed = observedValues.get(key);
+      if (control.seed === 'split-second-edge') return observed === 12;
+      if (control.seed === 'list-field') return observed?.value === 1;
+      const caseId = key.split('/')[1];
+      return observed === fixture.cases.find(({ id }) => id === caseId).actual + 1;
+    });
+    const pass = good && red && preserved && correctFault && hits.length === control.hits;
     if (!pass) controlFailures.push(control.seed);
-    record('controls.jsonl', { seed: control.seed, pass, good, red, preserved, hits, targets, results: Object.fromEntries(controlResults) });
+    record('controls.jsonl', { seed: control.seed, pass, good, red, preserved, correctFault, hits, targets,
+      observedValues: Object.fromEntries(observedValues), results: Object.fromEntries(controlResults) });
   }
   const result = summarize(inventory, assertions);
   writeFileSync(join(evidence, 'summary.json'), JSON.stringify({ ...result, controlFailures, runtime, partial: Boolean(filter) }, null, 2) + '\n');

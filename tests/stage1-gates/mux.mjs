@@ -58,8 +58,8 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
         limits: fixture.limits, cases, comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
       };
       const bundle = await page.evaluate(async (options) => {
-        const { createAlgorithmJudgeBundle } = await import('/gate-browser.mjs');
-        return createAlgorithmJudgeBundle(options);
+        const { createAlgorithmJudgeBundle, supportedTraceOptions } = await import('/gate-browser.mjs');
+        return createAlgorithmJudgeBundle({ ...options, traceOptions: supportedTraceOptions(options.language, options.traceOptions) });
       }, options);
       rawReceipt = undefined;
       let legacy;
@@ -74,7 +74,7 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
             requestId: id, language: fixture.language, code: fixture.code,
             functionName: fixture.functionName, executionStyle: fixture.executionStyle,
             mode: trace ? 'trace' : 'run',
-            compareMode: 'exact', traceOptions: fixture.traceOptions,
+            compareMode: 'exact', traceOptions: bundle.execution.traceOptions,
             limits: {
               wallTimeMs: fixture.limits.wallClockMs,
               maxLineEvents: fixture.limits.maxLineEvents,
@@ -90,7 +90,7 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
         }, { receipt: rawReceipt, language: fixture.language, trace });
         onResult(request, {
           reported: rawReceipt, legacy, projections,
-          submitted: { id, workspaceDigest: bundle.workspaceDigest },
+          submitted: { id, workspaceDigest: bundle.workspaceDigest, traceOptions: bundle.execution.traceOptions },
           wallMs: performance.now() - started,
         });
       } catch (error) {

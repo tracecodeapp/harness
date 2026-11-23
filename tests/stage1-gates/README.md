@@ -1,6 +1,6 @@
 # Stage 1 G1 and G6 qualification
 
-The default matrix resolves `@tracecode/harness/judge` from an isolated tarball installation and runs in full Chromium. `manifest.json` contains the exact programs, expected answers, comparator targets and assertion IDs. It is reproducible with `node tests/stage1-gates/build-manifest.mjs` from a checkout that can read the pinned fixture commits. The manifest contains 18 default row observations and 144 ordinary row assertions for each two-case stdout fixture.
+The default matrix resolves `@tracecode/harness/judge` from an isolated tarball installation and runs in full Chromium. `manifest.json` contains the exact programs, expected answers, comparator targets and assertion IDs. It is reproducible with `node tests/stage1-gates/build-manifest.mjs` from a checkout that can read the pinned fixture commits. The core request matrix contains 18 row observations and 144 ordinary row assertions for each two-case stdout fixture. G1 adds four one-shot `execute` observations for each pair, one traced and one untraced request per case. The runner projects the requested trace options against the installed package's published capabilities before calling Judge or the mux adapter.
 
 Script invocation uses the function style with the selector omitted. Each script assigns the `result` variable and prints it. The no-default and default-constructible C++ `Value` witnesses use the same mixed argument shapes. The app stages use their own budgets and remain external to this checkout.
 
@@ -22,5 +22,7 @@ The pinned mux adapter runs against a Playwright-supplied private slot and check
 The cap dispositions are part of the assertion inventory. Python tests its existing item ceiling. The other baseline byte-limit cells fail with the recorded absence of a product-owned seam. The gate needs a product-owned policy before it can run the 1,024-byte control on those serializers.
 
 The print-then-throw fixture checks for both messages and the deliberate runtime error in every receipt. For Java, Python, C# and C++, its text oracle allows one trailing LF per captured message. JS and TS use their line-oriented console and must match its LF framing. Judge paths within each language must agree byte for byte. `console-framing.jsonl` records byte differences from program writes and indicates whether framing alone accounts for each difference.
+
+The C++ terminator failure needs the index read on its own source line. The one-line sibling is a passing regression guard. The Java graph seed copies the second edge on the worker request, and the Python output seeds change scoped worker replies before Judge sees them.
 
 Historical controls use separate host job suffixes and the same committed oracles. Set `TRACECODE_STAGE1_SUBJECT` to `e13bf6ec1b67681eede99c8dea1df951b424eb91` for the pre-#68 paired printer, `15ebff79943cf991ed5f4921fd9609c3b48f33d3` for the pre-cycle Java graph, or `published-0.17.1` for the published queens artifact. Compare the targeted assertion and raw receipt before accepting a historical red. Required companion routes that run only on the frozen candidate remain missing in these historical reports.

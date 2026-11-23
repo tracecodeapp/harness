@@ -1,4 +1,4 @@
-export function requestMatrix(cases, { untracedOnly = false } = {}) {
+export function requestMatrix(cases, { gate, untracedOnly = false } = {}) {
   const second = cases.slice(1, 2);
   const requests = [
     { id: 'run-first', mode: 'initial', cases, selected: cases.slice(0, 1) },
@@ -10,6 +10,14 @@ export function requestMatrix(cases, { untracedOnly = false } = {}) {
     }))),
     { id: 'submit-traced', mode: 'submit', cases, selected: cases },
   ];
+  if (gate === 'G1') {
+    for (const id of cases) {
+      requests.push(
+        { id: `execute-code-${id}`, mode: 'execute', cases: [id], selected: [] },
+        { id: `execute-traced-${id}`, mode: 'execute', cases: [id], selected: [id] },
+      );
+    }
+  }
   return untracedOnly ? requests.filter((request) => request.mode === 'submit' && request.selected.length === 0) : requests;
 }
 
@@ -38,7 +46,7 @@ export function jsRouteRequests(fixture) {
   if (!['javascript', 'typescript'].includes(fixture.language)) return [];
   if (!['stdout', 'ses-constructor-key', 'print-then-throw'].includes(fixture.name)) return [];
   return ['ses-compartment-pool', 'disposable-worker'].map((route) => ({
-    route, requests: requestMatrix(fixture.cases.map(({ id }) => id)).map((request) => ({ ...request, route })),
+    route, requests: requestMatrix(fixture.cases.map(({ id }) => id), fixture).map((request) => ({ ...request, route })),
   }));
 }
 

@@ -66,6 +66,8 @@ export function checkObservation(fixture, request, observation, record) {
       assert.equal(reported.schema, 'tracecode.judge.algorithm-receipt.v1');
     } else if (request.mode === 'initial') {
       assert.equal(typeof reported.executionId, 'string');
+    } else if (request.mode === 'execute') {
+      assert(!defined(reported.executionId));
     } else {
       assert(!defined(reported.executionId) || reported.executionId === observation.retainedExecutionId);
     }
@@ -209,6 +211,12 @@ export function checkObservation(fixture, request, observation, record) {
           (event.kind === 'snapshot' && event.target?.variable === 'n' && event.value === expected.anchorInput) ||
           (event.kind === 'stdout' && event.callStack?.at(-1)?.args?.n === expected.anchorInput)
         )), `No print-line event binding n=${expected.anchorInput}`);
+      });
+    }
+    if (expected.instrumentedLine && request.selected.includes(expected.id)) {
+      check(expected.id, 'instrumented-line', () => {
+        assert(row.trace?.events?.some((event) => event.line === expected.instrumentedLine),
+          `No recorded event on learner line ${expected.instrumentedLine}`);
       });
     }
   }
