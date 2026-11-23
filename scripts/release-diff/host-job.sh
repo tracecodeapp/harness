@@ -5,6 +5,7 @@
 # Environment (all optional): RD_LANGUAGES (default all six, cheapest first), RD_PROBLEMS,
 # RD_CATALOG (default all), RD_BASE_VERSION (default 0.17.1), RD_SKIP_BUILD=1.
 # RD_RERUN_FILE: lines "<language> <id>,<id>" rerun only those problems (with RD_OUT=rerun-out).
+# RD_NOSTOP_SIDE=1 (rerun mode): also run the target without stopAtFirstRunaway (target-nostop).
 # Output: release-diff-out/<label>-<language>.json and logs, copied back with scp.
 set -uo pipefail
 ROOT=$(pwd)
@@ -45,6 +46,7 @@ status=0
 run_side() {
   local lang=$1 side=$2 root label stop
   if [ "$side" = base ]; then root="$BASE/package"; label="v$BASE_VERSION"; stop=0
+  elif [ "$side" = target-nostop ]; then root="$ROOT"; label=target-nostop; stop=0
   else root="$ROOT"; label=target; stop=1; fi
   echo "== $label $lang start $(date -u +%H:%M:%SZ)"
   RD_HARNESS_ROOT="$root" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
@@ -64,6 +66,8 @@ run_lang() {
     run_side "$lang" target & local t=$!
     wait $b || status=1
     wait $t || status=1
+    # Separates Harness changes from the app's Submit option (main sends stopAtFirstRunaway).
+    if [ "${RD_NOSTOP_SIDE:-0}" = 1 ]; then run_side "$lang" target-nostop || status=1; fi
   else
     run_side "$lang" base || status=1
     run_side "$lang" target || status=1
