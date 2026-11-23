@@ -6,7 +6,7 @@ import {
   createLegacyCppDrawingProducer,
   createSparseCppDrawingProducer,
 } from '../packages/runtime-cpp/src/cpp-observation';
-import { RUNTIME_TRACE_SCHEMA_VERSION } from '../packages/runtime-contracts/src/runtime-trace';
+import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 
 const source = 'int f() { return 0 && 1; }';
 const program = { code: source, functionName: 'f', executionStyle: 'function' } as const;
@@ -94,7 +94,7 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
 });
 
 test('observation projection reads only Drawing fields and drops a late result after disposal', async () => {
-  const trace = {
+  const trace: RuntimeTrace = {
     schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION, language: 'cpp' as const, runId: 'test',
     events: [{ kind: 'line' as const, runId: 'test', line: 1 }], lineEventCount: 1, traceStepCount: 1,
   };
