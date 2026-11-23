@@ -6310,13 +6310,90 @@ function parseFunctionFieldSignature(source, functionName) {
   return { returnType: cleanCppReturnType(returnType), parameters, line };
 }
 
+// Blanks comments and the contents of string, character and raw string
+// literals, keeping newlines and quote characters, so name lookups see only
+// code. A pp-number is consumed whole, so a digit separator (1'000) is not
+// taken for a character literal.
+let cppCodeOnlySourceCache = { source: null, code: '' };
+function cppCodeOnlySource(source) {
+  const text = String(source ?? '');
+  if (cppCodeOnlySourceCache.source === text) return cppCodeOnlySourceCache.code;
+  const blank = (segment) => segment.replace(/[^\n]/g, ' ');
+  let out = '';
+  let index = 0;
+  while (index < text.length) {
+    const ch = text[index];
+    const next = text[index + 1];
+    if (ch === '/' && next === '/') {
+      let end = text.indexOf('\n', index);
+      if (end < 0) end = text.length;
+      out += blank(text.slice(index, end));
+      index = end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const close = text.indexOf('*/', index + 2);
+      const end = close < 0 ? text.length : close + 2;
+      out += blank(text.slice(index, end));
+      index = end;
+      continue;
+    }
+    const previous = index > 0 ? text[index - 1] : '';
+    if (/[0-9]/.test(ch) && !/[A-Za-z0-9_]/.test(previous)) {
+      const number = text.slice(index).match(/^(?:[0-9A-Za-z_.]|'(?=[0-9A-Za-z])|(?<=[eEpP])[+-])+/)[0];
+      out += number;
+      index += number.length;
+      continue;
+    }
+    const raw = text.slice(index).match(/^(?:u8|[uUL])?R"([^()\\\s]{0,16})\(/);
+    if (raw && !/[A-Za-z0-9_]/.test(previous)) {
+      const terminator = `)${raw[1]}"`;
+      const close = text.indexOf(terminator, index + raw[0].length);
+      const end = close < 0 ? text.length : close + terminator.length;
+      out += raw[0] + blank(text.slice(index + raw[0].length, end - terminator.length)) + text.slice(end - terminator.length, end);
+      index = end;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let end = index + 1;
+      while (end < text.length && text[end] !== ch && text[end] !== '\n') {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      end = Math.min(end + 1, text.length);
+      out += ch + blank(text.slice(index + 1, end - 1)) + (end - 1 > index ? text[end - 1] : '');
+      index = end;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  cppCodeOnlySourceCache = { source: text, code: out };
+  return out;
+}
+
+// Single-case ops-class operation-to-method resolution: the first
+// `#define NAME target` macro wins, then `delete` (a C++ keyword) maps to
+// deleteKey. Comments and literals are ignored. This is text, not the
+// preprocessor: it does not see #undef or #if (a known limit).
 function resolveCppObjectMethodMacro(source, operation) {
   const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const cleaned = stripComments(source);
-  const macroTarget = cleaned.match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1];
+  const code = cppCodeOnlySource(source);
+  const macroTarget = code.match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1];
   if (macroTarget) return macroTarget;
-  if (operation === 'delete' && /\bdeleteKey\s*\(/.test(cleaned)) return 'deleteKey';
+  if (operation === 'delete' && /\bdeleteKey\s*\(/.test(code)) return 'deleteKey';
   return operation;
+}
+
+// Prepared ops-class operation aliases. `delete` is a C++ keyword, so it can
+// never be a method name and a learner names the method `deleteKey`; the
+// prepared driver, which reads operation names at run time, maps the one onto
+// the other when the class has a public deleteKey. It does no macro-based
+// aliasing: text cannot tell a live macro from a dead one, so every other
+// operation dispatches by exact name, as the compiler would resolve it.
+function preparedOpsClassOperationAliases(methodNames) {
+  const aliases = new Map();
+  if (methodNames.has('deleteKey') && !methodNames.has('delete')) aliases.set('delete', 'deleteKey');
+  return aliases;
 }
 
 function cleanCppReturnType(returnType) {
@@ -10370,7 +10447,7 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
     });
     if (options.tracing === true) {
       lines.push(`  std::string __tc_args_json_${index} = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => `__tc_op_${index}_arg_${argIndex}`, aliases)} + "}";`);
-      lines.push(`  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(operation)}, __tc_args_json_${index});`);
+      lines.push(`  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signatureOperation)}, __tc_args_json_${index});`);
     }
     if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
       lines.push(`  __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
@@ -11704,6 +11781,12 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   for (const [methodName] of groupedMethods) {
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(methodName)}) {`);
+    lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
+    lines.push('      }');
+  }
+  for (const [operationName, methodName] of preparedOpsClassOperationAliases(groupedMethods)) {
+    const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
+    lines.push(`      if (__tc_operation_name == ${cppStringLiteral(operationName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
     lines.push('      }');
   }
