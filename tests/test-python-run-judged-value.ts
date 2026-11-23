@@ -375,3 +375,82 @@ test('the case clock runs out while the value is serialized: client-timeout on R
   assert.equal(submitted[1]!.ok, true);
   assert.deepEqual(differing, []);
 });
+
+// ---------------------------------------------------------------------------
+// A learner who defines their own ListNode/TreeNode (LeetCode's commented
+// definition, uncommented) and returns the input nodes gets the same judged
+// value as a learner who does not: the inputs are harness nodes, and the
+// harness classes stay node classes next to the learner's. Learner objects
+// keep the serialization they had: their own class is the node class on the
+// compatibility path, and an object on the algorithm-fast path.
+
+async function submitOutcomes(code: string, cases: readonly Record<string, unknown>[]) {
+  await setup();
+  const batch = await runtime.executePreparedProgramBatch!(deps, await prepareSource(code, 'code'), cases, LIMITS);
+  assert.equal(batch.results?.length, cases.length, JSON.stringify(batch).slice(0, 300));
+  return JSON.parse(JSON.stringify(batch.results.map(outcome)));
+}
+
+test('returning the input nodes with an own ListNode/TreeNode: Submit judges the same value as without one', async () => {
+  const cases = [
+    { head: HEAD, root: null, kind: 'reversed-input' },
+    { head: HEAD, root: null, kind: 'unchanged-input' },
+    { head: null, root: ROOT, kind: 'input-tree' },
+  ];
+  const own = await submitOutcomes(NODE_INPUT_PROGRAM(true), cases);
+  const harness = await submitOutcomes(NODE_INPUT_PROGRAM(false), cases);
+  assert.deepEqual(own, harness);
+  assert.ok(own.every((result) => result.ok && !result.output.includes('"value"')), JSON.stringify(own));
+});
+
+const NOT_A_NODE = `class ListNode:
+    def __init__(self, x):
+        self.x = x
+        self.extra = 'kept'
+
+class TreeNode:
+    def __init__(self, val, left=None, right=None):
+        self.val = val
+        self.left = left
+        self.right = right
+        self.color = 'red'
+`;
+
+test('a learner class named ListNode that is not a node, and a learner node with extra fields: serialized as before', async () => {
+  // Algorithm-fast (scalar inputs): the learner's classes are objects, every
+  // public field kept.
+  const fast = await submitOutcomes(`${NOT_A_NODE}
+class Solution:
+    def solve(self, kind, n):
+        if kind == 'not-a-node':
+            return ListNode(n)
+        return TreeNode(n, TreeNode(n + 1))
+`, [
+    { kind: 'not-a-node', n: 7 },
+    { kind: 'tree', n: 1 },
+  ]);
+  assert.deepEqual(fast, [
+    { ok: true, output: '{"__type__":"ListNode","__class__":"ListNode","x":7,"extra":"kept"}' },
+    {
+      ok: true,
+      output: '{"__type__":"TreeNode","__class__":"TreeNode","val":1,"left":{"__type__":"TreeNode","__class__":"TreeNode","val":2,"left":null,"right":null,"color":"red"},"right":null,"color":"red"}',
+    },
+  ]);
+  // Compatibility (node inputs): the learner's TreeNode is the node class
+  // (val/left/right only), and the input list is still the harness list.
+  const compat = await submitOutcomes(`${NOT_A_NODE}
+class Solution:
+    def solve(self, head, root, kind):
+        if kind == 'own-tree':
+            return TreeNode(5, TreeNode(6))
+        return head
+`, [
+    { head: HEAD, root: null, kind: 'own-tree' },
+    { head: HEAD, root: null, kind: 'input-list' },
+  ]);
+  assert.deepEqual(compat[0], {
+    ok: true,
+    output: '{"__type__":"TreeNode","val":5,"left":{"__type__":"TreeNode","val":6,"left":null,"right":null},"right":null}',
+  });
+  assert.equal(compat[1]!.ok, true, JSON.stringify(compat[1]));
+});

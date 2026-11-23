@@ -7920,6 +7920,10 @@ import time as _interview_time
 import traceback as _tracecode_execution_traceback
 import builtins as _builtins
 ${deps.PYTHON_CLASS_DEFINITIONS_SNIPPET}
+# The harness node classes, kept before learner code can define its own:
+# the finalizer serializes them as nodes alongside the learner's.
+__tracecode_harness_tree_node = TreeNode
+__tracecode_harness_list_node = ListNode
 ${PYTHON_DEFAULT_IMPORT_PRELUDE}
 ${preparedInputPrelude}
 pow = _builtins.pow
@@ -8331,6 +8335,8 @@ _tracecode_raw_result = {
     "console": _console_output,
     "treeNodeType": TreeNode,
     "listNodeType": ListNode,
+    "harnessTreeNodeType": __tracecode_harness_tree_node,
+    "harnessListNodeType": __tracecode_harness_list_node,
 }
 _tracecode_raw_result
 `;
@@ -8385,8 +8391,14 @@ else:
     try:
         _tracecode_serialized_result = _serialize(
             _tracecode_raw_result.get("output"),
-            tree_node_root=_tracecode_raw_result.get("treeNodeType", TreeNode),
-            list_node_root=_tracecode_raw_result.get("listNodeType", ListNode),
+            tree_node_root=(
+                _tracecode_raw_result.get("treeNodeType", TreeNode),
+                _tracecode_raw_result.get("harnessTreeNodeType", TreeNode),
+            ),
+            list_node_root=(
+                _tracecode_raw_result.get("listNodeType", ListNode),
+                _tracecode_raw_result.get("harnessListNodeType", ListNode),
+            ),
         )
     except _TracecodeSerializationLimit:
         _tracecode_final_result = {

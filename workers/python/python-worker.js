@@ -1281,16 +1281,25 @@ def _tracecode_make_execute_serializer(
             module_name = ''
         return class_name, module_name
 
-    def serialize_inherits_from(obj, root_type):
+    def serialize_inherits_from(obj, root_types):
         try:
             obj_type = builtin_type(obj)
             type_mro = builtin_type_getattribute(obj_type, '__mro__')
         except builtin_base_exception:
             return False
         for entry in type_mro:
-            if entry is root_type:
-                return True
+            for root_type in root_types:
+                if entry is root_type:
+                    return True
         return False
+
+    def serialize_node_roots(root, harness_type):
+        # The caller's root (the learner's own class when it defines one) and
+        # this scope's harness class are both nodes: a learner that defines
+        # its own ListNode still gets the harness nodes its inputs were built
+        # from serialized as nodes, as when it does not define the class.
+        roots = root if builtin_isinstance(root, builtin_tuple) else (root,)
+        return roots + (harness_type,)
 
     def serialize_repr_fallback(obj):
         class_name, module_name = serialize_type_metadata(obj)
@@ -1389,8 +1398,8 @@ def _tracecode_make_execute_serializer(
             state = {
                 "nodes": 0,
                 "checkpoint": checkpoint,
-                "tree_node_type": tree_node_root,
-                "list_node_type": list_node_root,
+                "tree_node_type": serialize_node_roots(tree_node_root, tree_node_type),
+                "list_node_type": serialize_node_roots(list_node_root, list_node_type),
             }
         return serialize_value(obj, depth, state)
 
