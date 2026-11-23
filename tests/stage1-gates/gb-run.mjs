@@ -93,8 +93,12 @@ async function prepareSite() {
     plugins: [{
       name: 'installed-public-judge',
       setup(builder) {
-        builder.onResolve({ filter: /^@tracecode\/harness\/judge$/u }, ({ path }) =>
-          builder.resolve(path, { resolveDir: consumer, kind: 'import-statement' }));
+        builder.onResolve({ filter: /^@tracecode\/harness\/judge$/u }, ({ path, pluginData }) => {
+          if (pluginData?.resolvingInstalledJudge) return;
+          return builder.resolve(path, {
+            resolveDir: consumer, kind: 'import-statement', pluginData: { resolvingInstalledJudge: true },
+          });
+        });
       },
     }],
     absWorkingDir: consumer,
