@@ -10,6 +10,6 @@ export async function runInBrowser(selection: Omit<TraceCompileMatrixOptions, 'c
     assetBaseUrl: fault ? `/injected/${fault}/workers` : '/workers',
     providers: ['javascript', 'typescript'],
   });
-  const routeChecks = await runUntracedRouteChecks(createHost);
+  const routeChecks = await runUntracedRouteChecks(createHost, { runaway: true });
   return { routeChecks, ...(await runTraceCompileMatrix({ ...selection, createHost })) };
 }

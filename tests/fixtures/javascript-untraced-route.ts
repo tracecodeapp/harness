@@ -58,7 +58,10 @@ function answer(result: any): unknown[] {
 
 const passes = (result: any) => result.verdict?.kind === 'passed';
 
-export async function runUntracedRouteChecks(createHost: () => BrowserJudgeHost): Promise<UntracedRouteCheck[]> {
+export async function runUntracedRouteChecks(
+  createHost: () => BrowserJudgeHost,
+  settings: { readonly runaway?: boolean } = {}
+): Promise<UntracedRouteCheck[]> {
   const checks: UntracedRouteCheck[] = [];
   const named = (name: string): UntracedRouteCheck => {
     const check = { name, compared: 0, violations: [] };
@@ -234,6 +237,104 @@ export async function runUntracedRouteChecks(createHost: () => BrowserJudgeHost)
         for (const [index, probe] of probes.entries()) {
           same(options, `${language}/${name}: ${probe.label}`, await submit(host, language, probe.program), fresh[index]);
         }
+      });
+    }
+  }
+  // Untraced Submit sends a batch to compatibility workers when a case
+  // outgrows the pool's console, and keeps the program there (stop-mode
+  // Submit: every later case too). A Run equals that Submit of the same cases.
+  const consoleCheck = named('console fallback: a Run equals stop-mode Submit of the same cases, and a compile error stays one');
+  const noisyPrograms = {
+    process: {
+      javascript: 'function process(n) {\n  for (let i = 0; i < n; i++) console.log(i);\n  return n;\n}',
+      typescript: 'function process(n: number): number {\n  for (let i = 0; i < n; i++) console.log(i);\n  return n;\n}',
+      functionName: 'process',
+    },
+    window: {
+      javascript: 'const window = [];\nfunction solve(n) {\n  for (let i = 0; i < n; i++) console.log(i);\n  return n;\n}',
+      typescript: 'const window: number[] = [];\nfunction solve(n: number): number {\n  for (let i = 0; i < n; i++) console.log(i);\n  return n;\n}',
+      functionName: 'solve',
+    },
+  } as const;
+  const isRefused = (result: any) => result.diagnostics?.some((entry: any) => entry.code === 'trace-unavailable');
+  for (const language of LANGUAGES) {
+    for (const [name, source] of Object.entries(noisyPrograms)) {
+      for (const [order, ns] of [['noisy first', [100, 1]], ['noisy last', [1, 100]]] as const) {
+        const program = {
+          code: source[language],
+          functionName: source.functionName,
+          executionStyle: 'function',
+          cases: ns.map((n, index) => ({ id: String(index + 1), input: { n }, expected: n })),
+          policy: allCasesPassPolicy(),
+        };
+        const fresh = await onHost(async (host) => ({
+          stop: (await host.evaluateAlgorithm({ bundle: await bundle(language, program), stopAtFirstRunaway: true })).evaluation as any,
+          batch: (await host.evaluateAlgorithm({ bundle: await bundle(language, program) })).evaluation as any,
+        }));
+        for (const [optionsName, traceOptions] of [['app budgets', budgets], ['no trace options', {}]] as const) {
+          for (const tracedId of ['1', '2']) {
+            for (const shape of ['one case at a time', 'one batch'] as const) {
+              const label = `${language}/${name}/${order}/${optionsName}/case ${tracedId} traced/${shape}`;
+              const truth = shape === 'one case at a time' ? fresh.stop : fresh.batch;
+              const run = await onHost(async (host) => {
+                const started = await host.execute({
+                  bundle: await bundle(language, program, traceOptions),
+                  ...(shape === 'one case at a time' ? { interactive: true } : {}),
+                  tracing: { caseIds: [tracedId] },
+                });
+                if (started.executionId) await host.disposeExecution(started.executionId);
+                return started.evaluation as any;
+              });
+              consoleCheck.compared += 1;
+              if (truth.status === 'compile-failed' || run.status === 'compile-failed') {
+                if (canonical(run) !== canonical(truth)) consoleCheck.violations.push(`${label}: ${canonical(run).slice(0, 200)} != Submit ${canonical(truth).slice(0, 200)}`);
+                continue;
+              }
+              for (const result of run.cases) {
+                const expected = truth.cases.find((entry: any) => entry.caseId === result.caseId);
+                const same = JSON.stringify(answer(result)) === JSON.stringify(answer(expected));
+                if (result.caseId !== tracedId) {
+                  if (!same) consoleCheck.violations.push(`${label}: untraced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
+                } else if (expected?.failure?.stage === 'compile') {
+                  if (!same) consoleCheck.violations.push(`${label}: traced case ${result.caseId} must show Submit's compile error, got ${JSON.stringify(answer(result)).slice(0, 200)}`);
+                } else if (!same && !isRefused(result)) {
+                  consoleCheck.violations.push(`${label}: traced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
+                } else if (isRefused(result) && passes(expected) === false && expected?.failure?.stage === 'compile') {
+                  consoleCheck.violations.push(`${label}: refused a compile error`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (settings.runaway) {
+    // A traced case that hit a limit already has its answer: no second run.
+    const once = named('runaway: a traced runaway case in a budgeted Run is timed once');
+    const limitMs = 1500;
+    for (const language of LANGUAGES) {
+      const program = {
+        code: language === 'typescript'
+          ? 'function solve(n: number): number {\n  for (let i = 0; i < 200; i++) console.log(i);\n  while (n > 0) { }\n  return n;\n}'
+          : 'function solve(n) {\n  for (let i = 0; i < 200; i++) console.log(i);\n  while (n > 0) { }\n  return n;\n}',
+        functionName: 'solve',
+        executionStyle: 'function',
+        limits: { wallClockMs: limitMs },
+        cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 0 }, expected: 0 }],
+        policy: allCasesPassPolicy(),
+      };
+      await onHost(async (host) => {
+        await submit(host, language, warmUpFor(language));
+        const startedAt = performance.now();
+        const started = await host.execute({ bundle: await bundle(language, program, budgets), interactive: true, tracing: { caseIds: ['1'] } });
+        const elapsed = performance.now() - startedAt;
+        if (started.executionId) await host.disposeExecution(started.executionId);
+        const traced = (started.evaluation as any).cases.find((result: any) => result.caseId === '1');
+        once.compared += 1;
+        if (traced?.status !== 'timed-out') once.violations.push(`${language}: the traced case should time out, got ${traced?.status}`);
+        if (elapsed > limitMs * 1.8) once.violations.push(`${language}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
       });
     }
   }
