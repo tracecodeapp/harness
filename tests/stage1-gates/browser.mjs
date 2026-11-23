@@ -1,12 +1,17 @@
 import {
+  builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
 } from '@tracecode/harness/judge';
+export { resolveBuiltInTraceCCRuntimeManifest } from '@tracecode/harness/tracekernel';
+export { builtInProjectEvaluators, createAlgorithmJudgeBundle, createBrowserJudgeHost };
 
 let transcript = [];
 let nextGeneration = 0;
+let seed;
+let seedHits;
 const NativeWorker = globalThis.Worker;
 class ObservedWorker extends NativeWorker {
   constructor(url, options) {
@@ -14,16 +19,42 @@ class ObservedWorker extends NativeWorker {
     const generation = ++nextGeneration;
     const worker = String(url);
     const pending = new Map();
+    const programs = new Map();
     this.addEventListener('message', (event) => {
       const data = event.data;
       const command = pending.get(data?.id);
       if (command) {
-        pending.delete(data.id);
+        if (data.type !== 'batch-case-progress') pending.delete(data.id);
+        const rows = command.inputs;
+        const mutate = (row, input, traced) => {
+          if (row?.success !== true || !input) return;
+          if ((seed === 'stdout-b' && input.n === 11 && !traced) || seed === 'stdout-all') {
+            if (typeof row.output !== 'number') return;
+            const before = row.output;
+            row.output += 1;
+            seedHits.push({ generation, before, after: row.output, input });
+          }
+          if (seed === 'list-field' && row.output?.__type__ === 'ListNode') {
+            row.output.value = 1;
+            seedHits.push({ generation, input, field: 'value' });
+          }
+        };
+        if (worker.includes('/python/') && (Array.isArray(rows) || rows)) {
+          if (data.type === 'batch-case-progress' && data.payload?.phase === 'finished') {
+            const index = data.payload.index;
+            mutate(data.payload.result, rows[index], command.trace?.[index]);
+          } else if (data.type === 'execute-result') {
+            if (Array.isArray(data.payload?.results)) {
+              data.payload.results.forEach((row, index) => mutate(row, rows[index], command.trace?.[index]));
+            } else if (!Array.isArray(rows)) mutate(data.payload, rows, command.trace);
+          }
+        }
         transcript.push({
           action: 'response', worker, generation, id: data.id, type: data.type,
-          success: data.payload?.success, mode: data.payload?.mode,
+          success: data.payload?.success ?? data.ok, mode: data.payload?.mode,
           tier: data.payload?.isolationProfile?.tier,
-          rows: data.payload?.results?.length,
+          rows: data.payload?.results?.length, phase: data.payload?.phase,
+          index: data.payload?.index,
         });
       }
     });
@@ -32,14 +63,31 @@ class ObservedWorker extends NativeWorker {
     });
     const post = this.postMessage.bind(this);
     this.postMessage = (data, options) => {
-      const payload = data?.payload;
+      const payload = data?.payload ?? data;
       const prepared = payload?.prepared ?? payload?.artifact;
+      if (data?.type === 'prepare' && payload?.programId) programs.set(payload.programId, payload.source);
+      const program = programs.get(payload?.programId);
+      function copySecondEdge(input) {
+        if (!input?.root?.right?.__ref__) return;
+        input.root.right = { val: input.root.left.val, left: input.root.left.left, right: null };
+        seedHits.push({ generation, input });
+      }
+      if (seed === 'split-second-edge' && worker.includes('/python/')) {
+        if (payload?.inputBatch) {
+          data = { ...data, payload: { ...payload, inputBatch: structuredClone(payload.inputBatch) } };
+          data.payload.inputBatch.forEach(copySecondEdge);
+        } else if (payload?.inputs) {
+          data = { ...data, payload: { ...payload, inputs: structuredClone(payload.inputs) } };
+          copySecondEdge(data.payload.inputs);
+        }
+      }
       const command = {
         action: 'command', worker, generation, id: data?.id, type: data?.type,
-        role: payload?.runtimeRole, mode: payload?.mode ?? prepared?.mode,
+        role: payload?.runtimeRole, mode: payload?.mode ?? prepared?.mode ?? program?.mode,
         tier: payload?.isolationProfile?.tier ?? prepared?.isolationProfile?.tier,
-        functionName: payload?.functionName ?? prepared?.functionName,
-        inputs: payload?.inputs, trace: payload?.trace ?? payload?.traceFlags,
+        functionName: payload?.functionName ?? prepared?.functionName ?? program?.functionName,
+        inputs: payload?.inputBatch ?? payload?.inputs,
+        trace: payload?.traceEnabledBatch ?? payload?.tracingEnabled ?? payload?.trace ?? payload?.traceFlags,
       };
       if (command.id) pending.set(command.id, command);
       transcript.push(command);
@@ -63,11 +111,26 @@ function jsonWire(value) {
   return JSON.stringify(value, (_, field) => field === undefined ? { '$gate.undefined': true } : field);
 }
 
-export async function runFixture(fixture, requests, nonce) {
+export function projectCases(receipt, language, trace) {
+  return receipt.evaluation.cases.map((row) => {
+    try {
+      return judgeCaseExecutionOutcome(row, { language, trace });
+    } catch (error) {
+      return { rejected: errorInfo(error) };
+    }
+  });
+}
+
+export async function runFixture(fixture, requests, nonce, mutation) {
   const handles = new Map();
   let submitHost;
   let firstCompileFailed = false;
+  let createRouteHost;
+  if (fixture.algorithmExecution) {
+    ({ createJavaScriptRouteHost: createRouteHost } = await import(/* @vite-ignore */ '/gate-routes.mjs'));
+  }
   function freshHost() {
+    if (createRouteHost) return createRouteHost(fixture.language, fixture.algorithmExecution);
     return createBrowserJudgeHost({
       providers: [fixture.language],
       assetBaseUrl: location.origin + '/workers',
@@ -77,19 +140,25 @@ export async function runFixture(fixture, requests, nonce) {
   try {
     for (const request of requests) {
       transcript = [];
+      seed = mutation;
+      seedHits = [];
       const start = performance.now();
       let host;
       let reported;
       let bundle;
       let skip;
+      let retainedExecutionId;
       try {
         if (request.mode === 'continuation') {
           const retained = handles.get('run-first');
           if (firstCompileFailed) skip = 'initial-compile-failed';
           else if (!retained) throw new Error('Missing first interactive execution handle');
-          else reported = await retained.host.execute({
-            executionId: retained.id, tracing: { caseIds: request.selected },
-          });
+          else {
+            retainedExecutionId = retained.id;
+            reported = await retained.host.execute({
+              executionId: retained.id, tracing: { caseIds: request.selected },
+            });
+          }
         } else {
           host = request.mode === 'submit' ? (submitHost ??= freshHost()) : freshHost();
           bundle = await createAlgorithmJudgeBundle({
@@ -131,7 +200,7 @@ export async function runFixture(fixture, requests, nonce) {
           }
         }
         await globalThis.recordGateObservation(jsonWire({
-          nonce, request: request.id, reported, projections, compileProjection, skip,
+          nonce, request: request.id, reported, projections, compileProjection, skip, retainedExecutionId, seedHits,
           submitted: bundle && { id: bundle.id, workspaceDigest: bundle.workspaceDigest },
           worker: transcript, wallMs: performance.now() - start,
         }));
@@ -165,4 +234,11 @@ export async function runFixture(fixture, requests, nonce) {
     }
     submitHost?.dispose();
   }
+}
+
+export async function observeCppDirect(fixture, batch) {
+  transcript = [];
+  const { runCppDirect } = await import(/* @vite-ignore */ '/gate-routes.mjs');
+  const results = await runCppDirect(fixture, batch);
+  return { results, worker: transcript };
 }

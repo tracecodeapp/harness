@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { assertGraph } from './graph.mjs';
 
-const absent = { '$gate.undefined': true };
 const defined = (value) => value !== undefined && !(
   value && typeof value === 'object' && Object.hasOwn(value, '$gate.undefined')
 );
@@ -15,7 +14,7 @@ function requireValue(row, field, expected, expectedField, graph = false) {
 }
 
 export function checkObservation(fixture, request, observation, record) {
-  const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/default/${request.id}`;
+  const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}`;
   function check(caseId, assertion, comparison) {
     const id = `${prefix}/${caseId}/${assertion}`;
     try {
@@ -36,6 +35,16 @@ export function checkObservation(fixture, request, observation, record) {
     if (request.mode !== 'continuation' || defined(evaluation.compile)) {
       assert.equal(evaluation.compile?.status, 'compiled');
       assert(!defined(evaluation.compile?.failure));
+    }
+  });
+  check('@request', 'compile-footprint', () => {
+    if (evaluation.status === 'compile-failed') {
+      assert.equal(evaluation.cases.length, 0);
+      assert(!defined(reported.executionId));
+      assert(defined(evaluation.compile.failure));
+      if (request.route !== 'mux') assert(defined(observation.compileProjection));
+    } else {
+      assert.equal(evaluation.status, 'completed');
     }
   });
   check('@request', 'correlation', () => {
@@ -64,6 +73,39 @@ export function checkObservation(fixture, request, observation, record) {
       assert.deepEqual(reported.policy.missingFacts, []);
     });
   }
+  if (request.route !== 'mux') {
+    check('@request', 'worker-ack', () => {
+      const commands = observation.worker.filter((event) => event.action === 'command' && /execute|compile-run/.test(event.type));
+      const acknowledged = commands.filter((command) => observation.worker.some((event) => (
+        event.action === 'response' && event.id === command.id && event.generation === command.generation
+      )));
+      if (evaluation.status === 'compile-failed') assert.equal(commands.length, 0);
+      else assert(acknowledged.length > 0, 'No acknowledged worker execution request');
+      if (request.route === 'ses-compartment-pool') assert(acknowledged.some((command) => command.worker.includes('ses-algorithm')));
+      if (request.route === 'disposable-worker') assert(acknowledged.length && acknowledged.every((command) => !command.worker.includes('ses-algorithm')));
+      if (request.mode === 'continuation') {
+        assert(acknowledged.every((command) => command.trace !== false && !(Array.isArray(command.trace) && command.trace.includes(false))));
+      }
+    });
+  }
+  if (request.id.startsWith('legacy-')) {
+    check('@request', 'legacy-projection', () => {
+      assert.equal(observation.legacy.requestId, submitted.id);
+      assert.deepEqual(observation.legacy.results.map((row) => row.caseId), request.cases);
+      for (const expected of rows) {
+        const legacy = observation.legacy.results.find((row) => row.caseId === expected.id);
+        const raw = evaluation.cases.find((row) => row.caseId === expected.id);
+        const ordinary = expected.status === 'completed';
+        assert.equal(legacy.success, ordinary);
+        assert.equal(legacy.passed, ordinary ? expected.verdict === 'passed' : undefined);
+        assert.equal(ownValue(legacy, 'error'), !ordinary);
+        requireValue(legacy, 'expected', expected, 'expected');
+        requireValue(legacy, 'output', expected, 'actual', fixture.graph);
+        assert.deepEqual(legacy.consoleOutput, expected.stdout ? expected.stdout.replace(/\n$/, '').split('\n') : []);
+        if (!ordinary) assert.equal(legacy.error, raw?.diagnostics.find(({ severity }) => severity === 'error')?.message || raw?.stderr.trim());
+      }
+    });
+  }
 
   for (const expected of rows) {
     const index = evaluation.cases.findIndex((row) => row.caseId === expected.id);
@@ -76,7 +118,8 @@ export function checkObservation(fixture, request, observation, record) {
     });
     check(expected.id, 'status', () => {
       assert.equal(row.status, expected.status);
-      assert.equal(consumer.kind, expected.status === 'timed-out' ? 'limit' : expected.status === 'runtime-error' ? 'failed' : 'completed');
+      const kind = expected.failure?.origin === 'limit' ? 'limit' : expected.failure ? 'failed' : 'completed';
+      assert.equal(consumer.kind, kind);
     });
     check(expected.id, 'value', () => {
       requireValue(row, 'value', expected, 'actual', fixture.graph);
@@ -117,13 +160,66 @@ export function checkObservation(fixture, request, observation, record) {
       });
       check(expected.id, 'case-binding', () => {
         assert(Array.isArray(events) && events.some((event) => (
-          event.line === expected.anchor || event.source?.line === expected.anchor
-        ) && (
-          event.variables?.n === expected.anchorInput ||
-          event.locals?.n === expected.anchorInput ||
-          event.snapshot?.n === expected.anchorInput
-        )), `No print-line event binding n=${expected.anchorInput}`);
+          event.line === expected.anchor && event.kind === 'snapshot' &&
+          event.target?.variable === 'n' && event.value === expected.anchorInput
+        )), `No print-line snapshot binding n=${expected.anchorInput}`);
       });
+    }
+  }
+}
+
+export function checkCppDirect(fixture, route, observation, record) {
+  const prefix = `${fixture.gate}/cpp/${fixture.name}/${route}/code`;
+  function check(caseId, assertion, compare) {
+    const id = `${prefix}/${caseId}/${assertion}`;
+    try {
+      compare();
+      record({ id, status: 'pass' });
+    } catch (error) {
+      record({ id, status: 'fail', message: errorText(error) });
+    }
+  }
+  check('@request', 'worker-ack', () => {
+    const type = route === 'generated-batch' ? 'compile-run-batch' : 'compile-run';
+    const commands = observation.worker.filter((item) => item.type === type && item.action === 'command');
+    assert.equal(commands.length, route === 'generated-batch' ? 1 : fixture.cases.length);
+    for (const command of commands) {
+      assert(observation.worker.some((item) => item.id === command.id && item.generation === command.generation && item.action === 'response'));
+    }
+  });
+  check('@request', 'cardinality', () => assert.equal(observation.results.length, fixture.cases.length));
+  for (const [index, expected] of fixture.cases.entries()) {
+    const row = observation.results[index];
+    if (!row) continue;
+    check(expected.id, 'status', () => assert.equal(row.kind, 'completed'));
+    check(expected.id, 'value', () => requireValue(row, 'output', expected, 'actual', fixture.graph));
+    check(expected.id, 'console', () => assert.deepEqual(row.consoleOutput, []));
+  }
+}
+
+export function checkDifferential(fixture, observations, record) {
+  for (const expected of fixture.cases) {
+    const id = `${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/${expected.id}/receipt`;
+    const rows = observations.flatMap((observation) => !defined(observation.reported) ? [] : (
+      observation.reported.evaluation.cases.filter((item) => item.caseId === expected.id).map((row) => ({ request: observation.request, row }))
+    ));
+    const baseline = rows.find(({ request }) => request === `submit-default-${expected.id}`);
+    if (!baseline || rows.length < 2) continue;
+    const normalized = ({ sessionId, pid, startedAt, endedAt, timings, trace, value, ...row }) => ({
+      ...row,
+      diagnostics: row.diagnostics.filter((item) => item.kind !== 'trace-truncated'),
+      valuePresent: defined(value),
+    });
+    try {
+      for (const current of rows) {
+        assert.deepEqual(normalized(current.row), normalized(baseline.row), current.request);
+        if (ownValue(current.row, 'value')) {
+          (fixture.graph ? assertGraph : assert.deepEqual)(current.row.value, baseline.row.value);
+        }
+      }
+      record({ id, status: 'pass' });
+    } catch (error) {
+      record({ id, status: 'fail', message: errorText(error) });
     }
   }
 }

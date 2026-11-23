@@ -6,6 +6,8 @@ candidate=b025fdb8220694cdfe96b136a0b8bb82843f7371
 job_root=$PWD
 run_id=${1:-baseline}
 filter=${2:-}
+app_input=${3:-}
+mux_input=${4:-}
 case "$run_id" in
   *[!A-Za-z0-9._-]*|'') echo "Invalid run ID" >&2; exit 2 ;;
 esac
@@ -44,7 +46,9 @@ cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
 set +e
-TRACECODE_STAGE1_FILTER="$filter" node tests/stage1-gates/run.mjs "$job_root/gate-consumer" "$job_root/gate-assets" "$evidence"
+TRACECODE_STAGE1_FILTER="$filter" TRACECODE_STAGE1_APP_INPUT="$app_input" TRACECODE_STAGE1_MUX_INPUT="$mux_input" \
+  TRACECODE_STAGE1_CANDIDATE_SOURCE="$job_root/gate-candidate" \
+  node tests/stage1-gates/run.mjs "$job_root/gate-consumer" "$job_root/gate-assets" "$evidence"
 code=$?
 set -e
 printf 'browser_seconds=%s\ntotal_seconds=%s\nexit=%s\n' "$((SECONDS - browser_start))" "$((SECONDS - start))" "$code" | tee -a "$evidence/host-runtime.txt"

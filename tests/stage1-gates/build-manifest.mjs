@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 
 const candidate = 'b025fdb8220694cdfe96b136a0b8bb82843f7371';
 const languages = { js: 'javascript', ts: 'typescript', py: 'python', java: 'java', cs: 'csharp', cpp: 'cpp' };
@@ -86,7 +87,6 @@ function typedTree(tree) {
   return { __type__: 'TreeNode', ...tree, left: typedTree(tree.left), right: typedTree(tree.right) };
 }
 
-const pass = ['A', 'B'];
 const expectedLists = [[...Array.from({ length: 20 }, (_, i) => i + 1)], [-7]];
 const wide = Array.from({ length: 257 }, (_, i) => i);
 const wideLast = [...wide.slice(0, -1), -13];
@@ -180,6 +180,12 @@ const scriptSources = {
   cs: 'System.Console.WriteLine(7);',
   cpp: '#include <cstdio>\nint main() { std::printf("7\\n"); }',
 };
+const methodSources = {
+  ...wideSources,
+  js: 'class Solution { solve(nums) { return nums; } }',
+  ts: 'class Solution { solve(nums: number[]): number[] { return nums; } }',
+  py: 'class Solution:\n    def solve(self, nums): return nums\n',
+};
 const opsSources = {
   js: 'class Counter { add(n) { return n + 1; } }',
   ts: 'class Counter { add(n: number): number { return n + 1; } }',
@@ -191,7 +197,7 @@ const opsSources = {
 for (const ext of Object.keys(languages)) {
   add('G6', 'invocation-script', ext, scriptSources[ext], rows([{}, {}], [null, null]).map((row) => ({ ...row, stdout: '7\n' })),
     { functionName: undefined, executionStyle: undefined, untracedOnly: true });
-  add('G6', 'invocation-method', ext, wideSources[ext], rows([{ nums: [7] }, { nums: [11] }], [[7], [11]]),
+  add('G6', 'invocation-method', ext, methodSources[ext], rows([{ nums: [7] }, { nums: [11] }], [[7], [11]]),
     { executionStyle: 'solution-method', untracedOnly: true });
   const inputs = [7, 11].map((n) => ({ operations: ['Counter', 'add'], arguments: [[], [n]] }));
   add('G6', 'invocation-ops', ext, opsSources[ext], rows(inputs, [[null, 8], [null, 12]]),
@@ -199,39 +205,57 @@ for (const ext of Object.keys(languages)) {
 }
 
 add('G6', 'over-ceiling', 'py', program, [
-  { id: 'A', input: { kind: 'big', n: 250001 }, status: 'timed-out', verdict: 'not-evaluated', failure: { origin: 'limit', reason: 'serialization-limit' } },
+  { id: 'A', input: { kind: 'big', n: 250001 }, status: 'runtime-error', verdict: 'not-evaluated', failure: { origin: 'limit', reason: 'serialization-limit' } },
   { id: 'B', input: { kind: 'small', n: 0 }, actual: [1, 2, 3], expected: [1, 2, 3] },
 ], queensOptions);
 
-const requests = [
-  { id: 'run-first', mode: 'initial', cases: pass, selected: ['A'] },
-  { id: 'draw-b', mode: 'continuation', cases: ['B'], selected: ['B'] },
-  { id: 'redraw-b', mode: 'continuation', cases: ['B'], selected: ['B'] },
-  { id: 'run-all', mode: 'initial', cases: pass, selected: pass },
-  { id: 'run-none', mode: 'initial', cases: pass, selected: [] },
-  ...[false, true].flatMap((stop) => [pass, ['A'], ['B']].map((cases) => ({
-    id: `submit-${stop ? 'stop' : 'default'}-${cases.join('')}`, mode: 'submit', cases, selected: [], ...(stop ? { stop: true } : {}),
-  }))),
-  { id: 'submit-traced', mode: 'submit', cases: pass, selected: pass },
-];
+const requests = requestMatrix(['A', 'B']);
 const rowChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics'];
-const inventory = fixtures.flatMap((fixture) => requests.filter((request) =>
-  !fixture.untracedOnly || (request.mode === 'submit' && request.selected.length === 0)
-).flatMap((request) => {
-  const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/default/${request.id}`;
+const requiredAppFixtures = appSpec.map((spec) => ({
+  gate: 'G6', language: 'cpp', name: appFixtureName(spec), cases: spec.cases.map((id) => ({ id })),
+}));
+const inventory = [...fixtures, ...requiredAppFixtures].flatMap((fixture) => [
+  ...requestMatrix(fixture.cases.map(({ id }) => id), fixture), ...muxRequests(fixture),
+  ...jsRouteRequests(fixture).flatMap(({ requests }) => requests),
+].flatMap((request) => {
+  const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}`;
   return [
-    ...['order', 'compile', 'correlation', ...(request.mode === 'submit' ? ['aggregate'] : [])].map((id) => `${prefix}/@request/${id}`),
+    ...['order', 'compile', 'compile-footprint', 'correlation', ...(request.mode === 'submit' ? ['aggregate'] : []), ...(request.id.startsWith('legacy-') ? ['legacy-projection'] : []), ...(request.route !== 'mux' ? ['worker-ack'] : [])].map((id) => `${prefix}/@request/${id}`),
     ...request.cases.flatMap((caseId) => [
       ...rowChecks,
       ...(fixture.name === 'stdout' && request.selected.includes(caseId) ? ['source-event', 'case-binding'] : []),
     ].map((id) => `${prefix}/${caseId}/${id}`)),
   ];
 }));
+for (const fixture of fixtures) {
+  for (const route of cppDirectRoutes(fixture)) {
+    const prefix = `${fixture.gate}/cpp/${fixture.name}/${route}/code`;
+    inventory.push(`${prefix}/@request/worker-ack`, `${prefix}/@request/cardinality`);
+    for (const { id } of fixture.cases) {
+      inventory.push(...['status', 'value', 'console'].map((check) => `${prefix}/${id}/${check}`));
+    }
+  }
+}
 const baselineCaps = Object.values(languages).filter((language) => language !== 'python').map((language) => ({
   language, id: `G6/${language}/judged-byte-limit/provider/policy/@request/limit`, status: 'required-baseline-failure',
   reason: 'no explicit judge limit: no serialization-limit possible',
 }));
 inventory.push(...baselineCaps.map(({ id }) => id));
+for (const fixture of fixtures.filter(({ untracedOnly }) => !untracedOnly)) {
+  for (const row of fixture.cases) {
+    inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/${row.id}/receipt`);
+  }
+}
+const controls = [
+  { seed: 'stdout-b', fixture: 'G1/python/stdout', requests: ['run-first'], keys: ['run-first/B/value'], unchanged: ['run-first/B/verdict'], hits: 1 },
+  { seed: 'stdout-all', fixture: 'G1/python/stdout', requests: requests.map(({ id }) => id), keys: requests.flatMap((request) => request.cases.map((id) => `${request.id}/${id}/value`)), hits: 18 },
+  { seed: 'split-second-edge', fixture: 'G6/python/graph-input', requests: ['submit-default-A'], keys: ['submit-default-A/A/value'], hits: 1 },
+  { seed: 'list-field', fixture: 'G1/python/builtin-class', requests: ['submit-default-A'], keys: ['submit-default-A/A/value'], hits: 1 },
+];
 if (new Set(inventory).size !== inventory.length) throw new Error('Repeated assertion IDs');
 const path = new URL('manifest.json', import.meta.url);
-writeFileSync(path, JSON.stringify({ candidate, traceOptions, fixtures, requests, rowChecks, baselineCaps, inventory }, null, 2) + '\n');
+writeFileSync(path, '{\n'
+  + Object.entries({ candidate, traceOptions, fixtures, requests, rowChecks, baselineCaps, controls, inventory })
+    .map(([key, value]) => `  ${JSON.stringify(key)}: ${Array.isArray(value) ? '[\n' + value.map((item) => '    ' + JSON.stringify(item)).join(',\n') + '\n  ]' : JSON.stringify(value)}`)
+    .join(',\n')
+  + '\n}\n');
