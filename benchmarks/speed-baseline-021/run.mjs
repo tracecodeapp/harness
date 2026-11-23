@@ -46,7 +46,7 @@ const appRefs = {
   '0.17.1': '083bf3f4aec34a353dd6da749d691ca29ed601e8',
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
-const versions = candidate ? ['candidate'] : Object.keys(appRefs);
+const versions = candidate ? ['candidate-main', 'candidate-deploy'] : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
@@ -168,11 +168,11 @@ async function serve(site) {
 }
 
 async function prepareVersion(version) {
-  const root = join(out, 'v' + version);
+  const candidateVersion = version.startsWith('candidate-');
+  const root = join(out, candidateVersion ? 'vcandidate' : 'v' + version);
   const harness = join(root, 'package');
   const site = join(root, 'site');
   const manifest = await json(join(harness, 'package.json'));
-  const candidateVersion = version === 'candidate';
   assert.equal(manifest.version, candidateVersion ? candidate.version : version);
   const tarball = candidateVersion ? 'candidate.tgz' : 'tracecode-harness-' + version + '.tgz';
   const tarballBytes = await readFile(join(root, tarball));
@@ -243,7 +243,11 @@ async function openPage(context, version, url, group) {
     await page.evaluate(async ({ language, stopSubmit, candidate }) => {
       const { createSession } = await import('/entry.mjs');
       window.bench = createSession(language, stopSubmit, candidate);
-    }, { language: group.language, stopSubmit: version !== '0.17.1', candidate: version === 'candidate' });
+  }, {
+    language: group.language,
+    stopSubmit: version === '0.20.1' || version === 'candidate-main',
+    candidate: version.startsWith('candidate-'),
+  });
     return page;
   } catch (error) {
     await page.close().catch(() => {});
@@ -352,7 +356,7 @@ function plan() {
         }
         if (state === 'warm' && !phoneSubset) {
           groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target,
-            versions: candidate ? versions : ['0.20.1'] });
+            versions: candidate ? ['candidate-main'] : ['0.20.1'] });
         }
       }
     }
@@ -422,7 +426,10 @@ try {
   const fixtures = await loadFixtures();
   report.fixtures = fixtures.provenance;
   for (const version of versions) {
-    prepared[version] = await prepareVersion(version);
+    // The two app policies run on independent pages with the same installed bytes.
+    prepared[version] = candidate && prepared['candidate-main']
+      ? prepared['candidate-main']
+      : await prepareVersion(version);
     report.packages[version] = prepared[version].metadata;
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
@@ -482,7 +489,7 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if (group.language === 'java' && version === 'candidate' && !sample.invalid && !sample.refusal) {
+              if (group.language === 'java' && candidate && !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = javaCandidateOutcome(sample.initial, role, fixture.cases.length,
                   role === 'run' ? fixture.cases[0].id : undefined);
@@ -496,7 +503,7 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if (group.language === 'java' && version === 'candidate' && !sample.invalid && !sample.refusal) {
+                  if (group.language === 'java' && candidate && !sample.invalid && !sample.refusal) {
                     sample.invalid = javaCandidateOutcome(sample.second, 'click', 1, fixture.cases[1].id);
                   }
                 }
@@ -542,7 +549,7 @@ try {
     await save();
   } finally {
     await browser?.close();
-    for (const { server } of Object.values(prepared)) {
+    for (const { server } of new Set(Object.values(prepared))) {
       server.close();
       server.closeAllConnections();
     }

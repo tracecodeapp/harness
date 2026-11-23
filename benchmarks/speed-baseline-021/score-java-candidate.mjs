@@ -12,6 +12,7 @@ const endpoints = (group) => group.journey === 'lesson' ? ['lessonContinue'] :
   group.journey === 'submit' ? ['submitVerdicts'] :
     ['verdicts', 'firstTrace', ...(group.continuation ? ['secondTrace'] : [])];
 const versions = ['0.17.1', '0.20.1'];
+const policies = ['candidate-main', 'candidate-deploy'];
 const scopes = ['desktop', 'phone', 'spot'];
 const fixtureNames = ['binary-search', 'permutations'];
 const otherLanguages = ['javascript', 'typescript', 'python', 'cpp', 'csharp'];
@@ -103,9 +104,9 @@ for (const scope of scopes) {
     assert.deepEqual(meta.host, archived.host);
     assert.deepEqual(meta.browser, archived.browser);
     assert.deepEqual(meta.fixtures, archived.fixtures);
-    installed ??= meta.packages.candidate;
+    installed ??= meta.packages['candidate-main'];
     runnerCommit ??= meta.runnerCommit;
-    assert.deepEqual(meta.packages.candidate, installed);
+    for (const policy of policies) assert.deepEqual(meta.packages[policy], installed);
     assert.equal(meta.runnerCommit, runnerCommit);
     assert.match(installed.commit, /^[0-9a-f]{40}$/);
     assert.match(installed.sha256, /^[0-9a-f]{64}$/);
@@ -117,7 +118,7 @@ for (const scope of scopes) {
     const schedule = new Set();
     for (const group of meta.schedule) {
       assert.equal(group.target, 20);
-      assert.deepEqual(group.versions, ['candidate']);
+      assert.deepEqual(group.versions, group.journey === 'lesson' ? [policies[0]] : policies);
       for (const endpoint of endpoints(group)) {
         if (scope === 'spot' && endpoint === 'firstTrace') continue;
         const k = key(group, endpoint);
@@ -133,18 +134,20 @@ for (const scope of scopes) {
       loadRetakes: rows.filter(({ excluded }) => excluded).length,
     }));
     for (const k of schedule) {
-      const observed = stats(values.get(k + '/candidate'));
+      const appPolicies = k.endsWith('/lessonContinue') ? [policies[0]] : policies;
+      const observed = Object.fromEntries(appPolicies.map((policy) => [policy, stats(values.get(k + '/' + policy))]));
       const history = Object.fromEntries(versions.map((version) => [version, stats(frozen.get(k + '/' + version))]));
       const csharpAdvisory = k === 'csharp/1/binary-search/warm/submitVerdicts';
       const requiredBaseline = k.endsWith('/lessonContinue') || csharpAdvisory ? ['0.20.1'] : versions;
       const old = requiredBaseline.map((version) => history[version]);
       const minimum = k.startsWith('java/') ? 12 : 20;
-      const missing = observed.n !== 20 || old.some(({ n }) => n < minimum);
+      const missing = Object.values(observed).some(({ n }) => n !== 20) || old.some(({ n }) => n < minimum);
       const baselineMedian = Math.min(...old.map(({ median }) => median ?? Infinity));
       const baselineP90 = Math.min(...old.map(({ p90 }) => p90 ?? Infinity));
-      const pass = !missing && observed.median <= baselineMedian && observed.p90 <= 1.10 * baselineP90;
-      const escalate = scope === 'spot' && !missing &&
-        (observed.median > 1.05 * baselineMedian || observed.p90 > 1.10 * baselineP90);
+      const pass = !missing && Object.values(observed).every(({ median, p90 }) =>
+        median <= baselineMedian && p90 <= 1.10 * baselineP90);
+      const escalate = scope === 'spot' && !missing && Object.values(observed).some(({ median, p90 }) =>
+        median > 1.05 * baselineMedian || p90 > 1.10 * baselineP90);
       if ((scope !== 'spot' && !pass) || missing) accepted = false;
       if (escalate) spotExcursion = true;
       console.log(JSON.stringify({

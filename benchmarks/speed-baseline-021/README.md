@@ -105,7 +105,8 @@ node benchmarks/speed-baseline-021/score-java-candidate.mjs reports/speed-baseli
 Use the archived Desktop A pair with the switched Java top-up. The scorer
 checks the 25 desktop Java endpoints, eight 4× Java endpoints, and ten spot
 endpoints. It compares joined public Run latency and immediate continuation
-against the frozen distributions and prints the C# Submit advisory. An
+under both app policies against the frozen distributions and prints the C#
+Submit advisory. The lesson comparison uses the main policy. An
 excursion in the spot comparison requires the full matrix. The Java sample
 also includes role-tagged worker init, preparation, enqueue and execution
 timings, JVM starts, restores, the worker-reply-to-public-response interval,
