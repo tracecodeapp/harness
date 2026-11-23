@@ -1,3 +1,27 @@
+function recorderEvents(payload) {
+  const events = payload.trace?.events;
+  const transfer = payload.__traceEventTransport;
+  if (!transfer) return events;
+  const { schema, encoding, path, eventCount, byteLength, chunks } = transfer;
+  if (schema !== 'tracecode.trace-events.transfer.v1' || path !== 'trace.events' ||
+      encoding !== 'json-utf8' || !Array.isArray(events) || events.length !== 0 ||
+      !Number.isSafeInteger(byteLength) || byteLength <= 0 || byteLength > 64 * 1024 * 1024 ||
+      !Array.isArray(chunks) || chunks.some((chunk) => !(chunk instanceof ArrayBuffer)) ||
+      chunks.reduce((size, chunk) => size + chunk.byteLength, 0) !== byteLength) return;
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const decoded = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+    if (Array.isArray(decoded) && decoded.length === eventCount) return decoded;
+  } catch {
+    // The oracle treats a malformed terminal as failed recorder evidence.
+  }
+}
+
 // The browser page owns this transport. The installed Judge and worker files
 // remain untouched. A real worker runs each released row. The transport holds
 // the terminal batch response, leaving the production client to handle loss.
@@ -62,6 +86,7 @@ export function installJournal(fixture) {
   globalThis.Worker = class JournalWorker extends NativeWorker {
     #generation = ++generation;
     #wire = new Map();
+    #judgeWire = new Map();
     #forwardingProgress = false;
 
     constructor(url, options) {
@@ -73,6 +98,7 @@ export function installJournal(fixture) {
     postMessage(message, ...transfer) {
       const payload = message?.payload ?? message;
       const rows = (payload?.inputBatch ?? [payload?.inputs]).map(identify);
+      this.#trackJudgeWorker(message, payload, rows);
       if (request && rows.length && rows.every(Boolean) && /^execute/u.test(message.type)) {
         const mode = payload.mode ?? message.type;
         const wire = { request, rows, mode, message, index: 0 };
@@ -95,6 +121,53 @@ export function installJournal(fixture) {
         }
       }
       super.postMessage(message, ...transfer);
+    }
+
+    #trackJudgeWorker(message, payload, rows) {
+      if (fixture.gate !== 'G5' || !request || typeof message.protocolToken !== 'string' ||
+          !message.protocolToken) return;
+      const correlated = { request, generation: this.#generation, commandId: message.id };
+      if (['javascript', 'typescript'].includes(fixture.language) && message.type === 'observe-execution' &&
+          typeof payload.attemptToken === 'string') {
+        this.#judgeWire.set(message.id, {
+          correlated, rows, token: message.protocolToken, attemptToken: payload.attemptToken,
+        });
+        return;
+      }
+      if (fixture.language !== 'python') return;
+      const prepared = message.type === 'execute-prepared-program';
+      const ordinary = (prepared || message.type === 'execute-prepared-program-batch') &&
+        payload.mode === 'code' && payload.artifact?.mode === 'code';
+      const observation = prepared && payload.mode === 'trace' && payload.artifact?.observationOnly === true;
+      if (!ordinary && !observation) return;
+      this.#judgeWire.set(message.id, { correlated, rows, ordinary, token: message.protocolToken });
+      if (ordinary) {
+        record('ordinary-dispatch', { ...correlated, rows, reportsStarts: payload.reportCaseProgress === true });
+      }
+    }
+
+    #readJudgeWorker(event) {
+      const { id, type, payload, protocolToken } = event.data ?? {};
+      const wire = this.#judgeWire.get(id);
+      if (!wire || !event.isTrusted || protocolToken !== wire.token) return;
+      if (wire.ordinary && type === 'batch-case-progress' && payload?.phase === 'started') {
+        record('ordinary-start', { ...wire.correlated, caseId: wire.rows[payload.index], index: payload.index });
+      }
+      if (type !== 'execute-result' && type !== 'error') return;
+      this.#judgeWire.delete(id);
+      if (!wire.ordinary && type === 'execute-result') {
+        record('observer-reply', {
+          ...wire.correlated,
+          caseId: wire.rows[0],
+          ...(wire.attemptToken === undefined ? {} : {
+            attemptToken: wire.attemptToken,
+            drawing: payload?.attemptToken === wire.attemptToken ? payload.drawing : null,
+          }),
+          recorder: payload?.observation,
+          schemaVersion: payload?.trace?.schemaVersion,
+          events: payload && recorderEvents(payload),
+        });
+      }
     }
 
     #release(wire) {
@@ -120,6 +193,7 @@ export function installJournal(fixture) {
 
     #read(event) {
       if (this.#forwardingProgress) return;
+      this.#readJudgeWorker(event);
       const { id, type, payload } = event.data ?? {};
       const wire = this.#wire.get(id);
       if (!wire) return;
@@ -207,6 +281,9 @@ export function installJournal(fixture) {
   };
 
   return {
+    record(kind, fields) {
+      record(kind, { ...fields, request });
+    },
     track(route, injectedFault) {
       request = route;
       fault = injectedFault;

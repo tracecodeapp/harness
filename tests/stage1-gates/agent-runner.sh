@@ -23,13 +23,19 @@ runner=${3:-run.mjs}
 case "$run_id" in
   *[!A-Za-z0-9._-]*|'') echo "Invalid run ID" >&2; exit 2 ;;
 esac
+consumer="$job_root/gate-consumer-isolated"
+install_marker="$consumer/.installed"
+subject_key=$(printf '%s\n%s' "$candidate" "$canonical_sha")
+if [ -f "$install_marker" ] && [ "$(cat "$install_marker")" != "$subject_key" ]; then
+  echo "Installed consumer belongs to another or unverified subject; use a fresh job directory" >&2
+  exit 2
+fi
 mkdir -p "$job_root/gate-evidence"
 evidence="$job_root/gate-evidence/$run_id"
 mkdir "$evidence"
 printf '%s\n' "$candidate" >"$evidence/candidate.sha"
 git rev-parse HEAD >"$evidence/runner.sha"
 start=$SECONDS
-consumer="$job_root/gate-consumer-isolated"
 
 package_dir="$job_root/gate-package"
 tarball="$package_dir/tracecode-harness-subject.tgz"
@@ -41,7 +47,7 @@ if [ ! -f "$tarball" ]; then
 fi
 printf '%s  %s\n' "$canonical_sha" "$tarball" >"$evidence/tarball.sha256"
 sha256sum --check "$evidence/tarball.sha256"
-if [ ! -f "$consumer/.installed" ]; then
+if [ ! -f "$install_marker" ]; then
   mkdir -p "$consumer"
   printf '%s\n' '{"name":"stage1-gates-consumer","private":true,"type":"module"}' >"$consumer/package.json"
   (
@@ -49,7 +55,7 @@ if [ ! -f "$consumer/.installed" ]; then
     corepack pnpm --ignore-workspace add --prefer-offline --ignore-scripts "$tarball"
     node node_modules/@tracecode/harness/dist/cli.cjs sync-assets "$job_root/gate-assets" --inventory
   ) >"$evidence/install-assets.log" 2>&1 || { tail -60 "$evidence/install-assets.log"; exit 1; }
-  touch "$consumer/.installed"
+  printf '%s\n' "$subject_key" >"$install_marker"
 fi
 packed_judge_sha=$(tar -xOzf "$tarball" package/dist/judge.js | sha256sum | cut -d' ' -f1)
 installed_judge=$(realpath "$consumer/node_modules/@tracecode/harness/dist/judge.js")

@@ -21,6 +21,14 @@ const consumer = resolve(installationArg);
 const assets = resolve(assetsArg);
 const site = join(output, 'site');
 const runId = randomUUID();
+const attestedSubject = await readFile(join(output, 'candidate.sha'), 'utf8')
+  .then((value) => value.trim(), (error) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+const requestedSubject = process.env.TRACECODE_STAGE1_SUBJECT;
+const candidate = attestedSubject ?? requestedSubject ?? fixtures.candidate;
+assert.match(candidate, /^[0-9a-f]{40}$/u);
+if (requestedSubject) assert.equal(candidate, requestedSubject, 'Installed subject differs from the requested subject');
 const timer = performance.now();
 const select = (variable) => process.env[variable]?.split(',').filter(Boolean);
 const languages = select('GB_LANGUAGES');
@@ -116,7 +124,7 @@ async function prepareSite() {
   const [sha256] = (await readFile(join(output, 'tarball.sha256'), 'utf8')).split(/\s+/u);
   const browserBundleSha256 = createHash('sha256').update(await readFile(join(site, 'gate.mjs'))).digest('hex');
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-  return { head, candidate: fixtures.candidate, sha256, browserBundleSha256, publicExport: judgeEntry, setupMs: performance.now() - timer };
+  return { head, candidate, sha256, browserBundleSha256, publicExport: judgeEntry, setupMs: performance.now() - timer };
 }
 
 function summarizeSample(sample) {
@@ -194,7 +202,7 @@ async function main() {
   await mkdir(output, { recursive: true });
   const planned = requested.flatMap(({ fixture, route }) => ledgerFor(fixture, route).expected);
   assert.equal(new Set(planned).size, planned.length, 'Duplicate planned assertion ID');
-  await writeFile(join(output, 'planned.json'), JSON.stringify({ runId, candidate: fixtures.candidate, planned }, null, 2));
+  await writeFile(join(output, 'planned.json'), JSON.stringify({ runId, candidate, planned }, null, 2));
   const meta = await prepareSite();
   const server = await serve();
   const origin = `http://127.0.0.1:${server.address().port}`;

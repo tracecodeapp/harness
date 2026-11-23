@@ -44,6 +44,9 @@ export async function runFixture(fixture, options, onReceipt) {
   let retained;
   let executionId;
   let retainedCompile;
+  let retainedWorkspaceDigest;
+  const retainedEvidence = [];
+  let registeredReceiptPath = false;
   let singletonGuard;
   try {
     for (const route of fixture.routes) {
@@ -72,7 +75,10 @@ export async function runFixture(fixture, options, onReceipt) {
           journal.track(route, faultFixture && transportRoutes.has(route) ? route : undefined);
           if (continuation) {
             const result = await host.execute({ executionId, tracing: { caseIds: [route.at(-1)] } });
-            record = { result, setupMs, retainedCompile, retainedExecutionId: executionId };
+            record = {
+              result, setupMs, retainedCompile, retainedExecutionId: executionId, retainedWorkspaceDigest,
+              retainedEvidence: [...retainedEvidence],
+            };
           } else {
             const rows = rowsFor(fixture, route);
             const trace = interactive || route === 'submit-traced';
@@ -98,6 +104,7 @@ export async function runFixture(fixture, options, onReceipt) {
                 retained = host;
                 executionId = result.executionId;
                 retainedCompile = result.evaluation.compile;
+                retainedWorkspaceDigest = bundle.workspaceDigest;
               }
             } else {
               const stop = route.startsWith('submit-stop') || route.endsWith('-stop');
@@ -114,6 +121,7 @@ export async function runFixture(fixture, options, onReceipt) {
           }
           const evaluation = record.result?.evaluation;
           if (evaluation) {
+            registeredReceiptPath ||= evaluation.cases.some((row) => typeof row.attachment?.evaluationId === 'string');
             const conversionOptions = { language: fixture.language };
             record.conversions = {
               compile: evaluation.compile ? convert(judgeCompileExecutionOutcome, evaluation.compile, conversionOptions) : undefined,
@@ -132,8 +140,13 @@ export async function runFixture(fixture, options, onReceipt) {
           }
         }
       }
+      const transcript = journal.since(from);
+      if ((usesRetainedHost || continuation) && record.result?.evaluation) {
+        retainedEvidence.push(...transcript.filter(({ kind, request }) =>
+          request === route && (kind === 'schedule' || kind === 'observer-reply')));
+      }
       await onReceipt({
-        ...record, route, singletonGuard, transcript: journal.since(from), durationMs: performance.now() - start,
+        ...record, route, singletonGuard, transcript, registeredReceiptPath, durationMs: performance.now() - start,
         crossOriginIsolated: globalThis.crossOriginIsolated,
       });
     }

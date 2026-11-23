@@ -59,18 +59,174 @@ function desiredRow(fixture, route, row) {
 }
 
 const processProjection = (row) => Object.fromEntries(Object.entries(row ?? {}).filter(([key]) =>
-  !['sessionId', 'pid', 'timings', 'startedAt', 'endedAt', 'trace'].includes(key)
+  !['sessionId', 'pid', 'timings', 'startedAt', 'endedAt', 'trace', 'attachment'].includes(key)
 ));
 
+const traceSchema = 'runtime-trace-2026-04-28';
+const refusalReasons = new Map([
+  ['no-recorder', ['recorder-unavailable', 'recorder-unavailable']],
+  ['observer-compile-fault', ['observer-prepare', 'observer-prepare-failed']],
+  ['observer-encoder-fault', ['observer-encode', 'observer-encode-failed']],
+]);
+
 function rawAttachment(row) {
+  const named = row?.attachment;
+  if (named !== undefined) {
+    if (named && (named.status === 'drawn' || Object.hasOwn(named, 'reason') ||
+        Object.hasOwn(named, 'evaluationId'))) {
+      return {
+        modern: true,
+        status: named.status === 'drawn' ? 'complete'
+          : ['truncated', 'refused'].includes(named.status) ? named.status : 'unknown',
+        cause: named.reason,
+        events: named.status === 'refused' ? (Object.hasOwn(named, 'trace') ? undefined : []) : named.trace?.events,
+        attemptedEventCount: named.attemptedEvents,
+        binding: {
+          evaluationId: named.evaluationId, workspaceDigest: named.workspaceDigest,
+          generation: named.generation, caseId: named.caseId,
+        },
+      };
+    }
+    return named ?? { status: 'unknown' };
+  }
   const budget = row?.diagnostics?.find(({ kind }) => kind === 'trace-truncated')?.code;
   const refuses = row?.diagnostics?.find(({ code }) => code === 'trace-unavailable');
-  const named = row?.attachment;
-  if (named) return named;
   if (budget) return { status: 'truncated', cause: budget, events: row.trace?.events };
   if (refuses) return { status: 'refused', cause: refuses.cause, events: row.trace?.events };
   if (row?.trace?.events?.length) return { status: 'complete', events: row.trace.events };
   return { status: 'unknown', events: row?.trace?.events };
+}
+
+function scopeMatches(left, right) {
+  return left.evaluationId === right.evaluationId && left.workspaceDigest === right.workspaceDigest &&
+    left.generation === right.generation;
+}
+
+function validBinding(attachment, row, sample) {
+  if (!attachment.modern) return true;
+  const { evaluationId, workspaceDigest, generation, caseId } = attachment.binding;
+  const expectedDigest = sample.stimulus?.bundle?.workspaceDigest ?? sample.retainedWorkspaceDigest;
+  return typeof evaluationId === 'string' && evaluationId.length > 0 &&
+    typeof workspaceDigest === 'string' && workspaceDigest.length > 0 &&
+    (expectedDigest === undefined || workspaceDigest === expectedDigest) &&
+    Number.isSafeInteger(generation) && generation > 0 && caseId === row.caseId;
+}
+
+function recorderEvidence(event) {
+  if (Object.hasOwn(event, 'drawing')) {
+    const drawing = event.drawing;
+    return {
+      completed: drawing?.status === 'drawn' || drawing?.status === 'truncated',
+      refusal: drawing?.status === 'refused' ? drawing.reason : undefined,
+      cut: drawing?.status === 'truncated' ? drawing.reason : undefined,
+      attemptedEvents: drawing?.attemptedEvents,
+      schemaVersion: drawing?.trace?.schemaVersion,
+      events: drawing?.trace?.events,
+    };
+  }
+  return {
+    completed: event.recorder?.recorderCompleted === true,
+    refusal: event.recorder?.encodeFailed === true ? 'observer-encode' : undefined,
+    cut: event.recorder?.cut,
+    attemptedEvents: event.recorder?.attemptedEvents,
+    schemaVersion: event.schemaVersion,
+    events: event.events,
+  };
+}
+
+// Python normalizes trace payloads at the adapter. Compare stable source
+// coordinates and event content across that boundary, in the original order.
+function eventProjection(event) {
+  return [event?.kind, event?.file, event?.line, event?.sourceSpan?.startLine,
+    event?.sourceSpan?.startColumn, event?.sourceSpan?.endLine, event?.sourceSpan?.endColumn,
+    event?.function, event?.frameId, event?.statementId, event?.text,
+    event?.target?.variable, event?.target?.objectId, event?.value, event?.args];
+}
+
+function checkRecorder(fixture, attachment, witness) {
+  const evidence = recorderEvidence(witness);
+  if (attachment.status === 'refused') {
+    return evidence.refusal === attachment.cause && attachment.events?.length === 0;
+  }
+  if (!evidence.completed || evidence.refusal || evidence.schemaVersion !== traceSchema ||
+      !Array.isArray(evidence.events) || !Array.isArray(attachment.events)) return false;
+  const exactEvents = fixture.language === 'python'
+    ? isDeepStrictEqual(evidence.events.map(eventProjection), attachment.events.map(eventProjection))
+    : isDeepStrictEqual(evidence.events, attachment.events);
+  if (!exactEvents) return false;
+  const sourceLines = fixture.code.trimEnd().split('\n').length;
+  const sourceEvent = attachment.events.some((event) => {
+    const line = event?.sourceSpan?.startLine ?? event?.line;
+    return event?.kind !== 'timeout' && typeof event?.file === 'string' &&
+      Number.isSafeInteger(line) && line > 0 && line <= sourceLines;
+  });
+  if (attachment.status === 'complete') return evidence.cut === undefined && sourceEvent;
+  return attachment.status === 'truncated' && evidence.cut === attachment.cause &&
+    Number.isSafeInteger(evidence.attemptedEvents) && evidence.attemptedEvents >= attachment.events.length &&
+    evidence.attemptedEvents === attachment.attemptedEventCount &&
+    (sourceEvent || (attachment.cause === 'byte-budget' && attachment.events.length === 0 && evidence.attemptedEvents > 0));
+}
+
+function checkObservation(fixture, route, sample, rows, published, assert) {
+  if (!route.startsWith('run-') && !continuation(route) && route !== 'submit-traced') return;
+  const wire = (sample.transcript ?? []).filter((event) => event.request === route);
+  const prior = sample.retainedEvidence ?? [];
+  const marks = wire.filter((event) => event.kind === 'schedule');
+  const selected = drawingRows(fixture, route);
+  const modern = sample.registeredReceiptPath || published.some((row) => rawAttachment(row).modern) || marks.length > 0;
+  if (!modern) return;
+
+  const starts = wire.filter((event) => event.kind === 'ordinary-start');
+  const dispatch = wire.filter((event) => event.kind === 'ordinary-dispatch');
+  const expectedStarts = continuation(route) ? []
+    : rows.filter((row) => desiredRow(fixture, route, row) !== 'not-run').map((row) => row.id);
+  const cacheHit = marks.some(({ phase, caseId }) => phase === 'observation-cache-hit' &&
+    selected.some(({ id }) => id === caseId));
+  const observerReply = wire.some(({ kind, caseId }) => kind === 'observer-reply' &&
+    selected.some(({ id }) => id === caseId));
+  const wrongStart = starts.some((event) => !expectedStarts.includes(event.caseId)) ||
+    new Set(starts.map(({ caseId }) => caseId)).size !== starts.length;
+  const startCoverage = dispatch.length > 0 && dispatch.every(({ reportsStarts }) => reportsStarts === true);
+  const observableContinuation = fixture.language === 'python' || wire.some(({ kind }) => kind === 'ordinary-coverage');
+  if (wrongStart || startCoverage || (continuation(route) &&
+      (dispatch.length > 0 || (observableContinuation && (observerReply || cacheHit))))) {
+    assert('ordinary-start-count', !wrongStart && (!continuation(route) || dispatch.length === 0) &&
+      isDeepStrictEqual(starts.map(({ caseId }) => caseId).sort(), [...expectedStarts].sort()),
+    { expectedStarts, starts, dispatch, observerReply, cacheHit });
+  }
+
+  if (!marks.length) return;
+  const resolve = marks.filter(({ phase }) => phase === 'public-resolve');
+  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
+  const retainedCommits = prior.filter(({ kind, phase }) => kind === 'schedule' && phase === 'ordinary-commit');
+  const commit = continuation(route) ? retainedCommits[0] : commits[0];
+  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
+  const expectedWrites = continuation(route) ? [] : published.map(({ caseId }) => caseId);
+  const sameScope = !!commit && marks.every((marker) => scopeMatches(marker, commit));
+  const noObserverWrites = !marks.some(({ phase, origin }) =>
+    phase === 'observer-write-attempt' || (phase === 'ordinary-write-attempt' && origin === 'observer'));
+  assert('observer-grade-writes', sameScope && resolve.length === 1 && noObserverWrites &&
+    isDeepStrictEqual(writes.map(({ caseId }) => caseId).sort(), [...expectedWrites].sort()) &&
+    writes.every((event) => event.sequence < commit.sequence),
+  { expectedWrites, writes, marks });
+
+  const binds = [...prior, ...wire].filter(({ kind, phase }) => kind === 'schedule' && phase === 'attachment-bind');
+  const selectedIds = selected.map(({ id }) => id);
+  const currentBinds = marks.filter(({ phase }) => phase === 'attachment-bind');
+  const matchesSelected = sameScope && resolve.length === 1 && selectedIds.every((caseId) => {
+    const row = published.find((entry) => entry.caseId === caseId);
+    const attachment = rawAttachment(row);
+    const caseBinds = binds.filter((event) => event.caseId === caseId);
+    return attachment.modern && validBinding(attachment, row, sample) &&
+      scopeMatches(attachment.binding, commit) && caseBinds.length === 1 &&
+      scopeMatches(caseBinds[0], commit) && commit.sequence < caseBinds[0].sequence &&
+      caseBinds[0].sequence < resolve[0].sequence;
+  });
+  assert('ordinary-before-observer', sameScope && resolve.length === 1 &&
+    commits.length === (continuation(route) ? 0 : 1) &&
+    (!continuation(route) || retainedCommits.length === 1) &&
+    commit.sequence < resolve[0].sequence && currentBinds.every(({ caseId }) => selectedIds.includes(caseId)) &&
+    matchesSelected, { commit, marks });
 }
 
 function matchesAnchor(fixture, target, attachment) {
@@ -124,7 +280,17 @@ function check(fixture, route, sample, assert) {
       : route.startsWith('run-')
         ? evaluation.status === 'compile-failed' ? receipt.executionId === undefined : typeof receipt.executionId === 'string'
         : receipt.bundleId === bundle?.id && receipt.workspaceDigest === bundle?.workspaceDigest;
-    assert('correlation', keysValid && matchingReference, {
+    const selected = new Set(drawingRows(fixture, route).map(({ id }) => id));
+    const onReceiptPath = sample.registeredReceiptPath || published.some((row) => rawAttachment(row).modern);
+    const attachments = published.filter((row) => Object.hasOwn(row, 'attachment'));
+    const binding = rawAttachment(attachments[0]).binding;
+    const boundSelection = fixture.gate !== 'G5' || !onReceiptPath ||
+      (attachments.length === selected.size && attachments.every((row) => {
+        const attachment = rawAttachment(row);
+        return attachment.modern && selected.has(row.caseId) && validBinding(attachment, row, sample) &&
+          scopeMatches(attachment.binding, binding);
+      }));
+    assert('correlation', keysValid && matchingReference && boundSelection, {
       bundleId: receipt.bundleId, workspaceDigest: receipt.workspaceDigest,
       executionId: receipt.executionId, retainedExecutionId: sample.retainedExecutionId,
     });
@@ -189,39 +355,74 @@ function check(fixture, route, sample, assert) {
   }
 
   if (fixture.gate === 'G5') {
+    checkObservation(fixture, route, sample, rows, published, assert);
     for (const expected of drawingRows(fixture, route)) {
       const row = published.find(({ caseId }) => caseId === expected.id);
       if (!row) continue;
       const attachment = rawAttachment(row);
       const label = expected.id;
-      const refusedFault = faultNames.includes(fixture.name) && label === 'A';
+      const bound = validBinding(attachment, row, sample);
+      const refusedFault = refusalReasons.has(fixture.name) && label === 'A';
+      const currentEvidence = wire.filter((event) => event.request === route);
+      const cacheHit = currentEvidence.some(({ kind, phase, caseId, attemptToken }) =>
+        kind === 'schedule' && phase === 'observation-cache-hit' && caseId === label &&
+        typeof attemptToken === 'string');
+      const evidence = cacheHit ? [...(sample.retainedEvidence ?? []), ...currentEvidence] : currentEvidence;
+      const replies = evidence.filter(({ kind, caseId }) => kind === 'observer-reply' && caseId === label);
+      const recorder = replies.length === 1 && bound && checkRecorder(fixture, attachment, replies[0]);
+      const faultAcks = currentEvidence.filter(({ kind, fault, caseId }) =>
+        kind === 'fault-ack' && fault === fixture.name && caseId === label);
       if (fixture.name === 'step-cap' || fixture.name === 'byte-cap') {
-        const reason = fixture.name === 'step-cap' ? 'trace-limit' : 'trace-byte-limit';
-        assert(`${label}/attachment-status`, attachment.status === 'truncated' && attachment.cause === reason, attachment);
-        if (fixture.name === 'byte-cap' && attachment.attemptedEventCount !== undefined) {
-          assert(`${label}/attempted-events`, attachment.attemptedEventCount > 0 && attachment.events?.length === 0, attachment);
+        const step = fixture.name === 'step-cap';
+        const reason = attachment.modern ? (step ? 'step-budget' : 'byte-budget')
+          : (step ? 'trace-limit' : 'trace-byte-limit');
+        assert(`${label}/attachment-status`, bound && attachment.status === 'truncated' &&
+          attachment.cause === reason, attachment);
+        if (step && replies.length) {
+          assert(`${label}/real-prefix`, recorder && attachment.status === 'truncated' &&
+            attachment.cause === reason && attachment.events.length > 0 &&
+            attachment.events.length <= fixture.traceOptions.maxTraceSteps &&
+            attachment.attemptedEventCount > attachment.events.length, { attachment, replies });
+        }
+        if (!step && (replies.length || (!attachment.modern && attachment.attemptedEventCount !== undefined))) {
+          assert(`${label}/attempted-events`, (!attachment.modern || recorder) &&
+            Number.isSafeInteger(attachment.attemptedEventCount) && attachment.attemptedEventCount > 0 &&
+            attachment.events?.length === 0, { attachment, replies });
         }
       } else {
-        const reason = {
-          'no-recorder': 'recorder-unavailable', 'observer-compile-fault': 'observer-prepare-failed',
-          'observer-encoder-fault': 'observer-encode-failed',
-        }[fixture.name];
+        const reasonIndex = attachment.modern ? 0 : 1;
+        const reason = refusalReasons.get(fixture.name)?.[reasonIndex];
         const complete = attachment.status === 'complete' && (attachment.events?.length ?? 0) > 0;
         const validRefusal = attachment.status === 'refused' && attachment.events?.length === 0;
-        const realWitnessCause = fixture.name === 'json-element' ? 'observer-encode-failed'
-          : fixture.name === 'trace-compile' ? 'observer-prepare-failed'
+        const realWitnessCause = fixture.name === 'json-element' ? refusalReasons.get('observer-encoder-fault')[reasonIndex]
+          : fixture.name === 'trace-compile' ? refusalReasons.get('observer-compile-fault')[reasonIndex]
           : undefined;
-        const accepted = refusedFault
-          ? validRefusal && attachment.cause === reason
+        const accepted = refusedFault ? validRefusal && attachment.cause === reason
+          : attachment.modern && row.status === 'not-run' ? validRefusal && attachment.cause === 'case-not-run'
           : complete || (!!realWitnessCause && validRefusal && attachment.cause === realWitnessCause);
-        assert(`${label}/attachment-status`, accepted, attachment);
-        if (refusedFault) assert('A/provenance', validRefusal && attachment.cause === reason, attachment);
+        assert(`${label}/attachment-status`, bound && accepted, attachment);
+        if (refusedFault && (faultAcks.length || !attachment.modern)) {
+          assert('A/provenance', bound && validRefusal && attachment.cause === reason &&
+            (!attachment.modern || (faultAcks.length === 1 && faultAcks[0].reason === reason &&
+              scopeMatches(faultAcks[0], attachment.binding))), { attachment, faultAcks });
+        }
+        if (refusedFault && faultAcks.length) {
+          assert('A/injection-ack', faultAcks.length === 1 && faultAcks[0].reason === reason &&
+            !!attachment.binding && scopeMatches(faultAcks[0], attachment.binding), faultAcks);
+        }
       }
-      if (fixture.anchor) {
+      if (fixture.anchor && !refusedFault) {
+        const reason = refusalReasons.get('observer-encoder-fault')[attachment.modern ? 0 : 1];
         const allowedEncoderRefusal = fixture.name === 'json-element' && attachment.status === 'refused' &&
-          attachment.cause === 'observer-encode-failed' && attachment.events?.length === 0;
-        if (!refusedFault) {
-          assert(`${label}/anchor`, allowedEncoderRefusal || matchesAnchor(fixture, expected, attachment), attachment.events);
+          attachment.cause === reason && attachment.events?.length === 0;
+        assert(`${label}/anchor`, allowedEncoderRefusal || matchesAnchor(fixture, expected, attachment), attachment.events);
+      }
+      if ((fixture.anchor && !refusedFault) || (fixture.name === 'observer-encoder-fault' && refusedFault)) {
+        if (replies.length || faultAcks.some(({ reason }) => reason === 'observer-encode')) {
+          assert(`${label}/recorder-boundary`, replies.length ? recorder
+            : bound && attachment.status === 'refused' && attachment.cause === 'observer-encode' &&
+              attachment.events?.length === 0 && faultAcks.length === 1 &&
+              scopeMatches(faultAcks[0], attachment.binding), { attachment, replies, faultAcks });
         }
       }
     }
@@ -253,7 +454,7 @@ function checkRow(fixture, oracle, row, status, published, converted, assert) {
     ? row.termination?.kind === 'exit' && row.termination?.exitCode === 0 && !row.timedOut
     : service || stopped ? row.timedOut === false : sameLimit && row.timedOut === (row.failure.reason === 'client-timeout'),
   [row.termination, row.timedOut]);
-  const allowedWarning = fixture.name === 'step-cap' || fixture.name === 'byte-cap';
+  const allowedWarning = !rawAttachment(row).modern && (fixture.name === 'step-cap' || fixture.name === 'byte-cap');
   assert(`${oracle.id}/diagnostics`, complete ? Array.isArray(row.diagnostics) &&
     row.diagnostics.every((diagnostic) => allowedWarning && diagnostic.kind === 'trace-truncated' && diagnostic.severity === 'warning')
     : Array.isArray(row.diagnostics), row.diagnostics);
