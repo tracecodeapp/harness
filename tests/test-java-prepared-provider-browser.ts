@@ -843,6 +843,14 @@ try {
             assert.deepEqual(proof.statuses, ['completed', 'timed-out', 'not-run']);
             assert.equal(proof.beforeRedraw.commands, 2);
             assert.equal(proof.batchCommands, proof.beforeRedraw.commands);
+            assert.deepEqual(proof.nonstoppingStatuses, ['completed', 'timed-out', 'completed']);
+            assert.deepEqual(proof.tracedStatuses, [['completed', 'drawn'], ['completed', 'drawn']]);
+            const expectedStarts = [[0, 1], [0, 1, 2], [0, 1]];
+            assert.deepEqual(proof.ordinaryBatches.map(({ starts }) => starts), expectedStarts,
+              'Java stopping Run, non-stopping Submit and traced Submit must ACK every admitted case');
+            assert.ok(proof.ordinaryBatches.every(({ requested }) => requested));
+            assert.deepEqual(proof.ordinaryBatches.map(({ terminal }) => terminal), expectedStarts,
+              'Java terminal sets must exactly match the authenticated starts');
             console.log('PASS: Java receipt journal binds the authenticated drawing and redraw to one attempt');
             if (journalOnly) continue;
             const companion = await page.evaluate(() => globalThis.javaCompanionProbe());

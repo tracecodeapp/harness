@@ -301,6 +301,7 @@ export async function runJavaJournalBrowserTest() {
   const journal: Marker[] = [];
   const starts: number[] = [];
   const replies: string[] = [];
+  const ordinaryBatches: Array<{ requested: boolean; starts: number[]; terminal?: number[] }> = [];
   const bridge = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
   Object.defineProperty(globalThis, bridge, {
     configurable: true, value: { onEvent: (event: Marker) => journal.push(event) },
@@ -311,15 +312,25 @@ export async function runJavaJournalBrowserTest() {
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
-      const pending = new Map<string, { protocolToken: string; attemptToken?: string }>();
+      const pending = new Map<string, {
+        protocolToken: string;
+        attemptToken?: string;
+        admissionId?: number;
+        ordinary?: typeof ordinaryBatches[number];
+      }>();
       this.addEventListener('message', ({ data, isTrusted }) => {
         const request = pending.get(data?.id);
         if (!isTrusted || !request || !request.protocolToken || request.protocolToken !== data.protocolToken) return;
         if (data.type === 'runtime-progress' && data.payload?.stage === 'ordinary-case-started') {
-          starts.push(data.payload.detail.caseIndex);
+          const { admissionId, caseIndex } = data.payload.detail;
+          if (request.ordinary && request.admissionId !== undefined && admissionId === request.admissionId) {
+            starts.push(caseIndex);
+            request.ordinary.starts.push(caseIndex);
+          }
         }
         if (data.type === batchType) {
           pending.delete(data.id);
+          if (request.ordinary) request.ordinary.terminal = data.payload?.startedCaseIndexes;
           const row = data.payload?.results?.[0];
           if (request.attemptToken && row?.success && row.observation?.attemptToken === request.attemptToken) {
             replies.push(request.attemptToken);
@@ -329,8 +340,11 @@ export async function runJavaJournalBrowserTest() {
       this.postMessage = (message, transfer?) => {
         if (message?.type === batchType) {
           batchCommands++;
+          const { admissionId, attemptToken } = message.payload;
+          const ordinary = attemptToken === undefined ? { requested: Number.isSafeInteger(admissionId), starts: [] } : undefined;
+          if (ordinary) ordinaryBatches.push(ordinary);
           pending.set(message.id, {
-            protocolToken: message.protocolToken, attemptToken: message.payload?.attemptToken,
+            protocolToken: message.protocolToken, attemptToken, admissionId, ordinary,
           });
         }
         super.postMessage(message, transfer as StructuredSerializeOptions);
@@ -361,9 +375,26 @@ export async function runJavaJournalBrowserTest() {
     if (!initial.executionId) throw new Error('Java Run did not retain the execution');
     const beforeRedraw = { journal: journal.length, commands: batchCommands };
     const redraw = await host.execute({ executionId: initial.executionId, tracing: { caseIds: ['A'] } });
+    const redrawBatchCommands = batchCommands;
+    const initialJournal = [...journal];
+    const initialStarts = [...starts];
+    const initialReplies = [...replies];
+    const submitBundle = (trace: boolean, targets: readonly number[]) => createAlgorithmJudgeBundle({
+      id: trace ? 'java-traced-submit-ack' : 'java-nonstopping-submit-ack',
+      language: 'java', code: source, functionName: 'search', executionStyle: 'solution-method',
+      trace, limits: { wallClockMs: 800 },
+      cases: targets.map((target, i) => ({ id: 'ABC'[i]!, input: { nums: [0, 2], target }, expected: i })),
+    });
+    const nonstopping = await host.evaluateAlgorithm({
+      bundle: await submitBundle(false, [0, -1, 2]), stopAtFirstRunaway: false,
+    });
+    const traced = await host.evaluateAlgorithm({ bundle: await submitBundle(true, [0, 2]) });
     return {
-      journal, starts, replies, beforeRedraw, batchCommands, digest: bundle.workspaceDigest,
+      journal: initialJournal, starts: initialStarts, replies: initialReplies, beforeRedraw,
+      batchCommands: redrawBatchCommands, digest: bundle.workspaceDigest, ordinaryBatches,
       statuses: initial.evaluation.cases.map(({ status }) => status),
+      nonstoppingStatuses: nonstopping.evaluation.cases.map(({ status }) => status),
+      tracedStatuses: traced.evaluation.cases.map(({ status, attachment }) => [status, attachment?.status]),
       attachment: initial.evaluation.cases[0]?.attachment,
       redraw: redraw.evaluation.cases[0]?.attachment,
     };
