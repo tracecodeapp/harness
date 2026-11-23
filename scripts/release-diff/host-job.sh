@@ -20,7 +20,10 @@ if [ ! -f "$BASE/package/dist/judge.js" ]; then
   rm -rf "$BASE" && mkdir -p "$BASE" && cd "$BASE" || exit 10
   npm pack "@tracecode/harness@$BASE_VERSION" --silent >pack.log 2>&1 || { cat pack.log; exit 11; }
   tar xzf "tracecode-harness-$BASE_VERSION.tgz" || exit 12
-  cd package && npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install.log" 2>&1 \
+  # Its devDependencies name unpublished workspace packages, which npm resolves even with
+  # --omit=dev; drop them from the unpacked manifest (dist/ and workers/ are untouched).
+  cd package && node -e "const f=require(\"fs\");const p=JSON.parse(f.readFileSync(\"package.json\"));delete p.devDependencies;f.writeFileSync(\"package.json\",JSON.stringify(p,null,2))" || exit 14
+  npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install.log" 2>&1 \
     || { tail -30 "$OUT/base-install.log"; exit 13; }
   cd "$ROOT"
 fi
