@@ -94,12 +94,28 @@ export function checkObservation(fixture, request, observation, record) {
       assert(observations.some((event) => event.tier === fixture.expectedTier && event.mode === 'code'), `No ${fixture.expectedTier} code artifact acknowledgement`);
       const commands = observation.worker.filter((event) => event.action === 'command' && /execute-prepared/.test(event.type));
       if (fixture.language === 'csharp') {
-        assert(commands.some(({ type, tier }) => type === 'execute-prepared-code' && tier === 'algorithm-fast'));
+        const admitted = commands.filter(({ type, tier }) => type === 'execute-prepared-code' && tier === fixture.expectedTier);
+        assert(admitted.length > 0);
+        if (fixture.retainedRunner) {
+          assert.equal(admitted.length, 2);
+          assert.equal(new Set(admitted.map(({ generation }) => generation)).size, 1);
+        }
+      } else if (fixture.language === 'java') {
+        assert(commands.some(({ type }) => type === 'execute-prepared-runtime-program-batch'));
       } else if (fixture.expectedTier === 'hard-isolated') {
         assert.equal(new Set(commands.map(({ generation }) => generation)).size, 2);
         assert(commands.every(({ type }) => type === 'execute-prepared-program'));
       } else {
         assert(commands.some(({ type, inputs }) => type === 'execute-prepared-program-batch' && inputs.length === 2));
+      }
+    });
+  }
+  if (fixture.nodeInputCompatibility && !request.route && request.id === 'submit-default-AB') {
+    check('@request', 'node-materialization', () => {
+      for (const row of evaluation.cases) {
+        assert.equal(row.status, 'completed');
+        assert.equal(typeof row.timings?.filesystemBeginMs, 'number');
+        assert.notEqual(row.timings?.algorithmFastBatch, true);
       }
     });
   }

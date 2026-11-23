@@ -220,6 +220,17 @@ add('G6', 'python-hard-isolated-scalar', 'py', 'def solve(n): return int(type(n)
   { untracedOnly: true, expectedTier: 'hard-isolated' });
 const compatible = fixtures.find((fixture) => fixture.name === 'invocation-ops' && fixture.language === 'python');
 compatible.expectedTier = 'judge-compatible';
+const nodeCompatible = fixtures.find((fixture) => fixture.name === 'graph-input' && fixture.language === 'python');
+nodeCompatible.nodeInputCompatibility = true;
+const scalars = rows([{ n: 7 }, { n: 11 }], [7, 11]);
+add('G6', 'java-fast-scalar', 'java', 'class Solution { public int solve(int n) { return n; } }', scalars,
+  { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'algorithm-fast' });
+add('G6', 'java-compatible-scalar', 'java', 'class Solution { public int solve(int n) { return "stable".intern().length() + n - 6; } }', scalars,
+  { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'compatibility' });
+add('G6', 'csharp-retained-scalar', 'cs', 'public class Solution { public int solve(int n) { return n; } }', scalars,
+  { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'algorithm-fast', retainedRunner: true });
+add('G6', 'csharp-compatible-scalar', 'cs', 'using System.Text.Json; public class Solution { public int solve(JsonElement n) { return n.GetInt32(); } }', scalars,
+  { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'compatibility' });
 
 const requests = requestMatrix(['A', 'B']);
 const rowChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics'];
@@ -242,6 +253,9 @@ const inventory = [...fixtures, ...requiredAppFixtures].flatMap((fixture) => [
 for (const fixture of fixtures) {
   if (fixture.expectedTier) {
     inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/submit-default-AB/@request/admitted-tier`);
+  }
+  if (fixture.nodeInputCompatibility) {
+    inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/submit-default-AB/@request/node-materialization`);
   }
   for (const route of cppDirectRoutes(fixture)) {
     const prefix = `${fixture.gate}/cpp/${fixture.name}/${route}/code`;
