@@ -19,7 +19,6 @@ import {
 import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 import type {
-  RuntimeObservationCall,
   RuntimeObservationReply,
 } from '../../packages/runtime-contracts/src/runtime-calls';
 import type {
@@ -76,6 +75,7 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly receipt: VerdictReceiptStore;
   private readonly binding: Omit<Binding, 'caseId'>;
   private program?: JudgeObservationProgram;
+  private ordinaryPreparationKey?: object;
   private artifact?: Promise<ObservationPreparation>;
   private lease?: JudgeObservationLease;
 
@@ -101,7 +101,8 @@ export class JudgeObservationSchedule<Result, Expected> {
     );
   }
 
-  recordPrepare(call: RuntimeObservationCall['program']): void {
+  recordPrepare(call: RuntimeProgramPreparationCall): void {
+    this.ordinaryPreparationKey = call;
     this.program = Object.freeze({
       code: call.code,
       functionName: call.functionName,
@@ -201,7 +202,9 @@ export class JudgeObservationSchedule<Result, Expected> {
             return observationRefused('observer-prepare');
           }
         }
-        const prepared = this.registration.prepareObservation(program, signal, this.traceOptions).then(async (artifact) => {
+        const prepared = this.registration.prepareObservation(
+          program, signal, this.traceOptions, this.ordinaryPreparationKey!
+        ).then(async (artifact) => {
           if ('status' in artifact) return artifact;
           if (signal.aborted) await artifact.dispose();
           else this.lease = artifact;

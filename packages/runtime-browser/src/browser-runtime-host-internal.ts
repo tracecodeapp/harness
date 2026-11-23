@@ -57,6 +57,7 @@ export interface JudgeReceiptProvider {
   readonly capabilities: {
     readonly observationLease: 'separate';
     readonly certification?: 'ends-same';
+    readonly algorithmBundlesOnly?: true;
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
@@ -69,7 +70,9 @@ export interface JudgeReceiptProvider {
   prepareObservation(
     program: JudgeObservationProgram,
     signal: AbortSignal,
-    traceOptions?: Readonly<TraceExecutionOptions>
+    traceOptions: Readonly<TraceExecutionOptions> | undefined,
+    /** Opaque per-evaluation key for deriving a drawing from immutable compilation bytes. */
+    ordinaryPreparationKey: object,
   ): Promise<JudgeObservationLease | ObservationRefusal>;
   /** Private trusted composition journal. Never comes from a request or a worker. */
   mark?(marker: JudgeScheduleMarker): void;

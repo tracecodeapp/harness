@@ -1,3 +1,4 @@
+import { TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-contracts';
 import type {
   Language,
   RuntimePreparedExecutionProvider,
@@ -5,8 +6,11 @@ import type {
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
-  BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
+import type {
+  BrowserRuntimeJudgeReceiptLease,
+  JudgeReceiptProvider,
+} from '../../runtime-browser/src/browser-runtime-host-internal';
 import {
   createJavaScriptPreparedExecutionProvider,
 } from './javascript-runtime-client';
@@ -29,7 +33,7 @@ export function createJavaScriptBrowserRuntimeProvider(
   return {
     id: '@tracecode/runtime-javascript',
     languages: ['javascript', 'typescript'],
-    create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
+    create(context: BrowserRuntimeProviderContext): BrowserRuntimeJudgeReceiptLease {
       const workerFactory =
         context.workerFactoryFor('javascript') ??
         context.workerFactoryFor('typescript');
@@ -81,8 +85,19 @@ export function createJavaScriptBrowserRuntimeProvider(
         ['javascript', javascript],
         ['typescript', typescript],
       ]);
+      const observation: JudgeReceiptProvider = {
+        runtimeVersion: TRACECODE_HARNESS_VERSION,
+        capabilities: {
+          algorithmBundlesOnly: true,
+          observationLease: 'separate',
+          observationDeadlineMs: 20_000,
+        },
+        prepareObservation: (_program, signal, options, key) =>
+          worker.prepareObservation(key, options, signal),
+      };
       return {
         preparedProviders,
+        judgeReceiptProviders: new Map([['javascript', observation], ['typescript', observation]]),
         // JavaScript and TypeScript share one coordinator/executor generation.
         disposeLanguage: () => worker.reset(),
         dispose: () => worker.terminate(),

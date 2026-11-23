@@ -231,7 +231,7 @@ async function main(): Promise<void> {
         const receipt = result[name];
         assertCondition(
           receipt?.verdict === 'failed' &&
-          receipt.evaluationStatus === 'completed' &&
+          receipt.evaluationStatus === 'compile-failed' &&
           receipt.passedCount === 0 &&
           receipt.timings.every((timing) => timing.algorithmFastBatch !== true),
           `${name} must preserve legacy syntax behavior: ${JSON.stringify(receipt)}`
@@ -422,6 +422,7 @@ async function main(): Promise<void> {
         const entry = await import(`${origin}/entry.mjs`);
         return entry.runJavaScriptSesUnavailableFailure(`${origin}/workers`);
       }, { origin: server.origin }) as Record<string, string | undefined>;
+      assertCondition(Object.keys(sesUnavailable).length === 2, 'Both SES startup failures must be witnessed');
       for (const [name, failure] of Object.entries(sesUnavailable)) {
         assertCondition(
           typeof failure === 'string' && failure.length > 0,

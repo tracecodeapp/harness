@@ -394,8 +394,11 @@ export class JavaScriptWorkerClient {
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
+  private readonly observationPreparations = new WeakMap<object, (
+    options: ObservationOptions,
+    signal?: AbortSignal,
+  ) => Promise<ObservationArtifact>>();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
-  private readonly ordinaryArtifacts = new WeakMap<RuntimePreparedProgram, OrdinaryArtifact>();
   private readonly leasedExecutionWorkers =
     new Set<JavaScriptWorkerConnection>();
   private generation = 1;
@@ -411,6 +414,7 @@ export class JavaScriptWorkerClient {
     this.sesAlgorithmModule = module;
     this.sesAlgorithmPool = new module.SesAlgorithmWorkerPool({
       workerUrl: this.options.algorithmWorkerUrl!,
+      debug: this.debug,
       ...(this.options.workerFactory ? { workerFactory: this.options.workerFactory } : {}),
       ...(this.options.algorithmJavascriptLibrariesUrl
         ? { javascriptLibrariesUrl: this.options.algorithmJavascriptLibrariesUrl }
@@ -927,7 +931,7 @@ export class JavaScriptWorkerClient {
         : {}),
     });
 
-    try {
+    const trusted = (async (): Promise<PreparedExecutionReply> => {
       if (call.signal?.aborted) {
         const error = new Error('Prepared JavaScript execution aborted.');
         error.name = 'AbortError';
@@ -976,6 +980,25 @@ export class JavaScriptWorkerClient {
         );
       }
 
+      return reply;
+    })();
+    if (preparation.mode === 'code') {
+      this.observationPreparations.set(call, async (options, signal) => {
+        const reply = await trusted;
+        signal?.throwIfAborted();
+        return this.prepareObservationArtifact({
+          generation,
+          language,
+          code: preparation.code,
+          functionName: preparation.functionName,
+          executionStyle: preparation.executionStyle,
+          preparedExecution: reply.preparedExecution,
+        }, options, signal);
+      });
+    }
+
+    try {
+      const reply = await trusted;
       let preparedExecution: unknown | undefined = reply.preparedExecution;
       const requirePreparedExecution = (): unknown => {
         if (preparedExecution === undefined) {
@@ -1125,7 +1148,7 @@ export class JavaScriptWorkerClient {
         executeTraceBatch: preparation.mode === 'trace' ? executeTraceBatch : undefined,
         dispose: async () => {
           preparedExecution = undefined;
-          this.ordinaryArtifacts.delete(program);
+          this.observationPreparations.delete(call);
           this.preparedPrograms.delete(program);
           if (sesProgram) await pool?.disposeProgram(sesProgram).catch(() => undefined);
           if (sesTraceProgram) await pool?.disposeProgram(sesTraceProgram).catch(() => undefined);
@@ -1133,12 +1156,6 @@ export class JavaScriptWorkerClient {
       });
       this.assertActive(generation);
       this.preparedPrograms.add(program);
-      if (program.mode === 'code') {
-        this.ordinaryArtifacts.set(program, {
-          generation, language, code: preparation.code, functionName: preparation.functionName,
-          executionStyle: preparation.executionStyle, preparedExecution: requirePreparedExecution(),
-        });
-      }
       const totalMs = performanceNow() - startedAt;
       return {
         kind: 'prepared',
@@ -1186,14 +1203,22 @@ export class JavaScriptWorkerClient {
     }
   }
 
-  /** Derive one observer artifact from a prepared ordinary program's trusted bytes. */
-  async prepareObservation(
-    ordinary: RuntimePreparedProgram,
+  prepareObservation(
+    ordinaryPreparationKey: object,
     traceOptions: ObservationOptions,
     signal?: AbortSignal,
   ): Promise<ObservationArtifact> {
-    const artifact = this.ordinaryArtifacts.get(ordinary);
-    if (!artifact) throw new Error('Missing JavaScript ordinary artifact for observation.');
+    const prepare = this.observationPreparations.get(ordinaryPreparationKey);
+    if (!prepare) throw new Error('Missing JavaScript ordinary artifact for observation.');
+    return prepare(traceOptions, signal);
+  }
+
+  /** Derive one observer artifact from a prepared ordinary program's trusted bytes. */
+  private async prepareObservationArtifact(
+    artifact: OrdinaryArtifact,
+    traceOptions: ObservationOptions,
+    signal?: AbortSignal,
+  ): Promise<ObservationArtifact> {
     const { generation, language, ...payload } = artifact;
     this.assertActive(generation);
     let preparedExecution: unknown;

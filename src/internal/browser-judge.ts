@@ -965,8 +965,9 @@ function prepareProviderProgram(
     }
     const outcome = yield* Effect.tryPromise({
       try: (signal) => {
-        const prepared = programs.prepare(evaluationId(invocation), { ...prepareCall, signal });
-        if (!concurrentInitialization) options.owned?.recordPrepare(prepareCall);
+        const call = { ...prepareCall, signal };
+        const prepared = programs.prepare(evaluationId(invocation), call);
+        if (!concurrentInitialization) options.owned?.recordPrepare(call);
         return prepared;
       },
       catch: errorFromUnknown,
@@ -2397,8 +2398,9 @@ export function createBrowserRuntimeJudge(
   never,
   Scope.Scope
 > {
+  const registration = getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language);
   return composeBrowserRuntimeJudge(
-    options, getBrowserRuntimeHostJudgeReceiptProvider(options.host, options.language),
+    options, registration?.capabilities.algorithmBundlesOnly ? undefined : registration,
     undefined, readJudgeTestBridge()
   );
 }
@@ -2701,11 +2703,9 @@ export function createBrowserJudgeHostFromRuntimeHost(
     disposeLanguage: host.disposeLanguage.bind(host),
     createJudge: (judgeOptions: CreateBrowserJudgeOptions) => {
       const registration = getBrowserRuntimeHostJudgeReceiptProvider(host, judgeOptions.language);
+      const direct = registration?.capabilities.algorithmBundlesOnly ? undefined : registration;
       return composeBrowserRuntimeJudge(
-        { host, ...judgeOptions },
-        registration,
-        registration ? lifetime.signal : undefined,
-        testBridge
+        { host, ...judgeOptions }, direct, direct ? lifetime.signal : undefined, testBridge
       );
     },
     execute,

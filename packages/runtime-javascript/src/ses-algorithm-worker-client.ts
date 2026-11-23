@@ -47,6 +47,7 @@ export interface SesAlgorithmPreparedSource {
 
 export interface SesAlgorithmWorkerPoolOptions {
   readonly workerUrl: string | URL;
+  readonly debug?: boolean;
   readonly workerFactory?: BrowserWorkerFactory;
   readonly javascriptLibrariesUrl?: string;
   readonly javascriptLibrariesIntegrity?: string;
@@ -940,6 +941,7 @@ class SesAlgorithmDeadlineError extends Error {
 
 class SesAlgorithmWorkerLane {
   private worker: BrowserWorkerLike | null = null;
+  private workerGeneration = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly preparedSources = new Map<string, SesAlgorithmPreparedSource>();
   private readonly preparedWorkerIds = new Set<string>();
@@ -966,6 +968,7 @@ class SesAlgorithmWorkerLane {
     if (this.terminated) throw new Error('SES algorithm Worker lane is terminated.');
     if (this.worker) return this.worker;
     const worker = this.createWorker();
+    this.workerGeneration += 1;
     worker.onmessage = (event: MessageEvent) => {
       if (this.worker !== worker) return;
       const response = parseWorkerResponse(event.data);
@@ -1039,6 +1042,12 @@ class SesAlgorithmWorkerLane {
         const retirementLeadMs = Math.min(25, Math.max(1, deadlineMs * 0.05));
         timeout = setTimeout(() => {
           if (!this.pending.has(id)) return;
+          if (this.options.debug) {
+            console.debug('[tracecode:ses-deadline]', JSON.stringify({
+              lane: this.laneIndex, generation: this.workerGeneration,
+              operation: request.type, deadlineMs, route: 'ses-compartment-pool',
+            }));
+          }
           this.retire(new SesAlgorithmDeadlineError(deadlineMs));
         }, Math.max(1, deadlineMs - retirementLeadMs));
       }
