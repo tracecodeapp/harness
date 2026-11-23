@@ -73,7 +73,7 @@ class ObservedWorker extends NativeWorker {
       const program = programs.get(payload?.programId);
       function copySecondEdge(input) {
         if (!input?.root?.right?.__ref__) return;
-        input.root.right = { val: input.root.left.val, left: input.root.left.left, right: null };
+        input.root.right = { val: input.root.left.val, left: structuredClone(input.root.left.left), right: null };
         seedHits.push({ generation, input });
       }
       if (seed === 'split-second-edge' && worker.includes('/python/')) {
@@ -113,8 +113,14 @@ function errorInfo(error) {
 }
 
 function jsonWire(value) {
-  // Keep undefined distinct from an omitted field in the archived wire.
-  return JSON.stringify(value, (_, field) => field === undefined ? { '$gate.undefined': true } : field);
+  return JSON.stringify(value, (_, field) => {
+    if (field === undefined) return { '$gate.undefined': true };
+    if (typeof field === 'bigint') return { '$gate.bigint': String(field) };
+    if (typeof field === 'number' && (!Number.isFinite(field) || Object.is(field, -0))) {
+      return { '$gate.number': Object.is(field, -0) ? '-0' : String(field) };
+    }
+    return field;
+  });
 }
 
 export function projectCases(receipt, language, trace) {
