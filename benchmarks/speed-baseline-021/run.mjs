@@ -30,6 +30,10 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const versions = Object.keys(appRefs);
+const appLockIntegrity = {
+  '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
+  '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
+};
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
 const filePrefix = mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
 const metadataPath = join(out, filePrefix + 'metadata.json');
@@ -151,6 +155,9 @@ async function prepareVersion(version) {
   const manifest = await json(join(harness, 'package.json'));
   assert.equal(manifest.version, version);
   const tarball = 'tracecode-harness-' + version + '.tgz';
+  const tarballBytes = await readFile(join(root, tarball));
+  const integrity = 'sha512-' + createHash('sha512').update(tarballBytes).digest('base64');
+  assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
   const dependencyFile = join(root, 'dependencies.json');
   const shim = join(harness, 'dist', 'zlib-browser-shim.js');
   await build({
@@ -170,7 +177,7 @@ async function prepareVersion(version) {
   });
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
   const metadata = {
-    appRef: appRefs[version], tarball, sha256: sha256(await readFile(join(root, tarball))),
+    appRef: appRefs[version], tarball, integrity, sha256: sha256(tarballBytes),
     dependenciesSha256: sha256(await readFile(dependencyFile)),
     dependencies: await json(dependencyFile),
   };
@@ -239,6 +246,26 @@ function outcome(result, expectedIds) {
   if (failure) return failure.failure?.message ?? (failure.id + ' ' + failure.status + '/' + failure.verdict);
 }
 
+// Approximate wall costs in seconds from the smoke and lane V's warm/cold runs.
+// Only the schedule uses these estimates. The report uses measured timings.
+const actionCost = {
+  javascript: { warmRun: 0.25, warmSubmit: 0.15, coldStart: 0.45 },
+  typescript: { warmRun: 0.3, warmSubmit: 0.2, coldStart: 0.5 },
+  python: { warmRun: 0.7, warmSubmit: 0.45, coldStart: 0.9 },
+  cpp: { warmRun: 0.4, warmSubmit: 0.35, coldStart: 2.6 },
+  csharp: { warmRun: 0.55, warmSubmit: 0.4, coldStart: 3.8 },
+  java: { warmRun: 8.0, warmSubmit: 2.0, coldStart: 2.7 },
+};
+
+function expectedGroupSeconds(group) {
+  const { warmRun, warmSubmit, coldStart } = actionCost[group.language];
+  const action = group.journey === 'submit' ? warmSubmit : warmRun;
+  const heavy = group.problem === 'permutations' ? 1.2 : 1;
+  const setup = group.state === 'warm' ? 0 : coldStart + 0.4;
+  const previousRun = group.state === 'switched' ? warmRun : 0;
+  return group.target * group.versions.length * (action * heavy + setup + previousRun);
+}
+
 function plan() {
   const groups = [];
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
@@ -262,7 +289,7 @@ function plan() {
       }
     }
   }
-  if (mode !== 'smoke') return groups;
+  if (mode !== 'smoke') return groups.sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));
   return groups.filter(({ cpu, problem, journey, state, language }) =>
     (cpu === 1 && problem === 'binary-search' && state === 'cold' && journey === 'run') ||
     (language === 'javascript' && cpu === 4 && problem === 'permutations') ||
