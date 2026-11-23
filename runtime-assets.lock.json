@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.ccaa960c37c1417c733cca851040d0a556a6ba05c3e4d1260b9cfc1ba2f1df7b"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.40876e6350d8aa3056fc87440cefb008c24d216a281f7aa56291174e0673ab03"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "ccaa960c37c1417c733cca851040d0a556a6ba05c3e4d1260b9cfc1ba2f1df7b",
-  "totalPackagedRuntimeBytes": 152606400,
+  "packageTreeSha256": "40876e6350d8aa3056fc87440cefb008c24d216a281f7aa56291174e0673ab03",
+  "totalPackagedRuntimeBytes": 152600489,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.a06ffb869e1b5ddc311dc85802128a584515e85ccbae84884dbd1af7b241da4c",
@@ -31,8 +31,8 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.f9d13904135f207f1714081f9b4695f5815857ca93a912fb54377e9181d07ecc",
-      "treeSha256": "f9d13904135f207f1714081f9b4695f5815857ca93a912fb54377e9181d07ecc",
+      "releaseId": "csharp+sha256.0b49c8501327b143aba2daae709626eace09f96f90020757f90141504c2eb882",
+      "treeSha256": "0b49c8501327b143aba2daae709626eace09f96f90020757f90141504c2eb882",
       "totalBytes": 63379940,
       "files": [
         {
@@ -59,8 +59,8 @@
         {
           "path": "workers/vendor/csharp-runner/_framework/assemblies-02.pack",
           "size": 2396883,
-          "sha256": "1373023673604dc90994df2edf9dad66a4de2c7127365202254931ccceffec0d",
-          "integrity": "sha256-E3MCNnNgTckJlN8u352tZqTeLHEnNlICJUkxzM7/7A0=",
+          "sha256": "7c28011fcef61729799506f49e06b5433758b4d019b9577a6200bafbae48bfd2",
+          "integrity": "sha256-fCgBH872Fyl5lQb0nga1QzdYtNAZuVd6YgC6+65Iv9I=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -73,8 +73,8 @@
         {
           "path": "workers/vendor/csharp-runner/_framework/dotnet.boot.js",
           "size": 23688,
-          "sha256": "292979f880217aadde96273b6b47cc1302dc28eb109bd66486ece937c5d97612",
-          "integrity": "sha256-KSl5+IAheq3elic7a0fMEwLcKOsQm9ZkhuzpN8XZdhI=",
+          "sha256": "f4583df0498ba58bd8ef90c5e9ea7fa96033a5a085ff4c9ba4e61322a4965080",
+          "integrity": "sha256-9Fg98EmLpYvY75DF6ep/qWAzpaCF/0ybpOYTIqSWUIA=",
           "mediaType": "text/javascript"
         },
         {
@@ -1879,15 +1879,15 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.e98eb24e2d0086c9e32e2efbd233bdebc98889b9135d77856b94f783f0394dc6",
-      "treeSha256": "e98eb24e2d0086c9e32e2efbd233bdebc98889b9135d77856b94f783f0394dc6",
-      "totalBytes": 76056094,
+      "releaseId": "python+sha256.58cda4bec2972aee4876cef3c155ae1b0d81cc33f1c9db0db833c0154fcc4afd",
+      "treeSha256": "58cda4bec2972aee4876cef3c155ae1b0d81cc33f1c9db0db833c0154fcc4afd",
+      "totalBytes": 76050183,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
-          "size": 41726,
-          "sha256": "0bf6094811a5d76e9949f40e475cd940379d8205447c2f7b558ac386cdb92f2d",
-          "integrity": "sha256-C/YJSBGl126ZSfQOR1zZQDedggVEfC97VYrDhs25Ly0=",
+          "size": 40510,
+          "sha256": "6fd2efa07143b77242da2eadae257836946a8d027dddf0500bf6cef671dc5b2a",
+          "integrity": "sha256-b9LvoHFDt3JC2i6triV4NpRqjQJ93fBQC/bO9nHcWyo=",
           "mediaType": "text/javascript"
         },
         {
@@ -1969,16 +1969,16 @@
         },
         {
           "path": "workers/python/python-runtime.js",
-          "size": 386959,
-          "sha256": "0cfbae220cc6b074b6de1a2342d4a7c3ca814cea9a06b754f925350efd724f41",
-          "integrity": "sha256-DPuuIgzGsHS23hojQtSnw8qBTOqaBrdU+SU1Dv1yT0E=",
+          "size": 382863,
+          "sha256": "5cfff74f0a496f1411cb960655ddd9a591546662e9a6f008a8b186b1201f96b7",
+          "integrity": "sha256-XP/3TwpJbxQRy5YGVd3ZpZFUZmLppvAIqLGGsSAflrc=",
           "mediaType": "text/javascript"
         },
         {
           "path": "workers/python/python-worker.js",
-          "size": 389473,
-          "sha256": "d152919f3554babb6f92be1219fce787fd4ee745dd26ada78101a6056b9031c3",
-          "integrity": "sha256-0VKRnzVUurtvkr4SGfznh/1O50XdJq2ngQGmBWuQMcM=",
+          "size": 388874,
+          "sha256": "e45d28ee08e1d6bc5b9bb61917b5ada31f8361f3d95ceedba2def434f83d66aa",
+          "integrity": "sha256-5F0o7gjh1rxbm7YZF7Wtox+DYfPZXO7bot70NPg9Zqo=",
           "mediaType": "text/javascript"
         },
         {
@@ -2114,11 +2114,11 @@
           "uncompressedBytes": 50377102
         },
         "runner": {
-          "artifact": "csharp-bundle.66b487a0d70c00a66d62b3eefdba196446a0de2abe5d0c90cce7dc2fb8371e0e.zip",
-          "artifactBytes": 4681039,
-          "artifactSha256": "66b487a0d70c00a66d62b3eefdba196446a0de2abe5d0c90cce7dc2fb8371e0e",
+          "artifact": "csharp-bundle.ca83d118db6355b06bdb92447d0ed338e10b8110dedc9b5deaa1b14be8498888.zip",
+          "artifactBytes": 4681047,
+          "artifactSha256": "ca83d118db6355b06bdb92447d0ed338e10b8110dedc9b5deaa1b14be8498888",
           "fileCount": 12,
-          "treeSha256": "cd51f3e747a0ca42795cbcc4ae8ec0b06bb24d124d9950a2905c8c31d48b3fc1",
+          "treeSha256": "0355008f551cba3860f096f1daf318f485040a71affed4309c4807cf81d3409e",
           "uncompressedBytes": 12839192
         }
       }
@@ -2255,11 +2255,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 607,
-    "bytes": 428441154,
+    "bytes": 428435243,
     "byClass": {
       "locked": {
         "files": 348,
-        "bytes": 425728165
+        "bytes": 425722254
       },
       "alias": {
         "files": 1,
@@ -2308,7 +2308,7 @@
       {
         "path": "generated-python-harness-snippets.js",
         "files": 1,
-        "bytes": 41726
+        "bytes": 40510
       },
       {
         "path": "java-runtime-worker.js",
@@ -2353,12 +2353,12 @@
       {
         "path": "python",
         "files": 12,
-        "bytes": 75619354
+        "bytes": 75615258
       },
       {
         "path": "python-worker.js",
         "files": 1,
-        "bytes": 389473
+        "bytes": 388874
       },
       {
         "path": "shared",

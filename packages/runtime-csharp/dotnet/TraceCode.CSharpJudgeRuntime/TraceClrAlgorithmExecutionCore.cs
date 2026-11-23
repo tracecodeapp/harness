@@ -58,6 +58,11 @@ public static class TraceClrAlgorithmExecutionCore
     )
     {
         lastProgramFailureJson = null;
+        // The learner's code is instrumented even untraced. An earlier traced
+        // case on this retained worker must not leave its recording or
+        // deadline on for this one: an untraced case never records, and its
+        // wall clock is the client's.
+        RuntimeTraceSink.Reset();
         byte[] assemblyBytes = DecodeAndValidateArtifact(
             artifactBase64,
             artifactSha256
