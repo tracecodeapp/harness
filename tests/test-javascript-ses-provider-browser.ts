@@ -95,6 +95,33 @@ async function startServer(root: string) {
   };
 }
 
+async function checkConstructorParity(page: import('playwright').Page, origin: string) {
+  const results = await page.evaluate(async ({ origin }) => {
+    const entry = await import(`${origin}/entry.mjs`);
+    return entry.runJavaScriptConstructorParity(`${origin}/workers`);
+  }, { origin }) as Awaited<ReturnType<
+    typeof import('./fixtures/javascript-ses-provider-entry').runJavaScriptConstructorParity
+  >>;
+  const failures: unknown[] = [];
+  const ordinary = ({ verdict, values, caseVerdicts, diagnostics, stdout }: typeof results[number]['intrinsic']) =>
+    ({ verdict, values, caseVerdicts, diagnostics, stdout });
+  for (const { language, intrinsic, pairs } of results) {
+    if (intrinsic.verdict !== 'passed' || intrinsic.timings[0]?.algorithmFastBatch !== true) {
+      failures.push({ language, intrinsic: ordinary(intrinsic) });
+    }
+    for (const { id, ses, disposable } of pairs) {
+      if (ses.verdict !== 'passed' || disposable.verdict !== 'passed' ||
+        !ses.timings.every(({ algorithmFastBatch }) => algorithmFastBatch === true) ||
+        !disposable.timings.every(({ algorithmFastBatch }) => algorithmFastBatch !== true) ||
+        JSON.stringify(ordinary(ses)) !== JSON.stringify(ordinary(disposable))) {
+        failures.push({ id, ses: ordinary(ses), disposable: ordinary(disposable) });
+      }
+    }
+  }
+  assertCondition(failures.length === 0, `constructor parity mismatch: ${JSON.stringify(failures)}`);
+  console.log('PASS: JS/TS constructor parity and frozen Object.prototype');
+}
+
 async function main(): Promise<void> {
   assertSesAdmissionPolicy();
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-javascript-ses-provider-'));
@@ -137,6 +164,10 @@ async function main(): Promise<void> {
         if (!response.ok()) console.error(`[browser response] ${response.status()} ${response.url()}`);
       });
       await page.goto(`${server.origin}/`);
+      if (process.env.TRACECODE_CONSTRUCTOR_ONLY === '1') {
+        await checkConstructorParity(page, server.origin);
+        return;
+      }
       const result = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
         return entry.runJavaScriptSesProvider(`${origin}/workers`);
@@ -372,6 +403,7 @@ async function main(): Promise<void> {
         legacyPageRelative.passedCount === legacyPageRelative.totalCount,
         `legacyPageRelative failed: ${JSON.stringify(legacyPageRelative)}`
       );
+      await checkConstructorParity(page, server.origin);
       const serializerParity = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
         return entry.runJavaScriptSerializerParity(`${origin}/workers`);

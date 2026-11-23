@@ -1161,6 +1161,80 @@ function solve(values) {
   }
 }
 
+export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
+  const createHost = (algorithmExecution: 'ses-compartment-pool' | 'disposable-worker') =>
+    createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+      assetBaseUrl,
+      providers: ['javascript', 'typescript'],
+      providerRegistry: createBrowserRuntimeProviderRegistry([
+        createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
+      ]),
+      safeExecution: { workerLifecycle: 'retire-only' },
+    }));
+  const ses = createHost('ses-compartment-pool');
+  const disposable = createHost('disposable-worker');
+  try {
+    const results = [];
+    for (const language of ['javascript', 'typescript'] as const) {
+      const input = {
+        id: `${language}-constructor-key`,
+        language,
+        functionName: 'detectDrift',
+        executionStyle: 'solution-method' as const,
+        code: 'class Solution { detectDrift(snapshot) { return Object.keys(Object.assign({}, snapshot)).length; } }',
+        cases: [
+          { id: 'A', input: { snapshot: { constructor: 'example-only' } }, expected: 1 },
+          { id: 'B', input: { snapshot: { ordinary: 'example-only' } }, expected: 1 },
+        ],
+      };
+      const mutations = {
+        id: `${language}-own-key-writes`,
+        language,
+        functionName: 'solve',
+        code: `function solve(source, key, initial) {
+          const copy = source;
+          copy[key] = initial;
+          copy[key] += 1;
+          const own = Object.hasOwn(copy, key);
+          const { writable, enumerable, configurable } = Object.getOwnPropertyDescriptor(copy, key);
+          return [copy[key], own, writable, enumerable, configurable];
+        }`,
+        cases: [
+          { id: 'new-constructor', input: { source: {}, key: 'constructor', initial: 3 }, expected: [4, true, true, true, true] },
+          { id: 'existing-constructor', input: { source: { constructor: 0 }, key: 'constructor', initial: 7 }, expected: [8, true, true, true, true] },
+          { id: 'inherited-method', input: { source: {}, key: 'hasOwnProperty', initial: 11 }, expected: [12, true, true, true, true] },
+        ],
+      };
+      const intrinsic = await evaluate(ses, {
+        id: `${language}-intrinsic-write-denied`,
+        language,
+        functionName: 'solve',
+        code: `function solve(snapshot) {
+          const proto = Object.getPrototypeOf(snapshot);
+          const original = proto.constructor;
+          let blocked = false;
+          try { proto.constructor = 1; } catch { blocked = true; }
+          return [proto === Object.prototype, Object.isFrozen(proto), blocked, proto.constructor === original];
+        }`,
+        cases: [{ id: 'intrinsic', input: { snapshot: {} }, expected: [true, true, true, true] }],
+      });
+      const pairs = [];
+      for (const fixture of [input, mutations]) {
+        pairs.push({
+          id: fixture.id,
+          ses: await evaluate(ses, fixture),
+          disposable: await evaluate(disposable, fixture),
+        });
+      }
+      results.push({ language, intrinsic, pairs });
+    }
+    return results;
+  } finally {
+    ses.dispose();
+    disposable.dispose();
+  }
+}
+
 export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
   const providers = (algorithmExecution: 'ses-compartment-pool' | 'disposable-worker') =>
     createBrowserRuntimeHost({
