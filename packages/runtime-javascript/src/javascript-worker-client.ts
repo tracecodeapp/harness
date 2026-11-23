@@ -1499,7 +1499,7 @@ export class JavaScriptWorkerClient {
           },
         };
       }
-      throw error;
+      throw reportedRuntimeFault(error) ?? error;
     }
   }
 
