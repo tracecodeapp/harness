@@ -88,55 +88,34 @@ jobs:
           name: csharp-post-pause-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/csharp-pause/
 
+  # Use checked-in fixtures in public CI. Release uses the complete W and
+  # trace-parity catalogs on the build host with /root/ci/parity-app-data.
   host-history:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 90
     env:
-      DATA_SHA: ${{ vars.HARNESS_STAGE1_DATA_SHA }}
-      DATA_REPOSITORY: ${{ vars.HARNESS_STAGE1_DATA_REPOSITORY }}
+      TRACECODE_HOST_HISTORY_FIXTURE_ONLY: '1'
       TRACECODE_HOST_HISTORY_REPORT: ${{ runner.temp }}/host-history.json
-      TRACECODE_PARITY_REPORT: ${{ runner.temp }}/catalog-parity.json
-    defaults:
-      run:
-        working-directory: harness
     steps:
-      - name: Require an immutable, CI-readable corpus
-        working-directory: ${{ github.workspace }}
-        shell: bash
-        run: |
-          [[ "$DATA_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ -n "$DATA_REPOSITORY" ]]
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          path: harness
+          fetch-depth: 2
           persist-credentials: false
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ env.DATA_REPOSITORY }}
-          ref: ${{ env.DATA_SHA }}
-          path: stage1-app-data
-          persist-credentials: false
-      - name: Verify pinned corpus
-        run: test "$(git -C ../stage1-app-data rev-parse HEAD)" = "$DATA_SHA"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.4.1
-          package_json_file: harness/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
           cache: pnpm
-          cache-dependency-path: harness/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - name: Verify histories
+      - name: Verify fixture histories
         env:
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          export TRACECODE_HOST_HISTORY_APP_DATA="$GITHUB_WORKSPACE/stage1-app-data"
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             export TRACECODE_HOST_HISTORY_PROFILE=desktop
             languages=$(git diff --name-only "$PR_BASE" HEAD | node scripts/stage1/runtime-languages.mjs)
@@ -144,18 +123,8 @@ jobs:
           else
             bash scripts/run-untraced-host-history.sh
           fi
-      - name: Compare traced catalog with pinned app data
-        if: '!cancelled() && github.event_name != ''pull_request'''
-        env:
-          TRACECODE_PARITY_CATALOG: all
-          TRACECODE_PARITY_SUITE: catalog
-        run: |
-          export TRACECODE_PARITY_CORPUS="$GITHUB_WORKSPACE/stage1-app-data"
-          pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-parity-corpus.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: stage1-host-history-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.TRACECODE_HOST_HISTORY_REPORT }}
-            ${{ env.TRACECODE_PARITY_REPORT }}
+          path: ${{ env.TRACECODE_HOST_HISTORY_REPORT }}

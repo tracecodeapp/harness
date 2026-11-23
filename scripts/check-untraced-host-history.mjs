@@ -20,9 +20,10 @@ const referenceIds = [
   'maximum-subarray', 'merge-intervals', 'min-cost-climbing-stairs', 'product-of-array-except-self',
   'two-sum', 'valid-parentheses',
 ];
+const fixtureOnly = process.env.TRACECODE_HOST_HISTORY_FIXTURE_ONLY === '1';
 const dataRoot = resolve(process.env.TRACECODE_HOST_HISTORY_APP_DATA ?? '/root/ci/parity-app-data');
 const reportPath = resolve(process.env.TRACECODE_HOST_HISTORY_REPORT ?? 'untraced-host-history-report.json');
-const report = { languages: {}, fallback: {} };
+const report = { fixtureOnly, languages: {}, fallback: {} };
 let saveTail = Promise.resolve();
 function save() {
   const content = JSON.stringify(report, null, 2) + '\n';
@@ -159,7 +160,7 @@ async function runLanguage(browser, url, language, result) {
   const page = await browser.newPage();
   try {
     await page.goto(url);
-    const programs = await call(page, 'setup', language, await references(language));
+    const programs = await call(page, 'setup', language, fixtureOnly ? [] : await references(language));
     result.programs = Object.fromEntries(programs.map(({ id }) => [id, { histories: [] }]));
 
     // Run both fresh-host baselines for every program before any history.
@@ -386,7 +387,7 @@ async function runLanguage(browser, url, language, result) {
       }
     }
     const expected = language === 'typescript' || language === 'javascript'
-      ? (profiles === 'both' ? 330 : 222) : undefined;
+      ? (profiles === 'both' ? 330 : 222) - (fixtureOnly ? 90 : 0) : undefined;
     if (expected !== undefined && result.comparisons !== expected) {
       result.coverageGaps.push(`expected ${expected} comparisons, got ${result.comparisons}`);
     }
