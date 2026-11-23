@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -50,7 +50,9 @@ async function createPackagedExampleApp(tempRoot: string): Promise<string> {
   return appDir;
 }
 
-async function runWithTempRoot(tempRoot: string): Promise<void> {
+function packHarness(tempRoot: string): string {
+  const carried = process.env.TRACECODE_JAVA_EXAMPLE_PACKAGED_TARBALL;
+  if (carried) return resolve(carried);
   const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
   const packOutput = spawnSync('pnpm', ['pack', '--pack-destination', tempRoot], {
     cwd: repoRoot,
@@ -68,7 +70,11 @@ async function runWithTempRoot(tempRoot: string): Promise<void> {
     .at(-1);
   assertCondition(Boolean(tarballName), 'pnpm pack should print the generated tarball name');
 
-  const tarballPath = isAbsolute(tarballName!) ? tarballName! : join(tempRoot, tarballName!);
+  return isAbsolute(tarballName!) ? tarballName! : join(tempRoot, tarballName!);
+}
+
+async function runWithTempRoot(tempRoot: string): Promise<void> {
+  const tarballPath = packHarness(tempRoot);
   const appDir = await createPackagedExampleApp(tempRoot);
 
   const packageJsonPath = join(appDir, 'package.json');
