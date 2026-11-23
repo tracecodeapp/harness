@@ -262,7 +262,8 @@ async function main() {
     await runCommand('node', [
       join(harnessRoot, 'dist', 'cli.cjs'), 'sync-assets', join(tempRoot, 'workers'), '--languages',
       [...new Set(providers.map((language) => language === 'typescript' ? 'javascript' : language))].join(','),
-    ], process.cwd());
+    // From the package root: the CLI resolves its pinned runtime packages (tracecc) from cwd.
+    ], harnessRoot);
     const shim = join(harnessRoot, 'dist', 'zlib-browser-shim.js');
     await build({
       entryPoints: [resolve('tests/fixtures/release-diff-entry.ts')],
