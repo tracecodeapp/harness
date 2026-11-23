@@ -19,11 +19,12 @@ import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -96,6 +97,20 @@ const MACRO_SOURCE = [
   '};',
 ].join('\n');
 
+// A macro name that is also a public method. The single-case driver resolves
+// the operation to the macro target first, even with the macro #undef'd in the
+// compiled source; the prepared driver must call the same method.
+const MACRO_EQUALS_METHOD_SOURCE = [
+  '#define get getValue',
+  '#undef get',
+  '',
+  'class Store {',
+  'public:',
+  '    int get() { return 1; }',
+  '    int getValue() { return 2; }',
+  '};',
+].join('\n');
+
 const KV_CASES: OpsCase[] = [
   {
     operations: ['KeyValueStore', 'set', 'get', 'delete', 'get', 'delete'],
@@ -129,6 +144,18 @@ const INLINE_SCENARIOS: Scenario[] = [
       },
     ],
     expected: [[null, null, null, true, 1, false]],
+  },
+  {
+    name: 'macro name that is also a method',
+    className: 'Store',
+    code: MACRO_EQUALS_METHOD_SOURCE,
+    cases: [
+      {
+        operations: ['Store', 'get', 'getValue'],
+        arguments: [[], [], []],
+      },
+    ],
+    expected: [[null, 2, 2]],
   },
   {
     name: 'unknown operation still unresolved',
@@ -176,26 +203,41 @@ async function referenceScenarios(): Promise<Scenario[]> {
   return scenarios;
 }
 
-async function compilerIntegrity(workersRoot: string, origin: string): Promise<{
-  assets: Array<{ url: string; size: number; sha256: string }>;
+const REQUIRED_TRACECC_ASSETS = [
+  'tracecc-reactor.wasm',
+  'llvm-resources.tar',
+  'tracecode_runtime.hpp',
+  'narrow.pch',
+  'narrow.source.hpp',
+  'narrow.o',
+  'broad.pch',
+  'broad.source.hpp',
+  'broad.o',
+  'map.pch',
+  'map.source.hpp',
+  'map.o',
+] as const;
+
+// The TraceCC compiler assets, as tests/test-tracecc-browser-runtime.ts loads them.
+async function resolveTraceCCAssets(root: string): Promise<{
+  sourceRoot: string;
+  files: readonly { path: string; size: number; sha256: string }[];
 }> {
-  const assets = [];
-  for (const file of [
-    'bundle.js',
-    'llvm-resources.tar',
-    'llvm.core.wasm',
-    'llvm.core2.wasm',
-    'llvm.core3.wasm',
-    'llvm.core4.wasm',
-  ]) {
-    const bytes = await readFile(join(workersRoot, 'cpp', 'compiler', file));
-    assets.push({
-      url: `${origin}/workers/cpp/compiler/${file}`,
-      size: bytes.byteLength,
-      sha256: createHash('sha256').update(bytes).digest('hex'),
-    });
+  if (process.env.TRACECC_RUNTIME_ASSET_DIR) {
+    const sourceRoot = resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
+    return {
+      sourceRoot,
+      files: await Promise.all(REQUIRED_TRACECC_ASSETS.map(async (path) => {
+        const bytes = await readFile(join(sourceRoot, path));
+        return { path, size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
+      })),
+    };
   }
-  return { assets };
+  const { tracecc } = await loadEngineRuntimePackages(root);
+  return {
+    sourceRoot: tracecc.sourceRoot,
+    files: tracecc.files.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+  };
 }
 
 interface RunSummary {
@@ -214,9 +256,18 @@ async function main(): Promise<void> {
   const port = 5600 + Math.floor(Math.random() * 200);
   const origin = `http://127.0.0.1:${port}`;
   const scenarios = [...INLINE_SCENARIOS, ...(await referenceScenarios())];
+  const traceccAssets = await resolveTraceCCAssets(root);
+  const compilerIntegrity = {
+    assets: traceccAssets.files.map((file) => ({
+      url: `${origin}/tracecc/${file.path}`,
+      size: file.size,
+      sha256: file.sha256,
+    })),
+  };
 
   await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot, '--languages', 'cpp'], root);
-  for (const entry of ['cpp-worker-client', 'cpp-prepared-provider']) {
+  await symlink(traceccAssets.sourceRoot, join(tempRoot, 'tracecc'), 'dir');
+  for (const entry of ['cpp-worker-client', 'cpp-prepared-provider', 'tracecc-compiler-service']) {
     await build({
       entryPoints: [join(root, 'packages', 'runtime-cpp', 'src', `${entry}.ts`)],
       outfile: join(tempRoot, `${entry}.js`),
@@ -225,6 +276,10 @@ async function main(): Promise<void> {
       platform: 'browser',
       target: 'es2022',
       tsconfig: join(root, 'tsconfig.base.json'),
+      alias: {
+        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+      },
       define: { 'process.env.NODE_ENV': '"production"' },
     });
   }
@@ -234,6 +289,7 @@ async function main(): Promise<void> {
     'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
     'import os',
     'class Handler(SimpleHTTPRequestHandler):',
+    '    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".hpp": "text/plain"}',
     '    def end_headers(self):',
     '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
     '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
@@ -246,24 +302,37 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
   try {
     await waitForHttp(origin, 30_000);
-    const manifest = await compilerIntegrity(workersRoot, origin);
     const page = await browser.newPage();
-    page.setDefaultTimeout(300_000);
+    page.setDefaultTimeout(600_000);
     await page.goto(origin);
+    await page.evaluate('globalThis.__name = (fn) => fn');
     const results = await page.evaluate(`(async () => {
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
       const { createCppPreparedExecutionProvider } = await import('/cpp-prepared-provider.js');
+      const { TraceCCCompilerService } = await import('/tracecc-compiler-service.js');
+      const shard = (name) => ({
+        pchUrl: '/tracecc/' + name + '.pch',
+        pchSourceUrl: '/tracecc/' + name + '.source.hpp',
+        runtimeObjectUrl: '/tracecc/' + name + '.o',
+      });
+      const compiler = new TraceCCCompilerService({
+        workerUrl: '/workers/cpp-worker.js',
+        compilerUrl: '/tracecc/tracecc-reactor.wasm',
+        resourcesUrl: '/tracecc/llvm-resources.tar',
+        runtimeHeaderUrl: '/tracecc/tracecode_runtime.hpp',
+        compilerIntegrity: ${JSON.stringify(compilerIntegrity)},
+        maxCompilesPerWorker: 8,
+        shards: { narrow: shard('narrow'), broad: shard('broad'), map: shard('map') },
+      });
       const workerOptions = {
         workerUrl: '/workers/cpp-worker.js',
-        compilerFrameUrl: '/workers/cpp-compiler-frame.html',
-        compilerWorkerUrl: '/workers/cpp-compiler-worker.js',
-        compilerWasmUrl: '',
-        linkerWasmUrl: '',
-        sysrootUrl: '',
-        runtimeHeaderUrl: '/workers/cpp/tracecode_runtime.hpp',
-        compilerBundleUrl: '/workers/cpp/compiler/bundle.js',
-        compilerIntegrity: ${JSON.stringify(manifest)},
+        compilerWasmUrl: '/tracecc/tracecc-reactor.wasm',
+        linkerWasmUrl: '/tracecc/tracecc-reactor.wasm',
+        sysrootUrl: '/tracecc/llvm-resources.tar',
+        runtimeHeaderUrl: '/tracecc/tracecode_runtime.hpp',
+        trustedCompilerService: compiler,
         executionTimeoutMs: 60000,
+        tracingTimeoutMs: 60000,
       };
       const scenarios = ${JSON.stringify(scenarios)};
       const traceOptions = { maxTraceSteps: 2000 };
@@ -346,7 +415,11 @@ async function main(): Promise<void> {
           await preparedTrace.program.dispose();
         }
         out[scenario.name] = paths;
+        codeProvider.terminate();
+        traceProvider.terminate();
       }
+      client.terminate();
+      compiler.terminate();
       return out;
     })()`) as Record<string, PathResults>;
 

@@ -594,4 +594,123 @@ for (const tracing of [false, true]) {
   );
 }
 
+// A macro name that is also a public method: the single-case driver resolves
+// the operation to the macro target first, so the prepared driver must too,
+// even where the macro is inactive in the compiled source (#undef, #if 0).
+const operationDispatch = (driver: string, operation: string, method: string) =>
+  new RegExp(
+    `if \\(__tc_operation_name == "${operation}"\\) \\{\\s*__tc_operation_handled = __tc_call_${method}\\(`
+  ).test(driver);
+const macroEqualsMethodSources = {
+  undef: [
+    '#define get getValue',
+    '#undef get',
+    'class Store {',
+    'public:',
+    '  int get() { return 1; }',
+    '  int getValue() { return 2; }',
+    '};',
+  ].join('\n'),
+  ifZero: [
+    '#if 0',
+    '#define size length',
+    '#endif',
+    'class Store {',
+    'public:',
+    '  int size() { return 1; }',
+    '  int length() { return 2; }',
+    '};',
+  ].join('\n'),
+};
+for (const tracing of [false, true]) {
+  for (const [name, source] of Object.entries(macroEqualsMethodSources)) {
+    const [operation, target] = name === 'undef' ? ['get', 'getValue'] : ['size', 'length'];
+    const single = rewriter.buildOpsClassDriverSource(
+      source,
+      'Store',
+      { operations: ['Store', operation], arguments: [[], []] },
+      { tracing }
+    );
+    assertCondition(
+      single.includes(`__tc_instance.${target}(`) && !single.includes(`__tc_instance.${operation}(`),
+      `single-case ops-class driver (${name}, tracing ${tracing}) should resolve "${operation}" to the macro target ${target}`
+    );
+    const prepared = rewriter.buildPreparedOpsClassDriverSource(source, 'Store', { tracing });
+    assertCondition(
+      operationDispatch(prepared, operation, target) && !operationDispatch(prepared, operation, operation),
+      `prepared ops-class driver (${name}, tracing ${tracing}) should dispatch "${operation}" to the macro target ${target}, as the single-case driver does`
+    );
+    assertCondition(
+      operationDispatch(prepared, target, target),
+      `prepared ops-class driver (${name}, tracing ${tracing}) should keep dispatching "${target}" by name`
+    );
+  }
+}
+
+// Resolution ignores comments and string or character literals in both drivers:
+// a "deleteKey(" inside a string is not a deleteKey method.
+const stringMentionSource = [
+  'class KeyValueStore {',
+  'public:',
+  '  const char* note = "call deleteKey(key) to remove";',
+  "  char quote = '\"';",
+  '  bool remove(int key) { return false; }',
+  '};',
+].join('\n');
+let stringMentionError = '';
+try {
+  rewriter.buildOpsClassDriverSource(
+    stringMentionSource,
+    'KeyValueStore',
+    { operations: ['KeyValueStore', 'delete'], arguments: [[], [1]] },
+    {}
+  );
+} catch (error) {
+  stringMentionError = error instanceof Error ? error.message : String(error);
+}
+assertCondition(
+  stringMentionError !== '' && !stringMentionError.includes('deleteKey'),
+  `single-case ops-class driver should not resolve "delete" through a "deleteKey(" string literal: ${stringMentionError}`
+);
+const stringMentionPrepared = rewriter.buildPreparedOpsClassDriverSource(stringMentionSource, 'KeyValueStore', {});
+assertCondition(
+  !stringMentionPrepared.includes('__tc_operation_name == "delete"'),
+  'prepared ops-class driver should not resolve "delete" through a "deleteKey(" string literal'
+);
+// Digit separators are not character literals: deleteKey after 1'000 still counts.
+const digitSeparatorSource = [
+  'class KeyValueStore {',
+  'public:',
+  "  int limit() { return 1'000'000; }",
+  '  bool deleteKey(int key) { return false; }',
+  '};',
+].join('\n');
+const digitSeparatorSingle = rewriter.buildOpsClassDriverSource(
+  digitSeparatorSource,
+  'KeyValueStore',
+  { operations: ['KeyValueStore', 'delete'], arguments: [[], [1]] },
+  {}
+);
+assertCondition(
+  digitSeparatorSingle.includes('__tc_instance.deleteKey(') &&
+    operationDispatch(rewriter.buildPreparedOpsClassDriverSource(digitSeparatorSource, 'KeyValueStore', {}), 'delete', 'deleteKey'),
+  'a digit separator must not hide a later deleteKey method from either driver'
+);
+
+// Both traced drivers record the call under the method that runs (deleteKey),
+// not the operation name that selected it.
+const tracedSingleDelete = rewriter.buildOpsClassDriverSource(
+  deleteKeySource,
+  'KeyValueStore',
+  { operations: ['KeyValueStore', 'delete'], arguments: [[], ['a']] },
+  { tracing: true }
+);
+const tracedPreparedDelete = rewriter.buildPreparedOpsClassDriverSource(deleteKeySource, 'KeyValueStore', { tracing: true });
+assertCondition(
+  /emit_serialized_call_event\(7, "deleteKey", __tc_args_json_1\)/.test(tracedSingleDelete) &&
+    !/emit_serialized_call_event\(\d+, "delete",/.test(tracedSingleDelete) &&
+    /emit_serialized_call_event\(7, "deleteKey", __tc_args_json_7_7\)/.test(tracedPreparedDelete),
+  `traced ops-class drivers should record the aliased call as deleteKey in both drivers:\n${tracedSingleDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}\n${tracedPreparedDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}`
+);
+
 console.log('PASS: C++ rewriter source snapshots');
