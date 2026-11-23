@@ -174,6 +174,8 @@ const lines = [
   '- Chromium served the installed tarballs’ workers from same-origin loopback pages without cross-origin isolation. ' +
     'Phone-class used the same Chrome environment and app budgets with CDP CPU throttling at 4×. ' +
     'It covers only warm and cold Run verdicts and selected traces under the coordinator’s revised scope.',
+  '- Deploy Submit includes the passing Binary Search complexity fact. Main Submit uses the case-only policy and ' +
+    'sets stopAtFirstRunaway for every language except Python.',
   '- Binary Search uses 10 catalog cases. Permutations uses 12 catalog cases with recursive backtracking and larger results. ' +
     'Both versions use the same case data and unchanged reference source.',
   '- Warm pages settle runtime warmup before measurement and retain the same host for subsequent samples. ' +
@@ -185,6 +187,16 @@ const lines = [
   '- Main’s lesson finish calls Practice Run on a ready runtime and advances on a pass. The baseline uses a solved ' +
     'Binary Search program and ends when the passing verdicts reach the page. Deploy has no last-step Run tests action.',
   '- The median averages the middle pair for even sample counts. p90 uses nearest rank. An asterisk means p90 exceeds 1.5× the median.',
+  '',
+  '## Attempts by host window', '',
+  row(['Window', 'Kept attempts', 'Excluded for load', 'Invalid other']),
+  row(['---', '---:', '---:', '---:']),
+  ...windows.map(({ metadata: window, samples }) => row([
+    window.window,
+    samples.filter((s) => s.kept).length,
+    samples.filter((s) => s.excluded).length,
+    samples.filter((s) => !s.kept && !s.excluded).length,
+  ])),
   '',
   '## One-minute load of kept actions', '',
   row(['Action', 'n', 'Min', 'Median', 'p90', 'Max']),
