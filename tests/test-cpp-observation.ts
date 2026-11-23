@@ -85,7 +85,6 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
       async executePreparedTrace() { assert.fail('must not run'); },
       terminate() { retired++; },
     }),
-    certify() { assert.fail('must not certify'); },
   });
   const registration = createCppObservationRegistration(producer, options);
   const lease = await registration.prepareObservation(program, signal);
@@ -93,6 +92,52 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
   await lease.dispose();
   assert.equal(starts, 1);
   assert.equal(retired, 1);
+});
+
+test('the selected legacy producer draws its recorded events and refuses an empty recorder', async () => {
+  const trace: RuntimeTrace = {
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+    language: 'cpp',
+    runId: 'legacy',
+    events: [{ kind: 'line', runId: 'legacy', line: 1 }],
+    lineEventCount: 1,
+    traceStepCount: 1,
+  };
+  for (const variant of ['recorded', 'empty', 'cut'] as const) {
+    const producer = createLegacyCppDrawingProducer({
+      createObserverWorkerClient: () => ({
+        async init() { return { success: true, loadTimeMs: 0 }; },
+        async prepareRuntimeProgram() {
+          return {
+            success: true,
+            handle: { programId: 'legacy-test', mode: 'trace', lifecycleGeneration: 0 },
+            consoleOutput: [],
+          };
+        },
+        async executePreparedTrace(_handle, call) {
+          assert.equal(call.recordTrace, true);
+          return {
+            kind: 'completed',
+            trace: variant === 'empty' ? { ...trace, events: [], lineEventCount: 0, traceStepCount: 0 } : trace,
+            executionTimeMs: 1,
+            get output(): never { throw new Error('observer value'); },
+            get consoleOutput(): never { throw new Error('observer console'); },
+            ...(variant === 'cut' ? { traceTruncated: 'trace-limit' as const } : {}),
+          };
+        },
+        terminate() {},
+      }),
+    });
+    const registration = createCppObservationRegistration(producer, options);
+    const lease = await registration.prepareObservation(program, signal);
+    try {
+      assert.deepEqual(await lease.observe(request),
+        variant === 'recorded' ? { status: 'drawn', trace } :
+          { status: 'refused', reason: variant === 'empty' ? 'recorder-unavailable' : 'uncertified-drawing' });
+    } finally {
+      await lease.dispose();
+    }
+  }
 });
 
 test('observation projection reads only Drawing fields and drops a late result after disposal', async () => {
