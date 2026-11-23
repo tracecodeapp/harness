@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { appendFile, readFile, writeFile } from 'node:fs/promises';
@@ -20,8 +21,14 @@ const selectedCpu = windowName === 'phone' ? 4 : 1;
 const maxInvalid = mode === 'smoke' ? 1 : 5;
 const seed = Number(seedArg);
 const runMinutes = Number(minuteArg);
+const groupSelector = process.env.SPEED_GROUP_SELECTOR;
 assert.ok(mode === 'smoke' || Object.hasOwn(windowLanguages, windowName));
 assert.ok(Number.isSafeInteger(seed) && Number.isFinite(runMinutes) && runMinutes > 0);
+assert.ok(
+  groupSelector === undefined ||
+    (groupSelector === 'java-switched-run' && mode === 'run' && windowName === 'desktop-a'),
+  'SPEED_GROUP_SELECTOR must be unset or java-switched-run in a Desktop A run',
+);
 
 const languages = { python: 'py', javascript: 'js', typescript: 'ts', java: 'java', cpp: 'cpp', csharp: 'cs' };
 const problemIds = ['binary-search', 'permutations'];
@@ -321,10 +328,19 @@ function addressedBySample(sample) {
 
 const prepared = {};
 let browser;
-const schedule = plan();
+const fullSchedule = plan();
+const schedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
+  group.language === 'java' && group.state === 'switched' && group.journey === 'run');
+if (groupSelector !== undefined) {
+  assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
+}
 const report = {
   schema: 'tracecode.speed-baseline.v1',
   mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
+  ...(groupSelector !== undefined && {
+    groupSelector,
+    runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  }),
   host: { hostname: hostname(), logicalCpus: availableParallelism(), kernel: release() },
   browser: { channel: 'chromium', crossOriginIsolated: false },
   packages: {},

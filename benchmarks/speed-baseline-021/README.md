@@ -57,3 +57,17 @@ node benchmarks/speed-baseline-021/report.mjs SPEED-BASELINE.md \
   speed-desktop-a-metadata.json speed-desktop-a-samples.jsonl \
   speed-phone-metadata.json speed-phone-samples.jsonl
 ```
+
+With coordinator approval, repeat both Desktop A Java switched Run groups in
+their own exclusive window. The selector keeps the same fixtures, version
+interleaving, sample targets and load cutoff. It leaves ordinary runs unchanged
+when unset. The top-up metadata records the selector and runner commit.
+
+```sh
+ar-harness.sh <worktree> speed-021-topup "true && /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 SPEED_GROUP_SELECTOR=java-switched-run bash benchmarks/speed-baseline-021/host-job.sh run desktop-a 212026 25"
+```
+
+Copy the top-up's Desktop A files under distinct local names. Keep both raw
+pairs. For the validator input, replace the two original groups in their entirety
+with the top-up records, remapping group indices by the schedule entries. Verify
+that the package, fixture, browser and host provenance matches before combining.
