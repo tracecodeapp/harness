@@ -1,10 +1,12 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { isSesAlgorithmSourceEligible } from '../packages/runtime-javascript/src/ses-algorithm-worker-client';
@@ -95,6 +97,26 @@ async function startServer(root: string) {
   };
 }
 
+function checkSesIntrinsics() {
+  const worker = pathToFileURL(resolve('workers/javascript/javascript-ses-algorithm-worker.js')).href;
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    globalThis.self = globalThis;
+    await import(process.argv[1]);
+    const compartment = new Compartment();
+    assert.equal(compartment.evaluate(\`(() => {
+      const prototype = Object.prototype;
+      const original = prototype.constructor;
+      let blocked = false;
+      try { prototype.constructor = 1; } catch { blocked = true; }
+      return Object.isFrozen(prototype) && Object.isFrozen(Function.prototype) &&
+        blocked && prototype.constructor === original &&
+        !Reflect.defineProperty(prototype, 'constructor', { value: 1 }) &&
+        !Reflect.deleteProperty(prototype, 'constructor');
+    })()\`), true);
+  `, worker], { stdio: 'inherit' });
+}
+
 async function checkConstructorParity(page: import('playwright').Page, origin: string) {
   const results = await page.evaluate(async ({ origin }) => {
     const entry = await import(`${origin}/entry.mjs`);
@@ -103,12 +125,10 @@ async function checkConstructorParity(page: import('playwright').Page, origin: s
     typeof import('./fixtures/javascript-ses-provider-entry').runJavaScriptConstructorParity
   >>;
   const failures: unknown[] = [];
-  const ordinary = ({ verdict, values, caseVerdicts, diagnostics, stdout }: typeof results[number]['intrinsic']) =>
+  type Evaluation = typeof results[number]['pairs'][number]['ses'];
+  const ordinary = ({ verdict, values, caseVerdicts, diagnostics, stdout }: Evaluation) =>
     ({ verdict, values, caseVerdicts, diagnostics, stdout });
-  for (const { language, intrinsic, pairs } of results) {
-    if (intrinsic.verdict !== 'passed' || intrinsic.timings[0]?.algorithmFastBatch !== true) {
-      failures.push({ language, intrinsic: ordinary(intrinsic) });
-    }
+  for (const { pairs } of results) {
     for (const { id, ses, disposable } of pairs) {
       if (ses.verdict !== 'passed' || disposable.verdict !== 'passed' ||
         !ses.timings.every(({ algorithmFastBatch }) => algorithmFastBatch === true) ||
@@ -119,6 +139,7 @@ async function checkConstructorParity(page: import('playwright').Page, origin: s
     }
   }
   assertCondition(failures.length === 0, `constructor parity mismatch: ${JSON.stringify(failures)}`);
+  checkSesIntrinsics();
   console.log('PASS: JS/TS constructor parity and frozen Object.prototype');
 }
 

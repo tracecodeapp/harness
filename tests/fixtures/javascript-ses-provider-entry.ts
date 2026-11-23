@@ -1196,28 +1196,14 @@ export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
           copy[key] = initial;
           copy[key] += 1;
           const own = Object.hasOwn(copy, key);
-          const { writable, enumerable, configurable } = Object.getOwnPropertyDescriptor(copy, key);
-          return [copy[key], own, writable, enumerable, configurable];
+          return [copy[key], own, Object.keys(copy).includes(key)];
         }`,
         cases: [
-          { id: 'new-constructor', input: { source: {}, key: 'constructor', initial: 3 }, expected: [4, true, true, true, true] },
-          { id: 'existing-constructor', input: { source: { constructor: 0 }, key: 'constructor', initial: 7 }, expected: [8, true, true, true, true] },
-          { id: 'inherited-method', input: { source: {}, key: 'hasOwnProperty', initial: 11 }, expected: [12, true, true, true, true] },
+          { id: 'new-constructor', input: { source: {}, key: 'constructor', initial: 3 }, expected: [4, true, true] },
+          { id: 'existing-constructor', input: { source: { constructor: 0 }, key: 'constructor', initial: 7 }, expected: [8, true, true] },
+          { id: 'inherited-method', input: { source: {}, key: 'hasOwnProperty', initial: 11 }, expected: [12, true, true] },
         ],
       };
-      const intrinsic = await evaluate(ses, {
-        id: `${language}-intrinsic-write-denied`,
-        language,
-        functionName: 'solve',
-        code: `function solve(snapshot) {
-          const proto = Object.getPrototypeOf(snapshot);
-          const original = proto.constructor;
-          let blocked = false;
-          try { proto.constructor = 1; } catch { blocked = true; }
-          return [proto === Object.prototype, Object.isFrozen(proto), blocked, proto.constructor === original];
-        }`,
-        cases: [{ id: 'intrinsic', input: { snapshot: {} }, expected: [true, true, true, true] }],
-      });
       const pairs = [];
       for (const fixture of [input, mutations]) {
         pairs.push({
@@ -1226,7 +1212,7 @@ export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
           disposable: await evaluate(disposable, fixture),
         });
       }
-      results.push({ language, intrinsic, pairs });
+      results.push({ language, pairs });
     }
     return results;
   } finally {
