@@ -115,7 +115,7 @@ export function createAlgorithmJudgeReceipt<
       values,
     }
   );
-  const comparisonLimited = evaluation.cases.some(({ verdict }) =>
+  const comparisonLimited = evaluation.status === 'completed' && evaluation.cases.some(({ verdict }) =>
     verdict.kind === 'comparison-error' && verdict.message === GRAPH_COMPARISON_LIMIT
   );
   const policy = comparisonLimited
