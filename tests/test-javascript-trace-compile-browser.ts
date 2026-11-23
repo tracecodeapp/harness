@@ -17,6 +17,7 @@ import {
   TRACE_BUILD_FAULTS,
   type TraceBuildFault,
 } from './fixtures/javascript-trace-compile-matrix';
+import type { UntracedRouteCheck } from './fixtures/javascript-untraced-route';
 
 const CONTENT_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -100,7 +101,17 @@ async function main(): Promise<void> {
         styles: list('STYLES'),
         cases: list('CASES'),
         routes: list('ROUTES'),
-      }) as { observations: unknown[]; violations: string[]; checked: number };
+      }) as {
+        routeChecks: UntracedRouteCheck[];
+        observations: unknown[];
+        violations: string[];
+        checked: number;
+      };
+      for (const { name, compared, violations } of result.routeChecks) {
+        for (const violation of violations) console.error(`FAIL: ${name}: ${violation}`);
+        console.log(`${violations.length ? 'FAIL' : 'PASS'}: ${name} (${compared} compared, ${violations.length} violations)`);
+        if (violations.length) process.exitCode = 1;
+      }
       if (process.env.TRACECODE_TRACE_COMPILE_REPORT) {
         await writeFile(
           process.env.TRACECODE_TRACE_COMPILE_REPORT,

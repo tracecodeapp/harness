@@ -482,9 +482,81 @@ function formatConsoleArg(value) {
   }
 }
 
-function createConsoleProxy(output) {
+// The SES pool's console budget (CONSOLE_BOOTSTRAP_SOURCE in its worker), the
+// same rules in the same order, applied to the same rendered arguments: a
+// traced case run here reports whether its console would need the pool's
+// compatibility fallback, which keeps untraced Submit off the pool.
+function createSesConsoleBudget() {
+  const marker = '…[truncated]';
+  const truncate = (text, limit) => {
+    if (text.length <= limit) return text;
+    if (limit <= marker.length) return marker.slice(0, limit);
+    return text.slice(0, limit - marker.length) + marker;
+  };
+  let lines = 0;
+  let totalCharacters = 0;
+  let stopped = false;
+  let exceeded = false;
+  return {
+    // `rendered` holds the arguments this console rendered: all `count` of
+    // them, or those before one that could not be printed (`failed`).
+    capture(rendered, count = rendered.length, failed = false) {
+      if (stopped) return;
+      if (lines >= 99) {
+        stopped = true;
+        exceeded = true;
+        return;
+      }
+      const argumentLimit = Math.min(count, 40);
+      const values = rendered.slice(0, argumentLimit);
+      if (failed && values.length < argumentLimit) {
+        values.push('[Unprintable]');
+        // The pool renders the arguments after it too; this console never
+        // did, so the pool must be asked.
+        if (values.length < argumentLimit) exceeded = true;
+      }
+      let line = '';
+      for (let index = 0; index < values.length; index += 1) {
+        const value = truncate(values[index] ?? '', 4096);
+        if (value.endsWith(marker)) exceeded = true;
+        line = truncate(line + (index === 0 ? '' : ' ') + value, 8192);
+        if (line.endsWith(marker)) {
+          exceeded = true;
+          break;
+        }
+      }
+      if (count > argumentLimit && !line.endsWith(marker)) {
+        exceeded = true;
+        line = truncate(line + ' … ' + (count - argumentLimit) + ' more', 8192);
+      }
+      const remaining = 65536 - totalCharacters;
+      if (line.length > remaining) {
+        line = truncate(line, Math.max(0, remaining));
+        stopped = true;
+        exceeded = true;
+      }
+      lines += 1;
+      totalCharacters += line.length;
+    },
+    exceeded: () => exceeded,
+  };
+}
+
+function createConsoleProxy(output, sesConsoleBudget) {
   const capture = (...args) => {
-    output.push(args.map(formatConsoleArg).join(' '));
+    // Each argument is rendered once, in order, as before: a learner's toJSON
+    // or getter runs once, and one that cannot be printed still throws here.
+    const rendered = [];
+    for (const arg of args) {
+      try {
+        rendered.push(formatConsoleArg(arg));
+      } catch (error) {
+        sesConsoleBudget?.capture(rendered, args.length, true);
+        throw error;
+      }
+    }
+    sesConsoleBudget?.capture(rendered);
+    output.push(rendered.join(' '));
   };
 
   return {
@@ -7153,7 +7225,8 @@ async function executeWithTracing(payload) {
     language = 'javascript',
   } = payload ?? {};
   const consoleOutput = [];
-  const consoleProxy = createConsoleProxy(consoleOutput);
+  const sesConsoleBudget = createSesConsoleBudget();
+  const consoleProxy = createConsoleProxy(consoleOutput, sesConsoleBudget);
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
@@ -7233,6 +7306,8 @@ async function executeWithTracing(payload) {
         buildScriptExecutionRunner(executableCode, code);
       }
     } catch (untracedBuildError) {
+      // Untraced Submit's route compiled it; only this traced route cannot.
+      if (payload.untracedCompiles === true) return TRACE_UNAVAILABLE_RESULT;
       const untraced = await executeWithTracing({ ...payload, tracingEnabled: false });
       if (!untraced.success) return untraced;
       // The same build works the second time: the first failure was not the program's.
@@ -7315,6 +7390,7 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: traceRecorder.isTraceLimitExceeded(),
       timeoutReason: traceRecorder.getTimeoutReason(),
+      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
@@ -7357,6 +7433,7 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded,
       timeoutReason,
+      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
