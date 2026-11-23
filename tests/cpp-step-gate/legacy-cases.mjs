@@ -59,6 +59,11 @@ export const legacyCases = [
   { ...witness('invalid-vector-bool-or', 'compile negative', method(
     'std::vector<bool> flags{false};\nflags[0] |= true;\nreturn seed;', '#include <vector>'), undefined),
     invalid: true },
+  { ...witness('historical-bit-field-rhs', 'structs', method(
+    'Bits bits{3};\nstd::vector<int> v{seed};\nv[0] += bits.low;\nreturn v[0];',
+    '#include <vector>\nstruct Bits { unsigned low : 4; };'), 4,
+    event('v[0] += bits.low;', 'write', 'v', [4], [0])),
+    supplemental: true },
   witness('string-assignment', 'strings', method(
     'std::string text = "cat";\ntext = "dog";\nreturn int(text.size());', '#include <string>'), 3,
     event('text = "dog";', 'write', 'text', ['dog'])),
@@ -67,7 +72,7 @@ export const legacyCases = [
     event('char end = text[text.size()];', 'read', 'text', ['\0'], [3])),
 ];
 
-export const families = [...new Set(legacyCases.filter(c => !c.invalid).map(c => c.family))];
+export const families = [...new Set(legacyCases.filter(c => !c.invalid && !c.supplemental).map(c => c.family))];
 
 export function lineOf(code, anchor) {
   const start = code.indexOf(anchor);

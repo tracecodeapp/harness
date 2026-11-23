@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -10,7 +11,9 @@ const [command, catalog, argument, receiptPath] = process.argv.slice(2);
 if (!catalog || !['candidate', 'controls', 'prototype'].includes(command)) {
   throw new Error('Usage: run.mjs <candidate|controls|prototype> <catalog-root> [adapter.mjs|replay.json] [report.json]');
 }
-const witnesses = [...syntheticWitnesses, ...catalogWitnesses(catalog)];
+const references = catalogWitnesses(catalog);
+const witnesses = [...syntheticWitnesses, ...references];
+const manifestSha256 = createHash('sha256').update(JSON.stringify(witnesses)).digest('hex');
 const rows = [];
 const good = new Map(witnesses.map(witness => [witness.request.id, knownGood(witness)]));
 const candidateCase = async (adapter, witness) => {
@@ -30,7 +33,7 @@ if (command === 'candidate') {
   }
 } else if (command === 'prototype') {
   const data = JSON.parse(readFileSync(argument, 'utf8'));
-  for (const witness of catalogWitnesses(catalog)) {
+  for (const witness of references) {
     const id = witness.request.id;
     const raw = data[id];
     const result = raw?.out?.match(/^__TRACECODE_RESULT__(.+)$/m);
@@ -125,7 +128,7 @@ for (const row of rows) {
   const failed = row.assertions.filter(a => !a.pass);
   console.log(row.id, row.status, failed.length ? JSON.stringify(failed[0]) : '', row.error ?? '');
 }
-const report = { command, rows, counts: Object.fromEntries([...new Set(rows.map(row => row.status))].map(status =>
+const report = { command, manifestSha256, rows, counts: Object.fromEntries([...new Set(rows.map(row => row.status))].map(status =>
   [status, rows.filter(row => row.status === status).length])) };
 console.log(JSON.stringify(report.counts));
 if (receiptPath) writeFileSync(receiptPath, JSON.stringify(report, null, 2) + '\n');

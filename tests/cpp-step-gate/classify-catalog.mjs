@@ -7,11 +7,13 @@ const [root, reportPath] = process.argv.slice(2);
 if (!root || !reportPath) throw new Error('Usage: classify-catalog.mjs <catalog directory> <legacy report>');
 const { rows } = JSON.parse(readFileSync(reportPath, 'utf8'));
 const statuses = new Map(families.map(family => {
-  const cases = legacyCases.filter(c => c.family === family);
+  const cases = legacyCases.filter(c => c.family === family && !c.supplemental);
   const counts = { pass: 0, fail: 0, unexecuted: 0 };
   for (const c of cases) {
     const found = rows.filter(row => row.id === c.id);
-    counts[found.length === 1 ? found[0].status : 'unexecuted']++;
+    const status = found.length === 1 ? found[0].status : 'unexecuted';
+    if (!Object.hasOwn(counts, status)) throw new Error('Unexpected status for ' + c.id + ': ' + status);
+    counts[status]++;
   }
   return [family, { ...counts, verdict: counts.fail ? 'fail' : counts.unexecuted ? 'unknown' : 'pass' }];
 }));
@@ -49,8 +51,8 @@ function classify(source) {
       }
     }
   }
-  // Even when every detected kind has a green witness, regexes cannot certify
-  // an arbitrary program. Keep such files outside the measured drawing rate.
+  // This is a static screening model. Even a file with solely passing
+  // kinds has no execution or observer coverage proof from this scan.
   return [...new Set(kinds)].sort();
 }
 

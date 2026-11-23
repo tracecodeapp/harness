@@ -197,22 +197,31 @@ function lifetimes() {
 
 export const catalogSpecs = [
   {
-    id: 'climbing-stairs', functionName: 'climbStairs', inputs: { n: 5 }, output: 8, name: 'cur',
+    id: 'climbing-stairs', sourceSha256: 'b4eeb401bcc1b14ea09be9706dcfd87d7fdfec9b9207cb613a52ab328f942e98',
+    functionName: 'climbStairs', inputs: { n: 5 }, output: 8, name: 'cur',
     anchors: { declare: 'int cur = prev1 + prev2;', next: 'prev2 = prev1;' }, initialized: [3, 5, 8],
   },
   {
-    id: 'binary-search', functionName: 'search', inputs: { nums: [1, 4, 8, 10], target: 8 }, output: 2, name: 'mid',
+    id: 'binary-search', sourceSha256: '629c991e25777d29e32215e8858137d8ad39a65e3601822f4d56eeaeac5f979b',
+    functionName: 'search', inputs: { nums: [1, 4, 8, 10], target: 8 }, output: 2, name: 'mid',
     anchors: { declare: 'int mid = (left + right) / 2;', next: 'if (nums[mid] == target) return mid;' }, initialized: [1, 2],
   },
 ];
 export function catalogWitnesses(root) {
-  return catalogSpecs.map(spec => witness({
-    ...spec, source: readFileSync(join(root, 'practice', spec.id + '.cpp'), 'utf8'),
-    events: spec.initialized.flatMap((x, i) => {
-      const object = spec.name + '#' + (i + 1);
-      return [availability('declare', object, unavailable), availability('next', object, value(x))];
-    }),
-  }));
+  return catalogSpecs.map(spec => {
+    const source = readFileSync(join(root, 'practice', spec.id + '.cpp'), 'utf8');
+    const result = witness({
+      ...spec, source,
+      events: spec.initialized.flatMap((x, i) => {
+        const object = spec.name + '#' + (i + 1);
+        return [availability('declare', object, unavailable), availability('next', object, value(x))];
+      }),
+    });
+    if (result.request.sourceSha256 !== spec.sourceSha256) {
+      throw new Error('Catalog witness source differed from the frozen bytes: ' + spec.id);
+    }
+    return result;
+  });
 }
 function boundaryCases() {
   const good = aliases();
