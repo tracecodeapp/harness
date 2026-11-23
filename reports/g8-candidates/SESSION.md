@@ -13,6 +13,12 @@ S(C#), S(Python), and warm Binary Search Run spot cells for JavaScript,
 TypeScript, C++ and Java. The release stays on the original 0.17.x witness path;
 the 0.21 candidate worker witnesses do not apply.
 
+The post-run A/A control interleaves the pinned 0.17.1 release tarball with
+0.17.3 on today's release-policy runner. For C# and Python at desktop 1 CPU, it
+collects 20 samples per release for warm Run and warm Submit on Binary Search
+and Permutations. Cold Run on both problems supplies the near-zero control and
+its second-trace receipt. This control changes no score threshold.
+
 Python has a replacement candidate pin,
 `9e2afce5186c62e60a685e937099e51b6814c3dc`, at
 `/root/ci/coord-artifacts/feat-b3-python-9e2afce5186c.tgz` with SHA-256
@@ -71,6 +77,7 @@ wt=/Users/obinnanwachukwu/.t3/worktrees/harness/t3-df2808a1-af3ae7dd551a2a6c
 stage=/root/ci/g8-candidates.qHpuBwkE
 
 "$ar" "$wt" speed-g8-release-0173 "true && bash $stage/session-and-score-release.sh 90"
+"$ar" "$wt" speed-g8-release-aa "true && bash $stage/session-and-score-aa.sh 40"
 "$ar" "$wt" speed-g8-java "true && bash $stage/session-and-score.sh java 55"
 "$ar" "$wt" speed-g8-csharp "true && bash $stage/session-and-score.sh csharp 90"
 "$ar" "$wt" speed-g8-python "true && bash $stage/session-and-score.sh python 75"
