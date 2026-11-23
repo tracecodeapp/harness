@@ -1,7 +1,8 @@
-import {
-  createAlgorithmJudgeBundle,
-  createBrowserJudgeHost,
-} from '../../src/judge';
+import { createAlgorithmJudgeBundle } from '../../src/judge';
+import { createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
+import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/browser-runtime-host';
+import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
+import { createJavaBrowserRuntimeProvider } from '../../packages/runtime-java/src/browser-runtime-provider';
 import { JavaWorkerClient } from '../../packages/runtime-java/src/java-worker-client';
 import { createJavaBrowserPreparedExecutionProvider } from '../../packages/runtime-java/src/java-prepared-provider';
 
@@ -63,12 +64,21 @@ export async function runJavaStoppingBatchBrowserTest() {
     }
   };
 
-  const host = createBrowserJudgeHost({
+  // Keep the #77 mixed-artifact regression independent of receipt registration.
+  const legacy = createJavaBrowserRuntimeProvider({ runtimeAssetBaseUrl: '/tracejvm/' });
+  const providerRegistry = createBrowserRuntimeProviderRegistry([{
+    ...legacy,
+    create(context) {
+      const { preparedProviders, preflightLanguage, disposeLanguage, dispose } = legacy.create(context);
+      return { preparedProviders, preflightLanguage, disposeLanguage, dispose };
+    },
+  }]);
+  const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
     assetBaseUrl: '/workers',
     assets: { javaWorker: workerUrl },
     providers: ['java'],
-    java: { runtimeAssetBaseUrl: '/tracejvm/' },
-  });
+    providerRegistry,
+  }));
   const options = {
     language: 'java' as const, code: source, functionName: 'search',
     executionStyle: 'solution-method' as const,
