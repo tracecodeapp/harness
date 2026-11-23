@@ -88,3 +88,44 @@ test('the clock fixtures omit custom limits and retain independent row oracles',
     assert(ledger.expected.some((id) => id.endsWith('/A/ordinary-start-count')));
   }
 });
+
+test('the scripted Python transport releases three healthy rows before expiring the production clock', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const originalWorker = globalThis.Worker;
+  const wire = [];
+  globalThis.Worker = class FixtureWorker extends EventTarget {
+    postMessage(message) { wire.push(message); }
+  };
+  const journal = installJournal(fixture('python', 'transport'));
+  const expire = [];
+  try {
+    journal.track('clock-virtual', 'clock-virtual');
+    setTimeout(() => expire.push(30000), 30000);
+    const worker = new Worker('fixture-worker.js');
+    worker.postMessage({
+      id: 'batch', type: 'execute-prepared-program-batch',
+      payload: {
+        mode: 'code', artifact: { isolationProfile: { tier: 'algorithm-fast' } },
+        inputBatch: [{ n: 11 }, { n: 22 }, { n: 33 }],
+      },
+    });
+    for (const n of [11, 22, 33]) {
+      assert.deepEqual(wire.at(-1).payload.inputBatch, [{ n }]);
+      for (const phase of ['started', 'finished']) {
+        worker.dispatchEvent(new MessageEvent('message', {
+          data: { id: 'batch', type: 'batch-case-progress', payload: { index: 0, phase } },
+        }));
+      }
+      worker.dispatchEvent(new MessageEvent('message', {
+        data: { id: 'batch', type: 'execute-result', payload: { resultsStreamed: 1 } },
+      }));
+    }
+    assert.deepEqual(expire, [30000]);
+    const events = journal.since(0);
+    assert.deepEqual(events.filter((event) => event.kind === 'worker-started').map((event) => event.caseId), ['A', 'B', 'C']);
+    assert.deepEqual(events.filter((event) => event.kind === 'advance-clock').map((event) => event.virtualTime), [11000, 22000, 33000]);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+  }
+});
