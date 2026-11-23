@@ -9,6 +9,30 @@ const fallback = '__TRACECODE_TRACE_LIMIT__:true\n__TRACECODE_TRACE_FALLBACK_REQ
 const completed = (stdout, isolation = 'clean') => ({
   status: 'completed', exitCode: 0, stdout, stderr: '', isolation: { status: isolation },
 });
+const workerGlobal = () => ({
+  location: { href: 'https://test.invalid/workers/java-runtime-worker.js' },
+  postMessage() {}, addEventListener() {}, close() {}, importScripts() {},
+});
+
+test('prepared cache reuses the classified artifact under a new program lease', async () => {
+  const { first, second } = await runInNewContext(worker + `
+    (async () => {
+      const compile = { status: 'completed', exitCode: 0, program: { files: [] }, timings: { totalMs: 9 } };
+      let calls = 0;
+      compileSource = async () => ({ compile, compileCacheHit: calls++ > 0 });
+      const first = JSON.parse(await traceJVMPrepareRuntimeProgram('first', 'source', 'none', 'Entry'));
+      traceJVMDisposeRuntimeProgram('first');
+      const second = JSON.parse(await traceJVMPrepareRuntimeProgram('second', 'source', 'none', 'Entry'));
+      return { first, second };
+    })();
+  `, { self: workerGlobal(), URL });
+  assert.equal(first.compileCacheHit, false);
+  assert.equal(first.artifactCacheHit, false);
+  assert.equal(second.compileCacheHit, true);
+  assert.equal(second.artifactCacheHit, true);
+  assert.equal(second.compileTimeMs, 0);
+  assert.deepEqual(second.preparedArtifact, first.preparedArtifact);
+});
 
 test('observer export requires the matching recorder frame and retains an empty byte-cut witness', () => {
   const evaluate = (stdout) => runInNewContext(worker + `
@@ -34,7 +58,7 @@ test('observer export requires the matching recorder frame and retains an empty 
   assert.equal(valid.events.length, 0);
 });
 
-function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast' } = {}) {
+function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', observeTwice = false } = {}) {
   const calls = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -91,13 +115,26 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast' } =
     self.TraceCodeJavaPreparedCaseAdmitted = (index) => self.postMessage({
       type: 'java-prepared-case-admitted', payload: { index },
     });
+    if (observeTwice) {
+      (async () => {
+        const observe = async (caseId) => JSON.parse(await traceJVMRunPreparedRuntimeProgramBatch(
+          'p', 'Traced', '1', JSON.stringify([{ caseId }]), '500', '', '', '[]',
+          '', 'false', 'observer', '{"nonce":"sample"}'
+        ));
+        const first = await observe('first');
+        const second = await observe('second');
+        traceJVMDisposeRuntimeProgram('p');
+        return JSON.stringify({ first, second });
+      })();
+    } else {
     traceJVMRunPreparedRuntimeProgramBatch(
       'p', 'Traced', '1', '[{"caseId":"first"},{"caseId":"second"},{"caseId":"suffix"}]',
       '500', '', '', mode === 'ordinary' ? '[false,false,false]' : '[false,true,false]',
       'Clean', String(stop), mode
     );
+    }
   `, {
-    self, client, stop, mode, profile, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, mode, profile, observeTwice, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;
@@ -108,6 +145,29 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast' } =
   });
   return { calls, result: result.then(JSON.parse), timers };
 }
+
+test('a local observer reuses its clean runner with a fresh authority for a different case', async () => {
+  const { calls, result } = testBatch(() => completed(''), { observeTwice: true });
+  const { first, second } = await result;
+  assert.equal(first.runnerProcessCount, 1);
+  assert.equal(second.runnerProcessCount, 0);
+  assert.equal(second.runnerReused, true);
+  assert.deepEqual(calls, [
+    ['run', 1, 'first', 'Traced'], ['close'],
+    ['run', 1, 'second', 'Traced'], ['close'], ['dispose', 1],
+  ]);
+});
+
+test('a local observer retires a tainted runner before a different case', async () => {
+  const { calls, result } = testBatch(({ caseId }) =>
+    completed('', caseId === 'first' ? 'tainted' : 'clean'), { observeTwice: true });
+  const { second } = await result;
+  assert.equal(second.runnerProcessCount, 1);
+  assert.deepEqual(calls, [
+    ['run', 1, 'first', 'Traced'], ['dispose', 1], ['close'],
+    ['run', 2, 'second', 'Traced'], ['close'], ['dispose', 2],
+  ]);
+});
 
 test('ordinary admission precedes each start and excludes a stopped suffix', async () => {
   const { calls, result } = testBatch(({ caseId, advance, onDispose }) => {

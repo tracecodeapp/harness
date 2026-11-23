@@ -3011,6 +3011,8 @@ type ObserverReply = import('../packages/runtime-contracts/src/runtime-calls').R
 type ObserverCall = import('../packages/runtime-contracts/src/runtime-calls').RuntimeObservationCall;
 
 function receiptFixture(options: {
+  preparationInitializesRuntime?: boolean;
+  init?: () => void;
   ordinaryBarrier?: Promise<void>;
   observe?: (call: ObserverCall) => Promise<ObserverReply>;
   idleMs?: number;
@@ -3080,6 +3082,10 @@ function receiptFixture(options: {
   });
   const provider: RuntimePreparedExecutionProvider = {
     ...base,
+    async init() {
+      options.init?.();
+      return base.init();
+    },
     async prepareProgram(call) {
       const outcome = await base.prepareProgram(call);
       if (outcome.kind !== 'prepared' || outcome.program.mode !== 'code') return outcome;
@@ -3150,6 +3156,7 @@ function receiptFixture(options: {
       observationLease: 'separate' as const,
       certification: options.certification,
       observationDeadlineMs: options.deadlineMs ?? 3000,
+      ...(options.preparationInitializesRuntime ? { preparationInitializesRuntime: true as const } : {}),
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
     },
     async prepareObservation(program: (typeof preparedDescriptors)[number]) {
@@ -3730,6 +3737,20 @@ test('migrated execute owns one snapshot of invocation, inputs and selection', a
       assert.equal(f.state.prepareCalls.at(-1)?.executionStyle, execution.executionStyle);
       assert.equal(f.state.prepareCalls.at(-1)?.mode, 'code');
     }
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('owned preparation can initialize its leases without a separate Judge init barrier', async () => {
+  let initCalls = 0;
+  const f = receiptFixture({ preparationInitializesRuntime: true, init: () => { initCalls++; } });
+  try {
+    const result = await f.host.execute({
+      bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+    });
+    assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
+    assert.equal(initCalls, 0);
   } finally {
     f.host.dispose();
   }

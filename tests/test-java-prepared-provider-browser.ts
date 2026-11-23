@@ -838,14 +838,16 @@ try {
               assert.equal(companion.singleLine.reason, 'single-line-budget');
             }
             assert.equal(companion.workers, 2);
+            assert.deepEqual(companion.cache, [[false, false], [true, true]]);
+            assert.deepEqual(companion.submit, [3]);
             const prepares = companion.requests.filter(({ type }) => type === 'prepare-runtime-program');
             assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)])
               .sort(([a], [b]) => Number(a) - Number(b)),
-              [[1, false], [2, true]]);
+              [[1, false], [1, false], [2, true]]);
             assert.deepEqual(companion.requests.filter(({ type }) =>
               type === 'execute-prepared-runtime-program-batch')
               .map(({ worker, count }) => [worker, count]).sort(([a], [b]) => a! - b!),
-              [[1, 4], ...Array.from({ length: 6 }, () => [2, 1])]);
+              [[1, 4], [1, 1], ...Array.from({ length: 6 }, () => [2, 1])]);
             assert.ok(!companion.requests.some(({ type }) => type === 'restore-prepared-runtime-program'));
             console.log('PASS: separate Java observer preserves the ordinary batch and reuses its artifact');
             let deadline: ReturnType<typeof setTimeout> | undefined;

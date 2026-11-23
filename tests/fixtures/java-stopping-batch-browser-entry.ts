@@ -251,11 +251,21 @@ export async function runJavaCompanionBrowserTest() {
       draw(1, { maxTraceBytes: 1 }), draw(1, { maxLineEvents: 1 }),
       draw(3, { maxSingleLineHits: 1 }),
     ]);
+    await ordinary.program.dispose();
+    const submit = await provider.prepareProgram({ ...descriptor, mode: 'code' });
+    if (submit.kind !== 'prepared' || submit.program.mode !== 'code') {
+      throw new Error('Java Submit preparation failed');
+    }
+    const submitResult = await submit.program.executeBatchIsolated!({ inputBatch: [{ n: 2 }] });
+    await submit.program.dispose();
     return {
       admission,
       outcomes: batch.map((item) => ([item.kind, item.consoleOutput,
         item.kind === 'completed' ? item.output : item.kind === 'limit' ? item.reason : undefined])),
       failed, positive, step, byte, line, singleLine, requests, workers,
+      cache: [ordinary.timings, submit.timings].map((timings) =>
+        [timings?.compileCacheHit, timings?.artifactCacheHit]),
+      submit: submitResult.map((item) => item.kind === 'completed' ? item.output : item.kind),
     };
   } finally {
     await observer.dispose();
