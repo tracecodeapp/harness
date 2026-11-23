@@ -1086,3 +1086,72 @@ async function main(): Promise<void> {
 }
 
 test('javascript worker lifecycle', main);
+
+for (const language of ['javascript', 'typescript'] as const) {
+  test(`${language} pool fault ends the request and replaces the failed lane`, async () => {
+    resetVmWorkers();
+    const poolWorkers: Array<{ terminated: boolean }> = [];
+    let failNextCase = true;
+    let caseStarts = 0;
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/workers/javascript/javascript-worker.js',
+      algorithmExecution: 'ses-compartment-pool',
+      algorithmWorkerUrl: '/workers/javascript/javascript-ses-algorithm-worker.js',
+      replenishStandbyAfterUse: false,
+      workerFactory: (url) => {
+        if (!String(url).includes('ses-algorithm')) return new VmJavaScriptWorker(url);
+        const worker = {
+          onmessage: null as ((event: MessageEvent) => void) | null,
+          onerror: null as ((event: ErrorEvent) => void) | null,
+          terminated: false,
+          terminate() { this.terminated = true; },
+          postMessage(request: { id: number; type: string }) {
+            queueMicrotask(() => {
+              if (this.terminated) return;
+              let value: unknown = null;
+              if (request.type === 'init') value = { mode: 'ses', hardened: true };
+              if (request.type === 'execute-batch') {
+                caseStarts += 1;
+                if (failNextCase) {
+                  failNextCase = false;
+                  this.onerror?.({ message: 'fixture SES service failure' } as ErrorEvent);
+                  return;
+                }
+                value = [{ kind: 'completed', output: 5, consoleOutput: [] }];
+              }
+              this.onmessage?.({ data: { id: request.id, ok: true, value } } as MessageEvent);
+            });
+          },
+        };
+        poolWorkers.push(worker);
+        return worker;
+      },
+    });
+    const prepare = () => client.prepareProgram({
+      mode: 'code',
+      code: language === 'typescript'
+        ? 'function solve(n: number): number { return n + 1; }'
+        : 'function solve(n) { return n + 1; }',
+      functionName: 'solve',
+    }, language);
+    try {
+      const first = await prepare();
+      assert(first.kind === 'prepared' && first.program.mode === 'code');
+      await assert.rejects(
+        first.program.executeIsolated({ inputs: { n: 4 } }),
+        /fixture SES service failure/,
+      );
+      assert.equal(caseStarts, 1);
+      assert(poolWorkers.some((worker) => worker.terminated));
+      const next = await prepare();
+      assert(next.kind === 'prepared' && next.program.mode === 'code');
+      assert.equal(next.program.capabilities.profile, 'fast');
+      assert.equal((await next.program.executeIsolated({ inputs: { n: 4 } })).kind, 'completed');
+      assert.equal(caseStarts, 2);
+      assert.equal(VmJavaScriptWorker.instances.filter((worker) =>
+        worker.postedTypes.includes('execute-code')).length, 0);
+    } finally {
+      client.terminate();
+    }
+  });
+}
