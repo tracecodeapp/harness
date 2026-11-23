@@ -179,10 +179,14 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
               check(!Object.hasOwn(row, key), label + ' leaked ' + key);
             }
             check(row.diagnostics.every(({ code }) => code !== 'trace-unavailable'), label + '/diagnostics');
-            if (row.attachment?.status === 'drawn') {
-              check(name === 'legacy' && row.trace === row.attachment.trace &&
-                row.attachment.trace.events.some(({ kind }) => kind === 'line'), label + '/recorded-trace');
-              legacyDrawings++;
+            if (row.attachment?.status === 'drawn' || row.attachment?.status === 'truncated') {
+              check(name === 'legacy' && row.trace === row.attachment.trace, label + '/recorded-trace');
+              if (row.attachment.status === 'drawn') {
+                check(row.attachment.trace.events.some(({ kind }) => kind === 'line'), label + '/recorder-line');
+                legacyDrawings++;
+              } else {
+                check(row.attachment.attemptedEvents > row.attachment.trace.events.length, label + '/attempted-events');
+              }
             } else {
               check(!Object.hasOwn(row, 'trace'), label + '/absent-trace');
             }
