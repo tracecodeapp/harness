@@ -131,8 +131,8 @@ async function checkConstructorParity(page: import('playwright').Page, origin: s
   for (const { pairs } of results) {
     for (const { id, ses, disposable } of pairs) {
       if (ses.verdict !== 'passed' || disposable.verdict !== 'passed' ||
-        !ses.timings.every(({ algorithmFastBatch }) => algorithmFastBatch === true) ||
-        !disposable.timings.every(({ algorithmFastBatch }) => algorithmFastBatch !== true) ||
+        !ses.timings.every((timing) => timing?.algorithmFastBatch === true) ||
+        !disposable.timings.every((timing) => timing?.algorithmFastBatch !== true) ||
         JSON.stringify(ordinary(ses)) !== JSON.stringify(ordinary(disposable))) {
         failures.push({ id, ses: ordinary(ses), disposable: ordinary(disposable) });
       }

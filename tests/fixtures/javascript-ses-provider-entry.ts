@@ -1176,7 +1176,7 @@ export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
   try {
     const results = [];
     for (const language of ['javascript', 'typescript'] as const) {
-      const input = {
+      const input: Parameters<typeof evaluate>[1] = {
         id: `${language}-constructor-key`,
         language,
         functionName: 'detectDrift',
@@ -1187,7 +1187,7 @@ export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
           { id: 'B', input: { snapshot: { ordinary: 'example-only' } }, expected: 1 },
         ],
       };
-      const mutations = {
+      const mutations: Parameters<typeof evaluate>[1] = {
         id: `${language}-own-key-writes`,
         language,
         functionName: 'solve',
