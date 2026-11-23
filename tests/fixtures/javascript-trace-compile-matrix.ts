@@ -347,5 +347,14 @@ export async function runTraceCompileMatrix(options: TraceCompileMatrixOptions):
       }
     }
   }
+  // Primed and unprimed: what the host ran before cannot change untraced Submit.
+  const untraced = new Map(result.observations.map(({ label, submit }) => [label, canonical(submit)]));
+  for (const [label, submit] of untraced) {
+    if (!label.startsWith('app-budgets/')) continue;
+    const unprimed = untraced.get(label.replace('app-budgets/', 'ses/'));
+    if (unprimed !== undefined && submit !== unprimed) {
+      result.violations.push(`${label}: untraced Submit on a primed host differs from an unprimed host's`);
+    }
+  }
   return result;
 }
