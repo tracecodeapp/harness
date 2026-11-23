@@ -13,7 +13,7 @@ import type {
 import { ALGORITHM_RECEIPT_SCHEMA } from './algorithm-model';
 import type { JudgeKernelPort } from './port';
 import { evaluateJudgeVerdictPolicy } from './policy';
-import { createJudgeComparator } from './comparator-strategy';
+import { createJudgeComparator, GRAPH_COMPARISON_LIMIT } from './comparator-strategy';
 import { validateAlgorithmJudgeBundle } from './algorithm-validate';
 
 export function algorithmJudgePolicyValues(
@@ -107,7 +107,7 @@ export function createAlgorithmJudgeReceipt<
   evaluatedAt = new Date().toISOString()
 ): JudgeAlgorithmReceipt<Result, Expected> {
   const values = algorithmJudgePolicyValues(evaluation);
-  const policy = evaluateJudgeVerdictPolicy(
+  const evaluatedPolicy = evaluateJudgeVerdictPolicy(
     bundle.policy,
     {
       workspaceDigest: bundle.workspaceDigest,
@@ -115,6 +115,20 @@ export function createAlgorithmJudgeReceipt<
       values,
     }
   );
+  const comparisonLimited = evaluation.status === 'completed' && evaluation.cases.some(({ verdict }) =>
+    verdict.kind === 'comparison-error' && verdict.message === GRAPH_COMPARISON_LIMIT
+  );
+  const policy = comparisonLimited
+    ? Object.freeze({
+        result: 'unknown' as const,
+        trace: Object.freeze({
+          expression: bundle.policy.passWhen,
+          result: 'unknown' as const,
+          reason: GRAPH_COMPARISON_LIMIT,
+        }),
+        missingFacts: evaluatedPolicy.missingFacts,
+      })
+    : evaluatedPolicy;
   return Object.freeze({
     schema: ALGORITHM_RECEIPT_SCHEMA,
     bundleId: bundle.id,

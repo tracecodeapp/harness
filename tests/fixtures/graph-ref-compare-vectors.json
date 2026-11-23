@@ -1,0 +1,261 @@
+[
+  {
+    "name": "TreeNode labels rename both IDs",
+    "actual": {"__id__": "TreeNode:1","__type__": "TreeNode","val": 1,"left": {"__id__": "TreeNode:2","__type__": "TreeNode","val": 2,"left": {"__ref__": "TreeNode:1"},"right": null},"right": {"__ref__": "TreeNode:2"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": {"__ref__": "r"},"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "ref-number labels rename both IDs",
+    "actual": {"__id__": "ref-0","__type__": "TreeNode","val": 1,"left": {"__id__": "ref-1","__type__": "TreeNode","val": 2,"left": {"__ref__": "ref-0"},"right": null},"right": {"__ref__": "ref-1"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": {"__ref__": "r"},"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a self-cycle survives renaming",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__ref__": "a"},"right": null},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__ref__": "r"},"right": null},
+    "compareMode": "exact",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a shared child survives renaming",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__id__": "b","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__ref__": "b"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a shared node can be defined at either edge",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__ref__": "b"},"right": {"__id__": "b","__type__": "TreeNode","val": 2,"left": null,"right": null}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "distinct children cannot collapse into one",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__id__": "b","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__ref__": "b"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__id__": "d","__type__": "TreeNode","val": 2,"left": null,"right": null}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a shared child cannot split into two",
+    "actual": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__id__": "d","__type__": "TreeNode","val": 2,"left": null,"right": null}},
+    "expected": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__id__": "b","__type__": "TreeNode","val": 2,"left": null,"right": null},"right": {"__ref__": "b"}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a cycle differs from an acyclic tree",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__ref__": "a"},"right": null},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 1,"left": null,"right": null},"right": null},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "different leaf values remain unequal",
+    "actual": {"__id__": "a","__type__": "TreeNode","val": 1,"left": {"__id__": "b","__type__": "TreeNode","val": 3,"left": {"__ref__": "a"},"right": null},"right": {"__ref__": "b"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": {"__ref__": "r"},"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a reference marker differs from a plain ID string",
+    "actual": {"__id__": "r","__type__": "TreeNode","val": 1,"left": "r","right": null},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__ref__": "r"},"right": null},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "identical marker text can point to different nodes",
+    "actual": {"__id__": "c","__type__": "TreeNode","val": 1,"left": {"__id__": "r","__type__": "TreeNode","val": 2,"left": {"__ref__": "r"},"right": null},"right": {"__ref__": "c"}},
+    "expected": {"__id__": "r","__type__": "TreeNode","val": 1,"left": {"__id__": "c","__type__": "TreeNode","val": 2,"left": {"__ref__": "r"},"right": null},"right": {"__ref__": "c"}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a failed unordered candidate rolls back bindings",
+    "actual": [{"node": {"__id__": "a","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2},{"node": {"__id__": "b","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1},{"node": {"__ref__": "a"},"tag": 3},{"node": {"__ref__": "b"},"tag": 4}],
+    "expected": [{"node": {"__id__": "c","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1},{"node": {"__id__": "d","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2},{"node": {"__ref__": "d"},"tag": 3},{"node": {"__ref__": "c"},"tag": 4}],
+    "compareMode": "unordered-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "unordered matches preserve sharing across elements",
+    "actual": [{"node": {"__id__": "a","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2},{"node": {"__id__": "b","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1},{"node": {"__ref__": "b"},"tag": 3}],
+    "expected": [{"node": {"__id__": "c","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1},{"node": {"__id__": "d","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2},{"node": {"__ref__": "d"},"tag": 3}],
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "nested unordered matches preserve sharing across rows",
+    "actual": [[{"node": {"__id__": "a","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2},{"node": {"__id__": "b","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1}],[{"__ref__": "a"}]],
+    "expected": [[{"__ref__": "d"}],[{"node": {"__id__": "c","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 1},{"node": {"__id__": "d","__type__": "TreeNode","val": 7,"left": null,"right": null},"tag": 2}]],
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later sibling disambiguates one shared node (unordered-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"shared": {"__ref__": "a"}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"shared": {"__ref__": "y"}},
+    "compareMode": "unordered-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later sibling pins a node with a different value (unordered-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 2}]],"shared": {"__ref__": "a"}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 2}]],"shared": {"__ref__": "y"}},
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a later sibling disambiguates two shared nodes (unordered-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"shared": {"first": {"__ref__": "a"},"second": {"__ref__": "b"}}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"shared": {"first": {"__ref__": "y"},"second": {"__ref__": "x"}}},
+    "compareMode": "unordered-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later unordered sibling revises an earlier match (unordered-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"uses": [{"tag": "p","node": {"__ref__": "a"}},{"tag": "q","node": {"__ref__": "b"}}]},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"uses": [{"tag": "p","node": {"__ref__": "y"}},{"tag": "q","node": {"__ref__": "x"}}]},
+    "compareMode": "unordered-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later sibling disambiguates one shared node (unordered-nested-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"shared": {"__ref__": "a"}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"shared": {"__ref__": "y"}},
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later sibling pins a node with a different value (unordered-nested-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 2}]],"shared": {"__ref__": "a"}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 2}]],"shared": {"__ref__": "y"}},
+    "compareMode": "unordered-nested-array",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "a later sibling disambiguates two shared nodes (unordered-nested-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"shared": {"first": {"__ref__": "a"},"second": {"__ref__": "b"}}},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"shared": {"first": {"__ref__": "y"},"second": {"__ref__": "x"}}},
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a later unordered sibling revises an earlier match (unordered-nested-array)",
+    "actual": {"definitions": [[{"__id__": "a","value": 1}],[{"__id__": "b","value": 1}]],"uses": [{"tag": "p","node": {"__ref__": "a"}},{"tag": "q","node": {"__ref__": "b"}}]},
+    "expected": {"definitions": [[{"__id__": "x","value": 1}],[{"__id__": "y","value": 1}]],"uses": [{"tag": "p","node": {"__ref__": "y"}},{"tag": "q","node": {"__ref__": "x"}}]},
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "36 locally interchangeable definitions with ordered sibling pins",
+    "actual": {"definitions": [[{"__id__": "a0","value": 1}],[{"__id__": "a1","value": 1}],[{"__id__": "a2","value": 1}],[{"__id__": "a3","value": 1}],[{"__id__": "a4","value": 1}],[{"__id__": "a5","value": 1}],[{"__id__": "a6","value": 1}],[{"__id__": "a7","value": 1}],[{"__id__": "a8","value": 1}],[{"__id__": "a9","value": 1}],[{"__id__": "a10","value": 1}],[{"__id__": "a11","value": 1}],[{"__id__": "a12","value": 1}],[{"__id__": "a13","value": 1}],[{"__id__": "a14","value": 1}],[{"__id__": "a15","value": 1}],[{"__id__": "a16","value": 1}],[{"__id__": "a17","value": 1}],[{"__id__": "a18","value": 1}],[{"__id__": "a19","value": 1}],[{"__id__": "a20","value": 1}],[{"__id__": "a21","value": 1}],[{"__id__": "a22","value": 1}],[{"__id__": "a23","value": 1}],[{"__id__": "a24","value": 1}],[{"__id__": "a25","value": 1}],[{"__id__": "a26","value": 1}],[{"__id__": "a27","value": 1}],[{"__id__": "a28","value": 1}],[{"__id__": "a29","value": 1}],[{"__id__": "a30","value": 1}],[{"__id__": "a31","value": 1}],[{"__id__": "a32","value": 1}],[{"__id__": "a33","value": 1}],[{"__id__": "a34","value": 1}],[{"__id__": "a35","value": 1}]],"pins": {"0": {"__ref__": "a0"},"1": {"__ref__": "a1"},"2": {"__ref__": "a2"},"3": {"__ref__": "a3"},"4": {"__ref__": "a4"},"5": {"__ref__": "a5"},"6": {"__ref__": "a6"},"7": {"__ref__": "a7"},"8": {"__ref__": "a8"},"9": {"__ref__": "a9"},"10": {"__ref__": "a10"},"11": {"__ref__": "a11"},"12": {"__ref__": "a12"},"13": {"__ref__": "a13"},"14": {"__ref__": "a14"},"15": {"__ref__": "a15"},"16": {"__ref__": "a16"},"17": {"__ref__": "a17"},"18": {"__ref__": "a18"},"19": {"__ref__": "a19"},"20": {"__ref__": "a20"},"21": {"__ref__": "a21"},"22": {"__ref__": "a22"},"23": {"__ref__": "a23"},"24": {"__ref__": "a24"},"25": {"__ref__": "a25"},"26": {"__ref__": "a26"},"27": {"__ref__": "a27"},"28": {"__ref__": "a28"},"29": {"__ref__": "a29"},"30": {"__ref__": "a30"},"31": {"__ref__": "a31"},"32": {"__ref__": "a32"},"33": {"__ref__": "a33"},"34": {"__ref__": "a34"},"35": {"__ref__": "a35"}}},
+    "expected": {"definitions": [[{"__id__": "b0","value": 1}],[{"__id__": "b1","value": 1}],[{"__id__": "b2","value": 1}],[{"__id__": "b3","value": 1}],[{"__id__": "b4","value": 1}],[{"__id__": "b5","value": 1}],[{"__id__": "b6","value": 1}],[{"__id__": "b7","value": 1}],[{"__id__": "b8","value": 1}],[{"__id__": "b9","value": 1}],[{"__id__": "b10","value": 1}],[{"__id__": "b11","value": 1}],[{"__id__": "b12","value": 1}],[{"__id__": "b13","value": 1}],[{"__id__": "b14","value": 1}],[{"__id__": "b15","value": 1}],[{"__id__": "b16","value": 1}],[{"__id__": "b17","value": 1}],[{"__id__": "b18","value": 1}],[{"__id__": "b19","value": 1}],[{"__id__": "b20","value": 1}],[{"__id__": "b21","value": 1}],[{"__id__": "b22","value": 1}],[{"__id__": "b23","value": 1}],[{"__id__": "b24","value": 1}],[{"__id__": "b25","value": 1}],[{"__id__": "b26","value": 1}],[{"__id__": "b27","value": 1}],[{"__id__": "b28","value": 1}],[{"__id__": "b29","value": 1}],[{"__id__": "b30","value": 1}],[{"__id__": "b31","value": 1}],[{"__id__": "b32","value": 1}],[{"__id__": "b33","value": 1}],[{"__id__": "b34","value": 1}],[{"__id__": "b35","value": 1}]],"pins": {"0": {"__ref__": "b35"},"1": {"__ref__": "b34"},"2": {"__ref__": "b33"},"3": {"__ref__": "b32"},"4": {"__ref__": "b31"},"5": {"__ref__": "b30"},"6": {"__ref__": "b29"},"7": {"__ref__": "b28"},"8": {"__ref__": "b27"},"9": {"__ref__": "b26"},"10": {"__ref__": "b25"},"11": {"__ref__": "b24"},"12": {"__ref__": "b23"},"13": {"__ref__": "b22"},"14": {"__ref__": "b21"},"15": {"__ref__": "b20"},"16": {"__ref__": "b19"},"17": {"__ref__": "b18"},"18": {"__ref__": "b17"},"19": {"__ref__": "b16"},"20": {"__ref__": "b15"},"21": {"__ref__": "b14"},"22": {"__ref__": "b13"},"23": {"__ref__": "b12"},"24": {"__ref__": "b11"},"25": {"__ref__": "b10"},"26": {"__ref__": "b9"},"27": {"__ref__": "b8"},"28": {"__ref__": "b7"},"29": {"__ref__": "b6"},"30": {"__ref__": "b5"},"31": {"__ref__": "b4"},"32": {"__ref__": "b3"},"33": {"__ref__": "b2"},"34": {"__ref__": "b1"},"35": {"__ref__": "b0"}}},
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "one ring against two rings exhausts the deterministic search budget",
+    "actual": {"definitions": [{"__id__": "a0","value": 1},{"__id__": "a1","value": 1},{"__id__": "a2","value": 1},{"__id__": "a3","value": 1},{"__id__": "a4","value": 1},{"__id__": "a5","value": 1},{"__id__": "a6","value": 1},{"__id__": "a7","value": 1},{"__id__": "a8","value": 1},{"__id__": "a9","value": 1}],"edges": [{"from": {"__ref__": "a0"},"to": {"__ref__": "a1"}},{"from": {"__ref__": "a1"},"to": {"__ref__": "a2"}},{"from": {"__ref__": "a2"},"to": {"__ref__": "a3"}},{"from": {"__ref__": "a3"},"to": {"__ref__": "a4"}},{"from": {"__ref__": "a4"},"to": {"__ref__": "a5"}},{"from": {"__ref__": "a5"},"to": {"__ref__": "a6"}},{"from": {"__ref__": "a6"},"to": {"__ref__": "a7"}},{"from": {"__ref__": "a7"},"to": {"__ref__": "a8"}},{"from": {"__ref__": "a8"},"to": {"__ref__": "a9"}},{"from": {"__ref__": "a9"},"to": {"__ref__": "a0"}}]},
+    "expected": {"definitions": [{"__id__": "b0","value": 1},{"__id__": "b1","value": 1},{"__id__": "b2","value": 1},{"__id__": "b3","value": 1},{"__id__": "b4","value": 1},{"__id__": "b5","value": 1},{"__id__": "b6","value": 1},{"__id__": "b7","value": 1},{"__id__": "b8","value": 1},{"__id__": "b9","value": 1}],"edges": [{"from": {"__ref__": "b0"},"to": {"__ref__": "b1"}},{"from": {"__ref__": "b1"},"to": {"__ref__": "b2"}},{"from": {"__ref__": "b2"},"to": {"__ref__": "b3"}},{"from": {"__ref__": "b3"},"to": {"__ref__": "b4"}},{"from": {"__ref__": "b4"},"to": {"__ref__": "b0"}},{"from": {"__ref__": "b5"},"to": {"__ref__": "b6"}},{"from": {"__ref__": "b6"},"to": {"__ref__": "b7"}},{"from": {"__ref__": "b7"},"to": {"__ref__": "b8"}},{"from": {"__ref__": "b8"},"to": {"__ref__": "b9"}},{"from": {"__ref__": "b9"},"to": {"__ref__": "b5"}}]},
+    "compareMode": "unordered-array",
+    "equal": null,
+    "outcome": "limit"
+  },
+  {
+    "name": "a back edge closes an unordered array cycle",
+    "actual": {"__id__": "a","items": [{"__ref__": "a"},{"__id__": "b","v": 1}]},
+    "expected": {"__id__": "x","items": [{"__id__": "y","v": 1},{"__ref__": "x"}]},
+    "compareMode": "unordered-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "a back edge closes an unordered nested array cycle",
+    "actual": {"__id__": "a","items": [[{"__ref__": "a"},{"__id__": "b","v": 1}]]},
+    "expected": {"__id__": "x","items": [[{"__id__": "y","v": 1},{"__ref__": "x"}]]},
+    "compareMode": "unordered-nested-array",
+    "equal": true,
+    "outcome": "equal"
+  },
+  {
+    "name": "cutoff with endpoint keys first",
+    "actual": {"definitions": [{"__id__": "a0","v": 1},{"__id__": "a1","v": 1},{"__id__": "a2","v": 1},{"__id__": "a3","v": 1},{"__id__": "a4","v": 1},{"__id__": "a5","v": 1}],"edges": [{"from": {"__ref__": "a0"},"to": {"__ref__": "a1"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "a1"},"to": {"__ref__": "a2"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "a2"},"to": {"__ref__": "a3"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "a3"},"to": {"__ref__": "a4"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "a4"},"to": {"__ref__": "a5"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "a5"},"to": {"__ref__": "a0"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}}]},
+    "expected": {"definitions": [{"__id__": "b0","v": 1},{"__id__": "b1","v": 1},{"__id__": "b2","v": 1},{"__id__": "b3","v": 1},{"__id__": "b4","v": 1},{"__id__": "b5","v": 1}],"edges": [{"from": {"__ref__": "b0"},"to": {"__ref__": "b1"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "b1"},"to": {"__ref__": "b2"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "b2"},"to": {"__ref__": "b0"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "b3"},"to": {"__ref__": "b4"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "b4"},"to": {"__ref__": "b5"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}},{"from": {"__ref__": "b5"},"to": {"__ref__": "b3"},"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19}}]},
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "cutoff with payload key first",
+    "actual": {"definitions": [{"__id__": "a0","v": 1},{"__id__": "a1","v": 1},{"__id__": "a2","v": 1},{"__id__": "a3","v": 1},{"__id__": "a4","v": 1},{"__id__": "a5","v": 1}],"edges": [{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a0"},"to": {"__ref__": "a1"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a1"},"to": {"__ref__": "a2"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a2"},"to": {"__ref__": "a3"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a3"},"to": {"__ref__": "a4"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a4"},"to": {"__ref__": "a5"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "a5"},"to": {"__ref__": "a0"}}]},
+    "expected": {"definitions": [{"__id__": "b0","v": 1},{"__id__": "b1","v": 1},{"__id__": "b2","v": 1},{"__id__": "b3","v": 1},{"__id__": "b4","v": 1},{"__id__": "b5","v": 1}],"edges": [{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b0"},"to": {"__ref__": "b1"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b1"},"to": {"__ref__": "b2"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b2"},"to": {"__ref__": "b0"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b3"},"to": {"__ref__": "b4"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b4"},"to": {"__ref__": "b5"}},{"payload": {"k0000": 0,"k0001": 1,"k0002": 2,"k0003": 3,"k0004": 4,"k0005": 5,"k0006": 6,"k0007": 7,"k0008": 8,"k0009": 9,"k0010": 10,"k0011": 11,"k0012": 12,"k0013": 13,"k0014": 14,"k0015": 15,"k0016": 16,"k0017": 17,"k0018": 18,"k0019": 19},"from": {"__ref__": "b5"},"to": {"__ref__": "b3"}}]},
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal",
+    "compareStepsWith": "cutoff with endpoint keys first"
+  },
+  {
+    "name": "completed search with endpoint keys first",
+    "actual": {"definitions": [{"__id__": "a0","v": 1},{"__id__": "a1","v": 1},{"__id__": "a2","v": 1},{"__id__": "a3","v": 1},{"__id__": "a4","v": 1},{"__id__": "a5","v": 1}],"edges": [{"from": {"__ref__": "a0"},"to": {"__ref__": "a1"},"payload": {"k0000": 0}},{"from": {"__ref__": "a1"},"to": {"__ref__": "a2"},"payload": {"k0000": 0}},{"from": {"__ref__": "a2"},"to": {"__ref__": "a3"},"payload": {"k0000": 0}},{"from": {"__ref__": "a3"},"to": {"__ref__": "a4"},"payload": {"k0000": 0}},{"from": {"__ref__": "a4"},"to": {"__ref__": "a5"},"payload": {"k0000": 0}},{"from": {"__ref__": "a5"},"to": {"__ref__": "a0"},"payload": {"k0000": 0}}]},
+    "expected": {"definitions": [{"__id__": "b0","v": 1},{"__id__": "b1","v": 1},{"__id__": "b2","v": 1},{"__id__": "b3","v": 1},{"__id__": "b4","v": 1},{"__id__": "b5","v": 1}],"edges": [{"from": {"__ref__": "b0"},"to": {"__ref__": "b1"},"payload": {"k0000": 0}},{"from": {"__ref__": "b1"},"to": {"__ref__": "b2"},"payload": {"k0000": 0}},{"from": {"__ref__": "b2"},"to": {"__ref__": "b0"},"payload": {"k0000": 0}},{"from": {"__ref__": "b3"},"to": {"__ref__": "b4"},"payload": {"k0000": 0}},{"from": {"__ref__": "b4"},"to": {"__ref__": "b5"},"payload": {"k0000": 0}},{"from": {"__ref__": "b5"},"to": {"__ref__": "b3"},"payload": {"k0000": 0}}]},
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal"
+  },
+  {
+    "name": "completed search with payload key first",
+    "actual": {"definitions": [{"__id__": "a0","v": 1},{"__id__": "a1","v": 1},{"__id__": "a2","v": 1},{"__id__": "a3","v": 1},{"__id__": "a4","v": 1},{"__id__": "a5","v": 1}],"edges": [{"payload": {"k0000": 0},"from": {"__ref__": "a0"},"to": {"__ref__": "a1"}},{"payload": {"k0000": 0},"from": {"__ref__": "a1"},"to": {"__ref__": "a2"}},{"payload": {"k0000": 0},"from": {"__ref__": "a2"},"to": {"__ref__": "a3"}},{"payload": {"k0000": 0},"from": {"__ref__": "a3"},"to": {"__ref__": "a4"}},{"payload": {"k0000": 0},"from": {"__ref__": "a4"},"to": {"__ref__": "a5"}},{"payload": {"k0000": 0},"from": {"__ref__": "a5"},"to": {"__ref__": "a0"}}]},
+    "expected": {"definitions": [{"__id__": "b0","v": 1},{"__id__": "b1","v": 1},{"__id__": "b2","v": 1},{"__id__": "b3","v": 1},{"__id__": "b4","v": 1},{"__id__": "b5","v": 1}],"edges": [{"payload": {"k0000": 0},"from": {"__ref__": "b0"},"to": {"__ref__": "b1"}},{"payload": {"k0000": 0},"from": {"__ref__": "b1"},"to": {"__ref__": "b2"}},{"payload": {"k0000": 0},"from": {"__ref__": "b2"},"to": {"__ref__": "b0"}},{"payload": {"k0000": 0},"from": {"__ref__": "b3"},"to": {"__ref__": "b4"}},{"payload": {"k0000": 0},"from": {"__ref__": "b4"},"to": {"__ref__": "b5"}},{"payload": {"k0000": 0},"from": {"__ref__": "b5"},"to": {"__ref__": "b3"}}]},
+    "compareMode": "unordered-array",
+    "equal": false,
+    "outcome": "unequal",
+    "compareStepsWith": "completed search with endpoint keys first"
+  },
+  {
+    "name": "an earlier mismatch skips an unmarked live cycle",
+    "actual": {"a": 1,"b": {"v": 1}},
+    "expected": {"a": 2,"b": {"v": 9}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal",
+    "liveCycleAt": "b"
+  },
+  {
+    "name": "the same earlier mismatch with an acyclic value",
+    "actual": {"a": 1,"b": {"v": 1}},
+    "expected": {"a": 2,"b": {"v": 9}},
+    "compareMode": "exact",
+    "equal": false,
+    "outcome": "unequal"
+  }
+]

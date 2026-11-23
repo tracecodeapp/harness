@@ -3,6 +3,7 @@ import type {
   JudgeComparisonInput,
   JudgeComparisonResult,
 } from './comparison';
+import { isArrayIndex, refineGraphSignatures, type GraphReferenceIndex } from './graph-refinement';
 
 export type JudgeCompareMode =
   | 'exact'
@@ -171,73 +172,390 @@ function compareUnordered(
   });
 }
 
+// Preserve the original short-circuit and array comparison semantics for values
+// without resolved graph references.
+function compareNonGraphValues(
+  actual: unknown,
+  expected: unknown,
+  mode: JudgeCompareMode,
+  floatTolerance: boolean
+): boolean {
+  if (actual === expected ||
+    (actual === undefined && expected === null) ||
+    (actual === null && expected === undefined)) return true;
+  if (typeof actual === 'number' && typeof expected === 'number') {
+    return compareNumbers(actual, expected, floatTolerance);
+  }
+  if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') {
+    return false;
+  }
+  if (Array.isArray(actual) && Array.isArray(expected)) {
+    const exact = (left: unknown, right: unknown) =>
+      compareNonGraphValues(left, right, 'exact', floatTolerance);
+    if (mode === 'unordered-array') return compareUnordered(actual, expected, exact);
+    if (mode === 'unordered-nested-array') {
+      return compareUnordered(actual, expected, (left, right) =>
+        Array.isArray(left) && Array.isArray(right) ? compareUnordered(left, right, exact) : exact(left, right)
+      );
+    }
+    return actual.length === expected.length && actual.every((value, index) =>
+      compareNonGraphValues(value, expected[index], mode, floatTolerance)
+    );
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  const expectedRecord = expected as Record<string, unknown>;
+  const actualKeys = Object.keys(actualRecord).filter((key) => !METADATA_KEYS.has(key));
+  const expectedKeys = Object.keys(expectedRecord).filter((key) => !METADATA_KEYS.has(key));
+  return actualKeys.length === expectedKeys.length && actualKeys.every((key) =>
+    Object.hasOwn(expectedRecord, key) &&
+    compareNonGraphValues(actualRecord[key], expectedRecord[key], mode, floatTolerance)
+  );
+}
+
+export const GRAPH_COMPARISON_LIMIT = 'GRAPH_COMPARISON_LIMIT';
+// Shared with the app comparator. Charge for a value pair, an ordered child
+// slot, or an unordered slot considered for indexing, matching or retrying.
+const GRAPH_COMPARISON_STEP_BUDGET = 100_000;
+
+class GraphComparisonLimitError extends Error {
+  readonly name = 'GraphComparisonLimitError';
+  readonly code = GRAPH_COMPARISON_LIMIT;
+
+  constructor() {
+    super(GRAPH_COMPARISON_LIMIT);
+  }
+}
+
+type DeferredArray = {
+  readonly actual: readonly unknown[];
+  readonly expected: readonly unknown[];
+  readonly nested: boolean;
+};
+
+type GraphSearch = {
+  step(): void;
+  defer(array: DeferredArray): void;
+};
+
+const LEAVE_VALUE = Symbol('leave value');
+
+function indexSerializedGraph(
+  root: unknown,
+  structuralJson: boolean,
+  forSearch: boolean
+): GraphReferenceIndex & { readonly hasLiveCycle: boolean } {
+  const definitions = new Map<string, object | undefined>();
+  const markers = new Map<object, string>();
+  const visited = new Map<object, 'active' | 'done'>();
+  const pending = [root];
+  const postorder: object[] = [];
+  let canRefine = forSearch;
+  let hasLiveCycle = false;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (value === LEAVE_VALUE) {
+      const node = pending.pop() as object;
+      visited.set(node, 'done');
+      if (forSearch) postorder.push(node);
+      continue;
+    }
+    if (value === null || typeof value !== 'object') continue;
+    const state = visited.get(value);
+    if (state === 'done') continue;
+    if (state === 'active') {
+      hasLiveCycle = true;
+      continue;
+    }
+    visited.set(value, 'active');
+    pending.push(value, LEAVE_VALUE);
+    const keys = Object.keys(value);
+    if (Array.isArray(value)) {
+      if (keys.length !== value.length) canRefine = false;
+      for (const key of keys) {
+        if (!isArrayIndex(key)) {
+          canRefine = false;
+          continue;
+        }
+        pushDataProperty(value, key);
+      }
+      continue;
+    }
+    if (keys.length === 1 && keys[0] === '__ref__') {
+      const marker = Object.getOwnPropertyDescriptor(value, '__ref__')?.value;
+      if (typeof marker === 'string') {
+        markers.set(value, marker);
+        continue;
+      }
+    }
+    const id = Object.getOwnPropertyDescriptor(value, '__id__')?.value;
+    if (typeof id === 'string') {
+      definitions.set(id, definitions.has(id) ? undefined : value);
+    }
+    for (const key of keys) {
+      if (structuralJson || !METADATA_KEYS.has(key)) pushDataProperty(value, key);
+    }
+  }
+
+  const targets = new Set<object>();
+  const references = new Map<object, object>();
+  for (const [marker, id] of markers) {
+    const target = definitions.get(id);
+    // Unresolved or ambiguous markers retain their literal record semantics.
+    if (target === undefined) continue;
+    references.set(marker, target);
+    targets.add(target);
+  }
+  return { references, targets, postorder, canRefine, hasLiveCycle };
+
+  function pushDataProperty(owner: object, key: string): void {
+    // Discover serialized references without evaluating native getters.
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+    if (descriptor && 'value' in descriptor) pending.push(descriptor.value);
+    else canRefine = false;
+  }
+}
+
+/** Internal comparison entry point. The optional observer reads the test's search cost. */
+export function compareSerializedValues(
+  actual: unknown,
+  expected: unknown,
+  mode: JudgeCompareMode,
+  floatTolerance: boolean,
+  structuralJson: boolean,
+  recordSearchSteps?: (steps: number) => void
+): boolean {
+  if (actual === expected) return true;
+  if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') {
+    return structuralJson ? false : compareNonGraphValues(actual, expected, mode, floatTolerance);
+  }
+  const actualGraph = indexSerializedGraph(actual, structuralJson, mode !== 'exact');
+  const expectedGraph = indexSerializedGraph(expected, structuralJson, mode !== 'exact');
+  const hasGraph = actualGraph.targets.size > 0 || expectedGraph.targets.size > 0;
+  if (!hasGraph) {
+    return structuralJson ? false : compareNonGraphValues(actual, expected, mode, floatTolerance);
+  }
+  if (actualGraph.hasLiveCycle || expectedGraph.hasLiveCycle) {
+    throw new RangeError('Comparison requires cycles to use serialized references.');
+  }
+  const forward = new Map<object, object>();
+  const reverse = new Set<object>();
+  const changes: object[] = [];
+
+  function rollback(checkpoint: number): void {
+    while (changes.length > checkpoint) {
+      const node = changes.pop()!;
+      reverse.delete(forward.get(node)!);
+      forward.delete(node);
+    }
+  }
+
+  function compare(
+    left: unknown,
+    right: unknown,
+    currentMode: JudgeCompareMode,
+    search?: GraphSearch
+  ): boolean {
+    const pending: Array<[unknown, unknown]> = [[left, right]];
+    while (pending.length > 0) {
+      search?.step();
+      let [a, b] = pending.pop()!;
+      if (a !== null && typeof a === 'object') a = actualGraph.references.get(a) ?? a;
+      if (b !== null && typeof b === 'object') b = expectedGraph.references.get(b) ?? b;
+      if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+        const aTarget = actualGraph.targets.has(a);
+        const bTarget = expectedGraph.targets.has(b);
+        if (aTarget !== bTarget) return false;
+        if (aTarget) {
+          const paired = forward.get(a);
+          if (paired !== undefined) {
+            if (paired !== b) return false;
+            // The first visit owns comparison of the node's payload.
+            continue;
+          }
+          if (reverse.has(b)) return false;
+          forward.set(a, b);
+          reverse.add(b);
+          changes.push(a);
+        }
+
+        if (Array.isArray(a) && Array.isArray(b)) {
+          if (a.length !== b.length) return false;
+          const nested = currentMode === 'unordered-nested-array';
+          if (currentMode === 'exact') {
+            for (let index = a.length - 1; index >= 0; index--) {
+              search?.step();
+              if (index in a) pending.push([a[index], b[index]]);
+            }
+          } else {
+            search!.defer({ actual: a, expected: b, nested });
+          }
+          continue;
+        }
+        if (structuralJson && Array.isArray(a) !== Array.isArray(b)) return false;
+        const aRecord = a as Record<string, unknown>;
+        const bRecord = b as Record<string, unknown>;
+        const aKeys = Object.keys(aRecord).filter(includeKey);
+        const bKeys = Object.keys(bRecord).filter(includeKey);
+        if (aKeys.length !== bKeys.length) return false;
+        if (search) aKeys.sort();
+        for (let index = aKeys.length - 1; index >= 0; index--) {
+          search?.step();
+          const key = aKeys[index]!;
+          if (structuralJson ? key !== bKeys[index] : !Object.hasOwn(bRecord, key)) return false;
+          pending.push([aRecord[key], bRecord[key]]);
+        }
+        continue;
+      }
+
+      if (!compareLeaves(a, b)) return false;
+    }
+    return true;
+  }
+
+  function compareLeaves(left: unknown, right: unknown): boolean {
+    if (left === right || (!structuralJson && left == null && right == null)) return true;
+    return typeof left === 'number' && typeof right === 'number' &&
+      compareNumbers(left, right, floatTolerance);
+  }
+
+  function includeKey(key: string): boolean {
+    return structuralJson ? !(hasGraph && key === '__id__') : !METADATA_KEYS.has(key);
+  }
+
+  let searchSteps = 0;
+  if (mode === 'exact') return compare(actual, expected, mode);
+  try {
+    return compareGraphUnordered();
+  } finally {
+    recordSearchSteps?.(searchSteps);
+  }
+
+  function compareGraphUnordered(): boolean {
+    let signatures: ReturnType<typeof refineGraphSignatures> | undefined;
+    function signature(side: 0 | 1, value: unknown): number {
+      signatures ??= refineGraphSignatures(actualGraph, expectedGraph, includeKey, floatTolerance);
+      return signatures[side](value);
+    }
+    function step(): void {
+      if (searchSteps === GRAPH_COMPARISON_STEP_BUDGET) throw new GraphComparisonLimitError();
+      searchSteps++;
+    }
+
+    type ArrayWork = DeferredArray & {
+      readonly groups: ReadonlyMap<number, readonly number[]>;
+      readonly used: Set<number>;
+      readonly index: number;
+      readonly next?: ArrayWork;
+    };
+    type Choice = {
+      readonly array: ArrayWork;
+      readonly index: number;
+      readonly candidates: readonly number[];
+      readonly checkpoint: number;
+      offset: number;
+      selected?: number;
+    };
+    let work: ArrayWork | undefined;
+    const choices: Choice[] = [];
+
+    // Finish fixed object/array edges before choosing an unordered pairing.
+    // Any deferred arrays belong to this branch of the search.
+    function match(
+      left: unknown,
+      right: unknown,
+      currentMode: JudgeCompareMode,
+      resume?: ArrayWork
+    ): boolean {
+      const deferred: DeferredArray[] = [];
+      if (!compare(left, right, currentMode, { step, defer: (array) => deferred.push(array) })) {
+        return false;
+      }
+      work = resume;
+      for (let index = deferred.length - 1; index >= 0; index--) {
+        const array = deferred[index]!;
+        const groups = new Map<number, number[]>();
+        for (let slot = 0; slot < array.expected.length; slot++) {
+          step();
+          const color = signature(1, array.expected[slot]);
+          const group = groups.get(color);
+          if (group === undefined) groups.set(color, [slot]);
+          else group.push(slot);
+        }
+        work = { ...array, groups, used: new Set(), index: 0, next: work };
+      }
+      return true;
+    }
+
+    if (!match(actual, expected, mode)) return false;
+    search: while (true) {
+      // Skip sparse actual slots as the ordinary unordered matcher does.
+      while (work) {
+        const array = work;
+        let index = array.index;
+        for (; index < array.actual.length; index++) {
+          step();
+          if (index in array.actual) break;
+        }
+        if (index < array.actual.length) {
+          choices.push({
+            array,
+            index,
+            candidates: array.groups.get(signature(0, array.actual[index])) ?? [],
+            checkpoint: changes.length,
+            offset: 0,
+          });
+          break;
+        }
+        work = array.next;
+      }
+      if (!work) return true;
+
+      // Keep earlier successful choices until every sibling has matched.
+      // Failed branches unwind both their occupied slots and identity bindings.
+      while (choices.length > 0) {
+        const choice = choices.at(-1)!;
+        const { array, candidates, checkpoint, index } = choice;
+        if (choice.selected !== undefined) {
+          array.used.delete(choice.selected);
+          choice.selected = undefined;
+        }
+        rollback(checkpoint);
+        while (choice.offset < candidates.length) {
+          step();
+          const candidate = candidates[choice.offset++]!;
+          if (array.used.has(candidate)) continue;
+          const left = array.actual[index];
+          const right = array.expected[candidate];
+          array.used.add(candidate);
+          if (match(left, right, elementMode(array.nested, left, right), { ...array, index: index + 1 })) {
+            choice.selected = candidate;
+            continue search;
+          }
+          array.used.delete(candidate);
+          rollback(checkpoint);
+        }
+        choices.pop();
+      }
+      return false;
+    }
+  }
+}
+
+function elementMode(nested: boolean, actual: unknown, expected: unknown): JudgeCompareMode {
+  return nested && Array.isArray(actual) && Array.isArray(expected) ? 'unordered-array' : 'exact';
+}
+
 export function compareJudgeValues(
   actual: unknown,
   expected: unknown,
   mode: JudgeCompareMode = 'exact',
   floatTolerance = true
 ): boolean {
-  if (actual === expected) return true;
-  if (
-    (actual === undefined && expected === null) ||
-    (actual === null && expected === undefined)
-  ) {
-    return true;
-  }
-  if (actual === null || expected === null) return false;
-  if (actual === undefined || expected === undefined) return false;
-  if (typeof actual === 'number' && typeof expected === 'number') {
-    return compareNumbers(actual, expected, floatTolerance);
-  }
-  if (Array.isArray(actual) && Array.isArray(expected)) {
-    if (mode === 'unordered-array') {
-      return compareUnordered(actual, expected, (left, right) =>
-        compareJudgeValues(left, right, 'exact', floatTolerance)
-      );
-    }
-    if (mode === 'unordered-nested-array') {
-      return compareUnordered(actual, expected, (left, right) =>
-        Array.isArray(left) && Array.isArray(right)
-          ? compareUnordered(left, right, (nestedLeft, nestedRight) =>
-              compareJudgeValues(
-                nestedLeft,
-                nestedRight,
-                'exact',
-                floatTolerance
-              )
-            )
-          : compareJudgeValues(left, right, 'exact', floatTolerance)
-      );
-    }
-    if (actual.length !== expected.length) return false;
-    return actual.every((value, index) =>
-      compareJudgeValues(value, expected[index], mode, floatTolerance)
-    );
-  }
-  if (typeof actual === 'object' && typeof expected === 'object') {
-    const actualRecord = actual as Record<string, unknown>;
-    const expectedRecord = expected as Record<string, unknown>;
-    const actualKeys = Object.keys(actualRecord).filter(
-      (key) => !METADATA_KEYS.has(key)
-    );
-    const expectedKeys = Object.keys(expectedRecord).filter(
-      (key) => !METADATA_KEYS.has(key)
-    );
-    return (
-      actualKeys.length === expectedKeys.length &&
-      actualKeys.every(
-        (key) =>
-          Object.prototype.hasOwnProperty.call(expectedRecord, key) &&
-          compareJudgeValues(
-            actualRecord[key],
-            expectedRecord[key],
-            mode,
-            floatTolerance
-          )
-      )
-    );
-  }
-  return false;
+  return compareSerializedValues(actual, expected, mode, floatTolerance, false);
+}
+
+export function compareStructuralJsonGraphValues(actual: unknown, expected: unknown): boolean {
+  return compareSerializedValues(actual, expected, 'exact', false, true);
 }
 
 function isValidTopK(

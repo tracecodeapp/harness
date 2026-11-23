@@ -1,3 +1,5 @@
+import { compareStructuralJsonGraphValues } from './comparator-strategy';
+
 export interface JudgeComparisonInput<
   Input = unknown,
   Expected = unknown,
@@ -55,9 +57,8 @@ function serializeStructuralJson(
 /**
  * Compatibility comparator for the 0.13 browser and native judge behavior.
  *
- * Equality is intentionally defined by JSON serialization. This preserves the
- * existing array order, object insertion-order, and JSON coercion semantics
- * while the direct runners migrate behind Judge.
+ * JSON serialization preserves the existing array order, object insertion
+ * order and coercions. Graph references are resolved within those JSON values.
  */
 export const structuralJsonComparator: JudgeComparator =
   Object.freeze({
@@ -65,7 +66,11 @@ export const structuralJsonComparator: JudgeComparator =
     compare(input: JudgeComparisonInput): JudgeComparisonResult {
       const actual = serializeStructuralJson(input.actual, 'actual output');
       const expected = serializeStructuralJson(input.expected, 'expected output');
-      const matched = actual === expected;
+      const matched = actual === expected || (
+        actual?.includes('"__ref__":') === true &&
+        expected?.includes('"__ref__":') === true &&
+        compareStructuralJsonGraphValues(JSON.parse(actual), JSON.parse(expected))
+      );
       return Object.freeze({
         matched,
         ...(matched
