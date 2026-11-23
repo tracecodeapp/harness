@@ -53,7 +53,13 @@ public static class RuntimeTraceSink
         timeoutReason = null;
         minimalTrace = false;
         traceLimitExceeded = false;
-        recordingEnabled = true;
+        // A reset sink is idle, as on a fresh worker: only Configure turns
+        // recording (and with it the deadline check) on. Reset also runs in
+        // every execution's finally; leaving recording on there armed the
+        // two-second deadline above for the next request on a retained
+        // worker, so an untraced case that never configures the sink timed
+        // out on its first instrumented line.
+        recordingEnabled = false;
         nextTraceReferenceId = 0;
     }
 

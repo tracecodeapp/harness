@@ -36,6 +36,17 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- A warm C# runner no longer reports a correct untraced case as
+  `client-timeout` ("C# execution timed out.") within milliseconds. The
+  runner's trace sink was left recording, with a two-second deadline, after
+  every traced or compatibility execution, including the trusted prime of a
+  standby runner. The next untraced algorithm-fast case that started more than
+  two seconds later hit that deadline on its first line. With
+  `stopAtFirstRunaway`, the rest of the Submit was then not run. The sink is
+  now idle between executions and the untraced path resets it. A real runaway
+  still stops at its own limit as `client-timeout`. Only the runner role
+  artifact is rebuilt.
+
 - A Python or C# browser worker lost while it ran a learner's case (the host
   terminated it and its `error` event fired) is now the provider's failure:
   each case reports `failure.origin: "provider"` (`runtime-provider-error`),
