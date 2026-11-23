@@ -17,6 +17,7 @@ import {
   webkit,
   type BrowserType,
 } from 'playwright';
+import type {} from './fixtures/java-stopping-batch-browser-entry';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
@@ -152,6 +153,59 @@ function assertConsoleResults(
     `${engine}: Java consoleOutput must retain stdout in print order`
   );
   assert.equal(consoleResults.success.output, 7);
+}
+
+function assertStoppingBatch(
+  result: Awaited<ReturnType<typeof globalThis.javaStoppingBatchProbe>>,
+  engine: BrowserEngine,
+): void {
+  console.log(`Java ten-case Run (${engine}): ${JSON.stringify(result.happyLifecycle)}`);
+  console.log(`Java tight-loop probe: ${JSON.stringify({
+    nonstopping: result.nonstoppingLifecycle,
+    outcomes: result.nonstopping.map(({ success, output, timeoutReason, timings }) =>
+      ({ success, output, timeoutReason, runMs: timings?.runMs })),
+    stopping: result.stopRuns.map(({ cases, ...lifecycle }) => ({
+      ...lifecycle, statuses: cases.map(({ status }) => status),
+    })),
+  })}`);
+  const traceSize = (trace: unknown) => (trace as { events?: unknown[] } | undefined)?.events?.length ?? 0;
+  assert.equal(result.happy.length, 10);
+  assert.deepEqual(result.happy.map((row) => row.verdict.kind), Array(10).fill('passed'));
+  assert.deepEqual(result.happy.map((row) => row.value), Array.from({ length: 10 }, (_, i) => i));
+  assert.ok(traceSize(result.happy[0]?.trace) > 0);
+  assert.ok(result.happy.slice(1).every((row) => traceSize(row.trace) === 0));
+  assert.equal(result.happyLifecycle.workers, 1);
+  assert.equal(result.happyLifecycle.runners, 1);
+  assert.deepEqual(result.happyLifecycle.dispatches, [true, ...Array(9).fill(false)]);
+  assert.equal(result.continuationLifecycle.workers, 1);
+  assert.equal(result.continuationLifecycle.runners, 1);
+  assert.equal(result.continuation[0]?.caseId, '1');
+  assert.equal(result.continuation[0]?.value, 1);
+  assert.ok(traceSize(result.continuation[0]?.trace) > 0);
+
+  for (const { cases, requests, dispatches, selection } of result.stopRuns) {
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0]?.type, 'execute-prepared-runtime-program-batch');
+    assert.ok((requests[0]?.elapsed ?? Infinity) < result.bound + 800, JSON.stringify(requests));
+    assert.deepEqual(dispatches, [selection === '0', selection === '1']);
+    assert.equal(cases[0]?.verdict.kind, 'passed');
+    assert.equal(cases[1]?.status, 'timed-out');
+    assert.equal(cases[1]?.failure?.origin, 'limit');
+    assert.match(cases[1]?.failure?.message ?? '', new RegExp(`${result.bound}ms`));
+    assert.deepEqual(cases[2]?.notRun, {
+      reason: 'run-stopped-after-limit', stoppedByCaseId: '1', limit: 'client-timeout',
+    });
+  }
+
+  assert.deepEqual(result.nonstopping.map(({ output, timeoutReason }) => output ?? timeoutReason), [0, 'client-timeout', 2]);
+  assert.equal(result.nonstoppingLifecycle.runners, 2);
+  assert.deepEqual(result.nonstoppingLifecycle.runnerEvents, ['created', 'run', 'run', 'disposed', 'created', 'run', 'disposed']);
+  assert.equal(result.truncated[0]?.success, true);
+  assert.equal(result.truncated[0]?.output, 0);
+  assert.equal(result.truncated[0]?.traceLimitExceeded, true);
+  assert.deepEqual(result.fallbackLifecycle.dispatches, [true, false]);
+  assert.equal(result.abortName, 'AbortError');
+  assert.deepEqual(result.abortLifecycle.dispatches, [true, false]);
 }
 
 function assertPreparedResult(
@@ -467,14 +521,10 @@ function assertPreparedResult(
     [6, 9],
     `${engine}: prepared trace batches must preserve ordered outputs`
   );
-  // Traced batches run one request per case so each case has its own
-  // deadline; every case reports the boundary a single-case request reports.
   assert.equal(
     result.traceBatchRunnerProcessCount,
-    isolated ? 1 : -1,
-    isolated
-      ? `${engine}: each traced batch case must reuse one clean inner JVM like a single-case request`
-      : `${engine}: each traced batch case must restore into compatibility like a single-case request (got ${result.traceBatchRunnerProcessCount})`
+    1,
+    `${engine}: a prepared trace batch must share one clean inner JVM`
   );
   assert.equal(
     result.traceBatchHasEvents,
@@ -565,6 +615,7 @@ const temporaryDirectory = mkdtempSync(
   join(tmpdir(), 'java-prepared-provider-browser-')
 );
 const bundlePath = join(temporaryDirectory, 'test.js');
+const stoppingBundlePath = join(temporaryDirectory, 'stopping.js');
 
 try {
   await build({
@@ -579,6 +630,19 @@ try {
     logLevel: 'silent',
   });
   const bundle = readFileSync(bundlePath);
+  await build({
+    entryPoints: [resolve('tests/fixtures/java-stopping-batch-browser-entry.ts')],
+    bundle: true,
+    format: 'iife',
+    platform: 'browser',
+    target: 'es2022',
+    tsconfig: resolve('tsconfig.base.json'),
+    alias: { 'node:zlib': resolve('packages/tracekernel/src/zlib-browser-shim.ts') },
+    outfile: stoppingBundlePath,
+    logLevel: 'silent',
+  });
+  const stoppingBundle = readFileSync(stoppingBundlePath);
+
   const staticRoutes = new Map<string, string>([
     [
       '/workers/java-runtime-worker.js',
@@ -613,6 +677,43 @@ try {
       response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
     }
     response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    if (url.pathname === '/stopping.js') {
+      response.setHeader('content-type', 'text/javascript; charset=utf-8');
+      response.end(stoppingBundle);
+      return;
+    }
+    if (url.pathname === '/tracejvm/browser-client.js' && url.searchParams.has('observe')) {
+      response.setHeader('content-type', 'text/javascript; charset=utf-8');
+      response.end(`
+        import { TraceJVMRunnerHost as RunnerHost } from './browser-client.js';
+        export * from './browser-client.js';
+        const post = self.postMessage.bind(self);
+        const observe = (event, details) =>
+          post({ type: 'test-java-runner', payload: { event, ...details } });
+        export class TraceJVMRunnerHost extends RunnerHost {
+          async createProcess(...args) {
+            const process = await super.createProcess(...args);
+            let observed = false;
+            const run = process.run.bind(process);
+            const dispose = process.dispose.bind(process);
+            process.run = (request) => {
+              if (request.mainClass === 'tracecode.browser.TraceExecutionRunner') {
+                if (!observed) observe('created');
+                observed = true;
+                observe('run', { tracing: request.args?.[4] !== 'notrace' });
+              }
+              return run(request);
+            };
+            process.dispose = () => {
+              dispose();
+              if (observed) observe('disposed');
+            };
+            return process;
+          }
+        }
+      `);
+      return;
+    }
     if (url.pathname === '/test.js') {
       response.setHeader('content-type', 'text/javascript; charset=utf-8');
       response.end(bundle);
@@ -622,7 +723,10 @@ try {
     const staticPath = staticRoutes.get(url.pathname);
     if (staticPath) {
       response.setHeader('content-type', contentType(staticPath));
-      response.end(readFileSync(staticPath));
+      const source = readFileSync(staticPath);
+      response.end(url.pathname === '/workers/java-runtime-worker.js' && url.searchParams.has('probe')
+        ? source.toString().replace("new URL('browser-client.js', TRACEJVM_BASE_URL)", "new URL('browser-client.js?observe', TRACEJVM_BASE_URL)")
+        : source);
       return;
     }
 
@@ -649,7 +753,9 @@ try {
     }
 
     response.setHeader('content-type', 'text/html; charset=utf-8');
-    response.end('<!doctype html><script src="/test.js"></script>');
+    response.end(url.searchParams.has('stopping')
+      ? '<!doctype html><script src="/stopping.js"></script>'
+      : '<!doctype html><script src="/test.js"></script>');
   });
 
   await new Promise<void>((resolveListen, rejectListen) => {
@@ -673,7 +779,8 @@ try {
     for (const engine of requestedEngines) {
       const browserType = browserTypes[engine];
       if (!browserType) throw new Error(`Unknown browser engine: ${engine}`);
-      const isolationModes = engine === 'chromium' ? [true, false] : [true];
+      const stoppingOnly = process.env.TRACECODE_JAVA_STOPPING_ONLY === '1';
+      const isolationModes = stoppingOnly ? [false] : engine === 'chromium' ? [true, false] : [true];
       for (const isolated of isolationModes) {
         const browser = await browserType.launch({ headless: true });
         try {
@@ -693,6 +800,13 @@ try {
             isolated,
             `${engine}: test document must exercise the requested isolation mode`
           );
+          if (!isolated) {
+            await page.goto(`${origin}?isolated=false&stopping`);
+            const probe = await page.evaluate(() => globalThis.javaStoppingBatchProbe());
+            assertStoppingBatch(probe, engine);
+            if (stoppingOnly) continue;
+            await page.goto(`${origin}?isolated=false`);
+          }
           const consoleResults = await page.evaluate(() => {
             if (!globalThis.runJavaConsoleCases) {
               throw new Error('Java console fixture did not initialize.');
