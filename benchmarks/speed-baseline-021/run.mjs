@@ -48,6 +48,7 @@ const samplesPath = join(out, filePrefix + 'samples.jsonl');
 const deadline = Date.now() + runMinutes * 60_000;
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const json = async (path) => JSON.parse(await readFile(path, 'utf8'));
+const frozenDependencyHashes = await json(new URL('./dependency-locks/tree-sha256.json', import.meta.url));
 const now = () => new Date().toISOString();
 const pressure = () => ({ at: now(), oneMinute: loadavg()[0] });
 
@@ -166,6 +167,12 @@ async function prepareVersion(version) {
   const integrity = 'sha512-' + createHash('sha512').update(tarballBytes).digest('base64');
   assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
   const dependencyFile = join(root, 'dependencies.json');
+  const dependencyBytes = await readFile(dependencyFile);
+  const dependenciesSha256 = sha256(dependencyBytes);
+  assert.equal(dependenciesSha256, frozenDependencyHashes[version], `Installed dependency tree differs from the frozen tree for Harness ${version}`);
+  const dependencyLockSha256 = sha256(await readFile(join(harness, 'package-lock.json')));
+  const expectedLock = new URL(`./dependency-locks/${version}.package-lock.json`, import.meta.url);
+  assert.equal(dependencyLockSha256, sha256(await readFile(expectedLock)), `Install lock differs from the frozen lock for Harness ${version}`);
   const shim = join(harness, 'dist', 'zlib-browser-shim.js');
   await build({
     entryPoints: ['benchmarks/speed-baseline-021/entry.ts'],
@@ -185,8 +192,8 @@ async function prepareVersion(version) {
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
   const metadata = {
     appRef: appRefs[version], tarball, integrity, sha256: sha256(tarballBytes),
-    dependenciesSha256: sha256(await readFile(dependencyFile)),
-    dependencies: await json(dependencyFile),
+    dependencyLockSha256, dependenciesSha256,
+    dependencies: JSON.parse(dependencyBytes.toString('utf8')),
   };
   return { metadata, ...await serve(site) };
 }

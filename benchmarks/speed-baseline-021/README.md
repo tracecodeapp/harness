@@ -27,6 +27,14 @@ budgets on those devices. The benchmark has no iOS device measurements.
 Use Node 22 and run browser work only on the build host through `ar-harness.sh`.
 Start with a short smoke job. Its load and timings cannot count toward the baseline.
 
+The host installs each published tarball's production dependencies with
+`npm ci` and the committed lock under `dependency-locks/`. The runner checks
+the installed lock and the SHA-256 of the full `npm ls --omit=dev --all --json`
+receipt before any browser timings. The two current locks reproduce the Desktop
+A trees. A later candidate, including 0.21, needs its own committed lock and tree
+digest before it can run, with compatible shared dependencies held at these
+versions.
+
 ```sh
 ar-harness.sh <worktree> speed-021-smoke bash benchmarks/speed-baseline-021/host-job.sh smoke smoke 212026 5
 ```

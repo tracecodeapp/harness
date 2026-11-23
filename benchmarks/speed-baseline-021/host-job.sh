@@ -11,9 +11,15 @@ if [[ "$mode" == run && ${SPEED_EXCLUSIVE_WINDOW:-} != 1 ]]; then
 fi
 
 out="$PWD/reports/speed-baseline-021"
+locks="$PWD/benchmarks/speed-baseline-021/dependency-locks"
 mkdir -p "$out"
 for version in 0.17.1 0.20.1; do
   pkg="$out/v$version"
+  lock="$locks/$version.package-lock.json"
+  if [[ ! -f "$lock" ]]; then
+    echo "No frozen dependency lock for Harness $version" >&2
+    exit 2
+  fi
   mkdir -p "$pkg"
   if [[ ! -f "$pkg/.installed" ]]; then
     (
@@ -25,12 +31,16 @@ for version in 0.17.1 0.20.1; do
       # Published manifests include workspace-only dev dependencies. Leave dist
       # and workers untouched and resolve production dependencies in isolation.
       node -e 'const f = require("node:fs"); const p = require("./package.json"); delete p.devDependencies; f.writeFileSync("package.json", JSON.stringify(p, null, 2));'
-      npm install --omit=dev --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
-      npm ls --omit=dev --all --json > ../dependencies.json
+      cp "$lock" package-lock.json
+      npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
       node dist/cli.cjs sync-assets ../site/workers --languages python,javascript,java,cpp,csharp
       touch ../.installed
     )
   fi
+  (
+    cd "$pkg/package"
+    npm ls --omit=dev --all --json > ../dependencies.json
+  )
 done
 
 exec node benchmarks/speed-baseline-021/run.mjs "$out" "$mode" "$@"
