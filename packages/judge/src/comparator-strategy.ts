@@ -3,7 +3,7 @@ import type {
   JudgeComparisonInput,
   JudgeComparisonResult,
 } from './comparison';
-import { refineGraphSignatures, type GraphReferenceIndex } from './graph-refinement';
+import { isArrayIndex, refineGraphSignatures, type GraphReferenceIndex } from './graph-refinement';
 
 export type JudgeCompareMode =
   | 'exact'
@@ -172,6 +172,46 @@ function compareUnordered(
   });
 }
 
+// Preserve the original short-circuit and array comparison semantics for values
+// without resolved graph references.
+function compareNonGraphValues(
+  actual: unknown,
+  expected: unknown,
+  mode: JudgeCompareMode,
+  floatTolerance: boolean
+): boolean {
+  if (actual === expected ||
+    (actual === undefined && expected === null) ||
+    (actual === null && expected === undefined)) return true;
+  if (typeof actual === 'number' && typeof expected === 'number') {
+    return compareNumbers(actual, expected, floatTolerance);
+  }
+  if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') {
+    return false;
+  }
+  if (Array.isArray(actual) && Array.isArray(expected)) {
+    const exact = (left: unknown, right: unknown) =>
+      compareNonGraphValues(left, right, 'exact', floatTolerance);
+    if (mode === 'unordered-array') return compareUnordered(actual, expected, exact);
+    if (mode === 'unordered-nested-array') {
+      return compareUnordered(actual, expected, (left, right) =>
+        Array.isArray(left) && Array.isArray(right) ? compareUnordered(left, right, exact) : exact(left, right)
+      );
+    }
+    return actual.length === expected.length && actual.every((value, index) =>
+      compareNonGraphValues(value, expected[index], mode, floatTolerance)
+    );
+  }
+  const actualRecord = actual as Record<string, unknown>;
+  const expectedRecord = expected as Record<string, unknown>;
+  const actualKeys = Object.keys(actualRecord).filter((key) => !METADATA_KEYS.has(key));
+  const expectedKeys = Object.keys(expectedRecord).filter((key) => !METADATA_KEYS.has(key));
+  return actualKeys.length === expectedKeys.length && actualKeys.every((key) =>
+    Object.hasOwn(expectedRecord, key) &&
+    compareNonGraphValues(actualRecord[key], expectedRecord[key], mode, floatTolerance)
+  );
+}
+
 export const GRAPH_COMPARISON_LIMIT = 'GRAPH_COMPARISON_LIMIT';
 // Shared with the app comparator. Charge for a value pair, an ordered child
 // slot, or an unordered slot considered for indexing, matching or retrying.
@@ -203,13 +243,14 @@ function indexSerializedGraph(
   root: unknown,
   structuralJson: boolean,
   forSearch: boolean
-): GraphReferenceIndex {
+): GraphReferenceIndex & { readonly hasLiveCycle: boolean } {
   const definitions = new Map<string, object | undefined>();
   const markers = new Map<object, string>();
   const visited = new Map<object, 'active' | 'done'>();
   const pending = [root];
   const postorder: object[] = [];
   let canRefine = forSearch;
+  let hasLiveCycle = false;
   while (pending.length > 0) {
     const value = pending.pop();
     if (value === LEAVE_VALUE) {
@@ -221,29 +262,37 @@ function indexSerializedGraph(
     if (value === null || typeof value !== 'object') continue;
     const state = visited.get(value);
     if (state === 'done') continue;
-    if (state === 'active') throw new RangeError('Comparison requires cycles to use serialized references.');
+    if (state === 'active') {
+      hasLiveCycle = true;
+      continue;
+    }
     visited.set(value, 'active');
     pending.push(value, LEAVE_VALUE);
+    const keys = Object.keys(value);
     if (Array.isArray(value)) {
-      const start = pending.length;
-      value.forEach((child) => pending.push(child));
-      if (forSearch && (pending.length - start !== value.length || Object.keys(value).length !== value.length)) {
-        canRefine = false;
+      if (keys.length !== value.length) canRefine = false;
+      for (const key of keys) {
+        if (!isArrayIndex(key)) {
+          canRefine = false;
+          continue;
+        }
+        pushDataProperty(value, key);
       }
       continue;
     }
-    const record = value as Record<string, unknown>;
-    const keys = Object.keys(record);
-    if (keys.length === 1 && keys[0] === '__ref__' && typeof record.__ref__ === 'string') {
-      markers.set(value, record.__ref__);
-      continue;
+    if (keys.length === 1 && keys[0] === '__ref__') {
+      const marker = Object.getOwnPropertyDescriptor(value, '__ref__')?.value;
+      if (typeof marker === 'string') {
+        markers.set(value, marker);
+        continue;
+      }
     }
-    if (Object.hasOwn(record, '__id__') && typeof record.__id__ === 'string') {
-      const id = record.__id__;
+    const id = Object.getOwnPropertyDescriptor(value, '__id__')?.value;
+    if (typeof id === 'string') {
       definitions.set(id, definitions.has(id) ? undefined : value);
     }
     for (const key of keys) {
-      if (structuralJson || !METADATA_KEYS.has(key)) pending.push(record[key]);
+      if (structuralJson || !METADATA_KEYS.has(key)) pushDataProperty(value, key);
     }
   }
 
@@ -256,37 +305,47 @@ function indexSerializedGraph(
     references.set(marker, target);
     targets.add(target);
   }
-  return { references, targets, postorder, canRefine };
+  return { references, targets, postorder, canRefine, hasLiveCycle };
+
+  function pushDataProperty(owner: object, key: string): void {
+    // Discover serialized references without evaluating native getters.
+    const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+    if (descriptor && 'value' in descriptor) pending.push(descriptor.value);
+    else canRefine = false;
+  }
 }
 
-function compareSerializedValues(
+/** Internal comparison entry point. The optional observer reads the test's search cost. */
+export function compareSerializedValues(
   actual: unknown,
   expected: unknown,
   mode: JudgeCompareMode,
   floatTolerance: boolean,
-  structuralJson: boolean
+  structuralJson: boolean,
+  recordSearchSteps?: (steps: number) => void
 ): boolean {
   if (actual === expected) return true;
   if (actual === null || expected === null || typeof actual !== 'object' || typeof expected !== 'object') {
-    return compareLeaves(actual, expected);
+    return structuralJson ? false : compareNonGraphValues(actual, expected, mode, floatTolerance);
   }
   const actualGraph = indexSerializedGraph(actual, structuralJson, mode !== 'exact');
   const expectedGraph = indexSerializedGraph(expected, structuralJson, mode !== 'exact');
   const hasGraph = actualGraph.targets.size > 0 || expectedGraph.targets.size > 0;
-  type Binding = { expected: object; modes: Set<JudgeCompareMode> };
-  const forward = new Map<object, Binding>();
+  if (!hasGraph) {
+    return structuralJson ? false : compareNonGraphValues(actual, expected, mode, floatTolerance);
+  }
+  if (actualGraph.hasLiveCycle || expectedGraph.hasLiveCycle) {
+    throw new RangeError('Comparison requires cycles to use serialized references.');
+  }
+  const forward = new Map<object, object>();
   const reverse = new Set<object>();
-  const changes: Array<{ actual: object; mode: JudgeCompareMode }> = [];
+  const changes: object[] = [];
 
   function rollback(checkpoint: number): void {
     while (changes.length > checkpoint) {
-      const change = changes.pop()!;
-      const binding = forward.get(change.actual)!;
-      binding.modes.delete(change.mode);
-      if (binding.modes.size === 0) {
-        forward.delete(change.actual);
-        reverse.delete(binding.expected);
-      }
+      const node = changes.pop()!;
+      reverse.delete(forward.get(node)!);
+      forward.delete(node);
     }
   }
 
@@ -307,20 +366,16 @@ function compareSerializedValues(
         const bTarget = expectedGraph.targets.has(b);
         if (aTarget !== bTarget) return false;
         if (aTarget) {
-          let binding = forward.get(a);
-          if (binding === undefined) {
-            if (reverse.has(b)) return false;
-            binding = { expected: b, modes: new Set() };
-            forward.set(a, binding);
-            reverse.add(b);
+          const paired = forward.get(a);
+          if (paired !== undefined) {
+            if (paired !== b) return false;
+            // The first visit owns comparison of the node's payload.
+            continue;
           }
-          if (binding.expected !== b) return false;
-          // A back edge may arrive under a different ordering rule.
-          if (binding.modes.has(currentMode)) continue;
-          binding.modes.add(currentMode);
-          changes.push({ actual: a, mode: currentMode });
-        } else if (a === b && !hasGraph) {
-          continue;
+          if (reverse.has(b)) return false;
+          forward.set(a, b);
+          reverse.add(b);
+          changes.push(a);
         }
 
         if (Array.isArray(a) && Array.isArray(b)) {
@@ -331,12 +386,8 @@ function compareSerializedValues(
               search?.step();
               if (index in a) pending.push([a[index], b[index]]);
             }
-          } else if (search) {
-            search.defer({ actual: a, expected: b, nested });
-          } else if (!compareUnordered(a, b, (item, other) =>
-            compare(item, other, elementMode(nested, item, other))
-          )) {
-            return false;
+          } else {
+            search!.defer({ actual: a, expected: b, nested });
           }
           continue;
         }
@@ -346,6 +397,7 @@ function compareSerializedValues(
         const aKeys = Object.keys(aRecord).filter(includeKey);
         const bKeys = Object.keys(bRecord).filter(includeKey);
         if (aKeys.length !== bKeys.length) return false;
+        if (search) aKeys.sort();
         for (let index = aKeys.length - 1; index >= 0; index--) {
           search?.step();
           const key = aKeys[index]!;
@@ -370,9 +422,13 @@ function compareSerializedValues(
     return structuralJson ? !(hasGraph && key === '__id__') : !METADATA_KEYS.has(key);
   }
 
-  return hasGraph && mode !== 'exact'
-    ? compareGraphUnordered()
-    : compare(actual, expected, mode);
+  let searchSteps = 0;
+  if (mode === 'exact') return compare(actual, expected, mode);
+  try {
+    return compareGraphUnordered();
+  } finally {
+    recordSearchSteps?.(searchSteps);
+  }
 
   function compareGraphUnordered(): boolean {
     let signatures: ReturnType<typeof refineGraphSignatures> | undefined;
@@ -380,9 +436,9 @@ function compareSerializedValues(
       signatures ??= refineGraphSignatures(actualGraph, expectedGraph, includeKey, floatTolerance);
       return signatures[side](value);
     }
-    let steps = 0;
     function step(): void {
-      if (++steps > GRAPH_COMPARISON_STEP_BUDGET) throw new GraphComparisonLimitError();
+      if (searchSteps === GRAPH_COMPARISON_STEP_BUDGET) throw new GraphComparisonLimitError();
+      searchSteps++;
     }
 
     type ArrayWork = DeferredArray & {

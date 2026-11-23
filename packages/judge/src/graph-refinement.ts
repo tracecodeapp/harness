@@ -10,7 +10,7 @@ type Signatures = readonly [actual: Signature, expected: Signature];
 
 const REFINEMENT_ROUNDS = 4;
 
-function isArrayIndex(key: string): boolean {
+export function isArrayIndex(key: string): boolean {
   const index = Number(key);
   return Number.isInteger(index) && index >= 0 && index < 0xffff_ffff && String(index) === key;
 }
