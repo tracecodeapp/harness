@@ -63,20 +63,25 @@ try {
   });
   const installedJudge = Object.keys(built.metafile.inputs).find((name) => name.endsWith('/dist/judge.js'));
   assert(installedJudge && resolve(installedJudge).startsWith(installation + sep), 'Browser bundle must resolve installed /judge');
-  const candidateSource = process.env.TRACECODE_STAGE1_CANDIDATE_SOURCE;
+  let candidateSource = process.env.TRACECODE_STAGE1_CANDIDATE_SOURCE;
   if (candidateSource) {
     const shim = join(candidateSource, 'packages/tracekernel/src/zlib-browser-shim.ts');
-    await build({
-      stdin: {
-        contents: readFileSync(new URL('routes.mjs', import.meta.url), 'utf8'),
-        resolveDir: candidateSource,
-        sourcefile: 'stage1-provider-companions.mjs',
-      },
-      tsconfig: join(candidateSource, 'tsconfig.base.json'),
-      alias: { zlib: shim, 'node:zlib': shim },
-      outfile: join(evidence, 'gate-routes.mjs'), bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
-      define: { 'process.env.NODE_ENV': '"production"' },
-    });
+    try {
+      await build({
+        stdin: {
+          contents: readFileSync(new URL('routes.mjs', import.meta.url), 'utf8'),
+          resolveDir: candidateSource,
+          sourcefile: 'stage1-provider-companions.mjs',
+        },
+        tsconfig: join(candidateSource, 'tsconfig.base.json'),
+        alias: { zlib: shim, 'node:zlib': shim },
+        outfile: join(evidence, 'gate-routes.mjs'), bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
+        define: { 'process.env.NODE_ENV': '"production"' },
+      });
+    } catch (error) {
+      record('browser.jsonl', { route: 'provider-companions', setupError: error.message });
+      candidateSource = undefined;
+    }
   }
   record('identity.jsonl', {
     candidate: process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate,
@@ -92,16 +97,29 @@ try {
   const matches = (row) => !filter || filter.test(`${row.gate}/${row.language}/${row.name}`);
   const inventory = manifest.inventory.filter((id) => !filter || filter.test(id.split('/').slice(0, 3).join('/')));
   const appInput = process.env.TRACECODE_STAGE1_APP_INPUT;
-  const app = appInput ? JSON.parse(readFileSync(appInput, 'utf8')) : null;
-  if (app) {
-    assert.equal(app.revision, 'fcea04982d5c0aa3d2112e188cff7ef9b22d5753');
-    assert.deepEqual(app.fixtures.map((fixture) => ({ name: fixture.name, cases: fixture.cases.map(({ id }) => id) })),
-      appSpec.map((fixture) => ({ name: appFixtureName(fixture), cases: fixture.cases })));
-    record('identity.jsonl', { app: app.revision, appInputSha256: checksum(appInput) });
+  let appFixtures = [];
+  if (appInput) {
+    try {
+      const app = JSON.parse(readFileSync(appInput, 'utf8'));
+      assert.equal(app.revision, 'fcea04982d5c0aa3d2112e188cff7ef9b22d5753');
+      assert.deepEqual(app.fixtures.map((fixture) => ({ name: fixture.name, cases: fixture.cases.map(({ id }) => id) })),
+        appSpec.map((fixture) => ({ name: appFixtureName(fixture), cases: fixture.cases })));
+      record('identity.jsonl', { app: app.revision, appInputSha256: checksum(appInput) });
+      appFixtures = app.fixtures;
+    } catch (error) {
+      record('browser.jsonl', { route: 'app-fixtures', setupError: error.message });
+    }
   }
-  const selectedFixtures = [...manifest.fixtures, ...(app?.fixtures ?? [])].filter(matches);
+  const selectedFixtures = [...manifest.fixtures, ...appFixtures].filter(matches);
   const muxPath = process.env.TRACECODE_STAGE1_MUX_INPUT;
-  const mux = muxPath ? await loadMux(muxPath, evidence) : null;
+  let mux;
+  if (muxPath) {
+    try {
+      mux = await loadMux(muxPath, evidence);
+    } catch (error) {
+      record('browser.jsonl', { route: 'mux', setupError: error.message });
+    }
+  }
   if (mux) record('identity.jsonl', { mux: mux.muxPin, scope: 'pinned slot adapter, no stored result writer' });
   assert(selectedFixtures.length, 'Filter selected no fixtures');
   const assertions = [];
