@@ -218,6 +218,25 @@ test('expired attempt cannot publish against a retry or a replacement generation
   assert.deepEqual(serialize(row), archive);
 });
 
+test('live attempts are scoped to the evaluation even at the same generation and case', () => {
+  const first = owner();
+  const otherScope = { ...scope, evaluationId: 'evaluation-2' };
+  const otherBinding = { ...otherScope, caseId: 'A' };
+  const second = new VerdictReceiptStore(otherScope, bundle(['A']));
+  const firstAttempt = first.beginObservation('A');
+  const secondAttempt = second.beginObservation('A');
+  assert.notEqual(firstAttempt.token, secondAttempt.token);
+  const row = second.commitOrdinary(otherBinding, ordinary());
+  const bytes = serialize(row);
+  assert.equal(second.publishDrawing(firstAttempt, otherBinding, drawn), false);
+  assert.equal(second.publishDrawing(secondAttempt, a, drawn), false);
+  second.seal({ status: 'completed' }, evaluatedAt);
+  assert.deepEqual(second.projectEvaluation(['A']).cases[0]?.attachment, {
+    ...otherBinding, status: 'refused', reason: 'observer-protocol',
+  });
+  assert.deepEqual(serialize(row), bytes);
+});
+
 test('ordinary snapshots keep aliases, cycles and value presence without freezing inputs', () => {
   const shared = { n: 7, child: null as unknown };
   const aliased = { left: shared, right: shared, explicitUndefined: undefined };
@@ -298,6 +317,46 @@ test('truncation projects one owned prefix and a closed reason without changing 
   assert.equal(projected.diagnostics, row.diagnostics);
   assert.equal(JSON.stringify(projected.diagnostics), JSON.stringify(ordinary().diagnostics));
   assert.deepEqual(serialize(row), before);
+});
+
+test('case outcome reads attachment presentation and preserves ordinary result bytes', () => {
+  const options = { language: 'javascript', trace: true } as const;
+  const warning = {
+    severity: 'warning',
+    kind: 'trace-truncated',
+    code: 'line-limit',
+    message: 'legacy observer cutoff',
+  } as const;
+  const row = { ...ordinary(), diagnostics: [warning] };
+  const noTrace = judgeCaseExecutionOutcome(row, { language: 'javascript' });
+  assert.deepEqual(judgeCaseExecutionOutcome(row, options), { kind: 'trace-refused' });
+
+  const drawings: Drawing[] = [
+    drawn,
+    { status: 'truncated', reason: 'byte-budget', trace, attemptedEvents: 2 },
+    { status: 'refused', reason: 'recorder-unavailable' },
+  ];
+  for (const drawing of drawings) {
+    const store = owner();
+    const attempt = store.beginObservation('A');
+    store.commitOrdinary(a, row);
+    store.seal({ status: 'completed' }, evaluatedAt);
+    store.publishDrawing(attempt, a, drawing);
+    const projected = store.projectEvaluation(['A']).cases[0]!;
+    assert.equal(JSON.stringify(judgeCaseExecutionOutcome(projected, { language: 'javascript', trace: false })),
+      JSON.stringify(noTrace));
+    const legacyTrace = { ...trace, runId: 'unrelated-legacy-trace' };
+    const outcome = judgeCaseExecutionOutcome({ ...projected, trace: legacyTrace }, options);
+    if (drawing.status === 'refused') {
+      assert.deepEqual(outcome, { kind: 'trace-refused' });
+    } else {
+      assert.equal(outcome.kind, 'completed');
+      assert.equal(outcome.output, 7);
+      assert.deepEqual(outcome.consoleOutput, ['ordinary', '']);
+      assert.equal(outcome.trace, projected.trace);
+      assert.equal(outcome.traceTruncated, drawing.status === 'truncated' ? 'trace-byte-limit' : undefined);
+    }
+  }
 });
 
 test('unknown observer reasons and invalid prefixes refuse without rewriting the verdict', () => {
