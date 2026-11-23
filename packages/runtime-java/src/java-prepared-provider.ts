@@ -273,7 +273,7 @@ class JavaPreparedTraceProgramImpl
   observe(call: RuntimeObservationCall): Promise<Drawing> {
     return this.executeWithClient(
       (client) => client.observePreparedProgram(
-        this.programId, call.inputs, call.traceOptions, call.signal
+        this.programId, call.inputs, call.attemptToken, call.traceOptions, call.signal
       ),
       call.signal
     );

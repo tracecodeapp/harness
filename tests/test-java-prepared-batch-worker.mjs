@@ -93,9 +93,6 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
   const self = {
     location: { href: 'https://test.invalid/workers/java-runtime-worker.js' },
     postMessage(message) {
-      if (message.type === 'java-prepared-case-admitted') {
-        calls.push(['admit', message.payload.index]);
-      }
     },
     addEventListener() {},
     close() {},
@@ -112,9 +109,7 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
       program: {}, executions: 0, algorithmIsolationProfile: { tier: profile },
     });
     self.TraceCodeActiveKernelRequestId = 'request';
-    self.TraceCodeJavaPreparedCaseAdmitted = (index) => self.postMessage({
-      type: 'java-prepared-case-admitted', payload: { index },
-    });
+    self.TraceCodeJavaPreparedCaseAdmitted = (index) => record('admit', index);
     if (observeTwice) {
       (async () => {
         const observe = async (caseId) => JSON.parse(await traceJVMRunPreparedRuntimeProgramBatch(
@@ -134,7 +129,7 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
     );
     }
   `, {
-    self, client, stop, mode, profile, observeTwice, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, mode, profile, observeTwice, record: (...event) => calls.push(event), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;

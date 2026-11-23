@@ -114,9 +114,13 @@ const JAVA_OBSERVER_REFUSALS: ReadonlySet<string> = new Set<Refusal>([
   'recorder-unavailable', 'observer-encode', 'observer-runtime', 'observer-protocol', 'observer-timeout',
 ]);
 
-function decodeJavaObservation(entry: JavaWorkerRawObservation, options?: TraceExecutionOptions): Drawing {
+function decodeJavaObservation(
+  entry: JavaWorkerRawObservation,
+  attemptToken: string,
+  options?: TraceExecutionOptions
+): Drawing {
   const { observation } = entry;
-  if (!observation || typeof observation !== 'object') {
+  if (!observation || observation.attemptToken !== attemptToken) {
     return { status: 'refused', reason: 'observer-protocol' };
   }
   if (!entry.success) {
@@ -263,7 +267,7 @@ interface JavaWorkerRawPreparedTraceBatchItem
 interface JavaWorkerRawObservation {
   success: boolean;
   trace?: { events?: unknown };
-  observation?: { cut?: unknown; attemptedEvents?: unknown; reason?: unknown };
+  observation?: { attemptToken?: unknown; cut?: unknown; attemptedEvents?: unknown; reason?: unknown };
   sourceText?: string;
 }
 
@@ -397,10 +401,16 @@ export class JavaWorkerClient {
         }
       },
       onCommandMessage: (commandId, type, payload, pending) => {
-        if (type === 'java-prepared-case-admitted') {
-          const { admissionId, index } = (payload ?? {}) as { admissionId?: number; index?: number };
-          if (typeof admissionId === 'number' && typeof index === 'number') {
-            this.admissionCallbacks.get(admissionId)?.(index);
+        if (type === 'runtime-progress') {
+          const progress = payload as {
+            stage?: string;
+            detail?: { admissionId?: number; caseIndex?: number };
+          } | undefined;
+          if (progress?.stage === 'ordinary-case-started') {
+            const { admissionId, caseIndex } = progress.detail ?? {};
+            if (typeof admissionId === 'number' && typeof caseIndex === 'number') {
+              this.admissionCallbacks.get(admissionId)?.(caseIndex);
+            }
           }
           return true;
         }
@@ -1043,6 +1053,7 @@ export class JavaWorkerClient {
   async observePreparedProgram(
     programId: string,
     input: Record<string, unknown>,
+    attemptToken: string,
     options?: TraceExecutionOptions,
     signal?: AbortSignal
   ): Promise<Drawing> {
@@ -1053,8 +1064,8 @@ export class JavaWorkerClient {
       typeof deadline === 'number' && Number.isFinite(deadline) && deadline > 0
         ? Math.floor(deadline)
         : TRACING_TIMEOUT_MS,
-      { traceEventTransport: traceEventTransferRequest(), observationOptions: options },
-      (entry) => decodeJavaObservation(entry, options)
+      { traceEventTransport: traceEventTransferRequest(), observationOptions: options, attemptToken },
+      (entry) => decodeJavaObservation(entry, attemptToken, options)
     );
     return drawing ?? { status: 'refused', reason: 'observer-protocol' };
   }

@@ -455,7 +455,11 @@ function postMessageResponse(message, options = {}) {
 self.TraceCodeJavaPreparedCaseAdmitted = (index, admissionId) => {
   const id = self.TraceCodeActiveKernelRequestId;
   if (id && activeProtocolTokens.has(id)) {
-    postMessageResponse({ id, type: 'java-prepared-case-admitted', payload: { index, admissionId } });
+    postMessageResponse({
+      id,
+      type: 'runtime-progress',
+      payload: { stage: 'ordinary-case-started', detail: { caseIndex: index, admissionId } },
+    });
   }
 };
 
@@ -9144,7 +9148,9 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   const rawResults = Array.isArray(report.results) ? report.results : [];
   const results = rawResults.map((entry) => {
     if (observerOnly) {
-      return preparedJavaObservationResult(entry, program, maxTraceBytes, report.runnerProcessCount);
+      return preparedJavaObservationResult(
+        entry, program, maxTraceBytes, report.runnerProcessCount, payload.attemptToken
+      );
     }
     const executionTimeMs =
       (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0);
@@ -9195,10 +9201,10 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   };
 }
 
-function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProcessCount) {
+function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProcessCount, attemptToken) {
   const timings = { runnerProcessCount: runnerProcessCount ?? 0 };
   const refused = (reason) => ({
-    success: false, trace: { events: [] }, observation: { reason }, timings,
+    success: false, trace: { events: [] }, observation: { reason, attemptToken }, timings,
   });
   const report = entry.observation;
   if (!report || report.reason) return refused(report?.reason ?? 'observer-protocol');
@@ -9218,6 +9224,7 @@ function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProc
       trace: { events: retained < events.length ? events.slice(0, retained) : events },
       sourceText: program.normalizedPayload.sourceText,
       observation: {
+        attemptToken,
         ...(cut ? {
           cut,
           attemptedEvents: events.length + (report.cut
