@@ -6310,32 +6310,97 @@ function parseFunctionFieldSignature(source, functionName) {
   return { returnType: cleanCppReturnType(returnType), parameters, line };
 }
 
+// Blanks comments and the contents of string, character and raw string
+// literals, keeping newlines and quote characters, so name lookups see only
+// code. A pp-number is consumed whole, so a digit separator (1'000) is not
+// taken for a character literal.
+let cppCodeOnlySourceCache = { source: null, code: '' };
+function cppCodeOnlySource(source) {
+  const text = String(source ?? '');
+  if (cppCodeOnlySourceCache.source === text) return cppCodeOnlySourceCache.code;
+  const blank = (segment) => segment.replace(/[^\n]/g, ' ');
+  let out = '';
+  let index = 0;
+  while (index < text.length) {
+    const ch = text[index];
+    const next = text[index + 1];
+    if (ch === '/' && next === '/') {
+      let end = text.indexOf('\n', index);
+      if (end < 0) end = text.length;
+      out += blank(text.slice(index, end));
+      index = end;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const close = text.indexOf('*/', index + 2);
+      const end = close < 0 ? text.length : close + 2;
+      out += blank(text.slice(index, end));
+      index = end;
+      continue;
+    }
+    const previous = index > 0 ? text[index - 1] : '';
+    if (/[0-9]/.test(ch) && !/[A-Za-z0-9_]/.test(previous)) {
+      const number = text.slice(index).match(/^(?:[0-9A-Za-z_.]|'(?=[0-9A-Za-z])|(?<=[eEpP])[+-])+/)[0];
+      out += number;
+      index += number.length;
+      continue;
+    }
+    const raw = text.slice(index).match(/^(?:u8|[uUL])?R"([^()\\\s]{0,16})\(/);
+    if (raw && !/[A-Za-z0-9_]/.test(previous)) {
+      const terminator = `)${raw[1]}"`;
+      const close = text.indexOf(terminator, index + raw[0].length);
+      const end = close < 0 ? text.length : close + terminator.length;
+      out += raw[0] + blank(text.slice(index + raw[0].length, end - terminator.length)) + text.slice(end - terminator.length, end);
+      index = end;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      let end = index + 1;
+      while (end < text.length && text[end] !== ch && text[end] !== '\n') {
+        end += text[end] === '\\' ? 2 : 1;
+      }
+      end = Math.min(end + 1, text.length);
+      out += ch + blank(text.slice(index + 1, end - 1)) + (end - 1 > index ? text[end - 1] : '');
+      index = end;
+      continue;
+    }
+    out += ch;
+    index += 1;
+  }
+  cppCodeOnlySourceCache = { source: text, code: out };
+  return out;
+}
+
+// The one ops-class operation-to-method resolution. A `#define NAME target`
+// macro wins, then `delete` (a C++ keyword) maps to a deleteKey method.
+// Comments and literals are ignored. The single-case drivers call it per
+// operation; the prepared driver applies it through
+// resolveCppObjectMethodAliases.
 function resolveCppObjectMethodMacro(source, operation) {
   const escaped = operation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const cleaned = stripComments(source);
-  const macroTarget = cleaned.match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1];
+  const code = cppCodeOnlySource(source);
+  const macroTarget = code.match(new RegExp(`^\\s*#\\s*define\\s+${escaped}\\s+([A-Za-z_]\\w*)\\s*$`, 'm'))?.[1];
   if (macroTarget) return macroTarget;
-  if (operation === 'delete' && /\bdeleteKey\s*\(/.test(cleaned)) return 'deleteKey';
+  if (operation === 'delete' && /\bdeleteKey\s*\(/.test(code)) return 'deleteKey';
   return operation;
 }
 
-// Operation names that resolveCppObjectMethodMacro can map to a different
-// method: every `#define NAME target` macro name, and `delete` (a C++ keyword,
-// so a learner names the method `deleteKey`). The prepared ops-class driver
-// reads operation names at run time, so it dispatches these aliases up front
-// and they must resolve exactly as the single-case drivers resolve them.
+// Operation names resolveCppObjectMethodMacro maps to a different method that
+// the prepared driver can dispatch: every `#define NAME target` macro name,
+// and `delete`. The prepared driver reads operation names at run time, so it
+// emits these up front. An alias replaces the exact-name branch for that name,
+// as in the single-case driver, where the macro target wins over a method of
+// the same name. A target that is not a dispatchable method adds nothing.
 function resolveCppObjectMethodAliases(source, methodNames) {
-  const cleaned = stripComments(source);
+  const code = cppCodeOnlySource(source);
   const candidates = new Set(['delete']);
   const macroPattern = /^\s*#\s*define\s+([A-Za-z_]\w*)\s+[A-Za-z_]\w*\s*$/gm;
   let macroMatch;
-  while ((macroMatch = macroPattern.exec(cleaned))) {
+  while ((macroMatch = macroPattern.exec(code))) {
     candidates.add(macroMatch[1]);
   }
   const aliases = new Map();
   for (const operation of candidates) {
-    // A method literally named as the operation is dispatched by name and wins.
-    if (methodNames.has(operation)) continue;
     const target = resolveCppObjectMethodMacro(source, operation);
     if (target !== operation && methodNames.has(target)) aliases.set(operation, target);
   }
@@ -10393,7 +10458,7 @@ function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
     });
     if (options.tracing === true) {
       lines.push(`  std::string __tc_args_json_${index} = std::string("{") + ${buildTraceArgsJsonExpression(signature, (_parameter, argIndex) => `__tc_op_${index}_arg_${argIndex}`, aliases)} + "}";`);
-      lines.push(`  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(operation)}, __tc_args_json_${index});`);
+      lines.push(`  tracecode::emit_serialized_call_event(${signature.line}, ${cppStringLiteral(signatureOperation)}, __tc_args_json_${index});`);
     }
     if (normalizeCppType(signature.returnType, aliases) === 'void' || isNullCppReturnType(signature.returnType, aliases)) {
       lines.push(`  __tc_instance.${signatureOperation}(${argNames.join(', ')});`);
@@ -11724,13 +11789,15 @@ function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
   lines.push('        return 1;');
   lines.push('      }');
   lines.push('      bool __tc_operation_handled = false;');
+  const operationAliases = resolveCppObjectMethodAliases(userCode, groupedMethods);
   for (const [methodName] of groupedMethods) {
+    if (operationAliases.has(methodName)) continue;
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(methodName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
     lines.push('      }');
   }
-  for (const [operationName, methodName] of resolveCppObjectMethodAliases(userCode, groupedMethods)) {
+  for (const [operationName, methodName] of operationAliases) {
     const sanitizedMethodName = methodName.replace(/[^A-Za-z0-9_]/g, '_');
     lines.push(`      if (__tc_operation_name == ${cppStringLiteral(operationName)}) {`);
     lines.push(`        __tc_operation_handled = __tc_call_${sanitizedMethodName}(__tc_op_args, __tc_case_outputs, __tc_instance);`);
