@@ -31,7 +31,7 @@
    '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 @@ -157,22 +170,25 @@
  }
- 
+
  async function prepareVersion(version) {
 -  const root = join(out, 'v' + version);
 +  const isCandidate = version === candidateVersion;
