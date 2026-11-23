@@ -5,11 +5,12 @@ import type {
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
-  BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
 import {
   createJavaBrowserPreparedExecutionProvider,
+  createJavaJudgeReceiptProvider,
 } from './java-prepared-provider';
+import type { BrowserRuntimeJudgeReceiptLease } from '../../runtime-browser/src/browser-runtime-host-internal';
 import {
   type JavaWorkerClientOptions,
 } from './java-worker-client';
@@ -17,6 +18,7 @@ import {
   normalizeTraceJVMRuntimeAssetBaseUrl,
   preflightBuiltInTraceJVMRuntimeAssets,
   resolveBuiltInTraceJVMRuntimeAssetBaseUrl,
+  TRACEJVM_RUNTIME_VERSION,
 } from './tracejvm-runtime-assets';
 
 export interface JavaBrowserRuntimeProviderOptions {
@@ -74,7 +76,7 @@ export function createJavaBrowserRuntimeProvider(
   return {
     id: '@tracecode/runtime-java',
     languages: ['java'],
-    create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
+    create(context: BrowserRuntimeProviderContext): BrowserRuntimeJudgeReceiptLease {
       const workerFactory = context.workerFactoryFor('java');
       const runtimeAssetBaseUrl =
         options.runtimeAssetBaseUrl ??
@@ -105,6 +107,10 @@ export function createJavaBrowserRuntimeProvider(
 
       return {
         preparedProviders,
+        judgeReceiptProviders: new Map([['java', createJavaJudgeReceiptProvider(
+          preparedProvider,
+          context.manifestAsset('java', 'worker')?.integrity ?? `TraceJVM@${TRACEJVM_RUNTIME_VERSION}`
+        )]]),
         preflightLanguage: () =>
           preflightBuiltInTraceJVMRuntimeAssets(runtimeAssetBaseUrl),
         disposeLanguage: () => preparedProvider.releaseStandby(),
