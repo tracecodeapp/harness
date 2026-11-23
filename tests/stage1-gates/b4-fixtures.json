@@ -1,0 +1,319 @@
+[
+  {
+    "name": "stdout",
+    "language": "javascript",
+    "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 7
+        },
+        "expected": 7,
+        "actual": 7,
+        "stdout": "7\n",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 11
+        },
+        "expected": 11,
+        "actual": 11,
+        "stdout": "11\n",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "step-cap",
+    "language": "javascript",
+    "code": "function solve(n) {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 2,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 3
+        },
+        "expected": 3,
+        "actual": 3,
+        "stdout": "",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 4
+        },
+        "expected": 4,
+        "actual": 4,
+        "stdout": "",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "byte-cap",
+    "language": "javascript",
+    "code": "function solve(n) {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000,
+      "maxTraceBytes": 1
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 3
+        },
+        "expected": 3,
+        "actual": 3,
+        "stdout": "",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 4
+        },
+        "expected": 4,
+        "actual": 4,
+        "stdout": "",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "stdout",
+    "language": "typescript",
+    "code": "function solve(n: number): number {\n  console.log(n);\n  return n;\n}\n",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 7
+        },
+        "expected": 7,
+        "actual": 7,
+        "stdout": "7\n",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 11
+        },
+        "expected": 11,
+        "actual": 11,
+        "stdout": "11\n",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "step-cap",
+    "language": "typescript",
+    "code": "function solve(n: number): number {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 2,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 3
+        },
+        "expected": 3,
+        "actual": 3,
+        "stdout": "",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 4
+        },
+        "expected": 4,
+        "actual": 4,
+        "stdout": "",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "byte-cap",
+    "language": "typescript",
+    "code": "function solve(n: number): number {\n  let total = 0;\n  for (let i = 0; i < 20000; i += 1) {\n    total += i;\n  }\n  return n;\n}",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000,
+      "maxTraceBytes": 1
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 3
+        },
+        "expected": 3,
+        "actual": 3,
+        "stdout": "",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 4
+        },
+        "expected": 4,
+        "actual": 4,
+        "stdout": "",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "no-recorder",
+    "language": "javascript",
+    "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 7
+        },
+        "expected": 7,
+        "actual": 7,
+        "stdout": "7\n",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 11
+        },
+        "expected": 11,
+        "actual": 11,
+        "stdout": "11\n",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "observer-compile-fault",
+    "language": "javascript",
+    "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 7
+        },
+        "expected": 7,
+        "actual": 7,
+        "stdout": "7\n",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 11
+        },
+        "expected": 11,
+        "actual": 11,
+        "stdout": "11\n",
+        "grade": "passed"
+      }
+    ]
+  },
+  {
+    "name": "observer-encoder-fault",
+    "language": "javascript",
+    "code": "function solve(n) {\n  console.log(n);\n  return n;\n}\n",
+    "functionName": "solve",
+    "executionStyle": "function",
+    "traceOptions": {
+      "maxTraceSteps": 4000,
+      "maxLineEvents": 12000,
+      "maxSingleLineHits": 1000,
+      "maxStoredEvents": 16000
+    },
+    "cases": [
+      {
+        "id": "A",
+        "input": {
+          "n": 7
+        },
+        "expected": 7,
+        "actual": 7,
+        "stdout": "7\n",
+        "grade": "passed"
+      },
+      {
+        "id": "B",
+        "input": {
+          "n": 11
+        },
+        "expected": 11,
+        "actual": 11,
+        "stdout": "11\n",
+        "grade": "passed"
+      }
+    ]
+  }
+]
