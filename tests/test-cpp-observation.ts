@@ -88,7 +88,11 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
   });
   const registration = createCppObservationRegistration(producer, options);
   const lease = await registration.prepareObservation(program, signal);
-  assert.deepEqual(await lease.observe(request), { status: 'refused', reason: 'observer-prepare' });
+  assert.deepEqual(await lease.observe(request), {
+    status: 'refused',
+    reason: 'observer-prepare',
+    finalState: { status: 'compile-failed', console: '' },
+  });
   await lease.dispose();
   assert.equal(starts, 1);
   assert.equal(retired, 1);
@@ -103,7 +107,7 @@ test('the selected legacy producer draws its recorded events and refuses an empt
     lineEventCount: 1,
     traceStepCount: 1,
   };
-  for (const variant of ['recorded', 'empty', 'cut'] as const) {
+  for (const variant of ['recorded', 'empty', 'cut', 'trapped', 'timed-out', 'absent'] as const) {
     const producer = createLegacyCppDrawingProducer({
       createObserverWorkerClient: () => ({
         async init() { return { success: true, loadTimeMs: 0 }; },
@@ -116,12 +120,18 @@ test('the selected legacy producer draws its recorded events and refuses an empt
         },
         async executePreparedTrace(_handle, call) {
           assert.equal(call.recordTrace, true);
+          const base = { trace, executionTimeMs: 1, consoleOutput: ['one', 'two\n', ''] };
+          if (variant === 'trapped') {
+            return { ...base, kind: 'failed', error: 'trap', diagnosticStage: 'runtime' };
+          }
+          if (variant === 'timed-out') {
+            return { ...base, kind: 'limit', error: 'timeout', reason: 'client-timeout' };
+          }
           return {
+            ...base,
             kind: 'completed',
             trace: variant === 'empty' ? { ...trace, events: [], lineEventCount: 0, traceStepCount: 0 } : trace,
-            executionTimeMs: 1,
-            get output(): never { throw new Error('observer value'); },
-            get consoleOutput(): never { throw new Error('observer console'); },
+            output: variant === 'absent' ? undefined : { values: [0, null] },
             ...(variant === 'cut' ? { traceTruncated: 'trace-limit' as const } : {}),
           };
         },
@@ -129,11 +139,25 @@ test('the selected legacy producer draws its recorded events and refuses an empt
       }),
     });
     const registration = createCppObservationRegistration(producer, options);
+    assert.equal(registration.capabilities.certification, 'ends-same');
     const lease = await registration.prepareObservation(program, signal);
+    const console = 'one\ntwo\n\n';
+    const finalState = variant === 'trapped' || variant === 'timed-out' ? { status: variant, console } : {
+      status: 'completed',
+      console,
+      value: variant === 'absent' ? { present: false } : { present: true, value: { values: [0, null] } },
+    };
     try {
-      assert.deepEqual(await lease.observe(request),
-        variant === 'recorded' ? { status: 'drawn', trace } :
-          { status: 'refused', reason: variant === 'empty' ? 'recorder-unavailable' : 'uncertified-drawing' });
+      const drawing = variant === 'recorded' || variant === 'absent' ? { status: 'drawn', trace } : {
+        status: 'refused',
+        reason: {
+          empty: 'recorder-unavailable',
+          cut: 'uncertified-drawing',
+          trapped: 'observer-runtime',
+          'timed-out': 'observer-timeout',
+        }[variant],
+      };
+      assert.deepEqual(await lease.observe(request), { ...drawing, finalState });
     } finally {
       await lease.dispose();
     }
