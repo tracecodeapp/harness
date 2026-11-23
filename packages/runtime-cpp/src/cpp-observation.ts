@@ -6,6 +6,8 @@ import type {
 import type {
   Drawing,
   ExecutionResult,
+  ObservationFinalState,
+  RuntimeObservationReply,
   Refusal,
   RuntimeObservationCall,
 } from '@tracecode/runtime-contracts';
@@ -21,26 +23,17 @@ type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
   readonly program: JudgeObservationProgram;
 };
 
-type FinalState =
-  | { readonly status: 'completed'; readonly value: { present: boolean; value?: unknown }; readonly console: string }
-  | { readonly status: 'trapped' | 'timed-out' | 'compile-failed'; readonly console: string };
-
-type CppObservation = Drawing & { readonly finalState?: FinalState };
-type CppDrawingLease = Omit<JudgeObservationLease, 'observe'> & {
-  observe(call: RuntimeObservationCall): Promise<CppObservation>;
-};
-
 /** Internal composition supplies exactly one producer. */
 export interface CppDrawingProducer {
   readonly certification?: 'ends-same';
-  prepare(call: Preparation): Promise<CppDrawingLease>;
+  prepare(call: Preparation): Promise<JudgeObservationLease>;
 }
 
 function refused(reason: Refusal): Extract<Drawing, { status: 'refused' }> {
   return { status: 'refused', reason };
 }
 
-function refusalLease(reason: Refusal, finalState?: FinalState): CppDrawingLease {
+function refusalLease(reason: Refusal, finalState?: ObservationFinalState): JudgeObservationLease {
   return {
     observe: async () => ({ ...refused(reason), ...(finalState && { finalState }) }),
     dispose() {},
@@ -68,9 +61,9 @@ export function createCppObservationRegistration(
       program: JudgeObservationProgram,
       signal: AbortSignal,
       traceOptions?: Preparation['traceOptions']
-    ): Promise<CppDrawingLease> {
+    ): Promise<JudgeObservationLease> {
       signal.throwIfAborted();
-      let lease: CppDrawingLease;
+      let lease: JudgeObservationLease;
       try {
         lease = await producer.prepare({ program, traceOptions, signal });
       } catch {
@@ -89,7 +82,7 @@ export function createCppObservationRegistration(
             ? AbortSignal.any([attempt.signal, lifetime.signal])
             : lifetime.signal;
           signal.throwIfAborted();
-          let drawing: CppObservation;
+          let drawing: RuntimeObservationReply;
           try {
             drawing = await lease.observe({ ...attempt, signal });
           } catch {
@@ -153,7 +146,7 @@ function legacyDrawing(result: ExecutionResult): Drawing {
   return { status: 'drawn', trace };
 }
 
-function legacyFinalState(result: ExecutionResult): FinalState {
+function legacyFinalState(result: ExecutionResult): ObservationFinalState {
   // Match Judge's ordinary outputText framing. The runtime already decoded
   // the value with its prepared driver's JSON result protocol.
   const console = result.consoleOutput
@@ -171,7 +164,7 @@ function legacyFinalState(result: ExecutionResult): FinalState {
 
 type LegacyPrepareFailure = 'compile-failed' | 'timed-out';
 
-function legacyPrepareRefusal(status: LegacyPrepareFailure): CppDrawingLease {
+function legacyPrepareRefusal(status: LegacyPrepareFailure): JudgeObservationLease {
   return refusalLease(status === 'timed-out' ? 'observer-timeout' : 'observer-prepare', { status, console: '' });
 }
 
