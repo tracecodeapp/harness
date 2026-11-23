@@ -2,7 +2,7 @@
 set -euo pipefail
 ulimit -c 0
 
-mode=${1:?Usage: host-job.sh smoke|run [samples] [seed] [max-minutes]}
+mode=${1:?Usage: host-job.sh smoke|run [desktop-a|desktop-b|phone] [seed] [max-minutes]}
 shift
 case "$mode" in smoke|run) ;; *) exit 2 ;; esac
 if [[ "$mode" == run && ${SPEED_EXCLUSIVE_WINDOW:-} != 1 ]]; then

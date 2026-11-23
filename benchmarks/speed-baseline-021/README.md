@@ -28,26 +28,32 @@ Use Node 22 and run browser work only on the build host through `ar-harness.sh`.
 Start with a short smoke job. Its load and timings cannot count toward the baseline.
 
 ```sh
-ar-harness.sh <worktree> speed-021-smoke bash benchmarks/speed-baseline-021/host-job.sh smoke 1 212026 5
+ar-harness.sh <worktree> speed-021-smoke bash benchmarks/speed-baseline-021/host-job.sh smoke smoke 212026 5
 ```
 
 After coordinator approval, take the build host's exclusive lock for the long
 job. The initial `true` releases the ordinary slot that `ar-harness.sh` consumes
 before trying to acquire all of the slots. Everything after the no-op runs with
-the exclusive lock.
+the exclusive lock. Use a separate suffix for each of `desktop-b`, `desktop-a`
+and `phone`. Release the host between windows. Desktop uses 20 samples per cell
+and 12 for Java. Phone uses 12 per cell and covers only the Run verdicts and
+selected trace on warm and cold pages.
 
 ```sh
-ar-harness.sh <worktree> speed-021-full "true && /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 bash benchmarks/speed-baseline-021/host-job.sh run 20 212026 360"
+ar-harness.sh <worktree> speed-021-full "true && /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 bash benchmarks/speed-baseline-021/host-job.sh run desktop-b 212026 90"
 ```
 
 The runner appends one JSON record per attempt, including discarded attempts.
 It stops at its deadline or after it reaches the target. A group with too many
-invalid attempts is left incomplete. Copy back `reports/speed-baseline-021/speed-metadata.json`
-and `reports/speed-baseline-021/speed-samples.jsonl` with `scp`, then clean up the job.
+invalid attempts is left incomplete. Copy back `reports/speed-baseline-021/speed-<window>-metadata.json`
+and `reports/speed-baseline-021/speed-<window>-samples.jsonl` with `scp`, then clean up the job.
 Keep the results outside Git. The report script checks the schedule, counts,
 load and timing values against the raw records. It exits nonzero for an incomplete
 table.
 
 ```sh
-node benchmarks/speed-baseline-021/report.mjs speed-metadata.json speed-samples.jsonl SPEED-BASELINE.md
+node benchmarks/speed-baseline-021/report.mjs SPEED-BASELINE.md \
+  speed-desktop-b-metadata.json speed-desktop-b-samples.jsonl \
+  speed-desktop-a-metadata.json speed-desktop-a-samples.jsonl \
+  speed-phone-metadata.json speed-phone-samples.jsonl
 ```

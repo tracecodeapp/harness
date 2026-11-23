@@ -9,13 +9,18 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 
-const [outArg, mode, sampleArg = '20', seedArg = '0212026', minuteArg = '720'] = process.argv.slice(2);
+const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
-const target = mode === 'smoke' ? 1 : Number(sampleArg);
+const windowLanguages = {
+  'desktop-a': ['csharp', 'java'],
+  'desktop-b': ['javascript', 'typescript', 'python', 'cpp'],
+  phone: ['javascript', 'typescript', 'python', 'cpp', 'csharp', 'java'],
+};
+const selectedCpu = windowName === 'phone' ? 4 : 1;
 const maxInvalid = mode === 'smoke' ? 1 : 5;
 const seed = Number(seedArg);
 const runMinutes = Number(minuteArg);
-assert.ok(Number.isInteger(target) && (mode === 'smoke' || target >= 20));
+assert.ok(mode === 'smoke' || Object.hasOwn(windowLanguages, windowName));
 assert.ok(Number.isSafeInteger(seed) && Number.isFinite(runMinutes) && runMinutes > 0);
 
 const languages = { python: 'py', javascript: 'js', typescript: 'ts', java: 'java', cpp: 'cpp', csharp: 'cs' };
@@ -26,7 +31,7 @@ const appRefs = {
 };
 const versions = Object.keys(appRefs);
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = mode === 'smoke' ? 'smoke-' : 'speed-';
+const filePrefix = mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
 const metadataPath = join(out, filePrefix + 'metadata.json');
 const samplesPath = join(out, filePrefix + 'samples.jsonl');
 const deadline = Date.now() + runMinutes * 60_000;
@@ -236,17 +241,28 @@ function outcome(result, expectedIds) {
 
 function plan() {
   const groups = [];
-  for (const language of Object.keys(languages)) {
-    for (const cpu of [1, 4]) {
-      for (const problem of problemIds) {
-        for (const state of ['warm', 'cold', 'switched']) {
-          for (const journey of ['run', 'submit']) groups.push({ language, cpu, problem, state, journey, versions });
+  const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
+  const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
+  for (const language of cheapFirst) {
+    for (const cpu of cpuRates) {
+      const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
+      const phoneSubset = mode === 'run' && windowName === 'phone';
+      for (const state of phoneSubset ? ['warm', 'cold'] : ['warm', 'cold', 'switched']) {
+        for (const journey of phoneSubset ? ['run'] : ['submit', 'run']) {
+          for (const problem of problemIds) {
+            groups.push({
+              language, cpu, problem, state, journey, target, versions,
+              continuation: journey === 'run' && !phoneSubset,
+            });
+          }
+        }
+        if (state === 'warm' && !phoneSubset) {
+          groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target, versions: ['0.20.1'] });
         }
       }
-      groups.push({ language, cpu, problem: 'binary-search', state: 'warm', journey: 'lesson', versions: ['0.20.1'] });
     }
   }
-  if (mode !== 'smoke') return shuffled(groups);
+  if (mode !== 'smoke') return groups;
   return groups.filter(({ cpu, problem, journey, state, language }) =>
     (cpu === 1 && problem === 'binary-search' && state === 'cold' && journey === 'run') ||
     (language === 'javascript' && cpu === 4 && problem === 'permutations') ||
@@ -271,7 +287,7 @@ function addressedBySample(sample) {
   if (sample.journey === 'run') return {
     verdicts: sample.initial?.elapsedMs,
     firstTrace: sample.initial?.firstTraceMs,
-    secondTrace: sample.second?.elapsedMs,
+    ...(sample.continuation && { secondTrace: sample.second?.elapsedMs }),
   };
   return { [sample.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts']: sample.initial?.elapsedMs };
 }
@@ -281,7 +297,7 @@ let browser;
 const schedule = plan();
 const report = {
   schema: 'tracecode.speed-baseline.v1',
-  mode, target, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
+  mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
   host: { hostname: hostname(), logicalCpus: availableParallelism(), kernel: release() },
   browser: { channel: 'chromium', crossOriginIsolated: false },
   packages: {},
@@ -304,6 +320,7 @@ try {
     [version, await browser.newContext()])));
   let complete = true;
   for (const [groupIndex, group] of schedule.entries()) {
+    const { target } = group;
     const fixture = fixtures.data[group.problem][group.language];
     const otherProblem = problemIds.find((id) => id !== group.problem);
     const otherFixture = fixtures.data[otherProblem][group.language];
@@ -346,7 +363,10 @@ try {
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
               sample.refusal = refusal(sample.initial);
               sample.invalid = outcome(sample.initial, fixture.cases.map((c) => c.id));
-              if (group.journey === 'run' && !sample.invalid && !sample.refusal) {
+              if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
+                sample.invalid = 'No first-case trace';
+              }
+              if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
                 if (mode === 'run' && sample.beforeSecond.oneMinute > 2) {
                   sample.excluded = 'continuation load > 2.0';
@@ -355,7 +375,6 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if (!sample.invalid && sample.initial.firstTraceMs === null) sample.invalid = 'No first-case trace';
                 }
               }
             }
