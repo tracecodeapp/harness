@@ -1,0 +1,129 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const [archive, raw, primary] = process.argv.slice(2);
+const languages = ['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'];
+assert.ok(archive && raw && ['java', 'csharp', 'python'].includes(primary));
+const baselineReceipt = readFileSync(new URL('./baseline-results.sha256', import.meta.url), 'utf8')
+  .trim().split('\n').map((line) => line.split(/\s+/, 2));
+for (const [expected, file] of baselineReceipt) {
+  const actual = createHash('sha256').update(readFileSync(join(archive, file))).digest('hex');
+  assert.equal(actual, expected, `Frozen baseline digest differs for ${file}`);
+}
+const json = file => JSON.parse(readFileSync(file, 'utf8'));
+const records = file => readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+const versions = ['0.17.1', '0.20.1'];
+const key = (g, endpoint) => [g.language, g.cpu, g.problem, g.state, endpoint].join('/');
+const endpoints = (g) => g.journey === 'run'
+  ? ['verdicts', 'firstTrace', ...(g.continuation ? ['secondTrace'] : [])]
+  : [g.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts'];
+function collect(folder, prefix) {
+  const metadata = json(join(folder, prefix + '-metadata.json'));
+  const samples = records(join(folder, prefix + '-samples.jsonl'));
+  const values = new Map(), seen = new Set();
+  assert.equal(metadata.seed, 212026);
+  assert.equal(metadata.loadThreshold, 2);
+  for (const sample of samples) {
+    const group = metadata.schedule[sample.groupIndex];
+    assert.ok(group?.versions.includes(sample.version));
+    for (const field of ['language', 'cpu', 'problem', 'state', 'journey', 'target', 'continuation'])
+      assert.equal(sample[field], group[field]);
+    const attempt = [sample.groupIndex, sample.version, sample.round].join('/');
+    assert.ok(!seen.has(attempt));
+    seen.add(attempt);
+    if (!sample.kept) continue;
+    assert.ok(!sample.invalid && !sample.refusal && !sample.excluded);
+    for (const pressure of [sample.beforeInitial, ...(group.continuation ? [sample.beforeSecond] : [])])
+      assert.ok(pressure?.oneMinute >= 0 && pressure.oneMinute <= 2);
+    for (const endpoint of endpoints(group)) {
+      const measured = sample.metrics[endpoint];
+      assert.ok(Number.isFinite(measured) && measured > 0);
+      const name = key(group, endpoint) + '/' + sample.version;
+      if (!values.has(name)) values.set(name, []);
+      values.get(name).push(measured);
+    }
+  }
+  return { metadata, samples, values };
+}
+function stats(values = []) {
+  const ordered = [...values].sort((a,b) => a-b);
+  const n = ordered.length;
+  return n ? { n, median: (ordered[Math.floor((n-1)/2)] + ordered[Math.floor(n/2)])/2,
+    p90: ordered[Math.ceil(.9*n)-1] } : { n };
+}
+const capture = ['desktop-a-with-topup', 'desktop-b', 'phone'].map(w => collect(archive, 'speed-' + w));
+const archived = new Map(capture.flatMap(receipt => [...receipt.values]));
+function required(scope) {
+  if (scope === 'spot') return languages.filter(l => l !== primary).map(l => l + '/1/binary-search/warm/verdicts');
+  const cpu = scope === 'phone' ? 4 : 1;
+  const states = scope === 'phone' ? ['warm', 'cold'] : ['warm', 'cold', 'switched'];
+  return [
+    ...['binary-search', 'permutations'].flatMap(problem => states.flatMap(state =>
+      (scope === 'phone' ? ['verdicts', 'firstTrace'] : ['verdicts', 'firstTrace', 'secondTrace', 'submitVerdicts'])
+        .map(endpoint => key({language: primary, cpu, problem, state}, endpoint)))),
+    ...(scope === 'desktop' ? [primary + '/1/binary-search/warm/lessonContinue'] : []),
+  ];
+}
+function policyFor(scope, cell) {
+  if (scope === 'spot') return ['candidate-main'];
+  if (primary === 'python') return scope === 'phone' ? ['concurrent', 'sequential']
+    : cell.endsWith('/lessonContinue') ? ['concurrent'] : ['concurrent', 'concurrent-deploy'];
+  return cell.endsWith('/lessonContinue') ? ['candidate-main'] : ['candidate-main', 'candidate-deploy'];
+}
+const summary = { incomplete: [], failed: [], escalations: [], pythonPhone: {} };
+for (const scope of ['desktop', 'phone', 'spot']) {
+  const prefix = primary === 'python' && scope !== 'spot'
+    ? (scope === 'phone' ? 'speed-phone' : 'speed-desktop-b') : 's-' + primary + '-' + scope;
+  let observed;
+  try {
+    observed = collect(raw, prefix);
+    const reference = capture[scope === 'phone' ? 2 : 0].metadata;
+    for (const field of ['host', 'browser', 'fixtures', 'appRefs'])
+      assert.deepEqual(observed.metadata[field], reference[field], field);
+    const policyNames = [...new Set(required(scope).flatMap(cell => policyFor(scope, cell)))];
+    for (const policy of policyNames) {
+      const pkg = observed.metadata.packages[policy];
+      const tree = structuredClone(pkg.dependencies);
+      tree.version = '0.20.1';
+      assert.deepEqual(tree, reference.packages['0.20.1'].dependencies);
+    }
+  } catch (error) {
+    console.log(JSON.stringify({ scope, unavailable: error.message }));
+    summary.incomplete.push(...required(scope));
+    continue;
+  }
+  console.log(JSON.stringify({ scope, packages: Object.fromEntries(Object.entries(observed.metadata.packages)
+    .map(([policy, p]) => [policy, { commit: p.commit ?? p.candidate?.commit, sha256: p.sha256 }])),
+    refused: observed.samples.filter(row => row.refusal).length,
+    invalid: observed.samples.filter(row => row.invalid || row.refusal).length,
+    excluded: observed.samples.filter(row => row.excluded).length }));
+  for (const cell of required(scope)) {
+    const warmCsharp = /^csharp\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
+    const history = Object.fromEntries(versions.map(version => [version, stats(archived.get(cell + '/' + version))]));
+    const requiredHistory = warmCsharp || cell.endsWith('/lessonContinue') ? [history['0.20.1']] : Object.values(history);
+    assert.ok(requiredHistory.every(row => row.n >= (cell.startsWith('java/') || scope === 'phone' ? 12 : 20)), cell);
+    const thresholds = {
+      median: (scope === 'spot' ? 1.05 : 1) * Math.min(...requiredHistory.map(row => row.median)),
+      p90: 1.10 * Math.min(...requiredHistory.map(row => row.p90)),
+    };
+    if (cell === 'java/1/binary-search/warm/verdicts')
+      Object.assign(thresholds, { median: 830.4, p90: 944.1 });
+    for (const policy of policyFor(scope, cell)) {
+      const result = stats(observed.values.get(cell + '/' + policy));
+      const complete = result.n === 20;
+      const pass = complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
+      const id = cell + '/' + policy;
+      if (!complete) summary.incomplete.push(id);
+      else if (!pass && scope === 'spot') summary.escalations.push(id);
+      else if (!pass && primary === 'python' && scope === 'phone') (summary.pythonPhone[policy] ??= []).push(id);
+      else if (!pass) summary.failed.push(id);
+      console.log(JSON.stringify({ scope, cell, policy, result, history, thresholds, complete, pass,
+        ...(warmCsharp && { advisory: '0.17.1' }) }));
+    }
+  }
+}
+console.log(JSON.stringify({ summary }));
+if (summary.incomplete.length || summary.failed.length || summary.escalations.length ||
+  Object.keys(summary.pythonPhone).length) process.exitCode = 1;
