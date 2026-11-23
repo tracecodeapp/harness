@@ -117,7 +117,9 @@ for (const { language, scope } of scopes) {
     const pkg = observed.metadata.packages[policy];
     const tree = structuredClone(pkg.dependencies);
     tree.version = '0.17.1';
-    assert.deepEqual(tree, reference.metadata.packages['0.17.1'].dependencies);
+    // The frozen Desktop A receipt is the canonical npm tree encoding. Desktop
+    // B used an older npm serialization for the same lock and package set.
+    assert.deepEqual(tree, baselineCaptures.desktopA.metadata.packages['0.17.1'].dependencies);
   } catch (error) {
     console.log(JSON.stringify({ language, scope, unavailable: error.message }));
     summary.incomplete.push(...required(language, scope).map((cell) => cell + '/' + policy));
