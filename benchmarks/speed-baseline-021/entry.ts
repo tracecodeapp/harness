@@ -94,7 +94,7 @@ function submitPolicy(fixture: Fixture, main: boolean) {
 function measureJavaRequests() {
   type Request = {
     worker: number; type: string; role?: string; sent: number; received?: number;
-    cases?: number; timings?: Record<string, unknown>;
+    cases?: number; tier?: string; timings?: Record<string, unknown>;
   };
   let nextWorker = 0;
   let requests: Request[] = [];
@@ -112,6 +112,7 @@ function measureJavaRequests() {
         pending.delete(data.id);
         request.received = performance.now();
         request.timings = data.payload?.timings;
+        request.tier = data.payload?.results?.[0]?.algorithmIsolationProfile?.tier;
       });
       this.postMessage = (message, options?) => {
         if (message.id && /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program-batch)$/.test(message.type)) {

@@ -294,7 +294,9 @@ function javaCandidateOutcome(result, role, caseCount, caseId) {
   const observer = batches.filter(({ role }) => role === 'observer');
   if (ordinary.length !== expectedOrdinary || observer.length !== expectedObserver ||
       batches.length !== expectedOrdinary + expectedObserver ||
-      ordinary.some(({ cases, timings }) => cases !== caseCount || timings?.runnerProcessCount !== 1) ||
+      ordinary.some(({ cases, tier, timings }) => cases !== caseCount ||
+        (tier === 'algorithm-fast' ? timings?.runnerProcessCount !== 1 :
+          tier !== 'compatibility' || timings?.runnerProcessCount !== caseCount)) ||
       observer.some(({ cases, timings }) => cases !== 1 || timings?.runnerProcessCount !== 1) ||
       (ordinary.length && observer.length && ordinary[0].worker === observer[0].worker) ||
       result.java?.restores !== 0) return 'Java role, batch or worker-reuse witness differs';

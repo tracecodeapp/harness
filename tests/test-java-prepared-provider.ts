@@ -16,6 +16,7 @@ import {
 } from '../packages/runtime-browser/src/internal';
 import {
   createJavaBrowserPreparedExecutionProvider,
+  createJavaJudgeReceiptProvider,
   createJavaPreparedExecutionProvider,
 } from '../packages/runtime-java/src/java-prepared-provider';
 import {
@@ -328,6 +329,53 @@ test('Java prepared provider keeps one compiler worker and executes fresh proces
     preparation.program.executeIsolated({ inputs: { value: 3 } }),
     /already disposed/
   );
+});
+
+test('Java observer compile failure cannot block or rejudge the ordinary batch', async () => {
+  const ordinary = createFakeClient();
+  const compilerEntered = deferred<void>();
+  const compile = deferred<JavaWorkerPreparedProgramResult>();
+  const observer = createFakeClient({
+    executePrepare: () => {
+      compilerEntered.resolve();
+      return compile.promise;
+    },
+  });
+  let workers = 0;
+  const provider = createJavaPreparedExecutionProvider({
+    createWorkerClient: () => [ordinary, observer][workers++]!.client,
+  });
+  const registration = createJavaJudgeReceiptProvider(provider, 'test-build');
+  const program = {
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method' as const,
+    runtimeVersion: 'test-build',
+  };
+  const preparing = provider.prepareProgram({ ...program, mode: 'code' });
+  const observing = registration.prepareObservation(program, new AbortController().signal);
+  const prepared = await preparing;
+  assert(prepared.kind === 'prepared' && prepared.program.mode === 'code');
+  await compilerEntered.promise;
+  try {
+    const batch = await prepared.program.executeBatchIsolated!({
+      inputBatch: [{ value: 7 }, { value: 11 }],
+      stopAtFirstRunaway: true,
+    });
+    assert.deepEqual(batch.map(completedOutput), [7, 11]);
+    compile.resolve({ success: false, error: 'observer wrapper would not compile' });
+    assert.deepEqual(await observing, { status: 'refused', reason: 'observer-prepare' });
+    assert.deepEqual(ordinary.state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.deepEqual(observer.state.prepareCalls.map(({ mode }) => mode), ['trace']);
+    assert.equal(ordinary.state.codeBatchCalls.length, 1);
+    assert.equal(ordinary.state.terminateCalls, 0);
+    assert.equal(observer.state.terminateCalls, 1);
+    assert.equal(observer.state.codeBatchCalls.length, 0);
+  } finally {
+    compile.resolve({ success: false });
+    await prepared.program.dispose();
+    provider.dispose();
+  }
 });
 
 test('Java prepared batches cross the worker boundary once for the entire runner lease', async () => {
