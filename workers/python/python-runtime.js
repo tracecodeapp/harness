@@ -7089,20 +7089,80 @@ def __tracecode_compact_last_step(kind=None):
         return compact
     return None
 
-__tracecode_result_serialization_limit = False
+# The returned value is judged, so it is serialized by the same call Submit
+# makes for this case, with the same class roots, deadline checkpoint and
+# byte accounting. A prepared algorithm-fast case is Submit's fast batch:
+# the harness TreeNode/ListNode (the learner's own classes serialize as
+# objects), the case's clock checked while serializing and encoding, and the
+# byte ceiling over the whole entry (value, console and timings). Any other
+# case is Submit's executeCode: the namespace's classes and the ceiling over
+# its {guardTriggered, output, console} entry.
+class __TracecodeJudgedTimeout(BaseException):
+    pass
+
+def __tracecode_judged_checkpoint():
+    if _case_deadline > 0.0 and _tracecode_perf_counter() >= _case_deadline:
+        raise __TracecodeJudgedTimeout()
+
+__tracecode_judged_fast = ${usesPreparedBindings
+  ? "_builtins.globals().get('__tracecode_isolation_tier') == 'algorithm-fast'"
+  : 'False'}
+__tracecode_result_json = 'null'
+__tracecode_result_limit_reason = None
 try:
-    __tracecode_result_json = _tracecode_trusted_json_encode(
-        __tracecode_judged_serialize(
+    if __tracecode_judged_fast:
+        __tracecode_judged_value = __tracecode_judged_serialize(
+            _result,
+            checkpoint=__tracecode_judged_checkpoint,
+            tree_node_root=TreeNode,
+            list_node_root=ListNode,
+        )
+        __tracecode_judged_entry = {
+            'success': True,
+            'consoleOutput': _console_output,
+            'timings': {
+                'runMs': (_tracecode_perf_counter() - _case_started_at) * 1000,
+                'algorithmFastBatch': True,
+            },
+        }
+        __tracecode_judged_entry_checkpoint = __tracecode_judged_checkpoint
+    else:
+        __tracecode_judged_value = __tracecode_judged_serialize(
             _result,
             tree_node_root=_globals_dict.get('TreeNode', TreeNode),
             list_node_root=_globals_dict.get('ListNode', ListNode),
-        ),
+        )
+        __tracecode_judged_entry = {
+            'guardTriggered': False,
+            'console': _console_output,
+        }
+        __tracecode_judged_entry_checkpoint = None
+    # The ceiling counts the whole entry; the key order does not change its
+    # size, so the value goes last and is cut back out of the encoded entry.
+    __tracecode_judged_prefix = _tracecode_trusted_json_encode(__tracecode_judged_entry)[:-1] + ',"output":'
+    __tracecode_judged_entry['output'] = __tracecode_judged_value
+    __tracecode_judged_encoded = _tracecode_trusted_json_encode(
+        __tracecode_judged_entry,
         max_bytes=_MAX_SERIALIZED_BYTES,
         limit_type=_TracecodeSerializationLimit,
+        checkpoint=__tracecode_judged_entry_checkpoint,
     )
+    if (
+        __tracecode_judged_encoded.startswith(__tracecode_judged_prefix)
+        and __tracecode_judged_encoded.endswith('}')
+    ):
+        __tracecode_result_json = __tracecode_judged_encoded[len(__tracecode_judged_prefix):-1]
+    else:
+        __tracecode_result_json = _tracecode_trusted_json_encode(__tracecode_judged_value)
 except _TracecodeSerializationLimit:
     __tracecode_result_json = 'null'
-    __tracecode_result_serialization_limit = True
+    __tracecode_result_limit_reason = 'serialization-limit'
+except __TracecodeJudgedTimeout:
+    __tracecode_result_json = 'null'
+    __tracecode_result_limit_reason = 'client-timeout'
+__tracecode_judged_value = None
+__tracecode_judged_entry = None
+__tracecode_judged_encoded = None
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
@@ -7119,7 +7179,7 @@ __tracecode_execution_result_json = (
         _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
     ) + '}'
     + ',"result":' + __tracecode_result_json
-    + ',"resultSerializationLimit":' + json.dumps(__tracecode_result_serialization_limit)
+    + ',"resultLimitReason":' + json.dumps(__tracecode_result_limit_reason)
     + ',"console":' + json.dumps(_console_output)
     + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})
     + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
@@ -7491,6 +7551,8 @@ async function executeWithTracing(
             prepared.scopeTimings
           ),
           __tracecode_tracing_enabled: prepared.tracingEnabled !== false,
+          // Which Submit path this case matches when its value is judged.
+          __tracecode_isolation_tier: prepared.isolationTier,
           __tracecode_inputs_need_materialization:
             pythonInputsRequireCustomMaterialization(inputs),
         }
@@ -7620,12 +7682,17 @@ async function executeWithTracing(
       }
     }
 
-    // The returned value went over Submit's serialization limits (only a
-    // program that returned a value can): the case is Submit's
-    // serialization-limit, never a pass and never a cut-down answer.
-    const resultSerializationLimit = result.resultSerializationLimit === true;
+    // Serializing the returned value went over Submit's serialization limits
+    // or past the case's clock, as Submit's would: the case is that limit,
+    // never a pass and never a cut-down answer.
+    const resultLimitReason =
+      result.resultLimitReason === 'serialization-limit' ||
+      result.resultLimitReason === 'client-timeout'
+        ? result.resultLimitReason
+        : undefined;
+    const resultSerializationLimit = resultLimitReason !== undefined;
     if (resultSerializationLimit) {
-      errorMessage = 'Execution stopped: resource limit exceeded (serialization-limit).';
+      errorMessage = `Execution stopped: resource limit exceeded (${resultLimitReason}).`;
       errorLine = undefined;
     }
 
@@ -7658,7 +7725,7 @@ async function executeWithTracing(
         ? { traceLimitReason: result.traceLimitReason }
         : {}),
       ...(resultSerializationLimit
-        ? { timeoutReason: 'serialization-limit' }
+        ? { timeoutReason: resultLimitReason }
         : programRaisedAfterRecordingStopped ? {} : { timeoutReason }),
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
