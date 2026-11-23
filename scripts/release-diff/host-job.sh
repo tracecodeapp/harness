@@ -16,7 +16,7 @@ mkdir -p "$OUT"
 # The baseline is the published package production installs, unpacked with its own
 # production dependencies. npm verifies the registry integrity hash on download.
 BASE="$ROOT/.release-diff/harness-$BASE_VERSION"
-if [ ! -f "$BASE/package/dist/judge.js" ]; then
+if [ ! -f "$BASE/.installed" ]; then
   rm -rf "$BASE" && mkdir -p "$BASE" && cd "$BASE" || exit 10
   npm pack "@tracecode/harness@$BASE_VERSION" --silent >pack.log 2>&1 || { cat pack.log; exit 11; }
   tar xzf "tracecode-harness-$BASE_VERSION.tgz" || exit 12
@@ -25,9 +25,12 @@ if [ ! -f "$BASE/package/dist/judge.js" ]; then
   cd package && node -e "const f=require(\"fs\");const p=JSON.parse(f.readFileSync(\"package.json\"));delete p.devDependencies;f.writeFileSync(\"package.json\",JSON.stringify(p,null,2))" || exit 14
   npm install --omit=dev --ignore-scripts --no-audit --no-fund >"$OUT/base-install.log" 2>&1 \
     || { tail -30 "$OUT/base-install.log"; exit 13; }
+  [ -f node_modules/@tracecode/tracecc/package.json ] && [ -d node_modules/effect ] || { echo "baseline deps missing"; exit 15; }
+  touch "$BASE/.installed"
   cd "$ROOT"
 fi
 sha256sum "$BASE/tracecode-harness-$BASE_VERSION.tgz" >"$OUT/base-package.sha256"
+(cd "$BASE/package" && npm ls --omit=dev --depth=0 >"$OUT/base-deps.txt" 2>&1)
 
 if [ "${RD_SKIP_BUILD:-0}" != 1 ]; then
   { corepack pnpm materialize:csharp-role-assets && corepack pnpm build; } >"$OUT/target-build.log" 2>&1 \
