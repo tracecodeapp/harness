@@ -528,10 +528,11 @@ for (const loop of [
 }
 
 // `delete` is a C++ keyword, so an ops-class learner names the method
-// `deleteKey` or maps it with a macro. The prepared driver reads operation
-// names at run time and must dispatch them to the method the single-case
-// driver resolves (resolveCppObjectMethodMacro): macro target first, then
-// deleteKey. Unknown operations keep falling through to the unresolved error.
+// `deleteKey`. The prepared driver reads operation names at run time and
+// dispatches `delete` to a public deleteKey method. It does no macro-based
+// aliasing (text cannot tell a live macro from a dead one), so every other
+// operation dispatches by exact name, and unknown operations keep falling
+// through to the unresolved error.
 const deleteAliasDispatch = (driver: string, method: string) =>
   new RegExp(
     `if \\(__tc_operation_name == "delete"\\) \\{\\s*__tc_operation_handled = __tc_call_${method}\\(`
@@ -571,11 +572,17 @@ for (const tracing of [false, true]) {
       /if \(__tc_operation_name == "deleteKey"\) \{\s*__tc_operation_handled = __tc_call_deleteKey\(/.test(deleteKeyDriver),
     `prepared ops-class driver (tracing ${tracing}) should dispatch "delete" to deleteKey and keep "deleteKey" by name`
   );
-  const macroDriver = rewriter.buildPreparedOpsClassDriverSource(macroDeleteSource, 'KeyValueStore', { tracing });
-  assertCondition(
-    deleteAliasDispatch(macroDriver, 'removeKey') && !deleteAliasDispatch(macroDriver, 'deleteKey'),
-    `prepared ops-class driver (tracing ${tracing}) should let a #define delete macro win over deleteKey, as the single-case driver does`
+  const privateDeleteKeyDriver = rewriter.buildPreparedOpsClassDriverSource(
+    deleteKeySource.replace('  bool deleteKey(', 'private:\n  bool deleteKey('),
+    'KeyValueStore',
+    { tracing }
   );
+  assertCondition(
+    !privateDeleteKeyDriver.includes('__tc_operation_name == "delete"'),
+    `prepared ops-class driver (tracing ${tracing}) should not dispatch "delete" to a private deleteKey`
+  );
+  // Single-case keeps main's first-#define resolution (a known limit: it does
+  // not see #undef or #if); this checks only that it is unchanged.
   const singleMacroDriver = rewriter.buildOpsClassDriverSource(
     macroDeleteSource,
     'KeyValueStore',
@@ -594,14 +601,15 @@ for (const tracing of [false, true]) {
   );
 }
 
-// A macro name that is also a public method: the single-case driver resolves
-// the operation to the macro target first, so the prepared driver must too,
-// even where the macro is inactive in the compiled source (#undef, #if 0).
+// A dead macro whose name is also a method (#undef, #if 0): the compiler
+// calls the real method, so the prepared driver must dispatch the operation
+// by its exact name. (The single-case driver's text-level macro lookup sends
+// it to the macro target; that is a known limit, left as on main.)
 const operationDispatch = (driver: string, operation: string, method: string) =>
   new RegExp(
     `if \\(__tc_operation_name == "${operation}"\\) \\{\\s*__tc_operation_handled = __tc_call_${method}\\(`
   ).test(driver);
-const macroEqualsMethodSources = {
+const deadMacroSources = {
   undef: [
     '#define get getValue',
     '#undef get',
@@ -623,26 +631,14 @@ const macroEqualsMethodSources = {
   ].join('\n'),
 };
 for (const tracing of [false, true]) {
-  for (const [name, source] of Object.entries(macroEqualsMethodSources)) {
+  for (const [name, source] of Object.entries(deadMacroSources)) {
     const [operation, target] = name === 'undef' ? ['get', 'getValue'] : ['size', 'length'];
-    const single = rewriter.buildOpsClassDriverSource(
-      source,
-      'Store',
-      { operations: ['Store', operation], arguments: [[], []] },
-      { tracing }
-    );
-    assertCondition(
-      single.includes(`__tc_instance.${target}(`) && !single.includes(`__tc_instance.${operation}(`),
-      `single-case ops-class driver (${name}, tracing ${tracing}) should resolve "${operation}" to the macro target ${target}`
-    );
     const prepared = rewriter.buildPreparedOpsClassDriverSource(source, 'Store', { tracing });
     assertCondition(
-      operationDispatch(prepared, operation, target) && !operationDispatch(prepared, operation, operation),
-      `prepared ops-class driver (${name}, tracing ${tracing}) should dispatch "${operation}" to the macro target ${target}, as the single-case driver does`
-    );
-    assertCondition(
-      operationDispatch(prepared, target, target),
-      `prepared ops-class driver (${name}, tracing ${tracing}) should keep dispatching "${target}" by name`
+      operationDispatch(prepared, operation, operation) &&
+        !operationDispatch(prepared, operation, target) &&
+        operationDispatch(prepared, target, target),
+      `prepared ops-class driver (${name}, tracing ${tracing}) should dispatch "${operation}" to the real ${operation}() past a dead macro, and "${target}" by name`
     );
   }
 }
