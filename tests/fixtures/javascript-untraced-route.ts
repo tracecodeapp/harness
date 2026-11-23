@@ -258,6 +258,7 @@ export async function runUntracedRouteChecks(
   } as const;
   // Each needs the pool's console fallback in its noisy case (input 1) only;
   // the quiet case's `localeCompare` answers differently on the two routes.
+  const UNPRINTABLE = "const bad = { toJSON() { throw new Error('no json'); }, toString() { throw new Error('no string'); } };";
   const witnessBody = (noisy: string) => ({
     javascript: `function solve(n) {\n  if (n === 1) {\n    ${noisy}\n  }\n  return 'ä'.localeCompare('z');\n}`,
     typescript: `function solve(n: number): number {\n  if (n === 1) {\n    ${noisy}\n  }\n  return 'ä'.localeCompare('z');\n}`,
@@ -268,6 +269,11 @@ export async function runUntracedRouteChecks(
     'fails after 100 lines': witnessBody("for (let i = 0; i < 100; i++) console.log(i);\n    throw new Error('boom');"),
     // One short line that ends in the pool's truncation marker.
     'logs the truncation marker': witnessBody("console.log('…[truncated]');"),
+    // An argument that cannot be printed: the pool prints `[Unprintable]`
+    // and keeps counting; this console throws, which the learner catches.
+    '99 lines, then an unprintable argument': witnessBody(`${UNPRINTABLE}\n    for (let i = 0; i < 99; i++) console.log(i);\n    try { console.log(bad); } catch (error) { }`),
+    '40 arguments, then an unprintable one': witnessBody(`${UNPRINTABLE}\n    try { console.log(...Array.from({ length: 40 }, (_, i) => i), bad); } catch (error) { }`),
+    '100 unprintable lines': witnessBody(`${UNPRINTABLE}\n    for (let i = 0; i < 100; i++) { try { console.log(bad); } catch (error) { } }`),
   } as const;
   // Known limit: a traced case that a limit stopped is never checked against
   // the pool's console budget (a second run would cost a runaway one more
