@@ -47,8 +47,8 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
 fi
 [ "$(cat "$job_root/gate-package.ready")" = "$subject" ] || { echo 'Use a fresh host job for a different subject.' >&2; exit 2; }
 sha256sum --check --status "$job_root/gate-package/tarball.sha256"
+read -r _ tarball <"$job_root/gate-package/tarball.sha256"
 if [ ! -f "$consumer/.installed" ]; then
-  read -r _ tarball <"$job_root/gate-package/tarball.sha256"
   mkdir -p "$consumer"
   printf '%s\n' '{"name":"stage1-gates-consumer","private":true,"type":"module"}' >"$consumer/package.json"
   (
@@ -58,6 +58,14 @@ if [ ! -f "$consumer/.installed" ]; then
   ) >"$evidence/install-assets.log" 2>&1 || { tail -60 "$evidence/install-assets.log"; exit 1; }
   touch "$consumer/.installed"
 fi
+packed_judge_sha=$(tar -xOzf "$tarball" package/dist/judge.js | sha256sum | cut -d' ' -f1)
+installed_judge=$(realpath "$consumer/node_modules/@tracecode/harness/dist/judge.js")
+case "$installed_judge" in
+  "$consumer/node_modules/.pnpm/"*) ;;
+  *) echo "Judge resolved outside the isolated consumer store: $installed_judge" >&2; exit 2 ;;
+esac
+printf '%s  %s\n' "$packed_judge_sha" "$installed_judge" >"$evidence/installed-judge.sha256"
+sha256sum --check "$evidence/installed-judge.sha256"
 cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
@@ -65,7 +73,7 @@ set +e
 if [ "$subject" = "$candidate" ]; then
   export TRACECODE_STAGE1_CANDIDATE_SOURCE="$job_root/gate-candidate"
 fi
-TRACECODE_STAGE1_SUBJECT="$subject" TRACECODE_STAGE1_FILTER="$filter" TRACECODE_STAGE1_APP_INPUT="$app_input" TRACECODE_STAGE1_MUX_INPUT="$mux_input" \
+TRACECODE_STAGE1_VERIFIED_JUDGE="$installed_judge" TRACECODE_STAGE1_SUBJECT="$subject" TRACECODE_STAGE1_FILTER="$filter" TRACECODE_STAGE1_APP_INPUT="$app_input" TRACECODE_STAGE1_MUX_INPUT="$mux_input" \
   node tests/stage1-gates/run.mjs "$consumer" "$job_root/gate-assets" "$evidence"
 code=$?
 set -e

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, realpathSync, statSync } from 'node:fs';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
@@ -63,6 +63,8 @@ try {
   });
   const installedJudge = Object.keys(built.metafile.inputs).find((name) => name.endsWith('/dist/judge.js'));
   assert(installedJudge && resolve(installedJudge).startsWith(installation + sep), 'Browser bundle must resolve installed /judge');
+  const resolvedJudge = realpathSync(installedJudge);
+  assert.equal(resolvedJudge, process.env.TRACECODE_STAGE1_VERIFIED_JUDGE, 'Browser bundle must load the byte-verified /judge');
   let candidateSource = process.env.TRACECODE_STAGE1_CANDIDATE_SOURCE;
   if (candidateSource) {
     const shim = join(candidateSource, 'packages/tracekernel/src/zlib-browser-shim.ts');
@@ -85,7 +87,7 @@ try {
   }
   record('identity.jsonl', {
     candidate: process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate,
-    installedJudge, browserBundleSha256: checksum(bundlePath), node: process.version,
+    installedJudge: resolvedJudge, judgeSha256: checksum(resolvedJudge), browserBundleSha256: checksum(bundlePath), node: process.version,
   });
   writeFileSync(join(evidence, 'index.html'), '<!doctype html><meta charset="utf-8">');
   await new Promise((done) => server.listen(0, '127.0.0.1', done));
