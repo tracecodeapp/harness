@@ -94,6 +94,7 @@ export function createJavaBrowserRuntimeProvider(
         compileCacheLimit: options.compileCacheLimit,
         externalCompilerUrl: options.externalCompilerUrl,
         assetPreflight: context.preflight('java', ['worker']),
+        runtimeAssetPreflight: () => preflightBuiltInTraceJVMRuntimeAssets(runtimeAssetBaseUrl),
       };
       const preparedProvider =
         createJavaBrowserPreparedExecutionProvider(workerOptions);

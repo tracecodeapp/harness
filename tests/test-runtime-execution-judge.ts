@@ -3011,8 +3011,8 @@ type ObserverReply = import('../packages/runtime-contracts/src/runtime-calls').R
 type ObserverCall = import('../packages/runtime-contracts/src/runtime-calls').RuntimeObservationCall;
 
 function receiptFixture(options: {
-  preparationInitializesRuntime?: boolean;
-  init?: () => void;
+  overlapObservationWithInitialization?: boolean;
+  init?: () => void | Promise<void>;
   ordinaryBarrier?: Promise<void>;
   observe?: (call: ObserverCall) => Promise<ObserverReply>;
   idleMs?: number;
@@ -3083,7 +3083,7 @@ function receiptFixture(options: {
   const provider: RuntimePreparedExecutionProvider = {
     ...base,
     async init() {
-      options.init?.();
+      await options.init?.();
       return base.init();
     },
     async prepareProgram(call) {
@@ -3156,7 +3156,7 @@ function receiptFixture(options: {
       observationLease: 'separate' as const,
       certification: options.certification,
       observationDeadlineMs: options.deadlineMs ?? 3000,
-      ...(options.preparationInitializesRuntime ? { preparationInitializesRuntime: true as const } : {}),
+      ...(options.overlapObservationWithInitialization ? { overlapObservationWithInitialization: true as const } : {}),
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
     },
     async prepareObservation(program: (typeof preparedDescriptors)[number]) {
@@ -3742,16 +3742,27 @@ test('migrated execute owns one snapshot of invocation, inputs and selection', a
   }
 });
 
-test('owned preparation can initialize its leases without a separate Judge init barrier', async () => {
-  let initCalls = 0;
-  const f = receiptFixture({ preparationInitializesRuntime: true, init: () => { initCalls++; } });
+test('owned observer preparation overlaps ordinary initialization after it starts', { timeout: 5000 }, async () => {
+  const initializing = controlled();
+  const initialized = controlled();
+  const observing = controlled();
+  const events: string[] = [];
+  const f = receiptFixture({
+    overlapObservationWithInitialization: true,
+    init() { events.push('ordinary init'); initializing.resolve(); return initialized.promise; },
+    async prepareObserver() { events.push('observer prepare'); observing.resolve(); },
+  });
   try {
-    const result = await f.host.execute({
+    const pending = f.host.execute({
       bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
     });
-    assert.equal(result.evaluation.cases[0]?.attachment?.status, 'drawn');
-    assert.equal(initCalls, 0);
+    await Promise.all([initializing.promise, observing.promise]);
+    assert.deepEqual(events.sort(), ['observer prepare', 'ordinary init']);
+    assert.deepEqual(f.ordinaryStarts, []);
+    initialized.resolve();
+    assert.equal((await pending).evaluation.cases[0]?.attachment?.status, 'drawn');
   } finally {
+    initialized.resolve();
     f.host.dispose();
   }
 });

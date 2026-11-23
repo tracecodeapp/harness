@@ -111,3 +111,12 @@ excursion in the spot comparison requires the full matrix. The Java sample
 also includes role-tagged worker init, preparation, enqueue and execution
 timings, JVM starts, restores, the worker-reply-to-public-response interval,
 and the immediate click latency.
+
+For a short diagnostic in an ordinary host slot, stage the same tarball and
+run the command below. The runner writes separate files and marks every
+diagnostic sample ineligible for G8 scoring. It takes three samples per app
+policy for each desktop cold or warm Run and Submit.
+
+```sh
+SPEED_JAVA_SCOPE=desktop node benchmarks/speed-baseline-021/run.mjs reports/speed-baseline-021 diagnostic desktop-a 212026 10
+```

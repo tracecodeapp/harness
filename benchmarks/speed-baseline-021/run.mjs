@@ -18,7 +18,8 @@ const windowLanguages = {
   phone: ['javascript', 'typescript', 'python', 'cpp', 'csharp', 'java'],
 };
 const selectedCpu = windowName === 'phone' ? 4 : 1;
-const maxInvalid = mode === 'smoke' ? 1 : 5;
+const diagnostic = mode === 'diagnostic';
+const maxInvalid = mode === 'smoke' || diagnostic ? 1 : 5;
 const seed = Number(seedArg);
 const runMinutes = Number(minuteArg);
 const groupSelector = process.env.SPEED_GROUP_SELECTOR;
@@ -35,10 +36,11 @@ assert.ok(
   'SPEED_GROUP_SELECTOR must be unset or java-switched-run in a Desktop A run',
 );
 if (candidate) {
-  assert.ok(mode === 'run' && !groupSelector);
+  assert.ok((mode === 'run' || diagnostic) && !groupSelector);
   assert.ok((candidateScope === 'desktop' || candidateScope === 'spot') && windowName === 'desktop-a' ||
     candidateScope === 'phone' && windowName === 'phone');
 }
+if (diagnostic) assert.ok(candidate && candidateScope === 'desktop');
 
 const languages = { python: 'py', javascript: 'js', typescript: 'ts', java: 'java', cpp: 'cpp', csharp: 'cs' };
 const problemIds = ['binary-search', 'permutations'];
@@ -52,7 +54,7 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = candidate ? 's-java-' + candidateScope + '-' :
+const filePrefix = diagnostic ? 'java-diagnostic-' : candidate ? 's-java-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
 const metadataPath = join(out, filePrefix + 'metadata.json');
 const samplesPath = join(out, filePrefix + 'samples.jsonl');
@@ -301,7 +303,9 @@ function javaCandidateOutcome(result, role, caseCount, caseId) {
       ordinary.some(({ cases, tier, timings }) => cases !== caseCount ||
         (tier === 'algorithm-fast' ? timings?.runnerProcessCount !== 1 :
           tier !== 'compatibility' || timings?.runnerProcessCount !== caseCount)) ||
-      observer.some(({ cases, timings }) => cases !== 1 || timings?.runnerProcessCount !== 1) ||
+      observer.some(({ cases, timings }) => cases !== 1 ||
+        (timings?.runnerProcessCount !== 1 &&
+          !(role === 'click' && timings?.runnerProcessCount === 0 && timings.runnerReused === true))) ||
       (ordinary.length && observer.length && ordinary[0].worker === observer[0].worker) ||
       result.java?.restores !== 0) return 'Java role, batch or worker-reuse witness differs';
   if (role === 'click' && phases.some(({ type }) => type === 'prepare-runtime-program')) {
@@ -343,7 +347,7 @@ function plan() {
     candidate ? ['java'] : mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
   for (const language of cheapFirst) {
     for (const cpu of cpuRates) {
-      const target = candidate ? 20 : mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
+      const target = diagnostic ? 3 : candidate ? 20 : mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
       const phoneSubset = mode === 'run' && windowName === 'phone';
       for (const state of phoneSubset ? ['warm', 'cold'] : ['warm', 'cold', 'switched']) {
         for (const journey of phoneSubset ? ['run'] : ['submit', 'run']) {
@@ -361,6 +365,7 @@ function plan() {
       }
     }
   }
+  if (diagnostic) return groups.filter(({ state, journey }) => state !== 'switched' && journey !== 'lesson');
   if (candidateScope === 'spot') {
     return groups.filter(({ problem, state, journey }) =>
       problem === 'binary-search' && state === 'warm' && journey !== 'lesson')
@@ -380,7 +385,7 @@ function checkDeadline() {
 
 async function waitForQuiet() {
   checkDeadline();
-  if (mode === 'smoke') return;
+  if (mode === 'smoke' || diagnostic) return;
   while (loadavg()[0] > 2) {
     checkDeadline();
     await delay(5_000);

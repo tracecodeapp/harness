@@ -682,7 +682,7 @@ globalThis.runJavaPreparedProviderBrowserTest =
     const generatedLookalikeFirst =
       await ambientClient.prepareRuntimeProgram({
         mode: 'code',
-        code: generatedLookalikeSource,
+        code: generatedLookalikeSource + '\n// Different source has a different generated shell.',
         functionName: 'inspect',
         executionStyle: 'solution-method',
       });

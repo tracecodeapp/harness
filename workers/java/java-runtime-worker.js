@@ -54,6 +54,7 @@ let traceJVMClient;
 let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
 const traceJVMCompileCache = new Map();
+const traceJVMClassifiedArtifacts = new WeakMap();
 const TRACEJVM_COMPILE_CACHE_LIMIT = 64;
 const traceJVMPreparedPrograms = new Map();
 let traceJVMPreparedCompileCount = 0;
@@ -355,18 +356,25 @@ function traceJVMProcessHost(programId) {
     };
   }
   if (localAuthority) {
+    // A retained observer JVM must bind syscalls to the current case's
+    // authority, which is allocated and closed independently per request.
+    const activeLocalAuthority = () => {
+      const authority = traceJVMLocalKernelAuthorities.get(String(programId));
+      if (!authority) throw Object.assign(new Error('Java case authority is closed.'), { code: 'EPIPE' });
+      return authority;
+    };
     return {
       kernelBound: true,
       dispatchSync(request) {
         return unwrapTraceKernelResult(
           request.operation,
-          localAuthority.dispatchSync(request)
+          activeLocalAuthority().dispatchSync(request)
         );
       },
       async dispatch(request) {
         return unwrapTraceKernelResult(
           request.operation,
-          await localAuthority.dispatch(request)
+          await activeLocalAuthority().dispatch(request)
         );
       },
       close() {},
@@ -1049,12 +1057,15 @@ async function runInLeasedTraceJVMBatchProcess(
     stopAtFirstRunaway,
     onCaseAdmitted,
     reportRun,
+    retainLocalObserverProcess,
   }
 ) {
   const results = [];
   let processCount = 0;
-  let process;
-  let host;
+  const retained = retainLocalObserverProcess ? traceJVMPreparedProcessLeases.get(programId) : undefined;
+  if (retained) traceJVMPreparedProcessLeases.delete(programId);
+  let process = retained?.process;
+  let host = retained?.host;
 
   const releaseProcess = () => {
     process?.dispose();
@@ -1159,7 +1170,12 @@ async function runInLeasedTraceJVMBatchProcess(
         await resetTraceKernelExecutionScope(programId);
       }
     }
-    return { results, processCount };
+    if (retainLocalObserverProcess && process) {
+      traceJVMPreparedProcessLeases.set(programId, { process, host });
+      process = undefined;
+      host = undefined;
+    }
+    return { results, processCount, runnerReused: retained !== undefined };
   } finally {
     releaseProcess();
   }
@@ -1774,12 +1790,19 @@ async function traceJVMPrepareRuntimeProgram(
     });
   }
 
+  const artifactKey = JSON.stringify([entryClass, cleanEntryClass]);
+  const cachedArtifact = traceJVMClassifiedArtifacts.get(context.compile);
+  const artifactCacheHit = context.compileCacheHit && cachedArtifact?.key === artifactKey;
+  const artifact = artifactCacheHit ? cachedArtifact : {
+    key: artifactKey,
+    algorithmIsolationProfile: classifyTraceJVMAlgorithmProgram(context.compile.program, [entryClass, cleanEntryClass]),
+    preparedArtifact: serializeTraceJVMPreparedProgram(context.compile.program),
+  };
+  if (!artifactCacheHit) traceJVMClassifiedArtifacts.set(context.compile, artifact);
+
   traceJVMPreparedPrograms.set(normalizedProgramId, {
     program: context.compile.program,
-    algorithmIsolationProfile: classifyTraceJVMAlgorithmProgram(
-      context.compile.program,
-      [entryClass, cleanEntryClass]
-    ),
+    algorithmIsolationProfile: artifact.algorithmIsolationProfile,
     compilerDebugProfile: String(compilerDebugProfile),
     compilerStdout: context.compile.stdout,
     compilerStderr: context.compile.stderr,
@@ -1800,12 +1823,10 @@ async function traceJVMPrepareRuntimeProgram(
       ? 0
       : (context.compile.timings?.totalMs ?? 0),
     compileCacheHit: context.compileCacheHit,
+    artifactCacheHit,
     preparedCompileCount: traceJVMPreparedCompileCount,
-    algorithmIsolationProfile:
-      traceJVMPreparedPrograms.get(normalizedProgramId).algorithmIsolationProfile,
-    preparedArtifact: serializeTraceJVMPreparedProgram(
-      context.compile.program
-    ),
+    algorithmIsolationProfile: artifact.algorithmIsolationProfile,
+    preparedArtifact: artifact.preparedArtifact,
   });
 }
 
@@ -1979,17 +2000,21 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       'TraceJVM prepared trace selection must be empty or contain one boolean per batch case.'
     );
   }
-  disposeTraceJVMPreparedProcessLease(normalizedProgramId);
+  const observerOnly = batchRole === 'observer';
+  const observation = observerOnly ? JSON.parse(observationOptions) : undefined;
+  const freshLocalAuthority = !traceJVMProcessHost(normalizedProgramId).kernelBound;
+  const reuseProcess = prepared.algorithmIsolationProfile?.tier === 'algorithm-fast';
+  const retainLocalObserverProcess = Boolean(observation?.nonce) &&
+    freshLocalAuthority && systemPropertiesBatch.length === 1 && reuseProcess;
+  if (!retainLocalObserverProcess) disposeTraceJVMPreparedProcessLease(normalizedProgramId);
   let localAuthority;
-  if (!traceJVMProcessHost(normalizedProgramId).kernelBound) {
+  if (freshLocalAuthority) {
     localAuthority = await createLocalTraceKernelAuthority();
     traceJVMLocalKernelAuthorities.set(normalizedProgramId, localAuthority);
   }
   let batch;
   try {
     const cleanEntry = String(cleanEntryClass) || String(entryClass);
-    const observerOnly = batchRole === 'observer';
-    const observation = observerOnly ? JSON.parse(observationOptions) : undefined;
     const traceArgs = traceJVMRunnerArgs(entryClass, maxStoredEvents, {
       learnerFrame,
       profile: String(traceProfile) === 'true',
@@ -2037,7 +2062,8 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
         onCaseAdmitted: batchRole === 'ordinary'
           ? (index) => self.TraceCodeJavaPreparedCaseAdmitted?.(index, Number(observationOptions))
           : undefined,
-        reuseProcess: prepared.algorithmIsolationProfile?.tier === 'algorithm-fast',
+        reuseProcess,
+        retainLocalObserverProcess,
         stopAtFirstRunaway: String(stopAtFirstRunaway) === 'true',
         reportRun: (run) => observation?.nonce
           ? traceJVMObservationReport(run, observation.nonce)
@@ -2056,6 +2082,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
     results: batch.results,
     algorithmIsolationProfile: prepared.algorithmIsolationProfile,
     runnerProcessCount: batch.processCount,
+    ...(batch.runnerReused ? { runnerReused: true } : {}),
     preparedExecutionCount: prepared.executions,
     preparedCompileCount: traceJVMPreparedCompileCount,
   });
@@ -2151,6 +2178,8 @@ self.cheerpjInit = async () => {
   await client.initialize();
 };
 
+self.TraceCodePreloadPreparedJavaAssets = loadTraceJVMHelperJar;
+
 self.cheerpOSAddStringFile = async (path, source) => {
   traceJVMStringFiles.set(String(path), String(source));
 };
@@ -2177,6 +2206,7 @@ self.cheerpjRunLibrary = async () => ({
         disposeRuntimeProgram: traceJVMDisposeRuntimeProgram,
         resetPersistentRuntimeStorage() {
           traceJVMStringFiles.clear();
+          traceJVMCompileCache.clear();
         },
         deleteRuntimeRequestTree() {},
         restoreCompileCache() {

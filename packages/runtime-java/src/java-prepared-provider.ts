@@ -564,6 +564,7 @@ export function createJavaJudgeReceiptProvider(
       observationLease: 'separate',
       observationDeadlineMs: 30_000,
       observationPrepareDeadlineMs: 120_000,
+      overlapObservationWithInitialization: true,
       stoppingBatchAdmission: 'worker-start',
     },
     async prepareObservation(program, signal, traceOptions) {

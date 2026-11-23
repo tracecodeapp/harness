@@ -8485,6 +8485,8 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   let stableCompileId;
   let entryClass;
   let cleanEntryClass;
+  let buildKey;
+  let shellIdentity;
   let rewriteMs = 0;
   try {
     normalizedPayload = normalizeJavaExecutionPayload({
@@ -8492,7 +8494,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       inputs: {},
       options: payload.options ?? {},
     });
-    const buildKey = JSON.stringify({
+    buildKey = JSON.stringify({
       compileMode: observerOnly ? 'prepared-observer' : `prepared-${mode}`,
       code: payload.code,
       functionName: normalizedPayload.functionName,
@@ -8505,8 +8507,9 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
     // classes. Its identity must not be predictable from learner-controlled
     // source, otherwise a crafted top-level `$` class could impersonate an
     // excluded nested shell class.
-    const cached = observerOnly ? javaPreparedSourceCache.get(buildKey) : undefined;
-    const shellIdentity = cached?.shellIdentity ?? javaWorkerSecureRandomHex(4);
+    const cachePrepared = (mode === 'code' || observerOnly) && javaCompileCacheLimit > 0;
+    const cached = cachePrepared ? javaPreparedSourceCache.get(buildKey) : undefined;
+    shellIdentity = cached?.shellIdentity ?? javaWorkerSecureRandomHex(4);
     const traceDynamicInputs = cached?.dynamicInputs ?? preparedDynamicInputEntriesForPayload(
       normalizedPayload,
       stableCompileId
@@ -8558,14 +8561,6 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
         ),
       }];
       dynamicInputs = traceDynamicInputs;
-    }
-    if (observerOnly && javaCompileCacheLimit > 0) {
-      javaPreparedSourceCache.set(buildKey, {
-        shellIdentity, preparedSources, dynamicInputs, entryClass, cleanEntryClass,
-      });
-      while (javaPreparedSourceCache.size > javaCompileCacheLimit) {
-        javaPreparedSourceCache.delete(javaPreparedSourceCache.keys().next().value);
-      }
     }
     rewriteMs = performance.now() - sourceStart;
   } catch (error) {
@@ -8660,7 +8655,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
     hostCallMs: libraryCallEnd - libraryCallStart,
     totalMs: performance.now() - totalStart,
     compileCacheHit: report.compileCacheHit ?? false,
-    artifactCacheHit: false,
+    artifactCacheHit: report.artifactCacheHit ?? false,
   };
 
   if (report.success !== true) {
@@ -8675,6 +8670,14 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       consoleOutput,
       timings,
     };
+  }
+  if ((mode === 'code' || observerOnly) && javaCompileCacheLimit > 0) {
+    javaPreparedSourceCache.set(buildKey, {
+      shellIdentity, preparedSources, dynamicInputs, entryClass, cleanEntryClass,
+    });
+    while (javaPreparedSourceCache.size > javaCompileCacheLimit) {
+      javaPreparedSourceCache.delete(javaPreparedSourceCache.keys().next().value);
+    }
   }
 
   const preparedState = {
@@ -9167,6 +9170,7 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   if (results[0]?.timings) {
     results[0].timings.runnerProcessCount =
       report.runnerProcessCount ?? 0;
+    if (report.runnerReused === true) results[0].timings.runnerReused = true;
   }
   return {
     success:
@@ -9433,8 +9437,17 @@ self.onmessage = (event) => {
         await ensureReady();
         // Complete trusted compiler/runtime loading before ambient browser
         // authority is removed for the user-controlled invocation.
-        if (!(message.payload?.observerOnly === true ||
-          preparedJavaRuntimePrograms.get(message.payload?.programId)?.observerOnly)) {
+        const prepared = preparedJavaRuntimePrograms.get(message.payload?.programId);
+        const preparingOrRestoring = message.type === 'prepare-runtime-program' ||
+          message.type === 'restore-prepared-runtime-program';
+        const preparedMode = prepared?.mode ??
+          (preparingOrRestoring ? message.payload?.snapshot?.mode ?? message.payload?.mode : undefined);
+        const observerOnly = prepared?.observerOnly || (preparingOrRestoring &&
+          (message.payload?.observerOnly === true || message.payload?.snapshot?.observerOnly === true));
+        if ((preparedMode === 'code' || observerOnly) &&
+          typeof self.TraceCodePreloadPreparedJavaAssets === 'function') {
+          await self.TraceCodePreloadPreparedJavaAssets();
+        } else if (!observerOnly) {
           await warmRunHost();
         }
         const requestedAuthorityMode = message.type === 'execute-project-java'

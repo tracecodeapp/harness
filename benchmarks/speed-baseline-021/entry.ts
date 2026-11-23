@@ -112,6 +112,10 @@ function measureJavaRequests() {
         pending.delete(data.id);
         request.received = performance.now();
         request.timings = data.payload?.timings;
+        const runner = data.payload?.results?.[0]?.timings;
+        if (runner?.runnerReused === true) {
+          request.timings = { ...request.timings, runnerReused: true };
+        }
         request.tier = data.payload?.results?.[0]?.algorithmIsolationProfile?.tier;
       });
       this.postMessage = (message, options?) => {

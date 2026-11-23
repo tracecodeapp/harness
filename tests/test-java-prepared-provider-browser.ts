@@ -487,7 +487,7 @@ function assertPreparedResult(
   assert.equal(
     result.generatedIdentityDistinct,
     true,
-    `${engine}: identical preparations must receive unpredictable generated-shell identities`
+    `${engine}: distinct sources must receive distinct generated-shell identities`
   );
   assert.ok(
     result.generatedLookalikeProfile?.tier === 'compatibility' &&
@@ -822,6 +822,12 @@ try {
             assert.deepEqual(companion.outcomes[1], ['completed', ['ordinary 1'], 2]);
             assert.equal(companion.outcomes[2]?.[2], 'client-timeout');
             assert.equal(companion.positive.status, 'drawn');
+            assert.equal(companion.nextPositive.status, 'drawn');
+            if (companion.positive.status === 'drawn' && companion.nextPositive.status === 'drawn') {
+              for (const [trace, expected] of [[companion.positive.trace, 2], [companion.nextPositive.trace, 3]] as const) {
+                assert.ok(trace.events.some((event) => event.kind === 'return' && event.value === expected));
+              }
+            }
             assert.equal(companion.failed?.status, 'drawn');
             assert.equal(companion.step.status, 'truncated');
             assert.equal(companion.byte.status, 'truncated');
@@ -840,6 +846,8 @@ try {
             assert.equal(companion.workers, 2);
             assert.deepEqual(companion.cache, [[false, false], [true, true]]);
             assert.deepEqual(companion.submit, [3]);
+            assert.deepEqual(companion.observerRunners[0], { count: 1, reused: undefined });
+            assert.ok(companion.observerRunners.some(({ count, reused }) => count === 0 && reused));
             const prepares = companion.requests.filter(({ type }) => type === 'prepare-runtime-program');
             assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)])
               .sort(([a], [b]) => Number(a) - Number(b)),
@@ -847,7 +855,7 @@ try {
             assert.deepEqual(companion.requests.filter(({ type }) =>
               type === 'execute-prepared-runtime-program-batch')
               .map(({ worker, count }) => [worker, count]).sort(([a], [b]) => a! - b!),
-              [[1, 4], [1, 1], ...Array.from({ length: 6 }, () => [2, 1])]);
+              [[1, 4], [1, 1], ...Array.from({ length: 7 }, () => [2, 1])]);
             assert.ok(!companion.requests.some(({ type }) => type === 'restore-prepared-runtime-program'));
             console.log('PASS: separate Java observer preserves the ordinary batch and reuses its artifact');
             let deadline: ReturnType<typeof setTimeout> | undefined;

@@ -191,6 +191,7 @@ export async function runJavaStoppingBatchBrowserTest() {
 
 export async function runJavaCompanionBrowserTest() {
   const requests: Array<{ worker: number; type: string; observer?: boolean; count?: number }> = [];
+  const observerRunners: Array<{ count?: number; reused?: boolean }> = [];
   let workers = 0;
   const provider = createJavaBrowserPreparedExecutionProvider({
     workerUrl: workerUrl + '?tracejvmBaseUrl=/tracejvm/',
@@ -198,6 +199,11 @@ export async function runJavaCompanionBrowserTest() {
     workerFactory(url) {
       const worker = new Worker(url);
       const id = ++workers;
+      worker.addEventListener('message', ({ data }) => {
+        if (id !== 2 || data?.type !== 'execute-prepared-runtime-program-batch') return;
+        const timings = data.payload?.results?.[0]?.timings;
+        observerRunners.push({ count: timings?.runnerProcessCount, reused: timings?.runnerReused });
+      });
       const send = worker.postMessage.bind(worker);
       worker.postMessage = (message, options?) => {
         requests.push({
@@ -211,11 +217,12 @@ export async function runJavaCompanionBrowserTest() {
   });
   const descriptor = {
     code: `class Solution {
+      private static int executions;
       public int solve(int n) {
         System.out.println("ordinary " + n);
         if (n == 0) throw new IllegalStateException("expected");
         if (n < 0) while (true) {}
-        int result = n + 1;
+        int result = n + ++executions;
         for (int i = 0; i < n; i++) {
           result += 0;
         }
@@ -246,8 +253,8 @@ export async function runJavaCompanionBrowserTest() {
       },
     };
     const batch = await ordinary.program.executeBatchIsolated!(call);
-    const [failed, positive, step, byte, line, singleLine] = await Promise.all([
-      caseDrawings[0], draw(1), draw(1, { maxTraceSteps: 2 }),
+    const [failed, positive, nextPositive, step, byte, line, singleLine] = await Promise.all([
+      caseDrawings[0], draw(1), draw(2), draw(1, { maxTraceSteps: 2 }),
       draw(1, { maxTraceBytes: 1 }), draw(1, { maxLineEvents: 1 }),
       draw(3, { maxSingleLineHits: 1 }),
     ]);
@@ -262,7 +269,7 @@ export async function runJavaCompanionBrowserTest() {
       admission,
       outcomes: batch.map((item) => ([item.kind, item.consoleOutput,
         item.kind === 'completed' ? item.output : item.kind === 'limit' ? item.reason : undefined])),
-      failed, positive, step, byte, line, singleLine, requests, workers,
+      failed, positive, nextPositive, step, byte, line, singleLine, requests, workers, observerRunners,
       cache: [ordinary.timings, submit.timings].map((timings) =>
         [timings?.compileCacheHit, timings?.artifactCacheHit]),
       submit: submitResult.map((item) => item.kind === 'completed' ? item.output : item.kind),
