@@ -155,6 +155,32 @@ for (const ext of Object.keys(languages)) {
     rows(expectedLists.map((values) => ({ head: list(values) })), expectedLists.map((values) => list(values, true))), { graph: true });
 }
 
+for (const [name, code, stdout, errorMarker] of [
+  [
+    'playground-array-print-then-throw',
+    '// proof-harness-0.20.4\nSystem.out.println("three");\nint[] values = new int[1];\nObject result = values[2];',
+    'three\n',
+    'ArrayIndexOutOfBoundsException',
+  ],
+  [
+    'playground-illegal-argument-print-then-throw',
+    'System.out.println("one");\nSystem.out.println("two");\nif (true) throw new IllegalArgumentException("boom");\nObject result = 1;\n',
+    'one\ntwo\n',
+    'IllegalArgumentException',
+  ],
+]) {
+  fixtures.push({
+    gate: 'G1', name, language: 'java', code, executionStyle: 'function',
+    traceOptions: null, playgroundScript: true,
+    cases: [{
+      id: 'A', input: {}, status: 'runtime-error', verdict: 'not-evaluated',
+      stdout, stderr: '', failure: { origin: 'program', stage: 'runtime' },
+      errorMarker, diagnostics: [],
+    }],
+    candidatePrediction: 'The Playground script must preserve stdout when execution ends in a runtime error.',
+  });
+}
+
 const java = read('tests/test-java-prepared-input-references.ts');
 for (const [name, code, functionName, head, answer] of [
   ['constructor-count', literal(java.split('function testNodesAreBuiltOnce()')[1], 'code'), 'count', list(Array.from({ length: 16 }, (_, i) => i + 1)), '16:16'],
@@ -271,7 +297,7 @@ const inventory = [...fixtures, ...requiredAppFixtures].flatMap((fixture) => [
 ].flatMap((request) => {
   const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}`;
   return [
-    ...['order', 'compile', 'compile-footprint', 'correlation', ...(request.mode === 'submit' ? ['aggregate'] : []), ...(request.id.startsWith('legacy-') ? ['legacy-projection'] : []), ...(request.route !== 'mux' ? ['worker-ack'] : [])].map((id) => `${prefix}/@request/${id}`),
+    ...['order', 'compile', 'compile-footprint', 'correlation', ...(request.mode === 'submit' ? ['aggregate'] : []), ...(fixture.playgroundScript ? ['app-request-shape'] : []), ...(request.id.startsWith('legacy-') ? ['legacy-projection'] : []), ...(request.route !== 'mux' ? ['worker-ack'] : [])].map((id) => `${prefix}/@request/${id}`),
     ...request.cases.flatMap((caseId) => [
       ...rowChecks,
       ...(fixture.name === 'stdout' && request.selected.includes(caseId) ? ['source-event', 'case-binding'] : []),

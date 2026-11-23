@@ -1,4 +1,16 @@
-export function requestMatrix(cases, { gate, untracedOnly = false } = {}) {
+export function requestMatrix(cases, { gate, untracedOnly = false, playgroundScript = false } = {}) {
+  if (playgroundScript) {
+    return [
+      {
+        id: 'execute-traced', mode: 'submit', cases, selected: cases,
+        functionName: null, trace: true,
+      },
+      {
+        id: 'execute-untraced', mode: 'submit', cases, selected: [],
+        functionName: '', trace: false, limits: { wallClockMs: 60000 },
+      },
+    ];
+  }
   const second = cases.slice(1, 2);
   const requests = [
     { id: 'run-first', mode: 'initial', cases, selected: cases.slice(0, 1) },
@@ -33,6 +45,7 @@ export function appFixtureName({ name, stage }) {
 }
 
 export function muxRequests(fixture) {
+  if (fixture.playgroundScript) return [];
   const cases = fixture.cases.map(({ id }) => id);
   const requests = [{ id: 'algorithm', route: 'mux', mode: 'submit', selected: [], cases }];
   if (fixture.name !== 'queens') {

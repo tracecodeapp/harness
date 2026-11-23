@@ -187,14 +187,14 @@ export async function runFixture(fixture, requests, nonce, mutation) {
             id: `${fixture.gate}-${fixture.language}-${fixture.name}-${request.id}`,
             language: fixture.language,
             code: fixture.code,
-            functionName: fixture.functionName,
+            functionName: Object.hasOwn(request, 'functionName') ? request.functionName : fixture.functionName,
             executionStyle: fixture.executionStyle,
-            trace: request.mode === 'initial' || request.selected.length > 0,
+            trace: Object.hasOwn(request, 'trace') ? request.trace : request.mode === 'initial' || request.selected.length > 0,
             cases: request.cases.map((id) => {
               const { input, expected } = fixture.cases.find((row) => row.id === id);
               return { id, input: structuredClone(input), ...(expected === undefined ? {} : { expected: structuredClone(expected) }) };
             }),
-            limits: fixture.limits,
+            limits: request.limits ?? fixture.limits,
             traceOptions: supportedTraceOptions(fixture.language, fixture.traceOptions),
             comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
           });
@@ -225,7 +225,11 @@ export async function runFixture(fixture, requests, nonce, mutation) {
         }
         await globalThis.recordGateObservation(jsonWire({
           nonce, request: request.id, reported, projections, compileProjection, skip, retainedExecutionId, seedHits,
-          submitted: bundle && { id: bundle.id, workspaceDigest: bundle.workspaceDigest, traceOptions: bundle.execution.traceOptions },
+          submitted: bundle && {
+            id: bundle.id, workspaceDigest: bundle.workspaceDigest,
+            traceOptions: bundle.execution.traceOptions,
+            ...(fixture.playgroundScript ? { execution: bundle.execution } : {}),
+          },
           worker: transcript, wallMs: performance.now() - start,
         }));
       } catch (error) {

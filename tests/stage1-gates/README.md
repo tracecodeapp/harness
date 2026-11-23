@@ -23,6 +23,8 @@ The cap dispositions are part of the assertion inventory. Python tests its exist
 
 The print-then-throw fixture checks for both messages and the deliberate runtime error in every receipt. For Java, Python, C# and C++, its text oracle allows one trailing LF per captured message. JS and TS use their line-oriented console and must match its LF framing. Judge paths within each language must agree byte for byte. `console-framing.jsonl` records byte differences from program writes and indicates whether framing alone accounts for each difference.
 
+The Java Playground companions use selector-free script source and reproduce the app's two Judge requests: traced with `functionName: null` and no app limit override, then untraced with `functionName: ''` and `wallClockMs: 60000`. Both require prints made before the runtime error to remain in stdout.
+
 The C++ terminator failure needs the index read on its own source line. The one-line sibling is a passing regression guard. The Java graph seed copies the second edge on the worker request, and the Python output seeds change scoped worker replies before Judge sees them.
 
 Historical controls use separate host job suffixes and the same committed oracles. Set `TRACECODE_STAGE1_SUBJECT` to `e13bf6ec1b67681eede99c8dea1df951b424eb91` for the pre-#68 paired printer, `15ebff79943cf991ed5f4921fd9609c3b48f33d3` for the pre-cycle Java graph, or `published-0.17.1` for the published queens artifact. Compare the targeted assertion and raw receipt before accepting a historical red. Required companion routes that run only on the frozen candidate remain missing in these historical reports.

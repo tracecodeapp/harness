@@ -87,6 +87,15 @@ export function checkObservation(fixture, request, observation, record) {
       assert.deepEqual(reported.policy.missingFacts, []);
     });
   }
+  if (fixture.playgroundScript) {
+    check('@request', 'app-request-shape', () => {
+      assert.equal(submitted.execution.functionName, request.functionName);
+      assert.equal(submitted.execution.executionStyle, 'function');
+      assert.equal(submitted.execution.trace ?? false, request.trace);
+      assert.equal(Object.hasOwn(submitted.execution, 'traceOptions'), false);
+      assert.deepEqual(submitted.execution.limits, request.limits);
+    });
+  }
   if (request.route !== 'mux') {
     check('@request', 'worker-ack', () => {
       const commands = observation.worker.filter((event) => event.action === 'command' && /execute|compile-run/.test(event.type));
@@ -291,7 +300,8 @@ export function checkDifferential(fixture, observations, record) {
     const rows = observations.flatMap((observation) => !defined(observation.reported) ? [] : (
       observation.reported.evaluation.cases.filter((item) => item.caseId === expected.id).map((row) => ({ request: observation.request, row }))
     ));
-    const baseline = rows.find(({ request }) => request === `submit-default-${expected.id}`);
+    const baselineRequest = fixture.playgroundScript ? 'execute-untraced' : `submit-default-${expected.id}`;
+    const baseline = rows.find(({ request }) => request === baselineRequest);
     if (!baseline || rows.length < 2) continue;
     const normalized = ({ sessionId, pid, startedAt, endedAt, timings, trace, value, ...row }) => ({
       ...row,
