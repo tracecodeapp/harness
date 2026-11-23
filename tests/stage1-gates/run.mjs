@@ -7,7 +7,7 @@ import { extname, join, resolve, sep } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { checkCppDirect, checkDifferential, checkObservation, summarize } from './checks.mjs';
+import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObservation, summarize } from './checks.mjs';
 import { runGraphControls } from './graph.mjs';
 import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, requestMatrix } from './requests.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
@@ -147,8 +147,8 @@ try {
         const request = requests.find(({ id }) => id === observation.request);
         assert(request, 'Unknown request observation');
         record('observations.jsonl', { fixture: key, route: options.route, control: options.control, ...observation });
-        if (options.control) options.onObservation(observation);
-        else {
+        options.onObservation?.(observation);
+        if (!options.control) {
           runtime.requests++;
           runtime.requestMs[`${key}/${options.route ?? 'default'}/${request.id}`] = observation.wallMs;
           observed.push(observation);
@@ -189,10 +189,14 @@ try {
       }
     }
     const stimulus = { traceOptions: manifest.traceOptions, ...fixture };
-    await exercise(stimulus, requestMatrix(fixture.cases.map(({ id }) => id), fixture));
+    const consoleObservations = [];
+    const keepConsole = (observation, route = 'default') => {
+      if (fixture.consolePolicy) consoleObservations.push({ ...observation, route });
+    };
+    await exercise(stimulus, requestMatrix(fixture.cases.map(({ id }) => id), fixture), { onObservation: keepConsole });
     if (candidateSource) {
       for (const { route, requests } of jsRouteRequests(fixture)) {
-        await exercise({ ...stimulus, algorithmExecution: route }, requests, { route });
+        await exercise({ ...stimulus, algorithmExecution: route }, requests, { route, onObservation: (observation) => keepConsole(observation, route) });
       }
       for (const route of cppDirectRoutes(fixture)) {
         const started = performance.now();
@@ -220,6 +224,7 @@ try {
         const started = performance.now();
         await exerciseMux(mux.JudgeBrowserSlot, browser, `http://127.0.0.1:${server.address().port}`, stimulus, (request, observation) => {
           record('observations.jsonl', { fixture: key, route: 'mux', request: request.id, ...observation });
+          keepConsole({ request: request.id, ...observation }, 'mux');
           checkObservation(stimulus, request, observation, recordAssertion);
           runtime.requests++;
           runtime.requestMs[`${key}/mux/${request.id}`] = observation.wallMs;
@@ -228,6 +233,9 @@ try {
       } catch (error) {
         record('browser.jsonl', { fixture: key, route: 'mux', setupError: error.message });
       }
+    }
+    if (fixture.consolePolicy) {
+      checkConsoleAcrossPaths(fixture, consoleObservations, recordAssertion, (observation) => record('console-framing.jsonl', observation));
     }
   }
   const baseline = new Map(assertions.map((item) => [item.id, item.status]));

@@ -98,6 +98,14 @@ const wideSources = {
   cs: 'public class Solution { public int[] solve(int[] nums) { return nums; } }',
   cpp: '#include <vector>\nclass Solution { public: std::vector<int> solve(std::vector<int> nums) { return nums; } };',
 };
+const printThenThrow = {
+  js: ['Error', 'function solve(n) {\n  console.log("first " + n);\n  console.log("second " + n);\n  throw new Error("gate throw " + n);\n}'],
+  ts: ['Error', 'function solve(n: number): never {\n  console.log("first " + n);\n  console.log("second " + n);\n  throw new Error("gate throw " + n);\n}'],
+  py: ['ValueError', 'def solve(n):\n    print(f"first {n}")\n    print(f"second {n}", end="", flush=True)\n    raise ValueError(f"gate throw {n}")\n'],
+  java: ['IllegalArgumentException', 'class Solution {\n  public int solve(int n) {\n    System.out.println("first " + n);\n    System.out.print("second " + n);\n    System.out.flush();\n    throw new IllegalArgumentException("gate throw " + n);\n  }\n}'],
+  cs: ['InvalidOperationException', 'public class Solution {\n  public int solve(int n) {\n    System.Console.WriteLine("first " + n);\n    System.Console.Write("second " + n);\n    throw new System.InvalidOperationException("gate throw " + n);\n  }\n}'],
+  cpp: ['std::runtime_error', '#include <cstdio>\n#include <stdexcept>\n#include <string>\nclass Solution {\npublic:\n  int solve(int n) {\n    std::printf("first %d\\n", n);\n    std::printf("second %d", n);\n    std::fflush(stdout);\n    throw std::runtime_error("gate throw " + std::to_string(n));\n  }\n};'],
+};
 for (const ext of Object.keys(languages)) {
   const stdout = parity('stdout', `solution.${ext}`);
   const delta = ext === 'cpp' ? 1 : 0;
@@ -107,6 +115,20 @@ for (const ext of Object.keys(languages)) {
   add('G1', 'stdout', ext, stdout, rows([{ n: 7 }, { n: 11 }], [7 + delta, 11 + delta], [7 + delta, 999]).map((row, index) => ({
     ...row, stdout: `${row.input.n}\n`, verdict: index === 0 ? 'passed' : 'failed', anchor, anchorInput: row.input.n,
   })));
+
+  const [nativeError, failingSource] = printThenThrow[ext];
+  const lineConsole = ['js', 'ts'].includes(ext);
+  add('G1', 'print-then-throw', ext, failingSource,
+    rows([{ n: 7 }, { n: 11 }], [undefined, undefined], [7, 11]).map((row) => ({
+      ...row, status: 'runtime-error', verdict: 'not-evaluated',
+      failure: { origin: 'program', stage: 'runtime' }, errorMarker: `gate throw ${row.input.n}`,
+      stdout: `first ${row.input.n}\nsecond ${row.input.n}${lineConsole ? '\n' : ''}`,
+    })), {
+      nativeError,
+      consolePolicy: 'one-optional-trailing-lf-per-message',
+      partialWrite: lineConsole ? 'not-applicable: the Judge runtime exposes a line-oriented console only' : 'real-partial-write',
+      ...(ext === 'java' ? { candidatePrediction: 'Untraced paths lose the prints before the exception.' } : {}),
+    });
 
   const treeSource = parity('binary-node-input-snapshot', `solution.${ext}`);
   const typedReturn = (source, type, argument) => source.replace(/\bint solve\(/, `${type} solve(`).replace(/: number \{/, `: ${type} | null {`).replace(new RegExp(`return ${argument}(?:->|\\.)val`), `return ${argument}`);
@@ -256,6 +278,9 @@ for (const fixture of fixtures) {
   }
   if (fixture.nodeInputCompatibility) {
     inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/submit-default-AB/@request/node-materialization`);
+  }
+  if (fixture.consolePolicy) {
+    for (const { id } of fixture.cases) inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/all-routes/console-paths/${id}/stdout-bytes`);
   }
   for (const route of cppDirectRoutes(fixture)) {
     const prefix = `${fixture.gate}/cpp/${fixture.name}/${route}/code`;

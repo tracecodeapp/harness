@@ -36,13 +36,13 @@ export function muxRequests(fixture) {
 
 export function jsRouteRequests(fixture) {
   if (!['javascript', 'typescript'].includes(fixture.language)) return [];
-  if (!['stdout', 'ses-constructor-key'].includes(fixture.name)) return [];
+  if (!['stdout', 'ses-constructor-key', 'print-then-throw'].includes(fixture.name)) return [];
   return ['ses-compartment-pool', 'disposable-worker'].map((route) => ({
     route, requests: requestMatrix(fixture.cases.map(({ id }) => id)).map((request) => ({ ...request, route })),
   }));
 }
 
 export function cppDirectRoutes(fixture) {
-  if (fixture.language !== 'cpp' || !/^(end-character|cpp-delete-|cpp-value-)/.test(fixture.name)) return [];
+  if (fixture.language !== 'cpp' || !/^(end-character|cpp-delete-|cpp-value-|print-then-throw)/.test(fixture.name)) return [];
   return ['ordinary-single', 'generated-batch'];
 }

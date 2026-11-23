@@ -1,11 +1,23 @@
 import assert from 'node:assert/strict';
 import { assertGraph } from './graph.mjs';
+import { jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 
 const defined = (value) => value !== undefined && !(
   value && typeof value === 'object' && Object.hasOwn(value, '$gate.undefined')
 );
 const ownValue = (object, key) => Object.hasOwn(object, key) && defined(object[key]);
 const errorText = (error) => error instanceof Error ? error.message : String(error);
+
+// LF is optional after each captured message. Preserve embedded newlines,
+// blank lines and all other characters.
+function messages(stdout) {
+  if (!stdout) return [];
+  return stdout.replace(/\n$/, '').split('\n');
+}
+
+function unframeMessage(message) {
+  return message.replace(/\n$/, '');
+}
 
 function requireValue(row, field, expected, expectedField, graph = false) {
   const present = Object.hasOwn(expected, expectedField);
@@ -132,7 +144,7 @@ export function checkObservation(fixture, request, observation, record) {
         assert.equal(ownValue(legacy, 'error'), !ordinary);
         requireValue(legacy, 'expected', expected, 'expected');
         requireValue(legacy, 'output', expected, 'actual', fixture.graph);
-        assert.deepEqual(legacy.consoleOutput, expected.stdout ? expected.stdout.replace(/\n$/, '').split('\n') : []);
+        assert.deepEqual(legacy.consoleOutput, messages(expected.stdout));
         if (!ordinary) assert.equal(legacy.error, raw?.diagnostics.find(({ severity }) => severity === 'error')?.message || raw?.stderr.trim());
       }
     });
@@ -157,9 +169,11 @@ export function checkObservation(fixture, request, observation, record) {
       requireValue(consumer, 'output', expected, 'actual', fixture.graph);
     });
     check(expected.id, 'console', () => {
-      assert.equal(row.stdout, expected.stdout);
+      if (fixture.consolePolicy && fixture.partialWrite === 'real-partial-write') {
+        assert.deepEqual(messages(row.stdout), messages(expected.stdout));
+      } else assert.equal(row.stdout, expected.stdout);
       if (!expected.failure) assert.equal(row.stderr, expected.stderr);
-      assert.deepEqual(consumer.consoleOutput, expected.stdout === '' ? [] : expected.stdout.slice(0, -1).split('\n'));
+      assert.deepEqual(consumer.consoleOutput, messages(expected.stdout));
     });
     check(expected.id, 'failure', () => {
       assert(!defined(row.notRun));
@@ -179,7 +193,8 @@ export function checkObservation(fixture, request, observation, record) {
       if (expected.failure) {
         assert(diagnostics.some((entry) => entry.severity === 'error'
           && entry.source === fixture.language
-          && (!expected.failure.reason || entry.code === expected.failure.reason)));
+          && (!expected.failure.reason || entry.code === expected.failure.reason)
+          && (!expected.errorMarker || (entry.code === 'runtime' && entry.message.includes(expected.errorMarker)))));
       } else assert.deepEqual(diagnostics, expected.diagnostics);
     });
     if (expected.anchor && request.selected.includes(expected.id)) {
@@ -196,6 +211,34 @@ export function checkObservation(fixture, request, observation, record) {
         )), `No print-line event binding n=${expected.anchorInput}`);
       });
     }
+  }
+}
+
+export function checkConsoleAcrossPaths(fixture, observations, record, framing) {
+  const requests = [
+    ...requestMatrix(fixture.cases.map(({ id }) => id), fixture), ...muxRequests(fixture),
+    ...jsRouteRequests(fixture).flatMap(({ requests }) => requests),
+  ];
+  for (const expected of fixture.cases) {
+    const stdout = [];
+    const planned = requests.filter((request) => request.cases.includes(expected.id));
+    for (const request of planned) {
+      const route = request.route ?? 'default';
+      const observation = observations.find((item) => item.route === route && item.request === request.id);
+      const result = observation?.reported?.evaluation?.cases.find((row) => row.caseId === expected.id);
+      if (typeof result?.stdout !== 'string') continue;
+      stdout.push({ route, request: request.id, bytes: result.stdout });
+      if (result.stdout !== expected.stdout) {
+        const framingOnly = JSON.stringify(messages(result.stdout)) === JSON.stringify(messages(expected.stdout));
+        framing({ fixture: fixture.name, language: fixture.language, case: expected.id, route,
+          request: request.id, expected: expected.stdout, received: result.stdout, framingOnly });
+      }
+    }
+    if (stdout.length !== planned.length) continue;
+    const id = `${fixture.gate}/${fixture.language}/${fixture.name}/all-routes/console-paths/${expected.id}/stdout-bytes`;
+    const baseline = stdout.find((row) => row.route === 'default' && row.request === `submit-default-${expected.id}`);
+    const difference = stdout.find((row) => row.bytes !== baseline.bytes);
+    record(difference ? { id, status: 'fail', message: 'Path console bytes differ', baseline, difference } : { id, status: 'pass' });
   }
 }
 
@@ -222,9 +265,15 @@ export function checkCppDirect(fixture, route, observation, record) {
   for (const [index, expected] of fixture.cases.entries()) {
     const row = observation.results[index];
     if (!row) continue;
-    check(expected.id, 'status', () => assert.equal(row.kind, 'completed'));
+    check(expected.id, 'status', () => {
+      assert.equal(row.kind, expected.failure ? 'failed' : 'completed');
+      if (expected.errorMarker) {
+        assert.equal(row.diagnosticStage, 'runtime');
+        assert(row.error.includes(expected.errorMarker));
+      }
+    });
     check(expected.id, 'value', () => requireValue(row, 'output', expected, 'actual', fixture.graph));
-    check(expected.id, 'console', () => assert.deepEqual(row.consoleOutput, []));
+    check(expected.id, 'console', () => assert.deepEqual(row.consoleOutput.map(unframeMessage), messages(expected.stdout)));
   }
 }
 
