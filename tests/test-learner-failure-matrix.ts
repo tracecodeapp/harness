@@ -74,8 +74,6 @@ const JS_TRACE =
   `Traced JavaScript/TypeScript runs execute instrumented source and the instrumenter keeps no map back to learner lines, so the Harness omits the line rather than report an instrumentation line.`;
 const JS_SYNTAX =
   `JavaScript compile errors come from engine evaluation (SES compartment or Function), which reports no position; TypeScript syntax lines come from the TypeScript compiler and are asserted.`;
-const JS_WRAPPER =
-  `On the compatibility worker the error's stack points into the generated wrapper, so the line is omitted rather than reported wrong.`;
 const JAVA_LINES =
   `TraceJVM's algorithm profile reports exception frames without line numbers, and javac errors refer to the generated wrapper class with no map back to the learner's file.`;
 const JAVA_EXIT =
@@ -96,13 +94,9 @@ export const KNOWN_GAPS: Readonly<Record<string, string>> = {
   'javascript:trace:*:line': JS_TRACE,
   'javascript:trace-batch:*:line': JS_TRACE,
   'javascript:interactive:*:line': JS_TRACE,
-  'javascript:code:process-exit:line': JS_WRAPPER,
-  'javascript:code-batch:process-exit:line': JS_WRAPPER,
   'typescript:trace:*:line': JS_TRACE,
   'typescript:trace-batch:*:line': JS_TRACE,
   'typescript:interactive:*:line': JS_TRACE,
-  'typescript:code:process-exit:line': JS_WRAPPER,
-  'typescript:code-batch:process-exit:line': JS_WRAPPER,
   'javascript:code:syntax:line': JS_SYNTAX,
   'javascript:code-batch:syntax:line': JS_SYNTAX,
   'javascript:trace:syntax:line': JS_SYNTAX,
