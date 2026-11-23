@@ -4,7 +4,12 @@ import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/bro
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
 import { createJavaBrowserRuntimeProvider } from '../../packages/runtime-java/src/browser-runtime-provider';
 import { JavaWorkerClient } from '../../packages/runtime-java/src/java-worker-client';
-import { createJavaBrowserPreparedExecutionProvider } from '../../packages/runtime-java/src/java-prepared-provider';
+import {
+  createJavaBrowserPreparedExecutionProvider,
+  createJavaJudgeReceiptProvider,
+  type JavaPreparedExecutionProvider,
+} from '../../packages/runtime-java/src/java-prepared-provider';
+import type { JudgeReceiptProvider } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 
 const workerUrl = '/workers/java-runtime-worker.js';
 const source = `class Solution {
@@ -291,9 +296,88 @@ export async function runJavaCompanionBrowserTest() {
   }
 }
 
+export async function runJavaJournalBrowserTest() {
+  type Marker = Parameters<NonNullable<JudgeReceiptProvider['mark']>>[0];
+  const journal: Marker[] = [];
+  const starts: number[] = [];
+  const replies: string[] = [];
+  const bridge = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+  Object.defineProperty(globalThis, bridge, {
+    configurable: true, value: { onEvent: (event: Marker) => journal.push(event) },
+  });
+  const NativeWorker = globalThis.Worker;
+  const batchType = 'execute-prepared-runtime-program-batch';
+  let batchCommands = 0;
+  globalThis.Worker = class extends NativeWorker {
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      const pending = new Map<string, { protocolToken: string; attemptToken?: string }>();
+      this.addEventListener('message', ({ data, isTrusted }) => {
+        const request = pending.get(data?.id);
+        if (!isTrusted || !request || !request.protocolToken || request.protocolToken !== data.protocolToken) return;
+        if (data.type === 'runtime-progress' && data.payload?.stage === 'ordinary-case-started') {
+          starts.push(data.payload.detail.caseIndex);
+        }
+        if (data.type === batchType) {
+          pending.delete(data.id);
+          const row = data.payload?.results?.[0];
+          if (request.attemptToken && row?.success && row.observation?.attemptToken === request.attemptToken) {
+            replies.push(request.attemptToken);
+          }
+        }
+      });
+      this.postMessage = (message, transfer?) => {
+        if (message?.type === batchType) {
+          batchCommands++;
+          pending.set(message.id, {
+            protocolToken: message.protocolToken, attemptToken: message.payload?.attemptToken,
+          });
+        }
+        super.postMessage(message, transfer as StructuredSerializeOptions);
+      };
+    }
+  };
+  const java = createJavaBrowserRuntimeProvider({ runtimeAssetBaseUrl: '/tracejvm/' });
+  const providerRegistry = createBrowserRuntimeProviderRegistry([{
+    ...java,
+    create(context) {
+      const lease = java.create(context);
+      const prepared = lease.preparedProviders!.get('java') as JavaPreparedExecutionProvider;
+      return { ...lease, judgeReceiptProviders: new Map([['java', createJavaJudgeReceiptProvider(prepared, 'test')]]) };
+    },
+  }]);
+  const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+    assetBaseUrl: '/workers', assets: { javaWorker: workerUrl }, providers: ['java'], providerRegistry,
+  }));
+  // The existing host must keep the captured callback after it is removed.
+  Reflect.deleteProperty(globalThis, bridge);
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'java-journal', language: 'java', code: source, functionName: 'search',
+      executionStyle: 'solution-method', trace: true, limits: { wallClockMs: 800 },
+      cases: [0, -1, 2].map((target, i) => ({ id: 'ABC'[i]!, input: { nums: [0, 2], target }, expected: i })),
+    });
+    const initial = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    if (!initial.executionId) throw new Error('Java Run did not retain the execution');
+    const beforeRedraw = { journal: journal.length, commands: batchCommands };
+    const redraw = await host.execute({ executionId: initial.executionId, tracing: { caseIds: ['A'] } });
+    return {
+      journal, starts, replies, beforeRedraw, batchCommands, digest: bundle.workspaceDigest,
+      statuses: initial.evaluation.cases.map(({ status }) => status),
+      attachment: initial.evaluation.cases[0]?.attachment,
+      redraw: redraw.evaluation.cases[0]?.attachment,
+    };
+  } finally {
+    host.dispose();
+    globalThis.Worker = NativeWorker;
+  }
+}
+
 declare global {
   var javaStoppingBatchProbe: typeof runJavaStoppingBatchBrowserTest;
   var javaCompanionProbe: typeof runJavaCompanionBrowserTest;
+  var javaJournalProbe: typeof runJavaJournalBrowserTest;
 }
 globalThis.javaStoppingBatchProbe = runJavaStoppingBatchBrowserTest;
 globalThis.javaCompanionProbe = runJavaCompanionBrowserTest;
+globalThis.javaJournalProbe = runJavaJournalBrowserTest;
