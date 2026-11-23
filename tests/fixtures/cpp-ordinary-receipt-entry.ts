@@ -180,7 +180,7 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
             check(row.diagnostics.every(({ code }) => code !== 'trace-unavailable'), label + '/diagnostics');
             if (row.attachment?.status === 'drawn') {
               check(name === 'legacy' && row.trace === row.attachment.trace &&
-                row.trace.events.some(({ kind }) => kind === 'line'), label + '/recorded-trace');
+                row.attachment.trace.events.some(({ kind }) => kind === 'line'), label + '/recorded-trace');
               legacyDrawings++;
             } else {
               check(!Object.hasOwn(row, 'trace'), label + '/absent-trace');

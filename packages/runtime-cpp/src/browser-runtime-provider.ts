@@ -2,15 +2,17 @@ import type {
   Language,
   RuntimePreparedExecutionProvider,
 } from '@tracecode/runtime-contracts';
+import { TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-contracts';
+import type { BrowserRuntimeJudgeReceiptLease } from '@tracecode/runtime-browser/browser-runtime-host-internal';
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
-  BrowserRuntimeProviderLease,
 } from '../../runtime-browser/src/runtime-provider-registry';
 import {
   createPromotableBrowserBackgroundTask,
 } from '@tracecode/runtime-browser/internal';
-import { createCppPreparedExecutionProvider } from './cpp-prepared-provider';
+import { createCppOrdinaryExecutionProvider } from './cpp-prepared-provider';
+import { createCppObservationRegistration, createLegacyCppDrawingProducer } from './cpp-observation';
 import { CppWorkerClient } from './cpp-worker-client';
 import {
   TraceCCCompilerService,
@@ -143,7 +145,7 @@ export function createCppBrowserRuntimeProvider(
   return {
     id: '@tracecode/runtime-cpp',
     languages: ['cpp'],
-    create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
+    create(context: BrowserRuntimeProviderContext): BrowserRuntimeJudgeReceiptLease {
       const workerFactory = context.workerFactoryFor('cpp');
       const compiler = options.compiler ?? {};
       const workerOptions = {
@@ -173,7 +175,7 @@ export function createCppBrowserRuntimeProvider(
         ...workerOptions,
         ...(compilerService ? { trustedCompilerService: compilerService } : {}),
       });
-      const preparedProvider = createCppPreparedExecutionProvider({
+      const preparedProvider = createCppOrdinaryExecutionProvider({
         createWorkerClient,
         warmCompilerOnInit: false,
         prewarmCompiler: () => compilerService?.prewarmAssets() ?? Promise.resolve(),
@@ -183,11 +185,20 @@ export function createCppBrowserRuntimeProvider(
         Language,
         RuntimePreparedExecutionProvider
       >([['cpp', preparedProvider]]);
+      const observer = createCppObservationRegistration(
+        createLegacyCppDrawingProducer({ createObserverWorkerClient: createWorkerClient }),
+        {
+          runtimeVersion: context.assets.runtimeManifests?.cpp?.runtimeVersion ?? `harness-${TRACECODE_HARNESS_VERSION}`,
+          observationDeadlineMs: options.tracingTimeoutMs ?? 20_000,
+          observationPrepareDeadlineMs: preparedProvider.lifecycleAllowanceMs,
+        }
+      );
       const terminateCompiler = () => {
         compilerService?.terminate();
       };
       return {
         preparedProviders,
+        judgeReceiptProviders: new Map([['cpp', observer]]),
         disposeLanguage: () => {
           preparedProvider.reset();
           terminateCompiler();
