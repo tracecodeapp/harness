@@ -112,6 +112,7 @@ async function main(): Promise<void> {
       'packages/runtime-cpp/src/tracecc-runtime-assets.ts',
       'tracecc-runtime-assets.js',
     ],
+    ['tests/fixtures/cpp-ordinary-receipt-entry.ts', 'cpp-ordinary-receipt.js'],
   ] as const) {
     await build({
       entryPoints: [join(root, entry)],
@@ -564,6 +565,8 @@ async function main(): Promise<void> {
         : null;
       projectClient.terminate();
       provider.terminate();
+      const { assertCppOrdinaryReceiptPaths } = await import('/cpp-ordinary-receipt.js');
+      const ordinaryReceiptPaths = await assertCppOrdinaryReceiptPaths(workerOptions);
       compiler.terminate();
       const { createBrowserProjectWorkspace } =
         await import('/browser-project.js');
@@ -611,6 +614,7 @@ async function main(): Promise<void> {
         workspace.dispose();
       }
       return {
+        ordinaryReceiptPaths,
         workerUrls,
         warmMs,
         first,
@@ -660,6 +664,7 @@ async function main(): Promise<void> {
         workspaceRun,
       };
     })()`) as {
+      ordinaryReceiptPaths: string[];
       workerUrls: string[];
       warmMs: number;
       first: {
@@ -735,6 +740,7 @@ async function main(): Promise<void> {
         exitCode: number;
       } | null;
     };
+    console.log('C++ ordinary receipt paths: '+result.ordinaryReceiptPaths.join(', '));
     assertCondition(
       result.first.kind === 'completed' && result.first.output === 42,
       `TraceCC first execution failed: ${JSON.stringify(result)}`
