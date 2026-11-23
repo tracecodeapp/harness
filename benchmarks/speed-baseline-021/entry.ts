@@ -204,11 +204,11 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
   }
 
   return {
-    async warm() {
+    async warm(collect = true) {
       try {
         const started = performance.now();
         const warm = await host.warmLanguage(language);
-        return java ? { ...warm, java: java.read(started, performance.now()) } : warm;
+        return java && collect ? { ...warm, java: java.read(started, performance.now()) } : warm;
       } catch (error) {
         return { error: errorDetails(error) };
       }
@@ -218,7 +218,7 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
       const started = performance.now();
       // Model a click as soon as the fresh page can request execution, while its
       // runtime prewarm is still in progress. The host owns the provider queue.
-      const warm = cold ? this.warm() : undefined;
+      const warm = cold ? this.warm(false) : undefined;
       try {
         const b = await bundle(fixture, mode !== 'submit');
         const builtMs = performance.now() - started;
