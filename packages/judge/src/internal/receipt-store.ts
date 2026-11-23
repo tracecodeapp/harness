@@ -46,7 +46,7 @@ const refusals = {
   'observer-encode': true,
   'observer-runtime': true,
   'observer-protocol': true,
-  'observer-deadline': true,
+  'observer-timeout': true,
   'uncertified-drawing': true,
   'case-not-run': true,
 } satisfies Record<Refusal, true>;
@@ -92,10 +92,13 @@ function readDrawing(message: unknown): Drawing {
   if (status === 'drawn' && isTrace(trace)) {
     return { status, trace };
   }
-  if (status === 'truncated' && typeof reason === 'string' && Object.hasOwn(cuts, reason)
-    && isTrace(trace) && nonnegativeInteger(attemptedEvents)
-    && attemptedEvents > 0 && attemptedEvents >= trace.events.length) {
-    return { status, reason: reason as Cut, trace, attemptedEvents };
+  if (status === 'truncated' && typeof reason === 'string' && Object.hasOwn(cuts, reason) && isTrace(trace)) {
+    if (reason === 'observer-deadline' && trace.events.length === 0) {
+      return refuse('observer-timeout');
+    }
+    if (nonnegativeInteger(attemptedEvents) && attemptedEvents > 0 && attemptedEvents >= trace.events.length) {
+      return { status, reason: reason as Cut, trace, attemptedEvents };
+    }
   }
   return refuse('observer-protocol');
 }

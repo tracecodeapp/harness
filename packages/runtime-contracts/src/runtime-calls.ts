@@ -31,7 +31,7 @@ export type Refusal =
   | 'observer-encode'
   | 'observer-runtime'
   | 'observer-protocol'
-  | 'observer-deadline'
+  | 'observer-timeout'
   | 'uncertified-drawing'
   | 'case-not-run';
 
