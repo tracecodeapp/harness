@@ -291,6 +291,7 @@ test('Java prepared provider keeps one compiler worker and executes fresh proces
     profile: 'compatibility',
     caseIsolation: 'fresh-case-state',
     maxConcurrency: 1,
+    stopsAtFirstRunaway: true,
   });
   assert.equal(
     (await preparation.program.executeIsolated({

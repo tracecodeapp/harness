@@ -24,21 +24,30 @@ const source = `class Solution {
 }`;
 
 export async function runJavaStoppingBatchBrowserTest() {
-  const workers: { requests: { id: string; type: string; started: number; elapsed?: number }[] }[] = [];
+  type WorkerRequest = { id: string; type: string; started: number; elapsed?: number };
+  type WorkerRecord = { requests: WorkerRequest[]; terminated?: boolean };
+  const workers: WorkerRecord[] = [];
   const probe: Array<{ event: string; tracing?: boolean }> = [];
   const NativeWorker = globalThis.Worker;
-  let abortDuringFallback: (() => void) | undefined;
+  let abortDuringFallback: ((worker: WorkerRecord) => void) | undefined;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       const preparedUrl = new URL(url, location.href);
       preparedUrl.searchParams.set('probe', '1');
       super(preparedUrl, options);
-      const requests: typeof workers[number]['requests'] = [];
-      workers.push({ requests });
+      const worker: typeof workers[number] = { requests: [] };
+      const { requests } = worker;
+      workers.push(worker);
+      this.terminate = () => {
+        worker.terminated = true;
+        super.terminate();
+      };
       this.addEventListener('message', ({ data }) => {
         if (data?.type === 'test-java-runner') {
+          const request = requests.find(({ id }) => id === data.requestId);
+          if (!request?.type.startsWith('execute-prepared')) return;
           probe.push(data.payload);
-          if (data.payload.event === 'run' && data.payload.tracing === false) abortDuringFallback?.();
+          if (data.payload.event === 'run' && data.payload.tracing === false) abortDuringFallback?.(worker);
           return;
         }
         const request = requests.find((item) => item.id === data?.id && item.type === data?.type);
@@ -80,16 +89,22 @@ export async function runJavaStoppingBatchBrowserTest() {
       ...options, id: 'java-stopping-ten-cases', trace: true, cases, limits: { wallClockMs: 60_000 },
     });
     let start = probe.length;
+    const runStarted = performance.now();
     const happy = await host.execute({ bundle: happyBundle, interactive: true, tracing: { caseIds: ['0'] } });
     const happyLifecycle = {
       ...summary(start),
+      elapsedMs: performance.now() - runStarted,
       workers: workers.length,
       requests: workers.flatMap(({ requests }) => requests.map(({ type, elapsed }) => ({ type, elapsed }))),
     };
     if (!happy.executionId) throw new Error('Java Run failed to retain the prepared program.');
     start = probe.length;
+    const requestCount = happyLifecycle.requests.length;
     const continuation = await host.execute({ executionId: happy.executionId, tracing: { caseIds: ['1'] } });
-    const continuationLifecycle = { ...summary(start), workers: workers.length };
+    const continuationLifecycle = {
+      ...summary(start), workers: workers.length, terminated: workers.some(({ terminated }) => terminated),
+      requests: workers.flatMap(({ requests }) => requests).slice(requestCount).map(({ type }) => type),
+    };
     await host.disposeExecution(happy.executionId);
 
     const bound = 800;
@@ -129,15 +144,32 @@ export async function runJavaStoppingBatchBrowserTest() {
       inputBatch: [inputs[0]!], limits: { wallClockMs: 60_000 },
     });
     const fallbackLifecycle = summary(start);
+    start = probe.length;
+    const fallbackTimeout = await client.executePreparedTraceBatch(fallback.programId, {
+      inputBatch: [runawayCases[1]!.input, inputs[2]!],
+      traceEnabledBatch: [true, false],
+      limits: { wallClockMs: bound }, stopAtFirstRunaway: true,
+    });
+    const fallbackTimeoutLifecycle = summary(start);
+
+    const abortBundle = await createAlgorithmJudgeBundle({
+      ...options, id: 'java-abort-during-fallback', trace: true,
+      traceOptions: { maxStoredEvents: 1 },
+      cases: runawayCases.slice(1),
+      limits: { wallClockMs: 5_000 },
+    });
     const abort = new AbortController();
-    abortDuringFallback = () => abort.abort();
+    let abortedWorker: WorkerRecord | undefined;
+    abortDuringFallback = (worker) => {
+      abortedWorker = worker;
+      abort.abort();
+    };
     start = probe.length;
     let abortName: string | undefined;
     try {
-      await client.executePreparedTraceBatch(fallback.programId, {
-        inputBatch: [runawayCases[1]!.input, inputs[2]!],
-        traceEnabledBatch: [true, false],
-        limits: { wallClockMs: 2_000 }, signal: abort.signal, stopAtFirstRunaway: true,
+      await host.execute({
+        bundle: abortBundle, tracing: { caseIds: ['1'] },
+        signal: abort.signal, stopAtFirstRunaway: true,
       });
     } catch (error) {
       abortName = (error as Error).name;
@@ -146,7 +178,8 @@ export async function runJavaStoppingBatchBrowserTest() {
       happy: happy.evaluation.cases, happyLifecycle,
       continuation: continuation.evaluation.cases, continuationLifecycle,
       stopRuns, bound, nonstopping, nonstoppingLifecycle,
-      truncated, fallbackLifecycle, abortName, abortLifecycle: summary(start),
+      truncated, fallbackLifecycle, fallbackTimeout, fallbackTimeoutLifecycle,
+      abortName, abortLifecycle: summary(start), abortedWorkerTerminated: abortedWorker?.terminated,
     };
   } finally {
     client.terminate();

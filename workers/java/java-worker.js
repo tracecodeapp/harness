@@ -8853,9 +8853,8 @@ function preparedJavaResultFromReport(
       ...(report.traceLimitExceeded !== undefined || report.timeoutReason
         ? {
             traceLimitExceeded: Boolean(report.traceLimitExceeded),
-            timeoutReason:
-              report.timeoutReason ??
-              (report.traceLimitExceeded ? 'trace-limit' : undefined),
+            timeoutReason: report.timeoutReason,
+            ...(report.traceLimitExceeded ? { traceLimitReason: 'trace-limit' } : {}),
             droppedEventCount: report.droppedEventCount ?? 0,
           }
         : {}),
@@ -9075,11 +9074,12 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
         program.learnerFrame,
         String(program.mode === 'trace' && program.traceOptions?.traceProfile === true),
         JSON.stringify(
-          Array.isArray(payload?.traceEnabledBatch)
-            ? payload.traceEnabledBatch
-            : []
+          program.mode === 'code'
+            ? inputBatch.map(() => false)
+            : payload?.traceEnabledBatch ?? []
         ),
-        program.cleanEntryClass ?? ''
+        program.cleanEntryClass ?? '',
+        String(payload?.stopAtFirstRunaway === true)
       );
     report = JSON.parse(reportText);
   } catch (error) {

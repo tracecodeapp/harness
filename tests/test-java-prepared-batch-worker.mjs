@@ -53,8 +53,8 @@ function testBatch(run, { stop = true } = {}) {
     getTraceJVMClient = async () => client;
     loadTraceJVMHelperJar = async () => ({});
     createLocalTraceKernelAuthority = async () => ({
-      resetExecutionScope() { calls.push(['reset']); },
-      close() { calls.push(['close']); },
+      resetExecutionScope() { record('reset'); },
+      close() { record('close'); },
     });
     traceJVMPreparedPrograms.set('p', {
       program: {}, executions: 0, algorithmIsolationProfile: { tier: 'algorithm-fast' },
@@ -64,7 +64,7 @@ function testBatch(run, { stop = true } = {}) {
       '500', '', '', '[false,true,false]', 'Clean', String(stop)
     );
   `, {
-    self, client, stop, calls, URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, record: (event) => calls.push([event]), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;

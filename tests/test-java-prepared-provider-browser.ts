@@ -164,6 +164,9 @@ function assertStoppingBatch(
     nonstopping: result.nonstoppingLifecycle,
     outcomes: result.nonstopping.map(({ success, output, timeoutReason, timings }) =>
       ({ success, output, timeoutReason, runMs: timings?.runMs })),
+    fallback: result.fallbackLifecycle,
+    fallbackTimeout: result.fallbackTimeoutLifecycle,
+    abort: { name: result.abortName, ...result.abortLifecycle },
     stopping: result.stopRuns.map(({ cases, ...lifecycle }) => ({
       ...lifecycle, statuses: cases.map(({ status }) => status),
     })),
@@ -178,6 +181,8 @@ function assertStoppingBatch(
   assert.equal(result.happyLifecycle.runners, 1);
   assert.deepEqual(result.happyLifecycle.dispatches, [true, ...Array(9).fill(false)]);
   assert.equal(result.continuationLifecycle.workers, 1);
+  assert.equal(result.continuationLifecycle.terminated, false);
+  assert.deepEqual(result.continuationLifecycle.requests, ['execute-prepared-runtime-program-batch']);
   assert.equal(result.continuationLifecycle.runners, 1);
   assert.equal(result.continuation[0]?.caseId, '1');
   assert.equal(result.continuation[0]?.value, 1);
@@ -191,7 +196,8 @@ function assertStoppingBatch(
     assert.equal(cases[0]?.verdict.kind, 'passed');
     assert.equal(cases[1]?.status, 'timed-out');
     assert.equal(cases[1]?.failure?.origin, 'limit');
-    assert.match(cases[1]?.failure?.message ?? '', new RegExp(`${result.bound}ms`));
+    assert.equal(cases[1]?.failure?.reason, 'client-timeout');
+    assert.equal(cases[1]?.timings?.runMs, result.bound);
     assert.deepEqual(cases[2]?.notRun, {
       reason: 'run-stopped-after-limit', stoppedByCaseId: '1', limit: 'client-timeout',
     });
@@ -204,7 +210,13 @@ function assertStoppingBatch(
   assert.equal(result.truncated[0]?.output, 0);
   assert.equal(result.truncated[0]?.traceLimitExceeded, true);
   assert.deepEqual(result.fallbackLifecycle.dispatches, [true, false]);
+  assert.equal(result.fallbackTimeout.length, 1);
+  assert.equal(result.fallbackTimeout[0]?.timeoutReason, 'client-timeout');
+  assert.equal(result.fallbackTimeout[0]?.timings?.runMs, result.bound);
+  assert.equal(result.fallbackTimeout[0]?.traceLimitExceeded, true);
+  assert.deepEqual(result.fallbackTimeoutLifecycle.dispatches, [true, false]);
   assert.equal(result.abortName, 'AbortError');
+  assert.equal(result.abortedWorkerTerminated, true);
   assert.deepEqual(result.abortLifecycle.dispatches, [true, false]);
 }
 
@@ -523,8 +535,10 @@ function assertPreparedResult(
   );
   assert.equal(
     result.traceBatchRunnerProcessCount,
-    1,
-    `${engine}: a prepared trace batch must share one clean inner JVM`
+    isolated ? 1 : 2,
+    isolated
+      ? `${engine}: the admitted trace batch must share one clean inner JVM`
+      : `${engine}: the restored compatibility artifact must use a fresh JVM for each trace case`
   );
   assert.equal(
     result.traceBatchHasEvents,
@@ -689,7 +703,7 @@ try {
         export * from './browser-client.js';
         const post = self.postMessage.bind(self);
         const observe = (event, details) =>
-          post({ type: 'test-java-runner', payload: { event, ...details } });
+          post({ type: 'test-java-runner', requestId: self.TraceCodeActiveKernelRequestId, payload: { event, ...details } });
         export class TraceJVMRunnerHost extends RunnerHost {
           async createProcess(...args) {
             const process = await super.createProcess(...args);
@@ -802,8 +816,15 @@ try {
           );
           if (!isolated) {
             await page.goto(`${origin}?isolated=false&stopping`);
-            const probe = await page.evaluate(() => globalThis.javaStoppingBatchProbe());
+            let deadline: ReturnType<typeof setTimeout> | undefined;
+            const probe = await Promise.race([
+              page.evaluate(() => globalThis.javaStoppingBatchProbe()),
+              new Promise<never>((_, reject) => {
+                deadline = setTimeout(() => reject(new Error('Java stopping batch probe exceeded 45 seconds')), 45_000);
+              }),
+            ]).finally(() => clearTimeout(deadline));
             assertStoppingBatch(probe, engine);
+            console.log(`PASS: Java stopping batches in ${engine} (ordinary document)`);
             if (stoppingOnly) continue;
             await page.goto(`${origin}?isolated=false`);
           }
