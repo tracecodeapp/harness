@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { missingEvidence } from '../scripts/stage1/leaf-ledger.mjs';
-import { knownLeaves } from '../scripts/stage1/suite-floor.mjs';
+import { createSuiteFloor, knownLeaves } from '../scripts/stage1/suite-floor.mjs';
 
 test('a child that vanishes or returns after startup cannot qualify', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'harness-floor-control-'));
@@ -69,6 +69,35 @@ test('the preload preserves Node assertion semantics', async () => {
     const events = (await readFile(`${ledger}.${child.pid}.jsonl`, 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(events.find(({ kind }) => kind === 'process-end').assertions
       .filter(([id]) => id.startsWith('equal@')).reduce((count, [, hits]) => count + hits, 0), 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+
+test('the suite fails when a successful task drops a planned child invocation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-dropped-child-'));
+  try {
+    const task = 'test:test-suite-runner';
+    const leaf = 'tests/test-test-suite-runner.ts';
+    const command = 'pnpm exec tsx --tsconfig tsconfig.base.json ' + leaf;
+    await writeFile(join(directory, 'package.json'), JSON.stringify({ scripts: { [task]: command } }));
+    await mkdir(join(directory, 'tests'));
+    await writeFile(join(directory, leaf), "import assert from 'node:assert/strict'; assert.equal(1, 1);");
+
+    for (const seed of ['healthy', 'drop-child', 'repaired']) {
+      const output = join(directory, seed);
+      const floor = await createSuiteFloor(directory, output, [task], false);
+      const receipt = await floor.start(task);
+      // An aggregate task can exit successfully even with a child omitted.
+      const invocation = seed === 'drop-child' ? ['-e', ''] : [join(directory, leaf)];
+      const child = spawnSync(process.execPath, invocation, { env: receipt.env, encoding: 'utf8' });
+      assert.equal(child.status, 0, child.stderr);
+      await floor.finish(task, receipt);
+      await floor.complete([task]);
+      const verdict = JSON.parse(await readFile(join(output, 'verdict.json'), 'utf8'));
+      assert.deepEqual(verdict.failures, seed === 'drop-child' ? [`G7/suite/${leaf}/missing-leaf`] : []);
+    }
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
