@@ -333,7 +333,6 @@ const INTERVIEW_GUARD_DEFAULTS = Object.freeze({
   maxLineEvents: 4000000,
   maxSingleLineHits: 1500000,
   maxCallDepth: 2000,
-  maxMemoryBytes: 96 * 1024 * 1024, // 96 MB
   memoryCheckEvery: 200,
 });
 const PROJECT_MAX_OUTPUT_STREAM_BYTES = 1024 * 1024;
@@ -1760,6 +1759,8 @@ async function executeWithTracing(code, functionName, inputs, executionStyle = '
 function guestGuardOptionsFromLimits(limits) {
   if (!limits || typeof limits !== 'object') return undefined;
   const guard = {};
+  // This switch arms the clock, line, and recursion guards. Allocation
+  // tracing is selected separately by an explicit maxMemoryBytes.
   let interviewGuard = false;
   if (Number.isFinite(limits.wallClockMs) && limits.wallClockMs > 0) {
     guard.wallClockMs = limits.wallClockMs;

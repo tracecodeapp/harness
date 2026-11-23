@@ -2379,9 +2379,11 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
         100,
         int(_tracecode_batch_limits.get('maxCallDepth', ${Number(defaults.maxCallDepth)})),
     )
-    _tracecode_max_memory_bytes = max(
-        8 * 1024 * 1024,
-        int(_tracecode_batch_limits.get('maxMemoryBytes', ${Number(defaults.maxMemoryBytes)})),
+    # The wall clock and line guard do not request allocation tracing.
+    _tracecode_max_memory_bytes = (
+        max(8 * 1024 * 1024, int(_tracecode_batch_limits['maxMemoryBytes']))
+        if _tracecode_batch_limits.get('maxMemoryBytes') is not None
+        else 0
     )
     _tracecode_memory_check_every = max(
         10,
@@ -2433,7 +2435,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
 
     if _tracecode_limits_enabled:
         try:
-            if _tracecode_interview_limits_enabled:
+            if _tracecode_max_memory_bytes > 0:
                 import tracemalloc as _tracecode_tracemalloc
                 if not _tracecode_tracemalloc.is_tracing():
                     _tracecode_tracemalloc.start()
@@ -7804,7 +7806,9 @@ async function executeCode(
     maxLineEvents: Math.max(10000, options.maxLineEvents ?? deps.INTERVIEW_GUARD_DEFAULTS.maxLineEvents),
     maxSingleLineHits: Math.max(1000, options.maxSingleLineHits ?? deps.INTERVIEW_GUARD_DEFAULTS.maxSingleLineHits),
     maxCallDepth: Math.max(100, options.maxCallDepth ?? deps.INTERVIEW_GUARD_DEFAULTS.maxCallDepth),
-    maxMemoryBytes: Math.max(8 * 1024 * 1024, options.maxMemoryBytes ?? deps.INTERVIEW_GUARD_DEFAULTS.maxMemoryBytes),
+    maxMemoryBytes: Number.isFinite(options.maxMemoryBytes)
+      ? Math.max(8 * 1024 * 1024, options.maxMemoryBytes)
+      : 0,
     memoryCheckEvery: Math.max(10, options.memoryCheckEvery ?? deps.INTERVIEW_GUARD_DEFAULTS.memoryCheckEvery),
   };
 
@@ -8002,7 +8006,7 @@ _INTERVIEW_GUARD_MAX_CALL_DEPTH = ${
 }
 _INTERVIEW_GUARD_MAX_MEMORY_BYTES = ${
   usesPreparedBindings
-    ? `_builtins.max(8 * 1024 * 1024, _builtins.int(_tracecode_case_limits.get('maxMemoryBytes', ${interviewGuardConfig.maxMemoryBytes})))`
+    ? `(_builtins.max(8 * 1024 * 1024, _builtins.int(_tracecode_case_limits['maxMemoryBytes'])) if _tracecode_case_limits.get('maxMemoryBytes') is not None else 0)`
     : interviewGuardConfig.maxMemoryBytes
 }
 _INTERVIEW_GUARD_MEMORY_CHECK_EVERY = ${
@@ -8011,10 +8015,12 @@ _INTERVIEW_GUARD_MEMORY_CHECK_EVERY = ${
     : interviewGuardConfig.memoryCheckEvery
 }
 
-try:
-    import tracemalloc as _interview_tracemalloc
-except Exception:
-    _interview_tracemalloc = None
+_interview_tracemalloc = None
+if _INTERVIEW_GUARD_MAX_MEMORY_BYTES > 0:
+    try:
+        import tracemalloc as _interview_tracemalloc
+    except Exception:
+        pass
 
 _interview_monitoring = getattr(sys, 'monitoring', None)
 # Bound before the learner's code runs (it may rebind builtins).
