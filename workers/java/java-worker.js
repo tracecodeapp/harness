@@ -9216,7 +9216,9 @@ function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProc
       observation: {
         ...(cut ? {
           cut,
-          attemptedEvents: Math.max(events.length, report.attemptedEvents ?? 0),
+          attemptedEvents: events.length + (report.cut
+            ? report.attemptedEvents - report.events.length
+            : 0),
         } : {}),
       },
       timings,

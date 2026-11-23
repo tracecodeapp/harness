@@ -826,7 +826,7 @@ try {
             assert.equal(companion.step.status, 'truncated');
             assert.equal(companion.byte.status, 'truncated');
             assert.equal(companion.line.status, 'truncated');
-            assert.equal(companion.singleLine.status, 'truncated');
+            assert.equal(companion.singleLine.status, 'truncated', JSON.stringify(companion.singleLine));
             if (companion.step.status === 'truncated' && companion.byte.status === 'truncated' &&
               companion.line.status === 'truncated' && companion.singleLine.status === 'truncated') {
               assert.equal(companion.step.reason, 'step-budget');
@@ -839,7 +839,8 @@ try {
             }
             assert.equal(companion.workers, 2);
             const prepares = companion.requests.filter(({ type }) => type === 'prepare-runtime-program');
-            assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)]),
+            assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)])
+              .sort(([a], [b]) => Number(a) - Number(b)),
               [[1, false], [2, true]]);
             assert.deepEqual(companion.requests.filter(({ type }) =>
               type === 'execute-prepared-runtime-program-batch')

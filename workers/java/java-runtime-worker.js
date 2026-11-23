@@ -1443,7 +1443,8 @@ function executionReport(
 }
 
 function traceJVMObservationReport(run, nonce) {
-  const refuse = (reason) => ({ success: false, observation: { reason } });
+  const runTimeMs = run.timings?.compileAndRunMs ?? run.timings?.totalMs ?? 0;
+  const refuse = (reason) => ({ success: false, runTimeMs, observation: { reason } });
   if (run.timeoutReason === 'client-timeout') return refuse('observer-timeout');
   if (run.status !== 'completed' || run.exitCode !== 0) return refuse('observer-runtime');
   const lines = run.stdout.trimEnd().split(/\r?\n/u);
@@ -1462,6 +1463,7 @@ function traceJVMObservationReport(run, nonce) {
   }
   return {
     success: true,
+    runTimeMs,
     observation: {
       events: lines.slice(beginIndex + 1, -1),
       ...(cut ? { cut, attemptedEvents: count + dropped } : {}),
