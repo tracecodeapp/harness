@@ -1,3 +1,4 @@
+import type { BrowserRuntimeJudgeReceiptLease } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/browser-runtime-host';
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
 import { createAlgorithmJudgeBundle } from '../../packages/judge/src/algorithm-bundle';
@@ -129,15 +130,16 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
       providerRegistry: createBrowserRuntimeProviderRegistry([{
         id: 'b7-cpp-test',
         languages: ['cpp'],
-        create: () => ({
+        create: (): BrowserRuntimeJudgeReceiptLease => ({
           preparedProviders: new Map([['cpp', ordinary]]),
+          judgeReceiptProviders: new Map([['cpp', registration]]),
           disposeLanguage: () => ordinary.reset(),
           dispose: () => ordinary.terminate(),
         }),
       }]),
       providers: ['cpp'],
     });
-    const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost, { receiptProviders: { cpp: registration } });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
     try {
       for (const fixture of fixtures) {
         const program = {

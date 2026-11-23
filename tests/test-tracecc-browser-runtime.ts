@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import {
   mkdtemp,
   readFile,
+  rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -846,6 +847,7 @@ async function main(): Promise<void> {
   } finally {
     await browser.close();
     server.kill('SIGTERM');
+    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 

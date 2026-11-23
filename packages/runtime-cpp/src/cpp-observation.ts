@@ -1,9 +1,13 @@
 import type {
+  JudgeObservationLease,
+  JudgeObservationProgram,
+  JudgeReceiptProvider,
+} from '@tracecode/runtime-browser/browser-runtime-host-internal';
+import type {
   Drawing,
   ExecutionResult,
   Refusal,
   RuntimeObservationCall,
-  RuntimeObservationProvider,
 } from '@tracecode/runtime-contracts';
 import type { CppWorkerClient } from './cpp-worker-client';
 import {
@@ -13,25 +17,20 @@ import {
   type VerifiedCppStage1Artifact,
 } from './cpp-stage1-artifact';
 
-type ObservationProgram = RuntimeObservationCall['program'] & { readonly runtimeVersion: string };
 type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
-  readonly program: ObservationProgram;
+  readonly program: JudgeObservationProgram;
 };
-
-interface CppDrawingLease extends RuntimeObservationProvider {
-  dispose(): void | Promise<void>;
-}
 
 /** Internal composition supplies exactly one producer. */
 export interface CppDrawingProducer {
-  prepare(call: Preparation): Promise<CppDrawingLease>;
+  prepare(call: Preparation): Promise<JudgeObservationLease>;
 }
 
 function refused(reason: Refusal): Drawing {
   return { status: 'refused', reason };
 }
 
-function refusalLease(reason: Refusal): CppDrawingLease {
+function refusalLease(reason: Refusal): JudgeObservationLease {
   return { observe: async () => refused(reason), dispose() {} };
 }
 
@@ -49,12 +48,12 @@ export function createCppObservationRegistration(
     runtimeVersion,
     capabilities: { observationLease: 'separate' as const, ...deadlines },
     async prepareObservation(
-      program: ObservationProgram,
+      program: JudgeObservationProgram,
       signal: AbortSignal,
       traceOptions?: Preparation['traceOptions']
-    ): Promise<CppDrawingLease> {
+    ): Promise<JudgeObservationLease> {
       signal.throwIfAborted();
-      let lease: CppDrawingLease;
+      let lease: JudgeObservationLease;
       try {
         lease = await producer.prepare({ program, traceOptions, signal });
       } catch {
@@ -81,7 +80,7 @@ export function createCppObservationRegistration(
             return refused('observer-runtime');
           }
           signal.throwIfAborted();
-          switch (drawing.status) {
+          switch (drawing?.status) {
             case 'drawn':
               return { status: 'drawn', trace: drawing.trace };
             case 'truncated':
@@ -104,7 +103,7 @@ export function createCppObservationRegistration(
         },
       };
     },
-  };
+  } satisfies JudgeReceiptProvider;
 }
 
 interface LegacyCppDrawingOptions {
@@ -118,28 +117,67 @@ interface LegacyCppDrawingOptions {
 export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions): CppDrawingProducer {
   return {
     async prepare({ program, traceOptions, signal }) {
-      const client = options.createObserverWorkerClient();
-      const retire = () => client.terminate();
-      signal?.addEventListener('abort', retire, { once: true });
-      try {
-        await client.init();
+      type ObserverClient = ReturnType<LegacyCppDrawingOptions['createObserverWorkerClient']>;
+      const clients = new Set<ObserverClient>();
+      const retire = (client: ObserverClient) => {
+        if (clients.delete(client)) client.terminate();
+      };
+
+      async function compile(signal?: AbortSignal) {
         signal?.throwIfAborted();
-        const preparation = await client.prepareRuntimeProgram({
-          code: program.code,
-          functionName: program.functionName,
-          executionStyle: program.executionStyle,
-          mode: 'trace',
-          traceOptions,
-          signal,
-        });
-        signal?.throwIfAborted();
-        if (preparation.success === false) {
-          client.terminate();
-          return refusalLease('observer-prepare');
+        const client = options.createObserverWorkerClient();
+        clients.add(client);
+        const abort = () => retire(client);
+        signal?.addEventListener('abort', abort, { once: true });
+        try {
+          await client.init();
+          signal?.throwIfAborted();
+          const preparation = await client.prepareRuntimeProgram({
+            code: program.code,
+            functionName: program.functionName,
+            executionStyle: program.executionStyle,
+            mode: 'trace',
+            traceOptions,
+            signal,
+          });
+          signal?.throwIfAborted();
+          if (preparation.success === false) {
+            retire(client);
+            return undefined;
+          }
+          return { client, handle: preparation.handle };
+        } catch (error) {
+          retire(client);
+          throw error;
+        } finally {
+          signal?.removeEventListener('abort', abort);
         }
-        return {
-          async observe(call) {
-            const result = await client.executePreparedTrace(preparation.handle, {
+      }
+
+      let standby = await compile(signal);
+      if (!standby) return refusalLease('observer-prepare');
+      return {
+        async observe(call) {
+          call.signal?.throwIfAborted();
+          // A contender must never run on a worker another attempt can abort.
+          // The separate trusted compiler may cache immutable compiler output.
+          let artifact = standby;
+          standby = undefined;
+          if (!artifact) {
+            try {
+              artifact = await compile(call.signal);
+            } catch {
+              call.signal?.throwIfAborted();
+              return refused('observer-prepare');
+            }
+          }
+          if (!artifact) return refused('observer-prepare');
+          const { client, handle } = artifact;
+          const abort = () => retire(client);
+          call.signal?.addEventListener('abort', abort, { once: true });
+          try {
+            call.signal?.throwIfAborted();
+            const result = await client.executePreparedTrace(handle, {
               inputs: call.inputs,
               recordTrace: true,
               signal: call.signal,
@@ -154,15 +192,16 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
               call.signal?.throwIfAborted();
               return refused('observer-encode');
             }
-          },
-          dispose() { client.terminate(); },
-        };
-      } catch (error) {
-        client.terminate();
-        throw error;
-      } finally {
-        signal?.removeEventListener('abort', retire);
-      }
+          } finally {
+            call.signal?.removeEventListener('abort', abort);
+            retire(client);
+          }
+        },
+        dispose() {
+          standby = undefined;
+          for (const client of clients) retire(client);
+        },
+      };
     },
   };
 }
@@ -176,7 +215,7 @@ interface SparseCppDrawingOptions {
    * separate worker and instantiates fresh memory and WASI for its attempt.
    * The site map alone supplies no browser drawing qualification.
    */
-  createObserver(artifact: VerifiedCppStage1Artifact): CppDrawingLease;
+  createObserver(artifact: VerifiedCppStage1Artifact): JudgeObservationLease;
 }
 
 export function createSparseCppDrawingProducer(options: SparseCppDrawingOptions): CppDrawingProducer {

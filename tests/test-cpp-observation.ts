@@ -125,3 +125,43 @@ test('observation projection reads only Drawing fields and drops a late result a
   pending.resolve(reply);
   await assert.rejects(late, { name: 'AbortError' });
 });
+
+test('each sparse attempt gets its own verified byte copy and retires its worker on cancellation', async () => {
+  const started = Promise.withResolvers<void>();
+  const replies = Promise.withResolvers<void>();
+  const allocated: Uint8Array[] = [];
+  let retired = 0;
+  const producer = createSparseCppDrawingProducer({
+    loadArtifact: async () => ({ ordinaryModule: wasm, sites: siteMap() }),
+    verifySites: async ({ sites }) => sites.sites[0]?.pc === 3,
+    createObserver({ ordinaryModule }) {
+      assert.deepEqual(ordinaryModule, wasm);
+      allocated.push(ordinaryModule);
+      // A derivation may edit a private buffer in place.
+      ordinaryModule[0] = 1;
+      return {
+        async observe() {
+          if (allocated.length === 2) started.resolve();
+          await replies.promise;
+          return { status: 'refused', reason: 'uncertified-drawing' };
+        },
+        dispose() { retired++; },
+      };
+    },
+  });
+  const registration = createCppObservationRegistration(producer, options);
+  const lease = await registration.prepareObservation(program, signal);
+  const cancel = new AbortController();
+  const first = lease.observe({ ...request, signal: cancel.signal });
+  const second = lease.observe({ ...request, attemptToken: 'second' });
+  await started.promise;
+  cancel.abort();
+  // The second attempt can finish independently of the first.
+  replies.resolve();
+  await assert.rejects(first, { name: 'AbortError' });
+  assert.deepEqual(await second, { status: 'refused', reason: 'uncertified-drawing' });
+  await lease.dispose();
+  assert.notEqual(allocated[0]?.buffer, allocated[1]?.buffer);
+  assert.equal(wasm[0], 0);
+  assert.equal(retired, 2);
+});
