@@ -102,7 +102,37 @@ function normalizedLine(value: unknown): number | undefined {
   return line === undefined ? undefined : Math.floor(line);
 }
 
-function sanitizeJsonValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+interface SanitizeCaps {
+  readonly maxItems: number;
+  readonly maxFields: number;
+  readonly maxDepth: number;
+}
+
+/** Caps for values the trace shows (snapshots, call arguments). */
+const DISPLAY_CAPS: SanitizeCaps = {
+  maxItems: MAX_NORMALIZED_ARRAY_ITEMS,
+  maxFields: MAX_NORMALIZED_OBJECT_FIELDS,
+  maxDepth: MAX_NORMALIZED_VALUE_DEPTH,
+};
+
+/**
+ * A case's returned value is judged, so it keeps every item, field and level
+ * the worker's serializer sent, as the untraced path returns it. With the
+ * display caps, the 352 boards of a correct n-queens (n = 9) became 256 boards
+ * and a truncation marker, a wrong answer in every Run case.
+ */
+const OUTPUT_CAPS: SanitizeCaps = {
+  maxItems: Number.POSITIVE_INFINITY,
+  maxFields: Number.POSITIVE_INFINITY,
+  maxDepth: Number.POSITIVE_INFINITY,
+};
+
+function sanitizeJsonValue(
+  value: unknown,
+  depth = 0,
+  seen = new WeakSet<object>(),
+  caps: SanitizeCaps = DISPLAY_CAPS
+): unknown {
   if (
     value === null ||
     typeof value === 'boolean' ||
@@ -116,7 +146,7 @@ function sanitizeJsonValue(value: unknown, depth = 0, seen = new WeakSet<object>
   if (typeof value !== 'object') {
     return undefined;
   }
-  if (depth >= MAX_NORMALIZED_VALUE_DEPTH) {
+  if (depth >= caps.maxDepth) {
     return '<max depth>';
   }
   if (seen.has(value)) {
@@ -125,22 +155,22 @@ function sanitizeJsonValue(value: unknown, depth = 0, seen = new WeakSet<object>
   seen.add(value);
   if (Array.isArray(value)) {
     const out = value
-      .slice(0, MAX_NORMALIZED_ARRAY_ITEMS)
-      .map((item) => sanitizeJsonValue(item, depth + 1, seen));
-    if (value.length > MAX_NORMALIZED_ARRAY_ITEMS) {
-      out.push({ __truncated__: true, remaining: value.length - MAX_NORMALIZED_ARRAY_ITEMS });
+      .slice(0, caps.maxItems)
+      .map((item) => sanitizeJsonValue(item, depth + 1, seen, caps));
+    if (value.length > caps.maxItems) {
+      out.push({ __truncated__: true, remaining: value.length - caps.maxItems });
     }
     return out;
   }
   const entries = Object.entries(value as Record<string, unknown>);
   const out: Record<string, unknown> = Object.create(null);
-  for (const [key, child] of entries.slice(0, MAX_NORMALIZED_OBJECT_FIELDS)) {
-    const childValue = sanitizeJsonValue(child, depth + 1, seen);
+  for (const [key, child] of entries.slice(0, caps.maxFields)) {
+    const childValue = sanitizeJsonValue(child, depth + 1, seen, caps);
     if (childValue !== undefined) out[key] = childValue;
   }
-  if (entries.length > MAX_NORMALIZED_OBJECT_FIELDS) {
+  if (entries.length > caps.maxFields) {
     out.__truncated__ = true;
-    out.remaining = entries.length - MAX_NORMALIZED_OBJECT_FIELDS;
+    out.remaining = entries.length - caps.maxFields;
   }
   return out;
 }
@@ -482,7 +512,7 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   return liftTraceOutcome(
     {
       success: record.success === true,
-      output: sanitizeJsonValue(record.output),
+      output: sanitizeJsonValue(record.output, 0, new WeakSet<object>(), OUTPUT_CAPS),
       ...(normalizedString(record.error) ? { error: normalizedString(record.error) } : {}),
       ...(normalizedLine(record.errorLine) !== undefined ? { errorLine: normalizedLine(record.errorLine) } : {}),
       ...(record.diagnosticStage === 'runtime' || record.diagnosticStage === 'compile'
