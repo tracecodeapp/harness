@@ -1,12 +1,12 @@
 #!/bin/bash
 # Build-host job for the cross-version release diff. Run from the checkout root through
 # harness-artifacts/tools/ar-harness.sh, e.g.
-#   ar-harness.sh <wt> rd-release env RD_PACK_RECEIPT=/path/to/pack RD_APP_DATA_SHA=<sha> \
+#   ar-harness.sh <wt> rd-release env RD_PACK_RECEIPT=/path/to/pack RD_PACK_SHA256=<digest> RD_APP_DATA_SHA=<sha> \
 #     RD_MANIFEST=/path/to/reviewed-manifest.json RD_PINS=/path/to/review-decisions.json \
 #     bash scripts/release-diff/host-job.sh
 # Optional selection: RD_LANGUAGES (default all six), RD_PROBLEMS, RD_CATALOG.
 # RD_STOP_POLICY selects the same Submit option on both sides.
-# Qualification requires RD_PACK_RECEIPT, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS.
+# Qualification requires RD_PACK_RECEIPT, RD_PACK_SHA256, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS.
 # RD_RERUN_FILE: lines "<language> <id>,<id>" rerun only those problems (with RD_OUT=rerun-out).
 # RD_NOSTOP_SIDE=1 (rerun mode): also run the target without stopAtFirstRunaway (target-nostop).
 # RD_SIDES="target target-nostop": run only the listed sides. Rerun reports are <label>-<lang>-<line>.json.
@@ -18,9 +18,9 @@ CORPUS=${RD_CORPUS:-/root/ci/parity-app-data}
 BASE_VERSION=0.17.1
 LANGS=${RD_LANGUAGES:-javascript,typescript,cpp,java,csharp,python}
 mkdir -p "$OUT"
-if [[ -z "${RD_PACK_RECEIPT:-}" || -z "${RD_APP_DATA_SHA:-}" ||
+if [[ -z "${RD_PACK_RECEIPT:-}" || ! "${RD_PACK_SHA256:-}" =~ ^[a-f0-9]{64}$ || -z "${RD_APP_DATA_SHA:-}" ||
       -z "${RD_MANIFEST:-}" || -z "${RD_PINS:-}" ]]; then
-  echo "release-diff/preflight: set RD_PACK_RECEIPT, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS"
+  echo "release-diff/preflight: set RD_PACK_RECEIPT, RD_PACK_SHA256, RD_APP_DATA_SHA, RD_MANIFEST and RD_PINS"
   exit 2
 fi
 python3 scripts/release-diff/check-corpus.py "$CORPUS" "$RD_APP_DATA_SHA" "$RD_MANIFEST" |
@@ -29,7 +29,10 @@ scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 candidate="$scratch/candidate"
 mkdir "$candidate"
-digest=$(cat "$RD_PACK_RECEIPT/qualified.sha256") || exit 16
+digest=$RD_PACK_SHA256
+[[ "$(cat "$RD_PACK_RECEIPT/verified.sha256")" == "$digest" ]] || { echo "release-diff/pack/receipt-digest"; exit 16; }
+[[ "$(node -p 'require(process.argv[1]).sha256' "$(realpath "$RD_PACK_RECEIPT/pack.json")")" == "$digest" ]] ||
+  { echo "release-diff/pack/metadata-digest"; exit 16; }
 file=$(node -p 'require(process.argv[1]).file' "$(realpath "$RD_PACK_RECEIPT/pack.json")") || exit 16
 [[ "$file" =~ ^[a-zA-Z0-9.-]+[.]tgz$ ]] || exit 16
 node scripts/stage1/clean-pack.mjs --verify "$RD_PACK_RECEIPT/$file" "$digest" || exit 16
@@ -111,6 +114,7 @@ if [ -n "${RD_RERUN_FILE:-}" ]; then
     RUN_TAG="$line_no" RD_PROBLEMS="$ids" run_lang "$lang"
   done <"$RD_RERUN_FILE"
   echo "done $(date -u +%H:%M:%SZ)"
+  node scripts/stage1/clean-pack.mjs --verify "$candidate/candidate.tgz" "$digest" || exit 16
   exit $status
 fi
 IFS=, read -ra LANG_LIST <<<"$LANGS"
@@ -129,4 +133,5 @@ echo "done $(date -u +%H:%M:%SZ)"
 if [ "$status" = 0 ] && [ -z "${RD_SIDES:-}" ]; then
   python3 scripts/release-diff/compare.py "$OUT" "v$BASE_VERSION" target "$RD_MANIFEST" "$RD_PINS" || status=$?
 fi
+node scripts/stage1/clean-pack.mjs --verify "$candidate/candidate.tgz" "$digest" || exit 16
 exit "$status"

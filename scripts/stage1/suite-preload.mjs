@@ -15,11 +15,13 @@ if (path && nonce && leaf && !leaf.startsWith('..') && !isAbsolute(leaf) && /(?:
   }
   record('process-start');
   const assertions = new Map();
+  // Node uses the identities of its match and rejection helpers internally.
+  // Leave them intact. The instrumented leaves attest to these checks explicitly.
   for (const methods of new Set([assert, strict])) {
     for (const name of [
       'ok', 'equal', 'notEqual', 'strictEqual', 'notStrictEqual', 'deepEqual', 'notDeepEqual',
-      'deepStrictEqual', 'notDeepStrictEqual', 'throws', 'doesNotThrow', 'rejects',
-      'doesNotReject', 'match', 'doesNotMatch', 'ifError', 'partialDeepStrictEqual',
+      'deepStrictEqual', 'notDeepStrictEqual', 'throws', 'doesNotThrow',
+      'ifError', 'partialDeepStrictEqual',
     ]) {
       const original = methods[name];
       if (typeof original !== 'function') continue;

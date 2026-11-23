@@ -1518,11 +1518,9 @@ async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void
 
 async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): Promise<void> {
   const ledger = leafLedger('js-destructured-iterable');
-  const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
-  const policySource = await readFile(
-    join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy-classic.js'),
-    'utf8'
-  );
+  const workerRoot = join(process.env.TRACECODE_G7_INSTALLED_PACKAGE || dirname(testDirectory), 'workers');
+  const source = await readFile(join(workerRoot, 'javascript', 'javascript-worker.js'), 'utf8');
+  const policySource = await readFile(join(workerRoot, 'shared', 'runtime-kernel-policy-classic.js'), 'utf8');
   const pending = new Map<string, { token: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   let ready = false;
   const workerScope = {

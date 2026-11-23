@@ -46,7 +46,7 @@ jobs:
 
   controls:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,10 +59,29 @@ jobs:
           node-version: 22.18.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Witness the repaired leaves and the browser short-circuit
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipts="$RUNNER_TEMP/g7-leaves"
+          mkdir "$receipts"
+          test ! -d packages/tracekernel/dist
+          node scripts/stage1/prove-known-leaves.mjs candidate "$PWD" "$receipts"
+          status=0
+          node scripts/stage1/prove-known-leaves.mjs browser-control "$PWD" "$receipts" >"$receipts/browser-control.log" 2>&1 || status=$?
+          cat "$receipts/browser-control.log"
+          test "$status" = 1
+          grep -F 'short-circuit hit=1' "$receipts/browser-control.log"
       - run: node --test tests/test-stage1-suite-floor.mjs
       - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release-diff -p test_qualify.py
       - run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-script-file.ts
       - run: bash scripts/stage1/prove-recorder.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: g7-leaves-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/g7-leaves/
 
   csharp-post-pause:
     runs-on: ubuntu-24.04

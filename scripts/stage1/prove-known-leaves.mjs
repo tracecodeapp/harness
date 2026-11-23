@@ -8,13 +8,16 @@ import { readSuiteEvents } from './suite-events.mjs';
 
 const [profile, source, destination] = process.argv.slice(2);
 const browserControl = profile === 'browser-control';
-if (!['baseline', 'candidate', 'browser-control'].includes(profile) || !source || !destination) {
-  throw new Error('Usage: prove-known-leaves.mjs <baseline|candidate|browser-control> <source> <receipt-directory>');
+if (!['baseline', 'candidate', 'browser-control', 'frozen-pack'].includes(profile) || !source || !destination) {
+  throw new Error('Usage: prove-known-leaves.mjs <baseline|candidate|browser-control|frozen-pack> <source> <receipt-directory>');
 }
 const root = resolve(source);
 const output = resolve(destination);
 const preload = new URL('./suite-preload.mjs', import.meta.url).href;
-let unexpected = 0;
+if (profile === 'frozen-pack' && !process.env.TRACECODE_G7_INSTALLED_PACKAGE) {
+  throw new Error('G7/frozen-pack: an isolated installed package is required');
+}
+const unexpected = [];
 for (const [file, { id, assertions }] of Object.entries(knownLeaves)) {
   if (browserControl && id !== 'python-line-guard') continue;
   const ledger = join(output, `${profile}-${id}.jsonl`);
@@ -25,7 +28,7 @@ for (const [file, { id, assertions }] of Object.entries(knownLeaves)) {
     const original = readFileSync(join(root, file), 'utf8');
     const point = "      ledger.checked('browser-worker');";
     if (original.split(point).length !== 2) throw new Error('G7/control: unique worker witness not found');
-    writeFileSync(variant, original.replace(point, point + '\n      ledger.done();\n      return;'), { flag: 'wx' });
+    writeFileSync(variant, original.replace(point, point + '\n      console.log("G7/short-circuit-applied");\n      ledger.done();\n      return;'), { flag: 'wx' });
   }
   const args = ['pnpm', 'exec', 'tsx', '--tsconfig', 'tsconfig.base.json', variant ?? file];
   if (id === 'js-destructured-iterable') args.push('--destructured-iterable');
@@ -34,10 +37,11 @@ for (const [file, { id, assertions }] of Object.entries(knownLeaves)) {
   try {
     const command = process.platform === 'linux' ? 'timeout' : 'corepack';
     const commandArgs = command === 'timeout' ? ['--kill-after=5s', '240s', 'corepack', ...args] : args;
+    const inherited = profile === 'frozen-pack' ? process.env : { ...process.env, TRACECODE_G7_INSTALLED_PACKAGE: '' };
     result = spawnSync(command, commandArgs, {
       cwd: root,
       env: {
-        ...process.env,
+        ...inherited,
         NODE_OPTIONS: `--import=${preload}`,
         TRACECODE_SUITE_LEDGER: ledger,
         TRACECODE_SUITE_NONCE: nonce,
@@ -59,7 +63,7 @@ for (const [file, { id, assertions }] of Object.entries(knownLeaves)) {
   console.log(`G7/${profile}/${id} exit=${result.status} ms=${ms} checked=${checks.length}`);
   if (browserControl) {
     const expected = ['submit', 'run'].map((check) => `G7/suite/${id}/missing-assertion/${check}`);
-    if (result.status !== 0 || result.error || checks.length !== 1 || checks[0].id !== 'browser-worker' ||
+    if (result.status !== 0 || result.error || log.split('G7/short-circuit-applied').length !== 2 || checks.length !== 1 || checks[0].id !== 'browser-worker' ||
         JSON.stringify(issues) !== JSON.stringify(expected)) {
       console.error('G7/browser-control: wrong stimulus, setup failure, or mutant survived');
       process.exitCode = 2;
@@ -71,16 +75,22 @@ for (const [file, { id, assertions }] of Object.entries(knownLeaves)) {
     break;
   }
   if (profile === 'baseline') {
-    if (!terminal || result.error || terminal.nonce !== nonce || result.status === 0 ||
-        (id !== 'js-destructured-iterable' && terminal.assertions.length !== 0)) {
+    const symptom = id === 'js-destructured-iterable'
+      ? /Unable to load TypeScript compiler.*Unexpected importScripts/u
+      : /Could not resolve .*@(tracecode\/tracekernel|tracecode\/runtime-contracts)/u;
+    if (!terminal || result.error || terminal.nonce !== nonce || result.status !== 1 ||
+        !symptom.test(log) || terminal.assertions.length !== 0) {
       console.error(`G7/${profile}/${id}: could not witness a pre-assertion failure`);
-      unexpected += 1;
+      unexpected.push(id);
     } else {
       console.log(`G7/${profile}/${id}/${id === 'js-destructured-iterable' ? 'unwitnessed-learner-assignment' : 'zero-assertions'}`);
     }
   } else if (result.status !== 0 || result.error || issues.length || !terminal) {
     console.error(issues.join('\n'));
-    unexpected += 1;
+    unexpected.push(id);
   }
 }
-if (!browserControl) process.exitCode = Number(unexpected !== 0);
+if (!browserControl) {
+  writeFileSync(join(output, `${profile}-verdict.json`), JSON.stringify({ unexpected }, null, 2) + '\n');
+  process.exitCode = Number(unexpected.length !== 0);
+}

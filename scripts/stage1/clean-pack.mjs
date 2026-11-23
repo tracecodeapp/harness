@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -42,11 +42,72 @@ export async function verifyTarball(tarball, expected) {
   return actual;
 }
 
+async function verifyInstalledPack({ tarball, sha256, environment, tree, root, output }) {
+  const consumer = join(root, 'consumer');
+  const file = basename(tarball);
+  await writeFile(join(output, 'pack.json'), JSON.stringify({ ...environment, file, sha256 }, null, 2) + '\n');
+  run(repo, 'python3', [join(scripts, 'tar-manifest.py'), tarball, join(output, 'tar-members.json')]);
+  await verifyTarball(tarball, sha256);
+  await mkdir(consumer);
+  await copyFile(tarball, join(consumer, 'candidate.tgz'));
+  await verifyTarball(join(consumer, 'candidate.tgz'), sha256);
+  const dependencyVersions = JSON.parse(run(tree, 'corepack', ['pnpm', 'list', '--prod', '--depth', '0', '--json'], true))[0].dependencies;
+  const overrides = Object.fromEntries(Object.entries(dependencyVersions).map(([name, { version }]) => {
+    if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error(`G7/pack/unpinned: ${name}@${version}`);
+    return [name, version];
+  }));
+  const consumerManifest = JSON.stringify({
+    private: true,
+    packageManager: 'pnpm@10.4.1',
+    dependencies: { '@tracecode/harness': 'file:./candidate.tgz' },
+    pnpm: { overrides },
+  }, null, 2) + '\n';
+  await writeFile(join(consumer, 'package.json'), consumerManifest);
+  await writeFile(join(output, 'consumer-package.json'), consumerManifest);
+  run(consumer, 'corepack', ['pnpm', 'install', '--ignore-scripts', '--no-frozen-lockfile']);
+  const consumerLock = await readFile(join(consumer, 'pnpm-lock.yaml'));
+  await writeFile(join(output, 'consumer-lock.yaml'), consumerLock);
+  run(consumer, 'corepack', ['pnpm', 'install', '--ignore-scripts', '--frozen-lockfile']);
+  const moduleFile = join(consumer, 'verify.mjs');
+  await writeFile(moduleFile, await readFile(join(scripts, 'verify-consumer.mjs')));
+  run(consumer, 'node', [moduleFile, output]);
+  await verifyTarball(tarball, sha256);
+  await verifyTarball(join(consumer, 'candidate.tgz'), sha256);
+  await writeFile(join(output, 'verified.sha256'), sha256 + '\n');
+}
+
+async function inspectExistingPack([sha, tarball, sha256, destination, scratch]) {
+  const output = resolve(destination);
+  const root = resolve(scratch);
+  const tree = process.cwd();
+  const head = run(tree, 'git', ['rev-parse', 'HEAD'], true);
+  if (!/^[a-f0-9]{40}$/.test(sha) || head !== sha || process.version !== 'v22.18.0' ||
+      run(tree, 'corepack', ['pnpm', '--version'], true) !== '10.4.1') {
+    throw new Error('G7/preflight: wrong companion source or toolchain');
+  }
+  await verifyTarball(tarball, sha256);
+  await mkdir(output);
+  const environment = {
+    head, node: process.version, pnpm: '10.4.1', os: process.platform, arch: process.arch,
+    lockDigest: await digest(join(tree, 'pnpm-lock.yaml')),
+    sourceBuild: 'not-run',
+  };
+  const carried = join(output, basename(tarball));
+  await copyFile(tarball, carried);
+  await verifyTarball(carried, sha256);
+  await verifyInstalledPack({ tarball: carried, sha256, environment, tree, root, output });
+  await verifyTarball(tarball, sha256);
+  console.log(`G7/pack verified installed frozen tarball ${sha} ${sha256}`);
+}
+
 async function main([sha, destination, ...extra]) {
+  if (sha === '--existing' && extra.length === 4) return inspectExistingPack([destination, ...extra]);
   if (sha === '--verify' && destination && extra.length === 1) {
     await verifyTarball(resolve(destination), extra[0]);
     return;
   }
+  const sourceOnly = sha === '--source-only';
+  if (sourceOnly) [sha, destination, ...extra] = [destination, ...extra];
   if (!/^[a-f0-9]{40}$/.test(sha ?? '') || !destination || extra.length) {
     throw new Error('Usage: node scripts/stage1/clean-pack.mjs <full-commit-sha> <empty-external-output-dir>');
   }
@@ -99,6 +160,7 @@ async function main([sha, destination, ...extra]) {
     for (const check of ['version:check', 'release:check', 'test:runtime-assets-lock']) {
       run(tree, 'corepack', ['pnpm', check]);
     }
+    if (sourceOnly) return;
     const packing = performance.now();
     run(tree, 'corepack', ['pnpm', 'pack', '--pack-destination', output]);
     await clean(tree, output, 'pack');
@@ -107,33 +169,7 @@ async function main([sha, destination, ...extra]) {
     const [file] = tarballs;
     const tarball = join(output, file);
     const sha256 = await digest(tarball);
-    const consumer = join(root, 'consumer');
-    await writeFile(join(output, 'pack.json'), JSON.stringify({ ...environment, file, sha256 }, null, 2) + '\n');
-    run(repo, 'python3', [join(scripts, 'tar-manifest.py'), tarball, join(output, 'tar-members.json')]);
-    await verifyTarball(tarball, sha256);
-    await mkdir(consumer);
-    await copyFile(tarball, join(consumer, 'candidate.tgz'));
-    const dependencyVersions = JSON.parse(run(tree, 'corepack', ['pnpm', 'list', '--prod', '--depth', '0', '--json'], true))[0].dependencies;
-    const overrides = Object.fromEntries(Object.entries(dependencyVersions).map(([name, { version }]) => {
-      if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error(`G7/pack/unpinned: ${name}@${version}`);
-      return [name, version];
-    }));
-    const consumerManifest = JSON.stringify({
-      private: true,
-      packageManager: 'pnpm@10.4.1',
-      dependencies: { '@tracecode/harness': 'file:./candidate.tgz' },
-      pnpm: { overrides },
-    }, null, 2) + '\n';
-    await writeFile(join(consumer, 'package.json'), consumerManifest);
-    await writeFile(join(output, 'consumer-package.json'), consumerManifest);
-    run(consumer, 'corepack', ['pnpm', 'install', '--ignore-scripts', '--no-frozen-lockfile']);
-    const consumerLock = await readFile(join(consumer, 'pnpm-lock.yaml'));
-    await writeFile(join(output, 'consumer-lock.yaml'), consumerLock);
-    run(consumer, 'corepack', ['pnpm', 'install', '--ignore-scripts', '--frozen-lockfile']);
-    const moduleFile = join(consumer, 'verify.mjs');
-    await writeFile(moduleFile, await readFile(join(scripts, 'verify-consumer.mjs')));
-    run(consumer, 'node', [moduleFile, output]);
-    await verifyTarball(tarball, sha256);
+    await verifyInstalledPack({ tarball, sha256, environment, tree, root, output });
     await writeFile(join(output, 'qualified.sha256'), sha256 + '\n');
     console.log(`G7/pack qualified ${sha} ${sha256} in ${Math.round(performance.now() - packing)} ms`);
   } finally {

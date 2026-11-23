@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -33,6 +33,42 @@ test('a child that vanishes or returns after startup cannot qualify', async () =
     ]);
     assert.deepEqual(missingEvidence(id, assertions, []), [`G7/suite/${id}/missing-leaf`]);
     assert.deepEqual(missingEvidence(id, assertions, await execute('repaired', checks)), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('the preload preserves Node assertion semantics', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-assertion-control-'));
+  try {
+    const preload = new URL('../scripts/stage1/suite-preload.mjs', import.meta.url);
+    const path = join(directory, 'tests', 'assertions.mjs');
+    await mkdir(join(directory, 'tests'));
+    await writeFile(path, `
+      import strict from 'node:assert/strict';
+      import assert from 'node:assert';
+      for (const methods of [strict, assert]) {
+        methods.match('infinite loop', /infinite loop/);
+        methods.doesNotMatch('infinite loop', /trace/);
+        await methods.rejects(async () => { throw new Error('expected'); }, /expected/);
+        await methods.doesNotReject(async () => {});
+        methods.equal(1, 1);
+      }
+    `);
+    const ledger = join(directory, 'events');
+    const child = spawnSync(process.execPath, ['--import', preload.href, path], {
+      env: {
+        ...process.env,
+        TRACECODE_SUITE_ROOT: directory,
+        TRACECODE_SUITE_LEDGER: ledger,
+        TRACECODE_SUITE_NONCE: 'assertions',
+      },
+      encoding: 'utf8',
+    });
+    assert.equal(child.status, 0, child.stderr);
+    const events = (await readFile(`${ledger}.${child.pid}.jsonl`, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events.find(({ kind }) => kind === 'process-end').assertions
+      .filter(([id]) => id.startsWith('equal@')).reduce((count, [, hits]) => count + hits, 0), 2);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
