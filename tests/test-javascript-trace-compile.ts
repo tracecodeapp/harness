@@ -376,6 +376,35 @@ function buildFunctionExecutionRunnerOriginal(`,
   }, () => withClient('disposable-worker', async (client) => {
     await assert.rejects(client.executeWithTracing({ code, functionName: 'solve', inputs: {} }), isProviderFault);
   }));
+  for (const entry of ['executeIsolated', 'executeBatchIsolated'] as const) {
+    await check(`an untraced build that fails only the first time, prepared ${entry}: provider fault, not refused`, {
+      name: 'transient-untraced-build-prepared',
+      edit: {
+        file: WORKER,
+        from: 'function buildFunctionExecutionRunner(',
+        to: `let __injectedBuildFailed = false;
+function buildFunctionExecutionRunner(...args) {
+  if (!__injectedBuildFailed && WORKER_ROLE === 'executor') {
+    __injectedBuildFailed = true;
+    throw new RangeError('injected transient build failure');
+  }
+  return buildFunctionExecutionRunnerOriginal(...args);
+}
+function buildFunctionExecutionRunnerOriginal(`,
+      },
+    }, () => withClient('disposable-worker', async (client) => {
+      const prepared = await client.prepareProgram(tracedPreparation);
+      assert.equal(prepared.kind, 'prepared', `blamed on the learner: ${JSON.stringify(prepared)}`);
+      if (prepared.kind !== 'prepared' || prepared.program.mode !== 'trace') return;
+      const program = prepared.program;
+      await assert.rejects(
+        () => entry === 'executeIsolated'
+          ? program.executeIsolated({ inputs: {} })
+          : program.executeBatchIsolated!({ inputBatch: [{}] }),
+        isProviderFault
+      );
+    }));
+  }
 
   for (const [name, type] of [['coordinator', 'prepare-execution'], ['executor', 'execute-with-tracing']] as const) {
     await check(`${name} death: no refusal, no compile error`, {
