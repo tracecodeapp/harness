@@ -1,6 +1,7 @@
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
+  isRuntimeProviderError,
 } from '../../src/judge';
 import { createTraceCCRuntimeManifest } from '../../packages/runtime-cpp/src/tracecc-runtime-assets';
 
@@ -27,6 +28,7 @@ export interface LostWorkerObservation {
    */
   readonly outcome: readonly string[];
   readonly threw?: string;
+  readonly typedCauses?: readonly string[];
   /** Each case's (or the compile's) failure message, when it has one. */
   readonly messages?: readonly string[];
   /** Message types the injection answered by losing the worker. */
@@ -175,7 +177,7 @@ async function evaluate(
   program: Program,
   mode: LostWorkerMode,
   limits?: { readonly wallClockMs: number }
-): Promise<{ outcome: string[]; threw?: string; messages?: string[] }> {
+): Promise<{ outcome: string[]; threw?: string; messages?: string[]; typedCauses?: string[] }> {
   sequence += 1;
   const caseCount = mode === 'code' || mode === 'trace' ? 1 : 2;
   const bundle = await createAlgorithmJudgeBundle({
@@ -198,10 +200,13 @@ async function evaluate(
       signal: AbortSignal.timeout(110_000),
     });
     const { evaluation } = receipt;
+    const cause = (failure: { origin: string; stage?: string; reason?: string } | undefined) =>
+      failure ? `${failure.origin}:${failure.stage ?? failure.reason}` : 'none';
     if (evaluation.status === 'compile-failed') {
       return {
         outcome: [`compile:${evaluation.compile.status}:${evaluation.compile.failure?.origin ?? 'none'}`],
         messages: [evaluation.compile.failure?.message?.slice(0, 300) ?? ''],
+        typedCauses: [cause(evaluation.compile.failure)],
       };
     }
     return {
@@ -209,12 +214,18 @@ async function evaluate(
         `case:${testCase.status}:${testCase.failure?.origin ?? 'none'}`
       ),
       messages: evaluation.cases.map((testCase) => testCase.failure?.message?.slice(0, 300) ?? ''),
+      typedCauses: evaluation.cases.map(({ failure }) => cause(failure)),
     };
   } catch (error) {
     const text = error instanceof Error
       ? `${error.name}: ${error.message}`
       : String(error);
-    return { outcome: [`threw:${text.slice(0, 300)}`], threw: text.slice(0, 600) };
+    const inner = error instanceof Error ? error.cause : undefined;
+    const provider = isRuntimeProviderError(error) ? error : isRuntimeProviderError(inner) ? inner : undefined;
+    return {
+      outcome: [`threw:${text.slice(0, 300)}`], threw: text.slice(0, 600),
+      typedCauses: provider ? [`provider:${provider.reason}`] : [],
+    };
   }
 }
 

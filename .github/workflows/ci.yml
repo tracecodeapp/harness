@@ -83,11 +83,11 @@ jobs:
         run: pnpm test:publish-safety && pnpm test:packaged-surface && pnpm test:smoke && pnpm test:asset-sync
 
   judge-browser-boundary:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     # The full learner-failure matrix compiles every C++ cell with TraceCC in
     # the browser; on a hosted runner it does not fit in 45 minutes.
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -107,4 +107,12 @@ jobs:
       - name: Test the public browser Judge boundary
         run: pnpm test:judge:browser
       - name: Test learner-failure classification across languages and run modes
+        env:
+          TRACECODE_MATRIX_BROWSER_CHANNEL: chromium
+          TRACECODE_MATRIX_REPORT: ${{ runner.temp }}/learner-failure-matrix.json
         run: pnpm test:learner-failure-matrix
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: learner-failure-matrix-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/learner-failure-matrix.json

@@ -244,7 +244,8 @@ interface CellVerdict {
 }
 
 function expectedClasses(spec: MatrixCellSpec, mode: MatrixMode) {
-  return spec.completesIn?.includes(baseMode(mode)) ? ['completed'] : spec.expected;
+  return spec.kind === 'trace-step-limit' || spec.completesIn?.includes(baseMode(mode))
+    ? ['completed'] : spec.expected;
 }
 
 function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict {
@@ -344,12 +345,16 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
     }
     // The Judge layer must state the same origin, and the exported conversion
     // must produce the matching outcome, so a consumer only forwards.
+    if (spec.kind === 'provider-asset-failure' && observation.origin !== 'provider:runtime-failure') {
+      failures.set('judge', `expected provider:runtime-failure, got ${String(observation.origin)}`);
+    }
     if (observation.status !== 'host-rejected') {
+      const stage = observation.origin?.startsWith('program:') ? observation.origin.slice(8) : undefined;
       const expectedJudge =
         observation.class === 'completed'
           ? { origin: 'none', conversion: 'completed' }
           : observation.class === 'compile' || observation.class === 'runtime'
-            ? { origin: `program:${observation.code}`, conversion: `failed:${observation.code}` }
+            ? { origin: `program:${stage}`, conversion: `failed:${stage}` }
             : observation.class === 'limit'
               ? { origin: `limit:${observation.reason}`, conversion: `limit:${observation.reason}` }
               : observation.class === 'provider'
@@ -359,7 +364,8 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
         const originOk = 'origin' in expectedJudge
           ? observation.origin === expectedJudge.origin
           : (observation.origin ?? '').startsWith(expectedJudge.originPrefix);
-        if (!originOk || observation.conversion !== expectedJudge.conversion) {
+        if (!originOk || observation.conversion !== expectedJudge.conversion ||
+            (stage !== undefined && observation.code !== undefined && observation.code !== stage)) {
           failures.set(
             'judge',
             `Judge origin ${String(observation.origin)} / conversion ${String(observation.conversion)} ` +

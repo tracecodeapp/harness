@@ -1,0 +1,59 @@
+name: Stage 1 clean pack
+
+on:
+  workflow_call:
+    inputs:
+      candidate_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+    steps:
+      - name: Require an immutable commit
+        shell: bash
+        run: '[[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]'
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.CANDIDATE_SHA }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build, pack, and verify an isolated install
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/stage1/clean-pack.mjs "$CANDIDATE_SHA" "$RUNNER_TEMP/stage1-pack" \
+            2>&1 | tee "$RUNNER_TEMP/stage1-pack.log"
+      - uses: actions/upload-artifact@v4
+        name: Store the qualified tarball and checksums
+        with:
+          name: stage1-pack-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stage1-pack/
+          if-no-files-found: error
+      - name: Exercise the packed-byte control
+        run: bash scripts/stage1/prove-digest.sh "$RUNNER_TEMP/stage1-pack"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: stage1-pack-failure-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/stage1-pack/*.status
+            ${{ runner.temp }}/stage1-pack/*.diff
+            ${{ runner.temp }}/stage1-pack.log

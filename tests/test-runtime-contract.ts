@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { withPythonScriptFile } from './fixtures/python-script-file';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -1682,10 +1683,10 @@ function runPythonCase(
   inputs: Record<string, unknown>
 ): { success: boolean; output?: unknown; error?: string } {
   const script = generateSolutionScript(solutionCode, functionName, inputs);
-  const run = spawnSync('python3', ['-c', script], {
+  const run = withPythonScriptFile(script, (path) => spawnSync('python3', [path], {
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024,
-  });
+  }));
 
   if (run.error) {
     throw new Error(`python3 execution failed: ${run.error.message}`);

@@ -322,9 +322,11 @@ async function runLanguage(browser, url, language, result) {
       if (!trapObserved) result.coverageGaps.push('cpp-fault: no traced Wasm out-of-bounds trap observed');
     }
 
+    const profiles = process.env.TRACECODE_HOST_HISTORY_PROFILE ?? 'both';
+    if (!['desktop', 'both'].includes(profiles)) throw new Error(`Unknown host history profile ${profiles}`);
     for (const [flavor, target, group] of [
       ['practice', 'shared', programs],
-      ['ios', 'ios', programs.filter(({ id }) => !referenceIds.includes(id))],
+      ...(profiles === 'both' ? [['ios', 'ios', programs.filter(({ id }) => !referenceIds.includes(id))]] : []),
     ]) {
       function historyName(name) {
         return flavor === 'practice' ? name : `ios/${name}`;
@@ -347,8 +349,11 @@ async function runLanguage(browser, url, language, result) {
           const evidence = await call(page, 'history', kind, id, flavor);
           result.histories[name] = evidence;
           if (evidence.excluded) result.exclusions.push({ history: name, reason: evidence.excluded });
-          else if (!evidence.witnessed && expectedStatus !== 'compile-failed') {
-            result.coverageGaps.push(`${name}: required trace/continuation not observed`);
+          const terminal = evidence.terminalCompile ||
+            (evidence.result?.status === 'compile-failed' && evidence.result.compileFailure?.origin === 'program' &&
+              evidence.result.cases.length === 0);
+          if (!evidence.witnessed && !(expectedStatus === 'compile-failed' && terminal)) {
+            result.coverageGaps.push(`${name}: required trace/continuation or terminal compile failure not observed`);
           }
           await compare(id, name, target);
         }
@@ -363,6 +368,7 @@ async function runLanguage(browser, url, language, result) {
         for (const { id } of group) await compare(id, name, target);
         if (kind === 'abandoned' && evidence.witnessed) {
           evidence.finalCheck = await call(page, 'abandonCheck', flavor);
+          if (!evidence.finalCheck.witnessed) result.coverageGaps.push(`${name}: retained drawing or cleanup not witnessed`);
         }
         await save();
       }
@@ -378,6 +384,11 @@ async function runLanguage(browser, url, language, result) {
           await compare(observer, name, target);
         }
       }
+    }
+    const expected = language === 'typescript' || language === 'javascript'
+      ? (profiles === 'both' ? 330 : 222) : undefined;
+    if (expected !== undefined && result.comparisons !== expected) {
+      result.coverageGaps.push(`expected ${expected} comparisons, got ${result.comparisons}`);
     }
     await call(page, 'close');
   } finally {
@@ -471,7 +482,7 @@ async function main() {
       await runLanguage(browser, site.url, language, result).catch((error) => {
         result.coverageGaps.push(error.message);
       });
-      result.verdict = result.differences ? 'VIOLATED' : result.coverageGaps.length ? 'UNPROVEN' : 'PROVEN';
+      result.verdict = result.differences ? 'VIOLATED' : result.coverageGaps.length || result.contractFailures.length ? 'UNPROVEN' : 'PROVEN';
       console.log(`${language}: ${result.verdict}, ${Object.keys(result.programs ?? {}).length} programs, ${result.comparisons} comparisons, ${result.differences} differences`);
       for (const gap of result.coverageGaps) console.error(`GAP ${language}: ${gap}`);
       for (const failure of result.contractFailures) console.error(`BATCH ${language}/${failure.id}/${failure.name}: ${failure.problems.join(', ')}`);

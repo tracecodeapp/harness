@@ -107,6 +107,10 @@ function traceEvidence(evaluation: JudgeEvaluationResult) {
     compileFailure: evaluation.compile?.failure,
     cases: evaluation.cases.map((item) => ({
       status: item.status,
+      caseId: item.caseId,
+      hasLearnerEvent: (item.trace as { events?: Array<{ kind: string; line?: number; text?: string }> } | undefined)
+        ?.events?.some(({ kind, line }) => ['line', 'write', 'return', 'stdout'].includes(kind) &&
+          Number.isInteger(line) && line! > 0) ?? false,
       verdict: item.verdict.kind,
       value: item.value,
       failure: item.failure,
@@ -426,7 +430,23 @@ export async function untraced(id: string, target: 'fresh' | 'shared' | 'ios', f
   }
 }
 
-export async function history(
+export async function history(...args: Parameters<typeof runHistory>) {
+  const transport: Array<Record<string, unknown>> = [];
+  watchWorker = (worker, direction, envelope) => {
+    transport.push({
+      direction, generation: workerGenerations.get(worker), url: workerUrls.get(worker),
+      id: envelope.id, type: envelope.type, phase: envelope.payload?.phase, stage: envelope.payload?.stage,
+    });
+  };
+  try {
+    const result = await runHistory(...args);
+    return { ...result, transport };
+  } finally {
+    watchWorker = undefined;
+  }
+}
+
+async function runHistory(
   kind: 'interactive' | 'all' | 'trace-limit' | 'runaway' | 'compile-failure' |
     'refused' | 'disposed' | 'abandoned' | 'module-mutation' | 'changed-recursion-limit' | 'first-drawing',
   id?: string,
@@ -461,6 +481,14 @@ export async function history(
     };
   }
   const caseIds = traced.plan.cases.map((item) => item.id);
+  const hasRows = (result: ReturnType<typeof traceEvidence>, ids: string[]) =>
+    result.cases.length === ids.length && result.cases.every(({ caseId }, index) => caseId === ids[index]);
+  const selected = (result: ReturnType<typeof traceEvidence>) =>
+    hasRows(result, caseIds) && result.cases[0]?.hasLearnerEvent === true &&
+    result.cases.slice(1).every(({ hasLearnerEvent }) => !hasLearnerEvent);
+  const terminalCompile = (result: ReturnType<typeof traceEvidence>) =>
+    result.status === 'compile-failed' && result.compileFailure?.origin === 'program' &&
+    result.cases.length === 0;
   try {
     if (kind === 'interactive' || kind === 'disposed' || kind === 'abandoned') {
       const initial = await host.execute({
@@ -473,16 +501,20 @@ export async function history(
           first.status === 'compile-failed'
           ? 'Compilation failed before a continuation could exist. The traced-only failure is covered separately.'
           : undefined;
-        return { kind, initial: first, witnessed: false, excluded };
+        return { kind, initial: first, terminalCompile: terminalCompile(first), witnessed: false, excluded };
       }
       if (kind === 'abandoned') {
         currentState.abandoned[flavor] = executionId;
-        return { kind, initial: first, retained: true, witnessed: true };
+        return { kind, initial: first, retained: true, witnessed: selected(first) };
       }
       try {
         if (kind === 'interactive') {
           const continuation = await host.execute({ executionId, tracing: { caseIds: caseIds.slice(1) } });
-          return { kind, initial: first, continuation: traceEvidence(continuation.evaluation), witnessed: true };
+          const next = traceEvidence(continuation.evaluation);
+          const sameHandle = !continuation.executionId || continuation.executionId === executionId;
+          return { kind, initial: first, continuation: next, sameHandle,
+            witnessed: selected(first) && sameHandle && hasRows(next, caseIds.slice(1)) &&
+              next.cases.length > 0 && next.cases.every(({ hasLearnerEvent }) => hasLearnerEvent) };
         }
       } finally {
         await host.disposeExecution(executionId);
@@ -492,7 +524,7 @@ export async function history(
         return { kind, initial: first, witnessed: false };
       } catch (error) {
         const rejection = errorText(error);
-        return { kind, initial: first, rejection, witnessed: /disposed/i.test(rejection.message) };
+        return { kind, initial: first, rejection, witnessed: selected(first) && /disposed/i.test(rejection.message) };
       }
     }
     if (kind === 'refused') {
@@ -501,7 +533,8 @@ export async function history(
         return { kind, witnessed: false };
       } catch (error) {
         const rejection = errorText(error);
-        return { kind, rejection, witnessed: /unknown|missing/i.test(rejection.message) };
+        return { kind, rejection, witnessed: false,
+          requestRejected: /unknown|missing/i.test(rejection.message) };
       }
     }
     // TraceCC reports the stored-event cutoff in Wasm, but the named-batch
@@ -529,13 +562,17 @@ export async function history(
     const tracedFailure = result.cases.some((item) => item.failure?.origin === 'program' || item.failure?.origin === 'limit');
     const tracedCompileFailure = id === 'cpp-trace-compile' && result.status === 'compile-failed' &&
       result.compileFailure?.origin === 'program';
-    const witnessed = kind === 'compile-failure' ? result.status === 'compile-failed'
-      : kind === 'trace-limit' ? hasLimit(traceLimits) || cppSoftCutoff
-      : kind === 'runaway' ? hasLimit(runawayLimits)
-      : kind === 'all' ? result.cases.some((item) => (item.traceSteps ?? 0) > 0) || tracedCompileFailure ||
-        (tracedFailure && (id === 'runtime-error' || id === 'recursive-limit'))
-      : kind === 'first-drawing' ? result.cases.some((item) => (item.traceSteps ?? 0) > 0)
-      : result.cases.some((item) => item.status === 'completed');
+    const witnessed = kind === 'compile-failure' ? terminalCompile(result)
+      : kind === 'trace-limit' ? selected(result) && (hasLimit(traceLimits) || cppSoftCutoff)
+      : kind === 'runaway' ? hasRows(result, caseIds) && result.cases[0]?.failure?.origin === 'limit' &&
+        runawayLimits.has(result.cases[0].failure.reason)
+      : kind === 'all' || kind === 'first-drawing'
+        ? (hasRows(result, caseIds) && result.cases.every(({ hasLearnerEvent }) => hasLearnerEvent)) ||
+          (kind === 'all' && (tracedCompileFailure ||
+            (tracedFailure && hasRows(result, caseIds) && (id === 'runtime-error' || id === 'recursive-limit'))))
+      : hasRows(result, caseIds) && (kind === 'module-mutation'
+        ? result.cases[0]?.verdict === 'passed' && result.cases[0]?.value === 37
+        : result.cases[0]?.status === 'completed');
     return { kind, result, limitControl, cppSoftCutoff, witnessed };
   } catch (error) {
     return { kind, rejection: errorText(error), witnessed: false };
@@ -550,7 +587,16 @@ export async function abandonCheck(flavor: Flavor) {
   const result = await host.execute({ executionId, tracing: { caseIds: ['case-2'] } });
   await host.disposeExecution(executionId);
   delete abandoned[flavor];
-  return traceEvidence(result.evaluation);
+  const evaluation = traceEvidence(result.evaluation);
+  try {
+    await host.execute({ executionId, tracing: { caseIds: ['case-2'] } });
+    return { evaluation, witnessed: false };
+  } catch (error) {
+    const rejection = errorText(error);
+    const [row] = evaluation.cases;
+    return { evaluation, rejection, witnessed: /disposed/i.test(rejection.message) &&
+      evaluation.cases.length === 1 && row?.caseId === 'case-2' && row.hasLearnerEvent };
+  }
 }
 
 export function close() {
@@ -611,6 +657,9 @@ const executionCommands = new Set([
   'execute-prepared-runtime-program-batch', 'execute-prepared-trace',
 ]);
 const NativeWorker = globalThis.Worker;
+let workerGeneration = 0;
+const workerGenerations = new WeakMap<Worker, number>();
+const workerUrls = new WeakMap<Worker, string>();
 let watchWorker: ((worker: Worker, direction: 'out' | 'in', envelope: WorkerEnvelope) => void) | undefined;
 
 // Preserve the app's host options and observe the existing transport. The
@@ -618,6 +667,8 @@ let watchWorker: ((worker: Worker, direction: 'out' | 'in', envelope: WorkerEnve
 class ObservedWorker extends NativeWorker {
   constructor(url: string | URL, options?: WorkerOptions) {
     super(url, options);
+    workerGenerations.set(this, ++workerGeneration);
+    workerUrls.set(this, String(url));
     this.addEventListener('message', ({ data }) => {
       if (data && typeof data === 'object') watchWorker?.(this, 'in', data);
     });
@@ -744,7 +795,10 @@ export async function abortTrial(shape: AbortShape, point: AbortPoint, firstRequ
     }
     return {
       shape, point, firstRequest, trigger, command: latch?.command, settled, after, firstHostBatches,
-      witnessed: trigger !== undefined && settled.status === 'rejected' &&
+      generation: latch && workerGenerations.get(latch.worker),
+      workerUrl: latch && workerUrls.get(latch.worker),
+      witnessed: trigger !== undefined && (point !== 'execute' || trigger.endsWith(' start')) &&
+        settled.status === 'rejected' &&
         'name' in settled && settled.name === 'AbortError',
     };
   } finally {

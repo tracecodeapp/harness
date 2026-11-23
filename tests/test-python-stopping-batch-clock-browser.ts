@@ -17,9 +17,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
-import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { runCommand } from './example-app-smoke';
+import { leafLedger } from '../scripts/stage1/leaf-ledger.mjs';
+import { bundlePythonBrowserFixture } from './fixtures/python-source-browser-bundle';
 import type { StoppingClockSample } from './fixtures/python-stopping-batch-clock-entry';
 
 const WALL_CLOCK_MS = Number(process.env.TRACECODE_STOPPING_CLOCK_WALL_MS ?? 2_000);
@@ -82,40 +82,29 @@ async function startServer(root: string) {
 }
 
 async function main(): Promise<void> {
+  const ledger = leafLedger('python-stopping-clock');
   const root = resolve('.');
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-stopping-clock-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
-    await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', 'python'], root);
-    await build({
-      absWorkingDir: root,
-      entryPoints: [join(root, 'tests/fixtures/python-stopping-batch-clock-entry.ts')],
-      outfile: join(tempRoot, 'entry.mjs'),
-      bundle: true,
-      format: 'esm',
-      platform: 'browser',
-      target: ['es2022'],
-      alias: {
-        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-      },
-      define: { 'process.env.NODE_ENV': '"production"' },
-      logLevel: 'warning',
-    });
+    await bundlePythonBrowserFixture(root, tempRoot, 'python-stopping-batch-clock-entry.ts');
     await writeFile(join(tempRoot, 'index.html'), '<!doctype html><meta charset="utf-8">\n', 'utf8');
     server = await startServer(resolve(tempRoot));
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: 'chromium', headless: true });
     try {
       const page = await browser.newPage();
+      const workerStarts: string[] = [];
+      page.on('worker', (worker) => workerStarts.push(worker.url()));
       page.setDefaultTimeout(15 * 60_000);
       page.on('pageerror', (error) => console.error(`[pageerror] ${error.message}`));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      const samples = (await page.evaluate(async (options) => {
+      const receipt = (await page.evaluate(async (options) => {
         const moduleUrl: string = '/entry.mjs';
         const module = await import(moduleUrl);
-        return module.runStoppingClock(options);
+        return { nonce: options.nonce, samples: await module.runStoppingClock(options) };
       }, {
         assetBaseUrl: '/workers',
+        nonce: ledger.nonce,
         caseCount: CASES,
         wallClockMs: WALL_CLOCK_MS,
         scenarios: [
@@ -127,8 +116,14 @@ async function main(): Promise<void> {
           { action: 'run', runawayCase: 0 },
           { action: 'submit-stop', runawayCase: 0 },
         ],
-      })) as StoppingClockSample[];
-      assert.equal(samples.length, 6);
+      })) as { nonce: string; samples: StoppingClockSample[] };
+      assert.equal(receipt.nonce, ledger.nonce);
+      assert.ok(workerStarts.some((url) => new URL(url).pathname === '/workers/python-worker.js'), 'real Python worker started');
+      ledger.checked('browser-worker');
+      const samples = receipt.samples;
+      assert.deepEqual(samples.map(({ action, runawayCase }) => [action, runawayCase]), [
+        ['run', 1], ['run', 5], ['submit-stop', 1], ['submit-stop', 5], ['run', 0], ['submit-stop', 0],
+      ]);
       for (const sample of samples) {
         const label = sample.runawayCase === 0
           ? `${sample.action} of a correct program`
@@ -139,14 +134,17 @@ async function main(): Promise<void> {
         assert.equal(sample.cases.length, CASES, label);
         sample.cases.forEach((testCase, index) => {
           const caseNumber = index + 1;
+          assert.equal(testCase.id ?? testCase.caseId, `case-${caseNumber}`);
           if (sample.runawayCase === 0 || caseNumber < sample.runawayCase) {
             assert.equal(testCase.status, 'completed', `${label}: case ${caseNumber} keeps its result`);
+            assert.equal(testCase.value, -1, label);
           } else if (caseNumber === sample.runawayCase) {
             assert.equal(testCase.status, 'timed-out', `${label}: the looping case`);
             assert.equal(testCase.failure?.reason, 'client-timeout', `${label}: the looping case`);
           } else {
             assert.equal(testCase.status, 'not-run', `${label}: case ${caseNumber}`);
           }
+          ledger.checked(`${sample.action}/${sample.runawayCase}/case-${caseNumber}`);
         });
         assert.ok(
           sample.ms < VERDICT_BOUND_MS,
@@ -160,6 +158,7 @@ async function main(): Promise<void> {
     await server?.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
+  ledger.done();
 }
 
 test('Python Run stops a never-ending case on one per-case clock in a real worker', main);

@@ -54,6 +54,7 @@ function summarize(evaluation: any) {
     id: testCase.caseId ?? testCase.id,
     status: testCase.status,
     verdict: testCase.verdict?.kind,
+    value: testCase.value,
     failure: testCase.failure,
     runMs: testCase.timings?.runMs,
   })));

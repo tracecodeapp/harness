@@ -1,3 +1,4 @@
+import { withPythonScriptFile } from '../fixtures/python-script-file';
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -111,7 +112,7 @@ function runPythonAsyncLikePyodide(code: string): string {
     '\n__tracecode_pyodide_result = json.dumps({\n$1\n})\nprint(__tracecode_pyodide_result)'
   );
   script = script.replace(/\n(_json_out)\s*$/, '\nprint($1)');
-  return execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trimEnd();
+  return withPythonScriptFile(script, (path) => execFileSync('python3', [path], { encoding: 'utf8' })).trimEnd();
 }
 
 function buildRuntimeDeps(): RuntimeDeps {

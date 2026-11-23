@@ -1,0 +1,1166 @@
+{
+  "test:test-suite-runner": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-test-suite-runner.ts",
+      "leaves": [
+        "tests/test-test-suite-runner.ts"
+      ]
+    }
+  ],
+  "test:runtime-info-sync": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts --check",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-open-source-info.ts --check",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-open-source-info.ts",
+      "leaves": [
+        "tests/test-runtime-open-source-info.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-notices.ts",
+      "leaves": [
+        "tests/test-runtime-notices.ts"
+      ]
+    }
+  ],
+  "test:runtime-assets-lock": [
+    {
+      "directory": ".",
+      "command": "node --import tsx scripts/generate-runtime-assets-lock.mjs --check",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node tests/test-runtime-assets-lock.mjs",
+      "leaves": [
+        "tests/test-runtime-assets-lock.mjs"
+      ]
+    }
+  ],
+  "test:kernel-policy-sync": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts --check",
+      "leaves": []
+    }
+  ],
+  "test:typescript-project-libs-sync": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts --check",
+      "leaves": []
+    }
+  ],
+  "test:python-sync": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts --check",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-harness-sync.ts",
+      "leaves": [
+        "tests/test-python-harness-sync.ts"
+      ]
+    }
+  ],
+  "test:java-sync": [
+    {
+      "directory": ".",
+      "command": "node scripts/build-java-browser-helper.mjs --check",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-harness-sync.ts",
+      "leaves": [
+        "tests/test-java-harness-sync.ts"
+      ]
+    }
+  ],
+  "test:publish-safety": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-publish-safety.ts",
+      "leaves": [
+        "tests/test-publish-safety.ts"
+      ]
+    }
+  ],
+  "test:contracts-public-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contracts-public-surface.ts",
+      "leaves": [
+        "tests/test-runtime-contracts-public-surface.ts"
+      ]
+    }
+  ],
+  "test:python-public-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-public-surface.ts",
+      "leaves": [
+        "tests/test-python-public-surface.ts"
+      ]
+    }
+  ],
+  "test:java-public-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-public-surface.ts",
+      "leaves": [
+        "tests/test-java-public-surface.ts"
+      ]
+    }
+  ],
+  "test:csharp-public-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-public-surface.ts",
+      "leaves": [
+        "tests/test-csharp-public-surface.ts"
+      ]
+    }
+  ],
+  "test:cpp-public-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-public-surface.ts",
+      "leaves": [
+        "tests/test-cpp-public-surface.ts"
+      ]
+    }
+  ],
+  "typecheck": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p tsconfig.root.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/tracekernel/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-contracts/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/judge/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-browser/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-python/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-javascript/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-java/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-csharp/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-cpp/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-native/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p packages/runtime-sql/tsconfig.json --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsc -p tsconfig.tests.json --noEmit",
+      "leaves": []
+    }
+  ],
+  "test:js-runtime": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-runtime.ts",
+      "leaves": [
+        "tests/test-javascript-runtime.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-worker-lifecycle.ts",
+      "leaves": [
+        "tests/test-javascript-worker-lifecycle.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-authority-browser.ts",
+      "leaves": [
+        "tests/test-javascript-authority-browser.ts"
+      ]
+    }
+  ],
+  "test:cpp-rewriter": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-rewriter.ts",
+      "leaves": [
+        "tests/test-cpp-rewriter.ts"
+      ]
+    }
+  ],
+  "test:trace-adapters": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-adapters.ts",
+      "leaves": [
+        "tests/test-trace-adapters.ts"
+      ]
+    }
+  ],
+  "test:sql-trace": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-trace.ts",
+      "leaves": [
+        "tests/test-sql-trace.ts"
+      ]
+    }
+  ],
+  "test:sql-trace-fixtures": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-trace-fixtures.ts",
+      "leaves": [
+        "tests/test-sql-trace-fixtures.ts"
+      ]
+    }
+  ],
+  "test:runtime-contract": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-contract.ts",
+      "leaves": [
+        "tests/test-runtime-contract.ts"
+      ]
+    }
+  ],
+  "test:judge": [
+    {
+      "directory": "packages/judge",
+      "command": "tsx --tsconfig tsconfig.json --test tests/*.test.ts",
+      "leaves": [
+        "packages/judge/tests/algorithm.test.ts",
+        "packages/judge/tests/judge.test.ts",
+        "packages/judge/tests/project-evaluators.test.ts",
+        "packages/judge/tests/project.test.ts"
+      ]
+    }
+  ],
+  "test:tracekernel-capabilities": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-controlled-runtime.ts",
+      "leaves": [
+        "tests/test-tracekernel-controlled-runtime.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-process-revocation.ts",
+      "leaves": [
+        "tests/test-tracekernel-process-revocation.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-revoked-delivery.ts",
+      "leaves": [
+        "tests/test-tracekernel-revoked-delivery.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-final-diff-publication.ts",
+      "leaves": [
+        "tests/test-tracekernel-final-diff-publication.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-stdin-revocation.ts",
+      "leaves": [
+        "tests/test-tracekernel-stdin-revocation.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "node tests/test-tracekernel-await-injection.mjs",
+      "leaves": [
+        "tests/test-tracekernel-await-injection.mjs"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-workspace-write-authority.ts",
+      "leaves": [
+        "tests/test-tracekernel-workspace-write-authority.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-readonly-commit.ts",
+      "leaves": [
+        "tests/test-tracekernel-readonly-commit.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-journal-boundaries.ts",
+      "leaves": [
+        "tests/test-tracekernel-journal-boundaries.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-runner-authority.ts",
+      "leaves": [
+        "tests/test-tracekernel-runner-authority.ts"
+      ]
+    }
+  ],
+  "test:terminal-executable-restoration": [
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-terminal-executable-restoration.ts",
+      "leaves": [
+        "tests/test-terminal-executable-restoration.ts"
+      ]
+    }
+  ],
+  "test:runtime-execution-judge": [
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-runtime-execution-judge.ts",
+      "leaves": [
+        "tests/test-runtime-execution-judge.ts"
+      ]
+    }
+  ],
+  "test:javascript-trace-compile": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile.ts",
+      "leaves": [
+        "tests/test-javascript-trace-compile.ts"
+      ]
+    }
+  ],
+  "test:prepared-provider-release-gate": [
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-prepared-provider-release-gate.ts",
+      "leaves": [
+        "tests/test-prepared-provider-release-gate.ts"
+      ]
+    }
+  ],
+  "test:native-harness": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-native-harness.ts",
+      "leaves": [
+        "tests/test-native-harness.ts"
+      ]
+    }
+  ],
+  "test:standalone-boundary": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-standalone-boundary.ts",
+      "leaves": [
+        "tests/test-standalone-boundary.ts"
+      ]
+    }
+  ],
+  "test:runtime-trace": [
+    {
+      "directory": ".",
+      "command": "TRACECODE_STRICT_RAW_EMISSION_PARITY=1 TRACECODE_RUNTIME_TRACE_LANGUAGES=python,javascript,typescript,java,csharp pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-trace-fixtures.ts",
+      "leaves": [
+        "tests/test-runtime-trace-fixtures.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-raw-emission-contract.ts",
+      "leaves": [
+        "tests/test-runtime-raw-emission-contract.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/report-runtime-trace-known-gaps.ts",
+      "leaves": [
+        "tests/report-runtime-trace-known-gaps.ts"
+      ]
+    }
+  ],
+  "test:tracecc": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-runtime-assets.ts",
+      "leaves": [
+        "tests/test-tracecc-runtime-assets.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-compiler-service.ts",
+      "leaves": [
+        "tests/test-tracecc-compiler-service.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-tracecc-client-contract.ts",
+      "leaves": [
+        "tests/test-cpp-tracecc-client-contract.ts"
+      ]
+    }
+  ],
+  "test:java-runtime": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-runtime.ts",
+      "leaves": [
+        "tests/test-java-runtime.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-filesystem.ts",
+      "leaves": [
+        "tests/test-java-project-filesystem.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-java-jar-manifest.ts",
+      "leaves": [
+        "tests/test-java-jar-manifest.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-project-provider.ts",
+      "leaves": [
+        "tests/test-java-project-provider.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-java-prepared-provider.ts tests/test-java-algorithm-isolation-classifier.ts",
+      "leaves": [
+        "tests/test-java-prepared-provider.ts",
+        "tests/test-java-algorithm-isolation-classifier.ts"
+      ]
+    }
+  ],
+  "test:java-prepared-provider:browser": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-prepared-provider-browser.ts",
+      "leaves": [
+        "tests/test-java-prepared-provider-browser.ts"
+      ]
+    }
+  ],
+  "test:csharp-runtime": [
+    {
+      "directory": ".",
+      "command": "node --test tests/test-traceclr-algorithm-profile.mjs tests/test-traceclr-profile-policy.mjs",
+      "leaves": [
+        "tests/test-traceclr-algorithm-profile.mjs",
+        "tests/test-traceclr-profile-policy.mjs"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "node --import tsx tests/test-traceclr-wire-codec.ts",
+      "leaves": [
+        "tests/test-traceclr-wire-codec.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/validate-csharp-runtime-role-assets.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-csharp-role-artifacts.ts tests/test-csharp-managed-assembly-packs.ts",
+      "leaves": [
+        "tests/test-csharp-role-artifacts.ts",
+        "tests/test-csharp-managed-assembly-packs.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-runtime.ts",
+      "leaves": [
+        "tests/test-csharp-runtime.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-csharp-prepared-provider.ts",
+      "leaves": [
+        "tests/test-csharp-prepared-provider.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-project-fs-parity.ts",
+      "leaves": [
+        "tests/test-csharp-project-fs-parity.ts"
+      ]
+    }
+  ],
+  "test:csharp-worker-browser": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/csharp-role-artifacts.ts materialize",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-client-http.ts",
+      "leaves": [
+        "tests/test-csharp-worker-client-http.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-browser.ts",
+      "leaves": [
+        "tests/test-csharp-worker-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-worker-lifecycle-browser.ts",
+      "leaves": [
+        "tests/test-csharp-worker-lifecycle-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-prepared-boundary-browser.ts",
+      "leaves": [
+        "tests/test-csharp-prepared-boundary-browser.ts"
+      ]
+    }
+  ],
+  "test:project": [
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-workspace-runtime-chaining.ts",
+      "leaves": [
+        "tests/test-workspace-runtime-chaining.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx tests/test-terminal-error-provenance.ts",
+      "leaves": [
+        "tests/test-terminal-error-provenance.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-workspace.ts",
+      "leaves": [
+        "tests/test-project-workspace.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-journal.ts",
+      "leaves": [
+        "tests/test-tracekernel-journal.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-hardening.ts",
+      "leaves": [
+        "tests/test-tracekernel-hardening.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-process-resource-limits.ts",
+      "leaves": [
+        "tests/test-process-resource-limits.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-external-http.ts",
+      "leaves": [
+        "tests/test-runtime-external-http.ts"
+      ]
+    }
+  ],
+  "test:python-runtime": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime.ts",
+      "leaves": [
+        "tests/test-python-runtime.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-trace-cutoff-guard.ts",
+      "leaves": [
+        "tests/test-python-trace-cutoff-guard.ts"
+      ]
+    }
+  ],
+  "test:python-default-names": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-default-names.ts",
+      "leaves": [
+        "tests/test-python-default-names.ts"
+      ]
+    }
+  ],
+  "test:python-learner-exception-stage": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-learner-exception-stage.ts",
+      "leaves": [
+        "tests/test-python-learner-exception-stage.ts"
+      ]
+    }
+  ],
+  "test:python-prepared-provider": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-runtime-image.ts",
+      "leaves": [
+        "tests/test-python-runtime-image.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider.ts",
+      "leaves": [
+        "tests/test-python-prepared-provider.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-stopping-batch-clock.ts",
+      "leaves": [
+        "tests/test-python-stopping-batch-clock.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-fast-batch-stop-decision.ts",
+      "leaves": [
+        "tests/test-python-fast-batch-stop-decision.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-trace-result-output.ts",
+      "leaves": [
+        "tests/test-python-trace-result-output.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-run-judged-value.ts",
+      "leaves": [
+        "tests/test-python-run-judged-value.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-batch-case-started-order.ts",
+      "leaves": [
+        "tests/test-python-batch-case-started-order.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-on-demand-tracing.ts",
+      "leaves": [
+        "tests/test-python-on-demand-tracing.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-prepared-provider-browser.ts",
+      "leaves": [
+        "tests/test-python-prepared-provider-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-stopping-batch-clock-browser.ts",
+      "leaves": [
+        "tests/test-python-stopping-batch-clock-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-trace-cutoff-guard-browser.ts",
+      "leaves": [
+        "tests/test-python-trace-cutoff-guard-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-untraced-line-guard-browser.ts",
+      "leaves": [
+        "tests/test-python-untraced-line-guard-browser.ts"
+      ]
+    }
+  ],
+  "test:python-browser-worker": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-browser-worker.ts",
+      "leaves": [
+        "tests/test-python-browser-worker.ts"
+      ]
+    }
+  ],
+  "test:javascript-trace-compile-browser": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile-browser.ts",
+      "leaves": [
+        "tests/test-javascript-trace-compile-browser.ts"
+      ]
+    }
+  ],
+  "test:python-worker-client-http": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-worker-client-http.ts",
+      "leaves": [
+        "tests/test-python-worker-client-http.ts"
+      ]
+    }
+  ],
+  "test:sql-browser-example": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-browser-example.ts",
+      "leaves": [
+        "tests/test-sql-browser-example.ts"
+      ]
+    }
+  ],
+  "build": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-language-info.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-python-harness-artifacts.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-kernel-policy-classic.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-typescript-project-libs.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec esbuild packages/runtime-javascript/src/project-browser-worker.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/javascript/javascript-project-worker.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/normalize-generated-worker-paths.mjs workers/javascript/javascript-project-worker.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/build-javascript-ses-worker.mjs",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/normalize-generated-worker-paths.mjs workers/javascript/javascript-ses-algorithm-worker.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec esbuild packages/runtime-java/src/tracekernel-syscall-client-worker.ts --bundle --format=iife --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-syscall-client.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/normalize-generated-worker-paths.mjs workers/shared/tracekernel-syscall-client.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec esbuild packages/runtime-java/src/tracekernel-local-java-host.ts --bundle --format=esm --platform=browser --target=es2022 --outfile=workers/shared/tracekernel-local-java-host.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/normalize-generated-worker-paths.mjs workers/shared/tracekernel-local-java-host.js",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/build-java-browser-helper.mjs",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/sync-language-package-assets.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node --import tsx scripts/generate-runtime-assets-lock.mjs",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/generate-runtime-open-source-info.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsup --config tsup.tracekernel.config.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsup --config tsup.runtime-contracts.config.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsup --config tsup.browser-host.config.ts",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsup",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "node scripts/rewrite-root-declaration-imports.mjs",
+      "leaves": []
+    },
+    {
+      "directory": "packages/judge",
+      "command": "tsup --config tsup.config.ts",
+      "leaves": []
+    }
+  ],
+  "test:cpp-prepared-lifecycle": [
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-cpp-compiler-lifecycle.ts",
+      "leaves": [
+        "tests/test-cpp-compiler-lifecycle.ts"
+      ]
+    }
+  ],
+  "test:tracecc-browser": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracecc-browser-runtime.ts",
+      "leaves": [
+        "tests/test-tracecc-browser-runtime.ts"
+      ]
+    }
+  ],
+  "test:learner-failure-matrix": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json scripts/csharp-role-artifacts.ts materialize",
+      "leaves": []
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-learner-failure-matrix.ts",
+      "leaves": [
+        "tests/test-learner-failure-matrix.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-lost-worker-provider-origin-browser.ts",
+      "leaves": [
+        "tests/test-lost-worker-provider-origin-browser.ts"
+      ]
+    }
+  ],
+  "test:workspace-authority-browser": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-tracekernel-readonly-browser.ts",
+      "leaves": [
+        "tests/test-tracekernel-readonly-browser.ts"
+      ]
+    }
+  ],
+  "test:browser-runtime-host": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-host-artifact-cache.ts",
+      "leaves": [
+        "tests/test-host-artifact-cache.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-session-core.ts",
+      "leaves": [
+        "tests/test-worker-session-core.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-startup-failure.ts",
+      "leaves": [
+        "tests/test-worker-startup-failure.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-worker-startup-failure-browser.ts",
+      "leaves": [
+        "tests/test-worker-startup-failure-browser.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-provider-registry.ts",
+      "leaves": [
+        "tests/test-browser-provider-registry.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-browser-worker-lifecycle-policy.ts",
+      "leaves": [
+        "tests/test-browser-worker-lifecycle-policy.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-host.ts",
+      "leaves": [
+        "tests/test-browser-runtime-host.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-execution-host.ts",
+      "leaves": [
+        "tests/test-browser-execution-host.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-assets.ts",
+      "leaves": [
+        "tests/test-browser-runtime-assets.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-asset-plumbing.ts",
+      "leaves": [
+        "tests/test-browser-runtime-asset-plumbing.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-runtime-environment.ts",
+      "leaves": [
+        "tests/test-browser-runtime-environment.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-trace-event-transport.ts",
+      "leaves": [
+        "tests/test-browser-trace-event-transport.ts"
+      ]
+    },
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-runtime-authority-lockdown.ts",
+      "leaves": [
+        "tests/test-runtime-authority-lockdown.ts"
+      ]
+    }
+  ],
+  "test:java-example-app-packaged": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-example-app-packaged.ts",
+      "leaves": [
+        "tests/test-java-example-app-packaged.ts"
+      ]
+    }
+  ],
+  "test:example-app-packaged": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app-packaged.ts",
+      "leaves": [
+        "tests/test-example-app-packaged.ts"
+      ]
+    }
+  ],
+  "test:java-example-app": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-java-example-app.ts",
+      "leaves": [
+        "tests/test-java-example-app.ts"
+      ]
+    }
+  ],
+  "test:project-ide-example": [
+    {
+      "directory": "examples/project-ide",
+      "command": "tsc --noEmit",
+      "leaves": []
+    },
+    {
+      "directory": "examples/project-ide",
+      "command": "node ../../dist/cli.cjs sync-assets public/workers",
+      "leaves": []
+    },
+    {
+      "directory": "examples/project-ide",
+      "command": "vite build",
+      "leaves": []
+    }
+  ],
+  "test:project-terminal-example": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-project-terminal-example.ts",
+      "leaves": [
+        "tests/test-project-terminal-example.ts"
+      ]
+    }
+  ],
+  "test:example-app": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-example-app.ts",
+      "leaves": [
+        "tests/test-example-app.ts"
+      ]
+    }
+  ],
+  "test:packaged-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-packaged-surface.ts",
+      "leaves": [
+        "tests/test-packaged-surface.ts"
+      ]
+    }
+  ],
+  "test:language-packages": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-language-package-surface.ts",
+      "leaves": [
+        "tests/test-language-package-surface.ts"
+      ]
+    }
+  ],
+  "test:sql-package-surface": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-sql-package-surface.ts",
+      "leaves": [
+        "tests/test-sql-package-surface.ts"
+      ]
+    }
+  ],
+  "test:smoke": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-harness-workspace-smoke.ts",
+      "leaves": [
+        "tests/test-harness-workspace-smoke.ts"
+      ]
+    }
+  ],
+  "test:asset-sync": [
+    {
+      "directory": ".",
+      "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-asset-sync.ts",
+      "leaves": [
+        "tests/test-asset-sync.ts"
+      ]
+    }
+  ]
+}

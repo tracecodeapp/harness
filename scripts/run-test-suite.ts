@@ -5,6 +5,7 @@ import { availableParallelism } from 'node:os';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
+import { createSuiteFloor } from './stage1/suite-floor.mjs';
 
 export type TestProfile = 'all' | 'ci';
 
@@ -379,6 +380,7 @@ export async function executePackageScript(
     timeoutMs?: number;
     clock?: ExecutionClock;
     onOutput?: (chunk: string) => void;
+    env?: NodeJS.ProcessEnv;
     spawnProcess?: typeof spawn;
   } = {}
 ): Promise<TaskResult> {
@@ -389,7 +391,7 @@ export async function executePackageScript(
   console.log(`START ${entry.script} (deadline ${formatDuration(timeoutMs)})`);
   const child = (options.spawnProcess ?? spawn)(options.command ?? (process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'), options.args ?? ['run', entry.script], {
     cwd,
-    env: process.env,
+    env: options.env ?? process.env,
     detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -527,6 +529,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  const floorDirectory = process.env.TRACECODE_SUITE_FLOOR_DIR;
+  const floor = floorDirectory ? await createSuiteFloor(
+    cwd, floorDirectory, phases.flatMap(({ tasks }) => tasks.map(({ script }) => script)),
+    profile === 'all' && !selection.from && !selection.only,
+  ) : undefined;
   const suiteStartedAt = performance.now();
   const results: TaskResult[] = [];
   const controller = new AbortController();
@@ -545,7 +552,18 @@ async function main(): Promise<void> {
         runTask: async (entry, signal) => {
           const startedAt = performance.now();
           try {
-            return await executePackageScript(cwd, entry, signal);
+            const receipt = await floor?.start(entry.script);
+            let tap = '';
+            try {
+              return await executePackageScript(cwd, entry, signal, {
+                env: receipt?.env,
+                onOutput: receipt ? (chunk) => {
+                  tap += chunk;
+                } : undefined,
+              });
+            } finally {
+              if (receipt) await floor?.finish(entry.script, receipt, tap);
+            }
           } catch (error) {
             if (!keepGoing) throw error;
             const normalized = error instanceof Error ? error : new Error(String(error));
@@ -560,7 +578,7 @@ async function main(): Promise<void> {
         },
       });
       results.push(...phaseResults);
-      if (phaseResults.some((result) => result.error)) {
+      if (phaseResults.some((result) => result.error) && (!floor || phase.id === 'build')) {
         console.error(`\nStopping after failed phase ${phase.id}; later phases may depend on it.`);
         break;
       }
@@ -571,9 +589,10 @@ async function main(): Promise<void> {
       console.log(`  ${formatDuration(result.durationMs).padStart(8)}  ${result.task.script}${result.error ? ' [failed]' : ''}`);
     }
     const failures = results.filter((result) => result.error);
-    if (failures.length > 0) {
+    const floorFailure = await floor?.complete(results.map(({ task }) => task.script));
+    if (failures.length > 0 || floorFailure) {
       throw new Error(
-        `${failures.length} test task(s) failed:\n${failures.map((result) => `- ${result.task.script}: ${result.error!.message}`).join('\n')}`
+        `${failures.length} test task(s) failed:\n${failures.map((result) => `- ${result.task.script}: ${result.error!.message}`).join('\n')}${floorFailure ? '\n' + floorFailure : ''}`
       );
     }
     console.log(`\nPASS: ${profile} test profile (${formatDuration(performance.now() - suiteStartedAt)})`);

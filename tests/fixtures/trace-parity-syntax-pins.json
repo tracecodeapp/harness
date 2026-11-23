@@ -1,0 +1,890 @@
+{
+  "baseline": "a86329662c91151607f6705c3420236369bfd8a9",
+  "programs": [
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "function/missing-closer",
+        "style": "function",
+        "functionName": "solve",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int solve() {\n  return 7;\n",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "driver-compile",
+            "message": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated.",
+              "code": "driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: function definition is not allowed here\nerror: expected '}'\nsolution.cpp:1:13: note: to match this '{'\n    1 | int solve() {\n      |             ^\n2 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "solution-method/class-method",
+        "style": "solution-method",
+        "functionName": "solve",
+        "executionStyle": "solution-method",
+        "expectation": "compile-error",
+        "code": "class Solution {\npublic:\n  int solve() {\n    return 1 +;\n  }\n};",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "solution.cpp:4:15: error: expected expression\n    4 |     return 1 +;\n      |               ^\n1 error generated.",
+            "line": 4
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "solution.cpp:4:15: error: expected expression\n    4 |     return 1 +;\n      |               ^\n1 error generated.",
+              "code": "compile",
+              "source": "cpp",
+              "line": 4
+            }
+          ],
+          "stdout": "",
+          "stderr": "solution.cpp:4:15: error: expected expression\n    4 |     return 1 +;\n      |               ^\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "solution.cpp:4: error: expected expression\n1 error generated.",
+            "line": 4
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "solution.cpp:4: error: expected expression\n1 error generated.",
+              "code": "compile",
+              "source": "cpp",
+              "line": 4
+            }
+          ],
+          "stdout": "",
+          "stderr": "solution.cpp:4: error: expected expression\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "script/missing-closer",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int result = 7;\nif (true) {\n  result = 7;",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "driver-compile",
+            "message": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated.",
+              "code": "driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: function definition is not allowed here\nerror: expected '}'\n2 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "script/extra-closer",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int result = 7;\n}",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "driver-compile",
+            "message": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated.",
+              "code": "driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: expected unqualified-id\nerror: extraneous closing brace ('}')\nerror: variable has incomplete type 'void'\n3 errors generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "script/class-method",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "class BrokenMethod {\npublic:\n  int check() { return 1 +; }\n};\n\nint result = 7;",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "solution.cpp:3:27: error: expected expression\n    3 |   int check() { return 1 +; }\n      |                           ^\n1 error generated.",
+            "line": 3
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "solution.cpp:3:27: error: expected expression\n    3 |   int check() { return 1 +; }\n      |                           ^\n1 error generated.",
+              "code": "compile",
+              "source": "cpp",
+              "line": 3
+            }
+          ],
+          "stdout": "",
+          "stderr": "solution.cpp:3:27: error: expected expression\n    3 |   int check() { return 1 +; }\n      |                           ^\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: expected expression\n1 error generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: expected expression\n1 error generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: expected expression\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "script/external-helper",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "auto brokenHelper = []() {\n  int value = ;\n  return value;\n};\n\nint result = 7;",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "solution.cpp:2:15: error: expected expression\n    2 |   int value = ;\n      |               ^\n1 error generated.",
+            "line": 2
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "solution.cpp:2:15: error: expected expression\n    2 |   int value = ;\n      |               ^\n1 error generated.",
+              "code": "compile",
+              "source": "cpp",
+              "line": 2
+            }
+          ],
+          "stdout": "",
+          "stderr": "solution.cpp:2:15: error: expected expression\n    2 |   int value = ;\n      |               ^\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: expected expression\n1 error generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: expected expression\n1 error generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: expected expression\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "cpp",
+        "id": "script/non-parse",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int bad = missingIdentifier;\nint result = 7;",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "solution.cpp:1:11: error: use of undeclared identifier 'missingIdentifier'\n    1 | int bad = missingIdentifier;\n      |           ^~~~~~~~~~~~~~~~~\n1 error generated.",
+            "line": 1
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "solution.cpp:1:11: error: use of undeclared identifier 'missingIdentifier'\n    1 | int bad = missingIdentifier;\n      |           ^~~~~~~~~~~~~~~~~\n1 error generated.",
+              "code": "compile",
+              "source": "cpp",
+              "line": 1
+            }
+          ],
+          "stdout": "",
+          "stderr": "solution.cpp:1:11: error: use of undeclared identifier 'missingIdentifier'\n    1 | int bad = missingIdentifier;\n      |           ^~~~~~~~~~~~~~~~~\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "trace-driver-compile",
+            "message": "error: use of undeclared identifier 'missingIdentifier'\n1 error generated."
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "error: use of undeclared identifier 'missingIdentifier'\n1 error generated.",
+              "code": "trace-driver-compile",
+              "source": "cpp"
+            }
+          ],
+          "stdout": "",
+          "stderr": "error: use of undeclared identifier 'missingIdentifier'\n1 error generated.\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "csharp",
+        "id": "function/missing-closer",
+        "style": "function",
+        "functionName": "Solve",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "public class Solution {\n  public int Solve() {\n    return 7;\n  }\n",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 4
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 4
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 5
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 5
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "csharp",
+        "id": "solution-method/missing-closer",
+        "style": "solution-method",
+        "functionName": "Solve",
+        "executionStyle": "solution-method",
+        "expectation": "compile-error",
+        "code": "public class Solution {\n  public int Solve() {\n    return 7;\n  }\n",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 4
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 4
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 5
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 5
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "csharp",
+        "id": "ops-class/missing-closer",
+        "style": "ops-class",
+        "functionName": "Counter",
+        "executionStyle": "ops-class",
+        "expectation": "compile-error",
+        "code": "public class Counter {\n  public int Solve() {\n    return 7;\n  }\n",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {
+              "operations": [
+                "Counter",
+                "Solve"
+              ],
+              "arguments": [
+                [],
+                []
+              ]
+            },
+            "expected": [
+              null,
+              7
+            ]
+          },
+          {
+            "id": "continuation",
+            "input": {
+              "operations": [
+                "Counter",
+                "Solve",
+                "Solve"
+              ],
+              "arguments": [
+                [],
+                [],
+                []
+              ]
+            },
+            "expected": [
+              null,
+              7,
+              7
+            ]
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 4
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 4
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 5
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 5
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "csharp",
+        "id": "script/missing-closer",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int result = 7;\nif (true) {\n  result = 7;",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 13
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 13
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "} expected",
+            "line": 20
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "} expected",
+              "code": "compile",
+              "source": "csharp",
+              "line": 20
+            }
+          ],
+          "stdout": "",
+          "stderr": "} expected\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    },
+    {
+      "fixture": {
+        "language": "csharp",
+        "id": "script/extra-closer",
+        "style": "script",
+        "functionName": "",
+        "executionStyle": "function",
+        "expectation": "compile-error",
+        "code": "int result = 7;\n}",
+        "cases": [
+          {
+            "id": "selected",
+            "input": {},
+            "expected": 7
+          },
+          {
+            "id": "continuation",
+            "input": {},
+            "expected": 7
+          }
+        ]
+      },
+      "untraced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "Invalid token 'return' in a member declaration",
+            "line": 9
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "Invalid token 'return' in a member declaration",
+              "code": "compile",
+              "source": "csharp",
+              "line": 9
+            }
+          ],
+          "stdout": "",
+          "stderr": "Invalid token 'return' in a member declaration\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      },
+      "traced": {
+        "status": "compile-failed",
+        "compile": {
+          "status": "compile-failed",
+          "failure": {
+            "origin": "program",
+            "stage": "compile",
+            "message": "Invalid token ';' in a member declaration",
+            "line": 10
+          },
+          "diagnostics": [
+            {
+              "severity": "error",
+              "message": "Invalid token ';' in a member declaration",
+              "code": "compile",
+              "source": "csharp",
+              "line": 10
+            }
+          ],
+          "stdout": "",
+          "stderr": "Invalid token ';' in a member declaration\n"
+        },
+        "cases": {},
+        "verdict": "failed"
+      }
+    }
+  ]
+}

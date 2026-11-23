@@ -109,15 +109,10 @@ function lostWorkerProblem(observation: LostWorkerObservation): string | undefin
   if (observation.lostAfter.length === 0) {
     return 'no learner execute message was dispatched, so nothing was injected';
   }
-  if (observation.threw !== undefined) {
-    return /JudgeInfrastructureError|RuntimeProviderError/u.test(observation.threw)
-      ? undefined
-      : `threw something other than an infrastructure error: ${observation.threw}`;
-  }
-  const notProvider = observation.outcome.filter((entry) => !entry.endsWith(':provider'));
-  return notProvider.length === 0
+  const causes = observation.typedCauses ?? [];
+  return causes.length && causes.every((cause) => cause === 'provider:runtime-failure')
     ? undefined
-    : `labeled the lost worker ${JSON.stringify(observation.outcome)}`;
+    : `G3/lost-worker/typed-cause: expected provider:runtime-failure, got ${JSON.stringify(causes)}`;
 }
 
 /** A program that failed on its own stays the program's, or its limit's. */
@@ -164,6 +159,7 @@ async function main(): Promise<void> {
       ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}),
     });
     const problems: string[] = [];
+    let controlHits = 0;
     try {
       for (const language of LANGUAGES) {
         const page = await browser.newPage();
@@ -189,6 +185,14 @@ async function main(): Promise<void> {
             const problem = observation.probe === 'worker-lost-after-dispatch'
               ? lostWorkerProblem(observation)
               : learnerProblem(observation);
+            if (!problem && controlHits === 0 && observation.probe === 'worker-lost-after-dispatch') {
+              const [first, ...rest] = observation.typedCauses!;
+              assert.equal(first, 'provider:runtime-failure');
+              const red = lostWorkerProblem({ ...observation, typedCauses: ['limit:client-timeout', ...rest] });
+              assert.match(red ?? '', /^G3\/lost-worker\/typed-cause:.*limit:client-timeout/u);
+              controlHits += 1;
+              console.log(`G3/lost-worker/typed-cause mutant hit=1 at browser receipt (${language}/${observation.mode})`);
+            }
             const verdict = problem ? 'FAIL' : 'pass';
             console.log(
               `${verdict} ${language} ${observation.mode} ${observation.probe}: ` +
@@ -213,6 +217,7 @@ async function main(): Promise<void> {
     } finally {
       await browser.close();
     }
+    if (controlHits !== 1) problems.push('G3/lost-worker/control: no passing live receipt to mutate');
     if (problems.length) {
       console.error(`\n${problems.length} lost-worker check(s) failed:`);
       for (const problem of problems) console.error(`- ${problem}`);

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,17 +112,20 @@ async function main([sha, destination, ...extra]) {
     run(repo, 'python3', [join(scripts, 'tar-manifest.py'), tarball, join(output, 'tar-members.json')]);
     await verifyTarball(tarball, sha256);
     await mkdir(consumer);
+    await copyFile(tarball, join(consumer, 'candidate.tgz'));
     const dependencyVersions = JSON.parse(run(tree, 'corepack', ['pnpm', 'list', '--prod', '--depth', '0', '--json'], true))[0].dependencies;
     const overrides = Object.fromEntries(Object.entries(dependencyVersions).map(([name, { version }]) => {
       if (!/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(version)) throw new Error(`G7/pack/unpinned: ${name}@${version}`);
       return [name, version];
     }));
-    await writeFile(join(consumer, 'package.json'), JSON.stringify({
+    const consumerManifest = JSON.stringify({
       private: true,
       packageManager: 'pnpm@10.4.1',
-      dependencies: { '@tracecode/harness': `file:${tarball}` },
+      dependencies: { '@tracecode/harness': 'file:./candidate.tgz' },
       pnpm: { overrides },
-    }));
+    }, null, 2) + '\n';
+    await writeFile(join(consumer, 'package.json'), consumerManifest);
+    await writeFile(join(output, 'consumer-package.json'), consumerManifest);
     run(consumer, 'corepack', ['pnpm', 'install', '--ignore-scripts', '--no-frozen-lockfile']);
     const consumerLock = await readFile(join(consumer, 'pnpm-lock.yaml'));
     await writeFile(join(output, 'consumer-lock.yaml'), consumerLock);

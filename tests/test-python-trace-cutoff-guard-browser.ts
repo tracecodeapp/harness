@@ -19,9 +19,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
-import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { runCommand } from './example-app-smoke';
+import { leafLedger } from '../scripts/stage1/leaf-ledger.mjs';
+import { bundlePythonBrowserFixture } from './fixtures/python-source-browser-bundle';
 import type { TraceCutoffSample } from './fixtures/python-trace-cutoff-guard-entry';
 
 // Well under the 30 s per-case clock; the guard itself takes ~1-2 s.
@@ -81,44 +81,37 @@ async function startServer(root: string) {
 }
 
 async function main(): Promise<void> {
+  const ledger = leafLedger('python-trace-cutoff');
   const root = resolve('.');
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-trace-cutoff-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
-    await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', 'python'], root);
-    await build({
-      absWorkingDir: root,
-      entryPoints: [join(root, 'tests/fixtures/python-trace-cutoff-guard-entry.ts')],
-      outfile: join(tempRoot, 'entry.mjs'),
-      bundle: true,
-      format: 'esm',
-      platform: 'browser',
-      target: ['es2022'],
-      alias: {
-        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-      },
-      define: { 'process.env.NODE_ENV': '"production"' },
-      logLevel: 'warning',
-    });
+    await bundlePythonBrowserFixture(root, tempRoot, 'python-trace-cutoff-guard-entry.ts');
     await writeFile(join(tempRoot, 'index.html'), '<!doctype html><meta charset="utf-8">\n', 'utf8');
     server = await startServer(resolve(tempRoot));
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: 'chromium', headless: true });
     try {
       const page = await browser.newPage();
+      const workerStarts: string[] = [];
+      page.on('worker', (worker) => workerStarts.push(worker.url()));
       page.setDefaultTimeout(5 * 60_000);
       page.on('pageerror', (error) => console.error(`[pageerror] ${error.message}`));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
       assert.equal(await page.evaluate(() => globalThis.crossOriginIsolated), false);
-      const samples = (await page.evaluate(async (options) => {
+      const receipt = (await page.evaluate(async (options) => {
         const moduleUrl: string = '/entry.mjs';
         const module = await import(moduleUrl);
-        return module.runTraceCutoff(options);
+        return { nonce: options.nonce, samples: await module.runTraceCutoff(options) };
       }, {
         assetBaseUrl: '/workers',
+        nonce: ledger.nonce,
         programs: ['runaway', 'finishes', 'runsLong'],
-      })) as TraceCutoffSample[];
-      assert.equal(samples.length, 3);
+      })) as { nonce: string; samples: TraceCutoffSample[] };
+      assert.equal(receipt.nonce, ledger.nonce);
+      assert.ok(workerStarts.some((url) => new URL(url).pathname === '/workers/python-worker.js'), 'real Python worker started');
+      ledger.checked('browser-worker');
+      const samples = receipt.samples;
+      assert.deepEqual(samples.map(({ program }) => program), ['runaway', 'finishes', 'runsLong']);
       const [runaway, finishes, runsLong] = samples;
       for (const sample of samples) {
         console.log(`${sample.program}: verdict in ${Math.round(sample.ms)} ms`);
@@ -168,6 +161,7 @@ async function main(): Promise<void> {
         `the trace reports its budget: ${JSON.stringify(long.diagnostics)}`
       );
       for (const testCase of afterLong) assert.equal(testCase.status, 'completed');
+      for (const { program } of samples) ledger.checked(program);
     } finally {
       await browser.close();
     }
@@ -175,6 +169,7 @@ async function main(): Promise<void> {
     await server?.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
+  ledger.done();
 }
 
 test('A traced Python Run keeps its runaway guard after the trace stops recording', main);

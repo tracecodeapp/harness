@@ -1,0 +1,150 @@
+name: Stage 1 runtime qualification
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  schedule:
+    - cron: '37 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  clean-pack:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/stage1-clean-pack.yml
+    with:
+      candidate_sha: ${{ github.sha }}
+
+  syntax:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      TRACECODE_PARITY_SUITE: syntax
+      TRACECODE_PARITY_REPORT: ${{ runner.temp }}/syntax-parity.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-parity-corpus.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: syntax-parity-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.TRACECODE_PARITY_REPORT }}
+
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/test-stage1-suite-floor.mjs
+      - run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/release-diff -p test_qualify.py
+      - run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-script-file.ts
+      - run: bash scripts/stage1/prove-recorder.sh
+
+  csharp-post-pause:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm materialize:csharp-role-assets
+      - run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-stale-trace-deadline-browser.ts
+
+  host-history:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      DATA_SHA: ${{ vars.HARNESS_STAGE1_DATA_SHA }}
+      DATA_REPOSITORY: ${{ vars.HARNESS_STAGE1_DATA_REPOSITORY }}
+      TRACECODE_HOST_HISTORY_REPORT: ${{ runner.temp }}/host-history.json
+      TRACECODE_PARITY_REPORT: ${{ runner.temp }}/catalog-parity.json
+    steps:
+      - name: Require an immutable, CI-readable corpus
+        shell: bash
+        run: |
+          [[ "$DATA_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ -n "$DATA_REPOSITORY" ]]
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DATA_REPOSITORY }}
+          ref: ${{ env.DATA_SHA }}
+          path: .stage1-data
+          persist-credentials: false
+      - name: Verify pinned corpus
+        run: test "$(git -C .stage1-data rev-parse HEAD)" = "$DATA_SHA"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Verify histories
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TRACECODE_HOST_HISTORY_APP_DATA="$PWD/.stage1-data"
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            export TRACECODE_HOST_HISTORY_PROFILE=desktop
+            languages=$(git diff --name-only "$PR_BASE" HEAD | node scripts/stage1/runtime-languages.mjs)
+            bash scripts/run-untraced-host-history.sh "$languages"
+          else
+            bash scripts/run-untraced-host-history.sh
+          fi
+      - name: Compare traced catalog with pinned app data
+        if: '!cancelled() && github.event_name != ''pull_request'''
+        env:
+          TRACECODE_PARITY_CATALOG: all
+          TRACECODE_PARITY_SUITE: catalog
+        run: |
+          export TRACECODE_PARITY_CORPUS="$PWD/.stage1-data"
+          pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-parity-corpus.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage1-host-history-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.TRACECODE_HOST_HISTORY_REPORT }}
+            ${{ env.TRACECODE_PARITY_REPORT }}

@@ -8,6 +8,8 @@ import { delimiter, join } from 'node:path';
 import { dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import ts from 'typescript';
+import { leafLedger } from '../scripts/stage1/leaf-ledger.mjs';
 import { javaTraceHooksEventsToRuntimeTrace } from '../packages/runtime-contracts/src/trace-adapters/java';
 import {
   RUNTIME_WORKSPACE_DEFAULT_MAX_BYTES,
@@ -1515,6 +1517,7 @@ async function testJavaScriptInputMaterializerAvoidsTypeNameEval(): Promise<void
 }
 
 async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): Promise<void> {
+  const ledger = leafLedger('js-destructured-iterable');
   const source = await readFile(join(dirname(testDirectory), 'workers', 'javascript', 'javascript-worker.js'), 'utf8');
   const policySource = await readFile(
     join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy-classic.js'),
@@ -1552,9 +1555,17 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
     queueMicrotask,
     TextEncoder,
     TextDecoder,
+    // Allowed: the runtime policy, and the TypeScript compiler, whose parser
+    // instruments the traced program (this request has no prepared build, so
+    // the worker instruments it itself). Without the compiler the run is a
+    // provider fault and nothing is traced. Anything else still throws.
     importScripts: (...urls: string[]) => {
       if (urls.every((url) => url.includes('runtime-kernel-policy-classic.js'))) {
         vm.runInContext(policySource, context, { filename: 'runtime-kernel-policy-classic.js' });
+        return;
+      }
+      if (urls.length === 1 && urls[0] === './vendor/typescript.js') {
+        (workerScope as { ts?: unknown }).ts = ts;
         return;
       }
       throw new Error(`Unexpected importScripts in destructured iterable test: ${urls.join(',')}`);
@@ -1565,8 +1576,13 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
   assertCondition(typeof workerScope.onmessage === 'function', 'JavaScript worker should register onmessage');
 
   const id = 'destructured-iterable';
-  const token = 'destructured-iterable-token';
-  const response = new Promise<{ success?: boolean; output?: unknown; error?: string }>((resolve, reject) => {
+  const token = `destructured-iterable-${ledger.nonce}`;
+  const response = new Promise<{
+    success?: boolean;
+    output?: unknown;
+    error?: string;
+    trace?: { events?: Array<{ kind?: string; line?: number; target?: { variable?: string }; value?: unknown }> };
+  }>((resolve, reject) => {
     pending.set(id, { token, resolve: resolve as (value: unknown) => void, reject });
   });
   workerScope.onmessage?.({
@@ -1633,6 +1649,15 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
     JSON.stringify(result.output) === JSON.stringify({ total: 23, pulls: 2, first: 5, setPulls: 1 }),
     `destructured iterable tracing should not pre-consume yielded iterables: ${JSON.stringify(result.output)}`
   );
+  ledger.checked('judged-value');
+  assertCondition(
+    result.trace?.events?.some((event) =>
+      event.kind === 'write' && event.line === 18 && event.target?.variable === 'total' && event.value === 23
+    ) === true,
+    'G7/suite/js-destructured-iterable/missing-assertion/learner-assignment'
+  );
+  ledger.checked('learner-assignment');
+  ledger.done();
 }
 
 async function testJavaScriptInputHydrationIsBounded(): Promise<void> {
@@ -4256,6 +4281,10 @@ async function testBrowserJavaScriptWorkerAmbientAuthorityIsDenied(): Promise<vo
 }
 
 async function main(): Promise<void> {
+  if (process.argv.includes('--destructured-iterable')) {
+    await testJavaScriptDestructuredIterableTracingDoesNotExhaustValues();
+    return;
+  }
   await testConcurrentCommandsKeepChainLocalContext();
   await testBackgroundJobDoesNotBlockForegroundCommands();
   await testBrowserJavaScriptMainThreadExecutionRequiresTrustedOptIn();

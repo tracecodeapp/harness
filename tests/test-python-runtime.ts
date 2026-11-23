@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { withPythonScriptFile } from './fixtures/python-script-file';
 import { test } from 'node:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -3760,7 +3761,7 @@ function runPythonAsyncLikePyodide(code: string): string {
     '\n__tracecode_pyodide_result = json.dumps({\n$1\n})\nprint(__tracecode_pyodide_result)'
   );
   script = script.replace(/\n(_json_out)\s*$/, '\nprint($1)');
-  return execFileSync('python3', ['-c', script], { encoding: 'utf8' }).trimEnd();
+  return withPythonScriptFile(script, (path) => execFileSync('python3', [path], { encoding: 'utf8' })).trimEnd();
 }
 
 async function assertExecuteCodeHydratesAnnotatedCustomObjects(): Promise<void> {
@@ -3932,7 +3933,7 @@ try:
 finally:
     os.scandir = original_scandir
 `;
-  execFileSync('python3', ['-c', script], { stdio: 'pipe' });
+  withPythonScriptFile(script, (path) => execFileSync('python3', [path], { stdio: 'pipe' }));
   console.log('PASS: Python virtual scandir matches iterator contract');
 }
 
@@ -3997,7 +3998,7 @@ async function assertBlankFunctionSelectorRunsAsScriptUntraced(): Promise<void> 
       `import json as _tracecode_test_json`,
       `print(_tracecode_test_json.dumps({k: _tracecode_raw_result.get(k) for k in ('kind', 'output', 'console', 'executionError')}, default=str))`,
     ].join('\n');
-    return JSON.parse(execFileSync('python3', ['-c', driver], { encoding: 'utf8' }).trim().split('\n').pop()!);
+    return JSON.parse(withPythonScriptFile(driver, (path) => execFileSync('python3', [path], { encoding: 'utf8' })).trim().split('\n').pop()!);
   };
   const raw = await runPrepared(script, '', 'function');
   assertCondition(
@@ -4089,7 +4090,7 @@ async function assertKeylessTreeAndListNodesHaveNoneLinks(): Promise<void> {
       `import json as _tracecode_test_json`,
       `print(_tracecode_test_json.dumps({k: _tracecode_raw_result.get(k) for k in ('kind', 'output', 'executionError')}, default=str))`,
     ].join('\n');
-    return JSON.parse(execFileSync('python3', ['-c', driver], { encoding: 'utf8' }).trim().split('\n').pop()!);
+    return JSON.parse(withPythonScriptFile(driver, (path) => execFileSync('python3', [path], { encoding: 'utf8' })).trim().split('\n').pop()!);
   };
   for (const testCase of cases) {
     const direct = await runtime.executeCode(deps, testCase.code, 'solve', testCase.inputs, 'function', {});

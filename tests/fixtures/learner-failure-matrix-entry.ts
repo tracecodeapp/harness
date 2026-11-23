@@ -41,23 +41,14 @@ const COMPILE_STAGES = new Set([
   'trace-driver-compile',
   'driver-link',
 ]);
-const LIMIT_REASONS = new Set([
-  'trace-limit',
-  'trace-byte-limit',
-  'line-limit',
-  'single-line-limit',
-  'recursion-limit',
-  'memory-limit',
-  'serialization-limit',
-  'client-timeout',
-]);
 const CELL_GUARD_MS = Number((globalThis as { __MATRIX_CELL_GUARD_MS__?: number }).__MATRIX_CELL_GUARD_MS__ ?? 150_000);
 
-function classOfCode(code: string | undefined): MatrixClass {
-  if (code === 'runtime-provider-error') return 'provider';
-  if (code && COMPILE_STAGES.has(code)) return 'compile';
-  if (code && LEARNER_STAGES.has(code)) return 'runtime';
-  if (code && LIMIT_REASONS.has(code)) return 'limit';
+function classOfFailure(failure: JudgeFailureLike | undefined): MatrixClass {
+  if (failure?.origin === 'provider' || failure?.origin === 'limit') return failure.origin;
+  if (failure?.origin === 'program' && failure.stage !== undefined) {
+    if (COMPILE_STAGES.has(failure.stage)) return 'compile';
+    if (LEARNER_STAGES.has(failure.stage)) return 'runtime';
+  }
   return 'unclassified';
 }
 
@@ -65,7 +56,7 @@ function observe(
   diagnostics: readonly DiagnosticLike[],
   extra: {
     readonly status?: string;
-    readonly timedOut?: boolean;
+    readonly failure?: JudgeFailureLike;
     readonly stderr?: string;
     readonly value?: unknown;
   }
@@ -84,17 +75,15 @@ function observe(
       value: JSON.stringify(extra.value ?? null).slice(0, 80),
     };
   }
-  let klass = classOfCode(diagnostic?.code);
-  if (klass === 'unclassified' && extra.timedOut) klass = 'limit';
+  const klass = classOfFailure(extra.failure);
   return {
     class: klass,
     ...(extra.status ? { status: extra.status } : {}),
     ...(diagnostic?.code ? { code: diagnostic.code } : {}),
-    ...(klass === 'limit'
-      ? { reason: diagnostic?.code && LIMIT_REASONS.has(diagnostic.code) ? diagnostic.code : 'client-timeout' }
-      : {}),
-    message: diagnostic?.message ?? extra.stderr ?? '',
-    ...(typeof diagnostic?.line === 'number' ? { line: diagnostic.line } : {}),
+    ...(extra.failure?.reason ? { reason: extra.failure.reason } : {}),
+    origin: originText(extra.failure),
+    message: diagnostic?.message ?? extra.failure?.message ?? extra.stderr ?? '',
+    line: diagnostic?.line ?? extra.failure?.line,
   };
 }
 
@@ -102,6 +91,8 @@ type JudgeFailureLike = {
   readonly origin: string;
   readonly stage?: string;
   readonly reason?: string;
+  readonly message?: string;
+  readonly line?: number;
 };
 
 function originText(failure: JudgeFailureLike | undefined): string | undefined {
@@ -136,6 +127,7 @@ function observeEvaluation(
       ...observe(compile.diagnostics, {
         status: 'compile-failed',
         stderr: compile.stderr,
+        failure: compile.failure,
       }),
       origin: originText(compile.failure),
       conversion: conversionText(() =>
@@ -148,7 +140,7 @@ function observeEvaluation(
   return evaluation.cases.map((testCase) => ({
     ...observe(testCase.diagnostics, {
       status: testCase.status,
-      timedOut: testCase.timedOut,
+      failure: testCase.failure,
       stderr: testCase.stderr,
       value: testCase.value,
     }),
@@ -163,8 +155,9 @@ function observeEvaluation(
 
 function thrown(error: unknown): MatrixObservation {
   return {
-    class: 'provider',
+    class: isRuntimeProviderError(error) ? 'provider' : 'unclassified',
     status: 'host-rejected',
+    ...(isRuntimeProviderError(error) ? { origin: `provider:${error.reason}`, reason: error.reason } : {}),
     message: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
   };
 }

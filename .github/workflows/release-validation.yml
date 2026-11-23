@@ -1,28 +1,38 @@
 name: Release validation
 
 on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 7 * * *'
   workflow_dispatch:
     inputs:
       candidate_sha:
         description: Full immutable Harness commit SHA to validate
         required: true
         type: string
-
+      run_release_diff:
+        description: Compare the canonical candidate tarball with 0.17.1 using the configured pinned corpus and review manifest
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-validation
+  group: harness-full-suite-${{ github.event_name }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:
   full-suite:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 360
     env:
-      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha || github.sha }}
       TRACECODE_TEST_JOBS: '1'
+      TRACECODE_TEST_TASK_TIMEOUT_MS: '7200000'
+      TRACECODE_MATRIX_BROWSER_CHANNEL: chromium
     steps:
       - name: Validate immutable input
         shell: bash
@@ -106,6 +116,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export TRACECODE_SUITE_FLOOR_DIR="$RUNNER_TEMP/harness-validation/ledger"
           node --import tsx scripts/run-test-suite.ts --all --jobs=1 --keep-going 2>&1 | tee "$RUNNER_TEMP/harness-validation/full-suite.log"
       - name: Record final checkout state
         if: always()
@@ -121,3 +132,59 @@ jobs:
           name: release-validation-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}
           path: ${{ runner.temp }}/harness-validation/
           if-no-files-found: error
+
+  canonical-pack:
+    if: github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/stage1-clean-pack.yml
+    with:
+      candidate_sha: ${{ inputs.candidate_sha }}
+
+  release-diff:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_release_diff
+    needs: canonical-pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      RD_APP_DATA_SHA: ${{ vars.HARNESS_STAGE1_DATA_SHA }}
+      DATA_REPOSITORY: ${{ vars.HARNESS_STAGE1_DATA_REPOSITORY }}
+    steps:
+      - name: Require a configured immutable corpus
+        shell: bash
+        run: |
+          [[ "$RD_APP_DATA_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ -n "$DATA_REPOSITORY" ]]
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DATA_REPOSITORY }}
+          ref: ${{ env.RD_APP_DATA_SHA }}
+          path: .stage1-data
+          persist-credentials: false
+      - name: Verify the corpus SHA
+        run: test "$(git -C .stage1-data rev-parse HEAD)" = "$RD_APP_DATA_SHA"
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage1-pack-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/canonical-pack
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.4.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Compare the published and candidate packages
+        env:
+          RD_PACK_RECEIPT: ${{ runner.temp }}/canonical-pack
+        run: |
+          RD_CORPUS="$PWD/.stage1-data"           RD_MANIFEST="$PWD/.stage1-data/release-diff-manifest.json"           RD_PINS="$PWD/.stage1-data/release-diff-pins.json"           bash scripts/release-diff/host-job.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-diff-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-diff-out/

@@ -14,9 +14,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
-import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { runCommand } from './example-app-smoke';
+import { leafLedger } from '../scripts/stage1/leaf-ledger.mjs';
+import { bundlePythonBrowserFixture } from './fixtures/python-source-browser-bundle';
 import type { LineGuardSample } from './fixtures/python-untraced-line-guard-entry';
 
 // Submit's batch has one 30-second clock when the caller sets no limit; the
@@ -77,42 +77,35 @@ async function startServer(root: string) {
 }
 
 async function main(): Promise<void> {
+  const ledger = leafLedger('python-line-guard');
   const root = resolve('.');
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-line-guard-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
-    await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', 'python'], root);
-    await build({
-      absWorkingDir: root,
-      entryPoints: [join(root, 'tests/fixtures/python-untraced-line-guard-entry.ts')],
-      outfile: join(tempRoot, 'entry.mjs'),
-      bundle: true,
-      format: 'esm',
-      platform: 'browser',
-      target: ['es2022'],
-      alias: {
-        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
-      },
-      define: { 'process.env.NODE_ENV': '"production"' },
-      logLevel: 'warning',
-    });
+    await bundlePythonBrowserFixture(root, tempRoot, 'python-untraced-line-guard-entry.ts');
     await writeFile(join(tempRoot, 'index.html'), '<!doctype html><meta charset="utf-8">\n', 'utf8');
     server = await startServer(resolve(tempRoot));
-    const browser = await chromium.launch({ headless: true });
+    const browser = await chromium.launch({ channel: 'chromium', headless: true });
     try {
       const page = await browser.newPage();
+      const workerStarts: string[] = [];
+      page.on('worker', (worker) => workerStarts.push(worker.url()));
       page.setDefaultTimeout(5 * 60_000);
       page.on('pageerror', (error) => console.error(`[pageerror] ${error.message}`));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      const samples = (await page.evaluate(async (options) => {
+      const receipt = (await page.evaluate(async (options) => {
         const moduleUrl: string = '/entry.mjs';
         const module = await import(moduleUrl);
-        return module.runLineGuard(options);
-      }, { assetBaseUrl: '/workers' })) as LineGuardSample[];
-      assert.equal(samples.length, 2);
+        return { nonce: options.nonce, samples: await module.runLineGuard(options) };
+      }, { assetBaseUrl: '/workers', nonce: ledger.nonce })) as { nonce: string; samples: LineGuardSample[] };
+      assert.equal(receipt.nonce, ledger.nonce);
+      assert.ok(workerStarts.some((url) => new URL(url).pathname === '/workers/python-worker.js'), 'real Python worker started');
+      ledger.checked('browser-worker');
+      const samples = receipt.samples;
+      assert.deepEqual(samples.map(({ action }) => action), ['submit', 'run']);
       for (const sample of samples) {
         const byId = new Map(sample.cases.map((testCase) => [testCase.id, testCase]));
+        assert.deepEqual(sample.cases.map(({ id }) => id), ['heavy', 'small', 'runaway']);
         const heavy = byId.get('heavy');
         const runaway = byId.get('runaway');
         console.log(
@@ -124,6 +117,8 @@ async function main(): Promise<void> {
         assert.equal(sample.status, 'completed', sample.action);
         assert.equal(heavy?.verdict, 'passed', `${sample.action}: the heavy correct case: ${JSON.stringify(heavy)}`);
         assert.equal(byId.get('small')?.verdict, 'passed', `${sample.action}: the small case: ${JSON.stringify(byId.get('small'))}`);
+        assert.equal(heavy?.value, 79_999_800_000, sample.action);
+        assert.equal(byId.get('small')?.value, 6, sample.action);
         assert.equal(runaway?.failure?.origin, 'limit', `${sample.action}: the runaway case: ${JSON.stringify(runaway)}`);
         assert.ok(
           runaway?.failure?.reason === 'line-limit' || runaway?.failure?.reason === 'single-line-limit',
@@ -133,6 +128,7 @@ async function main(): Promise<void> {
           sample.ms < EVALUATION_BOUND_MS,
           `${sample.action}: verdict in ${Math.round(sample.ms)} ms, over ${EVALUATION_BOUND_MS} ms`
         );
+        ledger.checked(sample.action);
       }
     } finally {
       await browser.close();
@@ -141,6 +137,7 @@ async function main(): Promise<void> {
     await server?.close();
     await rm(tempRoot, { recursive: true, force: true });
   }
+  ledger.done();
 }
 
 test('Untraced Python finishes a heavy correct program and still stops a runaway', main);

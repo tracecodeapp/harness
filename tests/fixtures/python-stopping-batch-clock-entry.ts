@@ -54,7 +54,7 @@ async function bundle(trace: boolean, caseCount: number, runawayCase: number, wa
 function summarize(evaluation: any) {
   return (evaluation?.cases ?? []).map((testCase: any) =>
     testCase.status === 'not-run' || testCase.status === 'completed'
-      ? { id: testCase.id ?? testCase.caseId, status: testCase.status }
+      ? { id: testCase.id ?? testCase.caseId, status: testCase.status, value: testCase.value }
       : JSON.parse(JSON.stringify({ ...testCase, trace: undefined }))
   );
 }
