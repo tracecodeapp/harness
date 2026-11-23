@@ -3056,6 +3056,15 @@ def _custom_print(*args, **kwargs):
 
 print = _custom_print
 
+# The returned value is judged, so it is serialized exactly as Submit
+# serializes it: the execute serializer with its item, node and byte limits,
+# where going over a limit is the case's serialization-limit. The snapshot
+# serializer below caps values for display and tags node ids, so it never
+# serializes the returned value. Defined first: the snapshot serializer then
+# rebinds _serialize and its own limits for snapshots.
+${deps.PYTHON_EXECUTE_SERIALIZE_FUNCTION_SNIPPET}
+__tracecode_judged_serialize = _serialize
+
 ${deps.PYTHON_TRACE_SERIALIZE_FUNCTION_SNIPPET}
 
 _call_stack = []
@@ -7080,6 +7089,21 @@ def __tracecode_compact_last_step(kind=None):
         return compact
     return None
 
+__tracecode_result_serialization_limit = False
+try:
+    __tracecode_result_json = _tracecode_trusted_json_encode(
+        __tracecode_judged_serialize(
+            _result,
+            tree_node_root=_globals_dict.get('TreeNode', TreeNode),
+            list_node_root=_globals_dict.get('ListNode', ListNode),
+        ),
+        max_bytes=_MAX_SERIALIZED_BYTES,
+        limit_type=_TracecodeSerializationLimit,
+    )
+except _TracecodeSerializationLimit:
+    __tracecode_result_json = 'null'
+    __tracecode_result_serialization_limit = True
+
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
         'errorStep': __tracecode_compact_last_step('exception') or _tracecode_program_error_step,
@@ -7094,7 +7118,8 @@ __tracecode_execution_result_json = (
     + ',"traceStepCount":' + str(
         _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
     ) + '}'
-    + ',"result":' + json.dumps(_serialize_output(_result))
+    + ',"result":' + __tracecode_result_json
+    + ',"resultSerializationLimit":' + json.dumps(__tracecode_result_serialization_limit)
     + ',"console":' + json.dumps(_console_output)
     + ',"userCodeStartLine":' + json.dumps(${userCodeStartLine})
     + ',"traceLimitExceeded":' + json.dumps(_trace_limit_exceeded)
@@ -7595,13 +7620,23 @@ async function executeWithTracing(
       }
     }
 
+    // The returned value went over Submit's serialization limits (only a
+    // program that returned a value can): the case is Submit's
+    // serialization-limit, never a pass and never a cut-down answer.
+    const resultSerializationLimit = result.resultSerializationLimit === true;
+    if (resultSerializationLimit) {
+      errorMessage = 'Execution stopped: resource limit exceeded (serialization-limit).';
+      errorLine = undefined;
+    }
+
     return {
       success:
+        !resultSerializationLimit &&
         !errorStep &&
         !result.executionAborted &&
         (!result.traceLimitExceeded || traceOnlyBudgetExceeded) &&
         (!timeoutStep || traceOnlyBudgetExceeded),
-      output: result.result,
+      output: resultSerializationLimit ? null : result.result,
       error: errorMessage,
       errorLine,
       ...(learnerProgramRaised ? { diagnosticStage: 'runtime' } : {}),
@@ -7622,7 +7657,9 @@ async function executeWithTracing(
       ...(PYTHON_TRACE_BUDGET_REASONS.has(result.traceLimitReason)
         ? { traceLimitReason: result.traceLimitReason }
         : {}),
-      ...(programRaisedAfterRecordingStopped ? {} : { timeoutReason }),
+      ...(resultSerializationLimit
+        ? { timeoutReason: 'serialization-limit' }
+        : programRaisedAfterRecordingStopped ? {} : { timeoutReason }),
       lineEventCount: result.lineEventCount,
       traceStepCount: result.traceStepCount,
       timings: {
