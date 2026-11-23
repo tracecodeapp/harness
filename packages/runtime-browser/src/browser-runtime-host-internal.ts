@@ -41,7 +41,7 @@ export type JudgeSchedulePhase =
   | 'observation-cache-hit'
   | 'public-resolve';
 
-interface JudgeScheduleMarker {
+export interface JudgeScheduleMarker {
   readonly phase: JudgeSchedulePhase;
   readonly evaluationId: string;
   readonly workspaceDigest: string;
