@@ -26,6 +26,7 @@ import {
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
 } from '../../packages/runtime-contracts/src/execution-outcome';
+import { InterruptedCodeBatchError } from '../../packages/runtime-browser/src/worker-errors';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -1084,7 +1085,7 @@ function executePreparedProviderBatch(
         ? yield* executeProviderStoppingBatch(options, programs, invocation, cases)
         : yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
     }
-    const outcomes = yield* Effect.tryPromise({
+    const reply = yield* Effect.tryPromise({
       try: (signal) =>
         isTraceBinding(options.binding)
           ? programs.executeTraceBatch(evaluationId(invocation), {
@@ -1106,8 +1107,14 @@ function executePreparedProviderBatch(
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
               options.owned?.acknowledgeNonStoppingBatchStarts),
       catch: errorFromUnknown,
-    });
-    if (outcomes.length !== cases.length) {
+    }).pipe(Effect.catchAll((error) =>
+      !isTraceBinding(options.binding) && error instanceof InterruptedCodeBatchError
+        ? Effect.succeed(error)
+        : Effect.fail(error)
+    ));
+    const interrupted = reply instanceof InterruptedCodeBatchError;
+    const outcomes = interrupted ? reply.prefix : reply;
+    if (outcomes.length > cases.length || (!interrupted && outcomes.length !== cases.length)) {
       return yield* Effect.fail(
         new Error(
           `Prepared runtime returned ${outcomes.length} batch outcomes for ` +
@@ -1115,14 +1122,20 @@ function executePreparedProviderBatch(
         )
       );
     }
-    const batch = Object.freeze(outcomes.map((outcome, index) =>
-      batchCaseOutput(
-        cases[index]!.caseId,
+    const batch = Object.freeze(cases.map(({ caseId }, index) => {
+      if (interrupted && index >= outcomes.length) {
+        // Transport diagnostics describe the provider and are not learner stderr.
+        const row = batchCaseOutput(caseId, providerFailure(options.runtime, reply.message));
+        return Object.freeze({ ...row, stderr: '' });
+      }
+      const outcome = outcomes[index]!;
+      return batchCaseOutput(
+        caseId,
         isTraceBinding(options.binding)
           ? mappedTraceOutcome(options.runtime, outcome as ExecutionResult)
           : mappedCodeOutcome(options.runtime, outcome as CodeExecutionResult)
-      )
-    ));
+      );
+    }));
     return Object.freeze({
       output: Object.freeze({ batch }),
       process: Object.freeze({

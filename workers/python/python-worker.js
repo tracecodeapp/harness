@@ -424,10 +424,8 @@ function postBatchCaseStarted(id, protocolToken, index) {
 }
 
 /**
- * A stopping batch's per-case progress (see executePreparedProgramBatch): the
- * client restarts its per-case clock on each message and keeps each finished
- * result, so a case that never returns costs one per-case clock and the
- * finished prefix survives the worker's termination.
+ * Report each finished result so it survives worker loss. For stopping
+ * batches, the same progress messages also drive the client's per-case clock.
  */
 function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport) {
   let finishedCount = 0;
@@ -9784,19 +9782,15 @@ async function processMessage(data) {
       }
 
       case 'execute-prepared-program-batch': {
-        const streamingProgress =
-          payload?.reportCaseProgress === true && payload.stopAtFirstRunaway === true
+        const caseProgress =
+          payload?.reportCaseProgress === true &&
+            (payload.mode === 'code' || payload.stopAtFirstRunaway === true)
             ? createBatchCaseProgressReporter(
                 id,
                 protocolToken,
                 payload.mode === 'trace' ? payload.traceEventTransport : undefined
               )
             : undefined;
-        const caseProgress = streamingProgress ?? (
-          payload?.reportCaseProgress === true && payload.mode === 'code'
-            ? { started: (index) => postBatchCaseStarted(id, protocolToken, index) }
-            : undefined
-        );
         const result = batchReplyWithoutStreamedResults(
           await executePreparedPythonProgramBatch(
             payload?.artifact,
@@ -9807,7 +9801,7 @@ async function processMessage(data) {
             payload?.stopAtFirstRunaway,
             caseProgress
           ),
-          streamingProgress
+          caseProgress
         );
         analyzerInitialized = false;
         if (payload?.mode === 'trace') {

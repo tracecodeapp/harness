@@ -1932,8 +1932,7 @@ _tracecode_batch_function_name = ${functionNameLiteral}
 _tracecode_batch_execution_style = ${executionStyleLiteral}
 _tracecode_batch_random_state = _tracecode_batch_random.getstate()
 _tracecode_batch_encoded_results = []
-# The trusted driver reports starts for ordinary batches and also sends
-# encoded results when the client keeps a per-case clock for a stopping batch.
+# The trusted driver streams starts and finishes to the client on request.
 # Learner code runs in its own globals.
 try:
     _tracecode_batch_case_progress = __tracecode_case_progress
@@ -2629,10 +2628,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
     _tracecode_case_result = _tracecode_batch_append_result(
         _tracecode_case_result
     )
-    if (
-        _tracecode_batch_case_progress is not None
-        and _tracecode_batch_limits.get('stopAtFirstRunaway', False)
-    ):
+    if _tracecode_batch_case_progress is not None:
         _tracecode_batch_case_progress(
             _tracecode_batch_case_index,
             _tracecode_batch_encoded_results[-1],
@@ -8927,8 +8923,8 @@ async function executePreparedProgramBatch(
   stopAtFirstRunaway = false,
   caseProgress = undefined
 ) {
-  // Stopping batches also report finishes so the client can keep a prefix
-  // under its per-case clock. Non-stopping trace batches can reorder cases.
+  // Ordinary batches stream finishes to preserve delivered results if the
+  // worker disappears. Non-stopping trace batches can reorder cases.
   if (stopAtFirstRunaway !== true && artifact?.mode !== 'code') caseProgress = undefined;
   const startedAt = deps.performanceNow();
   await deps.loadPyodideInstance();

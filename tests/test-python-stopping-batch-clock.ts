@@ -25,7 +25,7 @@ import {
   isRuntimeProviderError,
   judgeCaseExecutionOutcome,
 } from '../src/judge';
-import { createBrowserRuntimeJudge } from '../src/internal/browser-judge';
+import { createBrowserJudgeHostFromRuntimeHost, createBrowserRuntimeJudge } from '../src/internal/browser-judge';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
@@ -77,7 +77,8 @@ interface WorkerLog {
 type Stall =
   | { readonly kind: 'before-first-case' }
   | { readonly kind: 'after-case'; readonly index: number }
-  | { readonly kind: 'withhold-reply' };
+  | { readonly kind: 'withhold-reply' }
+  | { readonly kind: 'crash-after-case'; readonly index: number };
 
 function newLog(): WorkerLog {
   return { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [], unwarmedBatchRequests: 0 };
@@ -162,7 +163,7 @@ class StuckCaseWorker {
     const inputBatch = payload.inputBatch as Array<{ value: number }>;
     const trace = payload.mode === 'trace';
     const report = payload.reportCaseProgress === true;
-    const stream = report && payload.stopAtFirstRunaway === true;
+    const stream = report;
     const results: Record<string, unknown>[] = [];
     if (this.stall?.kind === 'before-first-case') return; // trusted setup never ends
     for (let index = 0; index < inputBatch.length; index += 1) {
@@ -177,7 +178,7 @@ class StuckCaseWorker {
       const result = {
         success: true,
         output: inputBatch[index]!.value,
-        consoleOutput: [],
+        consoleOutput: [`case ${inputBatch[index]!.value} output`],
         ...(trace
           ? {
               trace: {
@@ -193,6 +194,7 @@ class StuckCaseWorker {
       };
       results.push(result);
       if (stream) progress({ index, phase: 'finished', result });
+      if (this.stall?.kind === 'crash-after-case' && this.stall.index === index) return this.crash();
     }
     if (this.stall?.kind === 'withhold-reply') return;
     reply('execute-result', stream
@@ -564,3 +566,90 @@ test('Python stopping batch whose worker stalls between cases reaches the Judge 
     provider.terminate();
   }
 });
+
+
+for (const cut of ['between cases', 'during case B'] as const) {
+  test(`Python Submit retains the delivered result when the worker is lost ${cut}`, async () => {
+    const log = newLog();
+    const provider = createPythonPreparedExecutionProvider({
+      createWorkerClient: () => new PythonWorkerClient({
+        workerUrl: 'python-worker.js',
+        debug: false,
+        workerFactory: () => new StuckCaseWorker(
+          -1,
+          log,
+          cut === 'during case B' ? 1 : -1,
+          cut === 'between cases' ? { kind: 'crash-after-case', index: 0 } : undefined
+        ) as never,
+      }),
+    });
+    const runtimeHost = createBrowserRuntimeHost({
+      providerRegistry: createBrowserRuntimeProviderRegistry([{
+        id: 'python-crashing-double',
+        languages: ['python'],
+        create() {
+          return {
+            preparedProviders: new Map([['python', provider]] as const),
+            judgeReceiptProviders: new Map([['python', {
+              runtimeVersion: 'test',
+              capabilities: {
+                observationLease: 'separate' as const,
+                observationDeadlineMs: 1_000,
+                nonStoppingBatchAdmission: 'worker-start' as const,
+              },
+              async prepareObservation() {
+                throw new Error('Submit should not prepare an observer');
+              },
+            }]] as const),
+            disposeLanguage() {},
+            dispose() {},
+          };
+        },
+      }]),
+      providers: ['python'],
+      featureOverrides: {
+        worker: true,
+        webAssembly: true,
+        webCrypto: true,
+        sharedArrayBuffer: true,
+        crossOriginIsolated: true,
+      },
+    });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+    try {
+      const bundle = await createAlgorithmJudgeBundle({
+        id: 'python-submit-worker-loss',
+        language: 'python',
+        code: 'def solve(value):\n    return value',
+        functionName: 'solve',
+        cases: ['A', 'B', 'C'].map((id, index) => ({
+          id, input: { value: index + 1 }, expected: index + 1,
+        })),
+      });
+      const { evaluation, passedCount } = await host.evaluateAlgorithm({ bundle });
+      assert.equal(evaluation.status, 'completed');
+      const [a, b, c] = evaluation.cases;
+      assert.equal(a?.status, 'completed');
+      assert.equal(a.value, 1);
+      assert.equal(a.stdout, 'case 1 output\n');
+      assert.equal(a.stderr, '');
+      assert.equal(a.failure, undefined);
+      assert.equal(a.verdict.kind, 'passed');
+      assert.deepEqual(a.termination, { kind: 'exit', exitCode: 0 });
+      assert.equal(passedCount, 1);
+      assert.deepEqual([b?.caseId, c?.caseId], ['B', 'C']);
+      for (const row of [b!, c!]) {
+        assert.equal(row.failure?.origin, 'provider');
+        assert.equal(row.timedOut, false);
+        assert.equal(row.stdout, '');
+        assert.equal(row.stderr, '');
+        assert.throws(() => judgeCaseExecutionOutcome(row, { language: 'python' }), isRuntimeProviderError);
+      }
+      assert.equal(log.batchRequests.length, 1);
+      assert.equal(log.batchWorkerTerminated[0]?.(), true);
+    } finally {
+      host.dispose();
+      provider.terminate();
+    }
+  });
+}

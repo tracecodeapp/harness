@@ -40,6 +40,7 @@ export type PythonRawTraceBatchResult = {
 type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
   algorithmFastBatchUnavailable?: boolean;
   algorithmFastBatchFailureClass?: 'capability-fallback' | 'driver-failure';
+  resultsStreamed?: unknown;
 };
 
 export class PythonAlgorithmFastBatchUnavailableError extends Error {
@@ -74,6 +75,7 @@ import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import {
   ExecutionTimeoutError,
+  InterruptedCodeBatchError,
   isExecutionTimeoutError,
   WorkerCrashedError,
   WorkerStartupError,
@@ -252,12 +254,11 @@ type StoppingBatchOutcome<R> =
     };
 
 /**
- * Follows a stopping batch's `batch-case-progress` messages. Only the next
- * case in order may start, and only the running case may finish, so a
- * malformed or replayed message can neither extend the clock past one
- * restart per case nor reorder the prefix.
+ * Follows authenticated `batch-case-progress` messages. Each case can
+ * start and finish once, in order. Stopping batches also reset the per-case
+ * watchdog when progress advances.
  */
-class StoppingBatchProgress {
+class BatchCaseProgress {
   readonly finished: unknown[] = [];
   running: number | undefined;
   invalid: Error | undefined;
@@ -302,6 +303,18 @@ class StoppingBatchProgress {
       typeof last.timeoutReason === 'string' &&
       PYTHON_RUNAWAY_TIMEOUT_REASONS.has(last.timeoutReason);
   }
+}
+
+function restoreStreamedBatchReply<R extends { results?: unknown[]; resultsStreamed?: unknown }>(
+  result: R,
+  progress: BatchCaseProgress
+): R {
+  if (Array.isArray(result.results) || result.resultsStreamed === undefined) return result;
+  if (progress.invalid || result.resultsStreamed !== progress.finished.length) {
+    throw new Error('Prepared Python batch returned an invalid result envelope.');
+  }
+  const { resultsStreamed: _streamed, ...reply } = result;
+  return { ...reply, results: progress.finished } as unknown as R;
 }
 
 /** Raw worker reasons after which a stopping batch runs no further case. */
@@ -698,7 +711,7 @@ export class PythonWorkerClient {
         onRequestRegistered: (id) => {
           if (!call.onCaseStarted) return;
           commandId = id;
-          const progress = new StoppingBatchProgress(1);
+          const progress = new BatchCaseProgress(1);
           this.batchProgress.set(id, (message) => {
             if (progress.accept(message) && progress.running === 0) call.onCaseStarted?.();
           });
@@ -769,9 +782,9 @@ export class PythonWorkerClient {
       }
       result = outcome.reply;
     } else {
+      const progress = new BatchCaseProgress(call.inputBatch.length);
       const onCaseStarted = call.onCaseStarted;
       let commandId: string | undefined;
-      let nextCase = 0;
       const send = this.core.sendMessageEffectWithOptions<PythonRawCodeBatchResult>(
         'execute-prepared-program-batch',
         { ...request, ...(onCaseStarted ? { reportCaseProgress: true } : {}) },
@@ -781,10 +794,8 @@ export class PythonWorkerClient {
             if (!onCaseStarted) return;
             commandId = id;
             this.batchProgress.set(id, (message) => {
-              if (!message || typeof message !== 'object') return;
-              const { index, phase } = message as { index?: unknown; phase?: unknown };
-              if (phase === 'started' && index === nextCase && nextCase < call.inputBatch.length) {
-                onCaseStarted(nextCase++);
+              if (progress.accept(message) && progress.running !== undefined) {
+                onCaseStarted(progress.running);
               }
             });
           },
@@ -795,7 +806,17 @@ export class PythonWorkerClient {
           if (commandId !== undefined) this.batchProgress.delete(commandId);
         }))
       );
-      result = await this.core.runClientEffect(program, call.signal);
+      try {
+        result = restoreStreamedBatchReply(await this.core.runClientEffect(program, call.signal), progress);
+      } catch (error) {
+        if (!(error instanceof WorkerCrashedError) || call.signal?.aborted
+          || progress.invalid || progress.finished.length === 0) {
+          throw error;
+        }
+        throw new InterruptedCodeBatchError(progress.finished.map((entry) =>
+          liftCodeOutcome(entry as RawExecutionPayload, 'Prepared Python batch execution failed')
+        ), error);
+      }
     }
     if (result.algorithmFastBatchUnavailable === true) {
       const unexpected =
@@ -1014,7 +1035,7 @@ export class PythonWorkerClient {
     signal: AbortSignal | undefined,
     onCaseStarted?: (index: number) => void
   ): Promise<StoppingBatchOutcome<R>> {
-    const progress = new StoppingBatchProgress(caseCount);
+    const progress = new BatchCaseProgress(caseCount);
     const caseClockMs = Math.min(
       MAX_WORKER_DEADLINE_MS,
       perCaseWallClockMs + STOPPING_BATCH_CASE_HEADROOM_MS
@@ -1077,14 +1098,7 @@ export class PythonWorkerClient {
     );
     try {
       const result = await this.core.runClientEffect(program, signal);
-      if (Array.isArray(result.results) || result.resultsStreamed === undefined) {
-        return { kind: 'reply', reply: result };
-      }
-      if (progress.invalid || result.resultsStreamed !== progress.finished.length) {
-        throw new Error('Prepared Python batch returned an invalid result envelope.');
-      }
-      const { resultsStreamed: _streamed, ...reply } = result;
-      return { kind: 'reply', reply: { ...reply, results: progress.finished } as unknown as R };
+      return { kind: 'reply', reply: restoreStreamedBatchReply(result, progress) };
     } catch (error) {
       if (!isExecutionTimeoutError(error)) throw error;
       if (progress.invalid) {
