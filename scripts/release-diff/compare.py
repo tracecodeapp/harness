@@ -14,7 +14,9 @@ Modes compared per case:
   run        the interactive Run's initial result list (selected case traced, others untraced)
   run-trace  the traced result of each case (initial for the first case, continuation for the rest)
 
-Compared fields: status, verdict (kind), value (canonical JSON), failure class.
+Compared fields: status, verdict (kind), value (canonical JSON), failure class, and the error
+diagnostic codes (both versions expose `code`; the deploy app reads `runtime-provider-error` as
+an infrastructure failure).
 0.17.1 has no `failure` object (it arrived in 0.20.0); its failure class is inferred from
 status, timedOut and diagnostic codes (see infer_legacy_failure). The target's class comes from
 failure.origin + stage/reason. `origin` (program/limit/provider/not-run/none) is the comparable
@@ -229,6 +231,9 @@ def diff_fields(a, b):
     if (not fields and a.get('origin') == b.get('origin') and a.get('origin') != 'none'
             and a.get('detail') is not None and a.get('detail') != b.get('detail')):
         fields.append('detail')
+    # Diagnostic error codes are exposed by both versions (0.20.0 kept them consumer-visible).
+    if not fields and a.get('origin') != 'none' and a.get('codes') != b.get('codes'):
+        fields.append('codes')
     return fields
 
 
@@ -237,6 +242,8 @@ def group_key(lang, mode, fields, a, b):
     for f in fields:
         if f in ('value', 'node-ids'):
             sig.append(f)
+        elif f == 'codes':
+            sig.append(f'codes:{",".join(a.get("codes") or []) or "-"}->{",".join(b.get("codes") or []) or "-"}')
         else:
             sig.append(f'{f}:{a.get(f)}->{b.get(f)}')
     return f'{mode} | ' + '; '.join(sig)
