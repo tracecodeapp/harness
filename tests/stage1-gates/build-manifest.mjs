@@ -209,6 +209,11 @@ add('G6', 'over-ceiling', 'py', program, [
   { id: 'B', input: { kind: 'small', n: 0 }, actual: [1, 2, 3], expected: [1, 2, 3] },
 ], queensOptions);
 
+add('G6', 'traceclr-wire-ceiling', 'cs', 'public class Solution { public int[] solve(int n) { return new int[n]; } }', [
+  { id: 'A', input: { n: 1000001 }, status: 'runtime-error', verdict: 'not-evaluated', failure: { origin: 'limit', reason: 'serialization-limit' } },
+  { id: 'B', input: { n: 2 }, actual: [0, 0], expected: [0, 0] },
+], { executionStyle: 'solution-method', untracedOnly: true, expectedTier: 'algorithm-fast' });
+
 add('G6', 'python-fast-scalar', 'py', 'def solve(n): return n\n', rows([{ n: 7 }, { n: 11 }], [7, 11]),
   { untracedOnly: true, expectedTier: 'algorithm-fast' });
 add('G6', 'python-hard-isolated-scalar', 'py', 'def solve(n): return int(type(n) is int) * n\n', rows([{ n: 7 }, { n: 11 }], [7, 11]),
@@ -249,6 +254,7 @@ for (const fixture of fixtures) {
 const baselineCaps = Object.values(languages).filter((language) => language !== 'python').map((language) => ({
   language, id: `G6/${language}/judged-byte-limit/provider/policy/@request/limit`, status: 'required-baseline-failure',
   reason: 'no explicit judge limit: no serialization-limit possible',
+  ...(language === 'csharp' ? { observedPolicy: 'TraceCLR wire safety caps are not a typed Judge serializer policy. The collection-cap fixture tests the actual artifact.' } : {}),
 }));
 inventory.push(...baselineCaps.map(({ id }) => id));
 for (const fixture of fixtures.filter(({ untracedOnly }) => !untracedOnly)) {

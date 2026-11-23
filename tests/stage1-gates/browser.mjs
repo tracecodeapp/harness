@@ -52,7 +52,7 @@ class ObservedWorker extends NativeWorker {
         transcript.push({
           action: 'response', worker, generation, id: data.id, type: data.type,
           success: data.payload?.success ?? data.ok,
-          mode: data.payload?.mode ?? data.payload?.artifact?.mode,
+          mode: data.payload?.mode ?? data.payload?.artifact?.mode ?? data.payload?.snapshot?.mode ?? command.mode,
           tier: data.payload?.isolationProfile?.tier ?? data.payload?.artifact?.isolationProfile?.tier ??
             data.payload?.algorithmIsolationProfile?.tier ?? data.payload?.preparedRunnerTier,
           tierReason: data.payload?.artifact?.isolationProfile?.reasons ??
