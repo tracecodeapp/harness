@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import { serialize } from 'node:v8';
 import { MessageChannel, Worker } from 'node:worker_threads';
-import { judgeCaseExecutionOutcome } from '../../../src/internal/judge-execution-outcome';
+import { judgeCaseExecutionOutcome, judgeCompileExecutionOutcome } from '../../../src/internal/judge-execution-outcome';
 import type { Attachment, Cut, Drawing, Refusal } from '../../../src/judge';
 import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../../runtime-contracts/src/runtime-trace';
 import { allCasesPassPolicy, createAlgorithmJudgeReceipt } from '../src/algorithm-evaluate';
@@ -100,7 +100,7 @@ test('the /judge attachment exports retain closed discriminants and reasons', ()
   const refusals: Equal<Refusal,
     'recorder-unavailable' | 'unsupported-program' | 'unsupported-option' |
     'observer-prepare' | 'observer-encode' | 'observer-runtime' | 'observer-protocol' |
-    'observer-deadline' | 'uncertified-drawing' | 'case-not-run'
+    'observer-timeout' | 'uncertified-drawing' | 'case-not-run'
   > = true;
   assert.ok(statuses && cuts && refusals);
 });
@@ -295,6 +295,10 @@ test('compile failure keeps the original decision and has no attachments even wh
   assert.deepEqual(archive, createAlgorithmJudgeReceipt(bundle(['A']), expected, evaluatedAt));
   assert.deepEqual(store.projectReceipt(['A']).evaluation, expected);
   assert.equal(store.publishDrawing(attempt, a, drawn), false);
+  const outcome = judgeCompileExecutionOutcome(compile, { language: 'javascript', trace: true });
+  assert.equal(outcome.kind, 'failed');
+  assert.equal(outcome.trace.runId, 'javascript:compile');
+  assert.deepEqual(outcome.trace.events, []);
 });
 
 test('truncation projects one owned prefix and a closed reason without changing diagnostics', () => {
@@ -357,6 +361,42 @@ test('case outcome reads attachment presentation and preserves ordinary result b
       assert.equal(outcome.traceTruncated, drawing.status === 'truncated' ? 'trace-byte-limit' : undefined);
     }
   }
+});
+
+test('an observer deadline requires a retained prefix to count as truncated', () => {
+  const cases = [
+    { draw: { status: 'truncated', reason: 'observer-deadline', trace, attemptedEvents: 1 },
+      expected: { status: 'truncated', reason: 'observer-deadline', trace, attemptedEvents: 1 } },
+    { draw: { status: 'truncated', reason: 'observer-deadline',
+      trace: { ...trace, events: [], lineEventCount: 0, traceStepCount: 0 }, attemptedEvents: 0 },
+      expected: { status: 'refused', reason: 'observer-timeout' } },
+    { draw: { status: 'refused', reason: 'observer-timeout' },
+      expected: { status: 'refused', reason: 'observer-timeout' } },
+  ];
+  for (const { draw, expected } of cases) {
+    const store = owner();
+    const attempt = store.beginObservation('A');
+    store.commitOrdinary(a, ordinary());
+    store.seal({ status: 'completed' }, evaluatedAt);
+    assert.equal(store.publishDrawing(attempt, a, draw), true);
+    const row = store.projectEvaluation(['A']).cases[0]!;
+    assert.deepEqual(row.attachment, { ...a, ...expected });
+    if (expected.status === 'refused') assert.equal('trace' in row, false);
+  }
+});
+
+test('ordinary provider failure and not-run retain precedence over refusal', () => {
+  const options = { language: 'javascript', trace: true } as const;
+  const unavailable: JudgeCaseResult = {
+    ...failed,
+    failure: { origin: 'provider', reason: 'runtime-failure', message: 'ordinary provider lost' },
+    attachment: { ...a, status: 'refused', reason: 'recorder-unavailable' },
+  };
+  assert.throws(() => judgeCaseExecutionOutcome(unavailable, options), /ordinary provider lost/);
+  assert.deepEqual(
+    judgeCaseExecutionOutcome({ ...skipped, attachment: { ...b, status: 'refused', reason: 'case-not-run' } }, options),
+    judgeCaseExecutionOutcome(skipped, { language: 'javascript' }),
+  );
 });
 
 test('unknown observer reasons and invalid prefixes refuse without rewriting the verdict', () => {
