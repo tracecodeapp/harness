@@ -211,24 +211,20 @@ function preparationErrorLine(error: unknown): number | undefined {
 /** The refusal of a case, worded as the worker words it. */
 const TRACE_UNAVAILABLE_MESSAGE = 'TraceCode could not trace this case.';
 
+/** Traced results whose console the disposable worker found over the pool's budget. */
+const sesConsoleBudgetExceededResults = new WeakSet<object>();
+
 /**
- * Whether the pool might have needed its console compatibility fallback for
- * a traced case: one refused, or one that completed near the pool's console
- * budget (99 lines, 40 arguments a call, 64 KiB). Deliberately broad, since a
- * flagged case is run once on the pool to find out exactly. A case that hit a
- * limit or failed in the learner's code already has its answer: running it
- * again would only double a runaway's time.
+ * Whether to ask the pool if a traced case run off it would have needed its
+ * console compatibility fallback: a refused case, or one that completed or
+ * failed in the learner's code with a console over the pool's own budget, as
+ * the worker measured it call by call. A case that a limit stopped is never
+ * asked: a second run would cost a runaway one more clock.
  */
 function mayNeedSesConsoleFallback(result: ExecutionResult): boolean {
-  if (result.kind === 'failed') return result.providerFailure !== undefined;
-  if (result.kind !== 'completed') return false;
-  const lines = result.consoleOutput ?? [];
-  let characters = 0;
-  for (const line of lines) {
-    characters += line.length;
-    if (line.length >= 1000 || line.split(' ').length > 40) return true;
-  }
-  return lines.length >= 90 || characters >= 30_000;
+  if (result.kind === 'failed' && result.providerFailure) return true;
+  if (result.kind === 'limit') return false;
+  return sesConsoleBudgetExceededResults.has(result);
 }
 
 /** A failure the worker reports as the runtime's own stays the provider's. */
@@ -1610,12 +1606,16 @@ export class JavaScriptWorkerClient {
         wallClockMs,
         call.signal
       );
-      return liftTraceOutcome(
+      const lifted = liftTraceOutcome(
         result,
         result.trace ??
           createEmptyRuntimeTrace(language, { runId: `${language}:run` }),
         'JavaScript tracing failed'
       );
+      if ((result as { readonly sesConsoleBudgetExceeded?: unknown }).sesConsoleBudgetExceeded === true) {
+        sesConsoleBudgetExceededResults.add(lifted);
+      }
+      return lifted;
     } catch (error) {
       if (isTraceUnavailableError(error)) {
         return traceUnavailableOutcome(error as Error, language);

@@ -482,9 +482,63 @@ function formatConsoleArg(value) {
   }
 }
 
-function createConsoleProxy(output) {
+// The SES pool's console budget (CONSOLE_BOOTSTRAP_SOURCE in its worker), the
+// same rules in the same order, applied to the same rendered arguments: a
+// traced case run here reports whether its console would need the pool's
+// compatibility fallback, which keeps untraced Submit off the pool.
+function createSesConsoleBudget() {
+  const marker = '…[truncated]';
+  const truncate = (text, limit) => {
+    if (text.length <= limit) return text;
+    if (limit <= marker.length) return marker.slice(0, limit);
+    return text.slice(0, limit - marker.length) + marker;
+  };
+  let lines = 0;
+  let totalCharacters = 0;
+  let stopped = false;
+  let exceeded = false;
+  return {
+    capture(rendered) {
+      if (stopped) return;
+      if (lines >= 99) {
+        stopped = true;
+        exceeded = true;
+        return;
+      }
+      const argumentLimit = Math.min(rendered.length, 40);
+      let line = '';
+      for (let index = 0; index < argumentLimit; index += 1) {
+        const value = truncate(rendered[index] ?? '', 4096);
+        if (value.endsWith(marker)) exceeded = true;
+        line = truncate(line + (index === 0 ? '' : ' ') + value, 8192);
+        if (line.endsWith(marker)) {
+          exceeded = true;
+          break;
+        }
+      }
+      if (rendered.length > argumentLimit && !line.endsWith(marker)) {
+        exceeded = true;
+        line = truncate(line + ' … ' + (rendered.length - argumentLimit) + ' more', 8192);
+      }
+      const remaining = 65536 - totalCharacters;
+      if (line.length > remaining) {
+        line = truncate(line, Math.max(0, remaining));
+        stopped = true;
+        exceeded = true;
+      }
+      lines += 1;
+      totalCharacters += line.length;
+    },
+    exceeded: () => exceeded,
+  };
+}
+
+function createConsoleProxy(output, sesConsoleBudget) {
   const capture = (...args) => {
-    output.push(args.map(formatConsoleArg).join(' '));
+    // Each argument is rendered once: a learner's toJSON or getter runs once.
+    const rendered = args.map(formatConsoleArg);
+    sesConsoleBudget?.capture(rendered);
+    output.push(rendered.join(' '));
   };
 
   return {
@@ -7153,7 +7207,8 @@ async function executeWithTracing(payload) {
     language = 'javascript',
   } = payload ?? {};
   const consoleOutput = [];
-  const consoleProxy = createConsoleProxy(consoleOutput);
+  const sesConsoleBudget = createSesConsoleBudget();
+  const consoleProxy = createConsoleProxy(consoleOutput, sesConsoleBudget);
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
@@ -7317,6 +7372,7 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: traceRecorder.isTraceLimitExceeded(),
       timeoutReason: traceRecorder.getTimeoutReason(),
+      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
@@ -7359,6 +7415,7 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded,
       timeoutReason,
+      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
