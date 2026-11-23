@@ -89,12 +89,16 @@ try {
         const request = (type, payload) => new Promise((accept, reject) => {
           const id = crypto.randomUUID();
           const protocolToken = crypto.randomUUID();
+          const starts = [];
           function onMessage({ data }) {
             if (data.id !== id || data.protocolToken !== protocolToken) return;
-            if (data.type === 'batch-case-progress') return;
+            if (data.type === 'batch-case-progress') {
+              if (data.payload.phase === 'started') starts.push(data.payload.index);
+              return;
+            }
             worker.removeEventListener('message', onMessage);
             if (data.type === 'error') reject(new Error(data.payload.error));
-            else accept({ type: data.type, payload: data.payload });
+            else accept({ type: data.type, payload: data.payload, starts });
           }
           worker.addEventListener('message', onMessage);
           worker.postMessage({ type, id, protocolToken, payload });
@@ -141,9 +145,28 @@ try {
           mode: 'code',
           functionName: null,
         });
-        const script = await ordinary('execute-prepared-program', { mode: 'code', artifact: scriptArtifact, inputs: {} });
+        const script = await ordinary('execute-prepared-program', {
+          mode: 'code', artifact: scriptArtifact, inputs: {}, reportCaseProgress: true,
+        });
+        const guardedCode = [
+          'def solve(value):',
+          '    if value == 2:',
+          '        while True: value += 1',
+          '    return value',
+        ].join('\n');
+        const guards = [];
+        for (const source of [guardedCode, guardedCode.replace(
+          '    if value == 2:', '    ast.literal_eval("1")\n    if value == 2:'
+        )]) {
+          const guarded = await prepare(ordinary, { code: source, mode: 'code', functionName });
+          const result = await ordinary('execute-prepared-program-batch', {
+            mode: 'code', artifact: guarded, inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+            stopAtFirstRunaway: true, reportCaseProgress: true, limits: { maxSingleLineHits: 1_000 },
+          });
+          guards.push({ tier: guarded.isolationProfile.tier, ...result });
+        }
         return {
-          fast, drawn, byte, compat, script,
+          fast, drawn, byte, compat, script, guards,
           tiers: [artifact, compatible, scriptArtifact].map((entry) => entry.isolationProfile.tier),
         };
       } finally {
@@ -168,6 +191,15 @@ try {
     }
   }
   assert.equal(results.script.type, 'execute-result');
+  assert.deepEqual(results.script.starts, [0]);
+  assert.deepEqual(results.script.payload.startedCaseIndexes, results.script.starts);
+  assert.deepEqual(results.guards.map(({ tier }) => tier), ['algorithm-fast', 'judge-compatible']);
+  for (const { type, starts, payload, tier } of results.guards) {
+    assert.equal(type, 'execute-result', tier);
+    assert.deepEqual(starts, [0, 1], tier);
+    assert.deepEqual(payload.startedCaseIndexes, starts, tier);
+    assert.equal(payload.resultsStreamed, 2, tier);
+  }
   assert.equal(results.script.payload.error, 'RuntimeError on line 3: oops');
   assert.deepEqual(results.script.payload.consoleOutput, ['before']);
   assert.equal(results.drawn.type, 'execute-result');
@@ -219,6 +251,11 @@ try {
       submitTraffic: result.submitTraffic,
     }));
   }
+  console.log(JSON.stringify({
+    witness: 'installed-python-start-proof',
+    batches: results.guards.map(({ tier, starts, payload }) => ({ tier, starts, terminal: payload.startedCaseIndexes })),
+    hardIsolated: { starts: results.script.starts, terminal: results.script.payload.startedCaseIndexes },
+  }));
   console.log(JSON.stringify({ witness: 'installed-python-ordinary-worker', tiers: results.tiers, assets: Object.fromEntries(assets) }));
 } finally {
   clearTimeout(watchdog);

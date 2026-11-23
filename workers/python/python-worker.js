@@ -428,12 +428,17 @@ function postBatchCaseStarted(id, protocolToken, index) {
  * batches, the same progress messages also drive the client's per-case clock.
  */
 function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport) {
+  const startedCaseIndexes = [];
   let finishedCount = 0;
   return {
+    startedCaseIndexes,
     get finishedCount() {
       return finishedCount;
     },
-    started: (index) => postBatchCaseStarted(id, protocolToken, index),
+    started(index) {
+      postBatchCaseStarted(id, protocolToken, index);
+      startedCaseIndexes.push(index);
+    },
     finished(index, result) {
       finishedCount += 1;
       const transported = traceEventTransport
@@ -459,20 +464,21 @@ function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport)
 }
 
 /**
- * Every result already reached the client as progress: reply without them so
- * a traced result is not encoded and sent twice.
+ * Attest which starts were posted for this command. If all results were
+ * streamed, omit the duplicate result array from the terminal reply.
  */
-function batchReplyWithoutStreamedResults(result, caseProgress) {
+function batchReplyWithProgress(result, caseProgress) {
+  if (!result || !caseProgress) return result;
+  const startedCaseIndexes = caseProgress.startedCaseIndexes;
   if (
-    !caseProgress ||
-    result?.algorithmFastBatchUnavailable === true ||
-    !Array.isArray(result?.results) ||
+    result.algorithmFastBatchUnavailable === true ||
+    !Array.isArray(result.results) ||
     result.results.length !== caseProgress.finishedCount
   ) {
-    return result;
+    return { ...result, startedCaseIndexes };
   }
   const { results: _streamed, ...reply } = result;
-  return { ...reply, resultsStreamed: caseProgress.finishedCount };
+  return { ...reply, startedCaseIndexes, resultsStreamed: caseProgress.finishedCount };
 }
 
 function postTraceResultMessage(id, protocolToken, result, request, path) {
@@ -9751,9 +9757,14 @@ async function processMessage(data) {
       }
 
       case 'execute-prepared-program': {
-        const beforeLearnerCode = payload?.mode === 'code' && payload.reportCaseProgress === true
-          ? () => postBatchCaseStarted(id, protocolToken, 0)
+        // Hard-isolated batches dispatch a separate code command for each case.
+        const startedCaseIndexes = payload?.mode === 'code' && payload.reportCaseProgress === true
+          ? []
           : undefined;
+        const beforeLearnerCode = startedCaseIndexes && (() => {
+          postBatchCaseStarted(id, protocolToken, 0);
+          startedCaseIndexes.push(0);
+        });
         const result = await executePreparedPythonProgram(
           payload?.artifact,
           payload?.inputs ?? {},
@@ -9774,7 +9785,7 @@ async function processMessage(data) {
           trustedPythonWorkerPostMessage({
             id,
             type: 'execute-result',
-            payload: result,
+            payload: startedCaseIndexes ? { ...result, startedCaseIndexes } : result,
             protocolToken,
           });
         }
@@ -9791,7 +9802,7 @@ async function processMessage(data) {
                 payload.mode === 'trace' ? payload.traceEventTransport : undefined
               )
             : undefined;
-        const result = batchReplyWithoutStreamedResults(
+        const result = batchReplyWithProgress(
           await executePreparedPythonProgramBatch(
             payload?.artifact,
             payload?.inputBatch ?? [],
