@@ -167,10 +167,33 @@ async function main(): Promise<void> {
     const result = await page.evaluate(`(async () => {
       const NativeWorker = globalThis.Worker;
       const workerUrls = [];
+      const ordinaryStarts = [];
+      const recorderReplies = [];
       globalThis.Worker = class ObservedWorker extends NativeWorker {
+        requests = new Map();
         constructor(url, options) {
           workerUrls.push(String(url));
           super(url, options);
+          this.addEventListener('message', (event) => {
+            const { id, type, protocolToken, payload } = event.data ?? {};
+            const request = this.requests.get(id);
+            if (!event.isTrusted || !request || !protocolToken || request.protocolToken !== protocolToken) return;
+            if (type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
+              ordinaryStarts.push({ type: request.type, mode: request.payload.mode, caseIndex: payload.detail.caseIndex });
+            }
+            if (type === request.type) {
+              if (payload?.observation) {
+                recorderReplies.push({ ...payload.observation, requestedToken: request.payload.attemptToken });
+              }
+              this.requests.delete(id);
+            }
+          });
+        }
+        postMessage(message, ...transfer) {
+          if (message.payload?.reportCaseProgress || message.payload?.attemptToken) {
+            this.requests.set(message.id, message);
+          }
+          return super.postMessage(message, ...transfer);
         }
       };
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
@@ -570,6 +593,32 @@ async function main(): Promise<void> {
         await import('/cpp-ordinary-receipt.js');
       const ordinaryReceiptPaths = await assertCppOrdinaryReceiptPaths(workerOptions);
       const productReceiptPaths = await assertCppProductReceiptPaths();
+      const ackClient = new CppWorkerClient(workerOptions);
+      try {
+        const standalone = await ackClient.executeCodeBatch({
+          code: 'class Solution { public: int add(int a) { return a + 1; } };',
+          functionName: 'add',
+          inputBatch: [{ a: 1 }, { a: 2 }],
+        });
+        if (standalone.results.map((row) => row.output).join(',') !== '2,3') {
+          throw new Error('ordinary batch ACK fixture failed: ' + JSON.stringify(standalone));
+        }
+      } finally {
+        ackClient.terminate();
+      }
+      const standaloneStarts = ordinaryStarts.filter(({ type }) => type === 'compile-run-batch');
+      if (standaloneStarts.map(({ caseIndex }) => caseIndex).join(',') !== '0,1' ||
+          !ordinaryStarts.some(({ type, mode }) => type === 'execute-prepared-runtime-program' && mode === 'code') ||
+          !ordinaryStarts.some(({ type, mode }) => type === 'execute-prepared-runtime-program-batch' && mode === 'code') ||
+          ordinaryStarts.some(({ mode }) => mode === 'trace')) {
+        throw new Error('ordinary worker starts did not match the request modes: ' + JSON.stringify(ordinaryStarts));
+      }
+      if (!recorderReplies.some(({ cut, attemptedEvents }) => cut === 'byte-budget' && attemptedEvents > 0) ||
+          !recorderReplies.some(({ recorderCompleted, cut }) => recorderCompleted && !cut) ||
+          recorderReplies.some(({ attemptToken, requestedToken }) => attemptToken !== requestedToken)) {
+        throw new Error('native recorder witness did not match its observation attempt');
+      }
+
       compiler.terminate();
       const { createBrowserProjectWorkspace } =
         await import('/browser-project.js');
@@ -619,6 +668,8 @@ async function main(): Promise<void> {
       return {
         ordinaryReceiptPaths,
         productReceiptPaths,
+        ordinaryStartCount: ordinaryStarts.length,
+        recorderReplyCount: recorderReplies.length,
         workerUrls,
         warmMs,
         first,
@@ -670,6 +721,8 @@ async function main(): Promise<void> {
     })()`) as {
       ordinaryReceiptPaths: string[];
       productReceiptPaths: boolean;
+      ordinaryStartCount: number;
+      recorderReplyCount: number;
       workerUrls: string[];
       warmMs: number;
       first: {

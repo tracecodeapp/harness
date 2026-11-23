@@ -11,7 +11,7 @@ import type {
 import {
   createPromotableBrowserBackgroundTask,
 } from '@tracecode/runtime-browser/internal';
-import { createCppOrdinaryExecutionProvider } from './cpp-prepared-provider';
+import { createCppPreparedExecutionProvider } from './cpp-prepared-provider';
 import { createCppObservationRegistration, createLegacyCppDrawingProducer } from './cpp-observation';
 import { CppWorkerClient } from './cpp-worker-client';
 import {
@@ -175,7 +175,9 @@ export function createCppBrowserRuntimeProvider(
         ...workerOptions,
         ...(compilerService ? { trustedCompilerService: compilerService } : {}),
       });
-      const preparedProvider = createCppOrdinaryExecutionProvider({
+      // Receipt evaluations request code mode. The scoped createJudge().evaluate
+      // entry still uses the legacy trace binding until the direct-entry migration.
+      const preparedProvider = createCppPreparedExecutionProvider({
         createWorkerClient,
         warmCompilerOnInit: false,
         prewarmCompiler: () => compilerService?.prewarmAssets() ?? Promise.resolve(),

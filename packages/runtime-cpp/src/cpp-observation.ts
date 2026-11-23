@@ -11,7 +11,7 @@ import type {
   Refusal,
   RuntimeObservationCall,
 } from '@tracecode/runtime-contracts';
-import type { CppWorkerClient } from './cpp-worker-client';
+import type { CppRecorderEvidence, CppWorkerClient } from './cpp-worker-client';
 import {
   verifyCppStage1Artifact,
   type CppStage1Artifact,
@@ -125,23 +125,27 @@ interface LegacyCppDrawingOptions {
     'init' | 'prepareRuntimeProgram' | 'executePreparedTrace' | 'terminate'>;
 }
 
-/**
- * Compatibility presentation for the explicitly selected legacy producer.
- * Recorded events describe the rewritten execution. A legacy budget signal
- * supplies neither a certified prefix nor an attempted-event count.
- */
-function legacyDrawing(result: ExecutionResult): Drawing {
+function legacyDrawing(result: ExecutionResult, observation?: CppRecorderEvidence): Drawing {
   if (result.kind === 'limit' && result.reason === 'client-timeout') {
     return refused('observer-timeout');
-  }
-  if (result.traceTruncated || result.kind === 'limit') {
-    return refused('uncertified-drawing');
   }
   if (result.kind === 'failed') {
     return refused(result.providerFailure ? 'recorder-unavailable' : 'observer-runtime');
   }
+  if (result.kind === 'limit' || result.traceTruncated) return refused('uncertified-drawing');
+
   const { trace } = result;
   if (trace.language !== 'cpp') return refused('observer-protocol');
+  if (!observation?.recorderCompleted) return refused('recorder-unavailable');
+  const sourceEvent = trace.events.some(({ kind }) => kind === 'line' || kind === 'call');
+  const { cut, attemptedEvents } = observation;
+  if (cut) {
+    if (!Number.isSafeInteger(attemptedEvents) || attemptedEvents <= trace.events.length ||
+      (!sourceEvent && !(cut === 'byte-budget' && trace.events.length === 0))) {
+      return refused('uncertified-drawing');
+    }
+    return { status: 'truncated', reason: cut, trace, attemptedEvents };
+  }
   if (!trace.events.some(({ kind }) => kind === 'line')) return refused('recorder-unavailable');
   return { status: 'drawn', trace };
 }
@@ -192,6 +196,7 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
             functionName: program.functionName,
             executionStyle: program.executionStyle,
             mode: 'trace',
+            observationOnly: true,
             traceOptions,
             signal,
           });
@@ -232,10 +237,11 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
             const result = await client.executePreparedTrace(handle, {
               inputs: call.inputs,
               recordTrace: true,
+              attemptToken: call.attemptToken,
               signal: call.signal,
             });
             call.signal?.throwIfAborted();
-            return { ...legacyDrawing(result), finalState: legacyFinalState(result) };
+            return { ...legacyDrawing(result, result.observation), finalState: legacyFinalState(result) };
           } finally {
             call.signal?.removeEventListener('abort', abort);
             retire(client);

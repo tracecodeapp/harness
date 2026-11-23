@@ -5507,6 +5507,8 @@ async function instantiateWasi(module, process, options = {}) {
     if (item.module === 'wasi_snapshot_preview1' || item.module === 'wasi_unstable') {
       imports[item.module] ??= {};
       imports[item.module][item.name] = wasi[item.name] || (() => ENOTSUP);
+    } else if (item.module === 'tracecode_judge' && item.name === 'ordinary_case_start' && options.onOrdinaryCaseStart) {
+      imports.tracecode_judge = { ordinary_case_start: options.onOrdinaryCaseStart };
     } else if (item.module === 'tracecode_kernel') {
       imports[item.module] ??= {};
       imports[item.module][item.name] = tracecodeKernelImports[item.name] || (() => -1);
@@ -5626,6 +5628,7 @@ async function runWasi(module, args, fs, options = {}) {
   // Whether the program ended by calling exit() rather than returning from
   // main: a program that exits early with status 0 never reports its result.
   let calledExit = false;
+  options.onStart?.();
   try {
     start();
   } catch (error) {
@@ -7385,6 +7388,7 @@ function traceBudgetHardStopForOptions(options = {}) {
 
 function traceLineBudgetHardStopForOptions(options = {}) {
   const traceOptions = options.traceOptions || {};
+  if (traceOptions.softTraceLineBudget === true) return false;
   return (
     Number.isFinite(traceOptions.maxLineEvents) ||
     Number.isFinite(traceOptions.maxSingleLineHits)
@@ -11321,6 +11325,7 @@ ${sourceForDriver}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
+${options.reportCaseProgress ? 'extern "C" __attribute__((import_module("tracecode_judge"), import_name("ordinary_case_start"))) void __tc_report_ordinary_case_start(int);' : ''}
 int main(${traced ? 'int argc, char** argv' : ''}) {
 ${traced ? cppBatchTraceSelectionSetup() : ''}
   tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
@@ -11330,6 +11335,7 @@ ${traced ? cppBatchTraceSelectionSetup() : ''}
   }
   std::string __tc_results = "[";
   for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {
+${options.reportCaseProgress ? '    __tc_report_ordinary_case_start(__tc_case_index);' : ''}
     const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];
     if (__tc_case_index > 0) __tc_results += ",";
 ${traceCaseSetup}
@@ -11433,6 +11439,7 @@ ${userCode}
 ${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
+${options.reportCaseProgress ? 'extern "C" __attribute__((import_module("tracecode_judge"), import_name("ordinary_case_start"))) void __tc_report_ordinary_case_start(int);' : ''}
 int main() {
   tracecode::JsonValue __tc_cases = tracecode::parse_json(tracecode::read_stdin_all());
   if (__tc_cases.kind != tracecode::JsonValue::Kind::Array) {
@@ -11450,6 +11457,7 @@ int main() {
   };
   std::string __tc_results = "[";
   for (std::size_t __tc_case_index = 0; __tc_case_index < __tc_cases.array_values.size(); ++__tc_case_index) {
+${options.reportCaseProgress ? '    __tc_report_ordinary_case_start(__tc_case_index);' : ''}
     const tracecode::JsonValue& __tc_case = __tc_cases.array_values[__tc_case_index];
     const tracecode::JsonValue* __tc_operations = tracecode::object_get(__tc_case, "operations");
     if (!__tc_operations) __tc_operations = tracecode::object_get(__tc_case, "ops");
@@ -12437,6 +12445,60 @@ function cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timing
       totalMs: elapsedMs(startedAt),
       batchMode: 'compile-once-trace',
       batchCaseCount: inputBatch.length,
+    },
+  };
+}
+
+// Observation retains recorder events only. The legacy UI path still uses
+// finalizeRuntimeTrace's historical presentation and timeout markers.
+function finalizePreparedObservation(parsed, prepared, attemptToken) {
+  const status = parsed.traceStatus;
+  const events = (prepared.inputMode === 'named-batch'
+    ? splitCppBatchTraceEvents(parsed.events, 1)[0] ?? []
+    : parsed.events).filter((event) => event.kind !== 'timeout');
+  const opts = prepared.traceOptions;
+  const { trace } = finalizeRuntimeTrace(events, {
+    sourceCode: prepared.source,
+    maxPathDepth: opts.maxPathDepth,
+    maxStoredEvents: Number.MAX_SAFE_INTEGER,
+  });
+  const dropped = Number.isSafeInteger(status?.droppedEventCount) && status.droppedEventCount > 0
+    ? status.droppedEventCount
+    : 0;
+  const attemptedEvents = events.length + dropped;
+  let cut;
+  let length = 0;
+  let bytes = 0;
+  const encoder = Number.isFinite(opts.maxTraceBytes) ? new TextEncoder() : undefined;
+  for (const event of trace.events) {
+    if (length >= opts.maxTraceSteps) { cut = 'step-budget'; break; }
+    if (length >= opts.maxStoredEvents) { cut = 'stored-event-budget'; break; }
+    if (encoder) {
+      bytes += encoder.encode(JSON.stringify(event)).byteLength;
+      if (bytes > opts.maxTraceBytes) { cut = 'byte-budget'; break; }
+    }
+    length++;
+  }
+  if (!cut && status?.traceLimitExceeded) {
+    cut = {
+      'line-limit': 'line-budget',
+      'single-line-limit': 'single-line-budget',
+      'trace-limit': 'stored-event-budget',
+    }[status.timeoutReason];
+  }
+  const retained = trace.events.slice(0, length);
+  return {
+    trace: {
+      ...trace,
+      events: retained,
+      lineEventCount: retained.filter(({ kind }) => kind === 'line').length,
+      traceStepCount: retained.length,
+    },
+    observation: {
+      attemptToken,
+      recorderCompleted: parsed.foundResult && status !== null && typeof status?.traceLimitExceeded === 'boolean',
+      attemptedEvents,
+      ...(cut && { cut }),
     },
   };
 }
@@ -15616,6 +15678,10 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     const program = await runWasi(programModule, ['program.wasm'], new InMemoryFileSystem(), {
       stdinBytes: staticStdinBytesFromText(stdinText),
       userProgram: true,
+      onStart: options.ordinaryCaseIndex === undefined
+        ? undefined
+        : () => emitRequestProgress('ordinary-case-started', { caseIndex: options.ordinaryCaseIndex }),
+      onOrdinaryCaseStart: options.onOrdinaryCaseStart,
       env: { USER: 'tracecode', [RESULT_NONCE_ENV]: resultNonce },
     });
     timings.runMs = elapsedMs(runStartedAt);
@@ -15774,9 +15840,18 @@ async function handlePrepareRuntimeProgram(payload) {
   // A prepared executable has one input and return framing regardless of
   // whether the host submits a singleton or schedules a batch of cases.
   // Only the observation variant gets recorder settings or a rewritten body.
-  const variant = tracing
-    ? { executionStyle, tracing: true, traceOptions: payload?.traceOptions || {} }
-    : { executionStyle };
+  const observationOnly = tracing && payload?.observationOnly === true;
+  const traceOptions = payload?.traceOptions || {};
+  const variant = tracing ? {
+    executionStyle,
+    tracing: true,
+    traceOptions: observationOnly ? {
+      ...traceOptions,
+      maxStoredEvents: traceOptions.maxStoredEvents ?? DEFAULT_MAX_STORED_EVENTS,
+      softTraceBudget: true,
+      softTraceLineBudget: true,
+    } : traceOptions,
+  } : { executionStyle };
   let preparedDriverSource;
   try {
     preparedDriverSource = executionStyle === 'ops-class'
@@ -15820,6 +15895,7 @@ async function handlePrepareRuntimeProgram(payload) {
   preparedPrograms.set(programId, {
     ...result.preparedArtifact,
     mode,
+    observationOnly,
   });
   return {
     success: true,
@@ -15847,7 +15923,8 @@ function preparedExecutionTimings(runMs, totalMs) {
 async function runPreparedRuntimeProgram(
   preparedProgram,
   inputs,
-  tracingEnabled = true
+  tracingEnabled = true,
+  { attemptToken, caseIndex } = {}
 ) {
   const startedAt = now();
   const normalizedInputs = inputs && typeof inputs === 'object' ? inputs : {};
@@ -15873,6 +15950,9 @@ async function runPreparedRuntimeProgram(
       {
         stdinBytes: staticStdinBytesFromText(stdinText),
         userProgram: true,
+        onStart: preparedProgram.mode === 'code' && caseIndex !== undefined
+          ? () => emitRequestProgress('ordinary-case-started', { caseIndex })
+          : undefined,
         env: { USER: 'tracecode', [RESULT_NONCE_ENV]: resultNonce },
       }
     );
@@ -15928,6 +16008,26 @@ async function runPreparedRuntimeProgram(
       ...parsed.consoleOutput,
       ...program.stderr.split(/\r?\n/).filter(Boolean),
     ];
+
+    if (preparedProgram.observationOnly) {
+      const { trace, observation } = finalizePreparedObservation(parsed, preparedProgram, attemptToken);
+      const named = preparedProgram.inputMode === 'named-batch';
+      const foundResult = parsed.foundResult &&
+        (!named || (Array.isArray(parsed.output) && parsed.output.length === 1));
+      const success = program.exitCode === 0 && foundResult;
+      return {
+        success,
+        ...(success
+          ? { output: named ? parsed.output[0] : parsed.output }
+          : { error: cppProgramExitMessage(program) || 'C++ observer did not return a result.', ...cppProgramExitFields(program) }),
+        ...(programTimedOut && !program.trap && { timeoutReason: 'client-timeout' }),
+        trace,
+        observation,
+        consoleOutput,
+        executionTimeMs: totalMs,
+        timings,
+      };
+    }
 
     if (preparedProgram.inputMode === 'named-batch') {
       if (preparedProgram.tracing) {
@@ -16041,7 +16141,8 @@ async function runPreparedRuntimeProgram(
 
 async function runPreparedCodeRuntimeProgramBatchIsolated(
   preparedProgram,
-  inputBatch
+  inputBatch,
+  reportCaseProgress
 ) {
   const startedAt = now();
   if (preparedProgram.tracing || preparedProgram.mode !== 'code') {
@@ -16076,7 +16177,9 @@ async function runPreparedCodeRuntimeProgramBatchIsolated(
     // The module is immutable and retained, but runPreparedRuntimeProgram
     // constructs a new InMemoryFileSystem, WasiProcess, WebAssembly.Instance,
     // linear memory, globals, constructors, and C/C++ runtime for every case.
-    const result = await runPreparedRuntimeProgram(preparedProgram, inputs);
+    const result = await runPreparedRuntimeProgram(preparedProgram, inputs, true, {
+      caseIndex: reportCaseProgress ? caseIndex : undefined,
+    });
     success = success && result.success === true;
     if (firstError === undefined && result.success !== true) {
       firstError = result.error || 'C++ isolated prepared batch execution failed.';
@@ -16118,7 +16221,11 @@ async function handleExecutePreparedRuntimeProgram(payload) {
   return runPreparedRuntimeProgram(
     preparedProgram,
     payload?.inputs || {},
-    payload?.traceEnabled !== false
+    payload?.traceEnabled !== false,
+    {
+      attemptToken: payload?.attemptToken,
+      caseIndex: payload?.reportCaseProgress === true ? 0 : undefined,
+    }
   );
 }
 
@@ -16131,7 +16238,8 @@ async function handleExecutePreparedRuntimeProgramBatch(payload) {
   }
   return runPreparedCodeRuntimeProgramBatchIsolated(
     preparedProgram,
-    payload?.inputBatch
+    payload?.inputBatch,
+    payload?.reportCaseProgress === true
   );
 }
 
@@ -16208,6 +16316,7 @@ async function handleCompileRun(payload) {
   try {
     return await compileAndRun(source, functionName, payload?.inputs || {}, {
       executionStyle: payload?.executionStyle || 'solution-method',
+      ordinaryCaseIndex: payload?.reportCaseProgress === true ? payload.caseIndex ?? 0 : undefined,
     });
   } catch (error) {
     return {
@@ -16326,8 +16435,8 @@ async function handleCompileRunBatch(payload) {
     // Script-style C++ has no stable per-case input contract today, so keep its
     // existing per-case behavior instead of pretending it is compile-once batch.
     const results = [];
-    for (const inputs of inputBatch) {
-      results.push(await handleCompileRun({ ...payload, inputs }));
+    for (const [caseIndex, inputs] of inputBatch.entries()) {
+      results.push(await handleCompileRun({ ...payload, inputs, caseIndex }));
     }
     return {
       success: results.every((result) => result.success === true),
@@ -16342,8 +16451,8 @@ async function handleCompileRunBatch(payload) {
     : cppBatchIsolationReason(source);
   if (isolationReason) {
     const results = [];
-    for (const inputs of inputBatch) {
-      results.push(await handleCompileRun({ ...payload, inputs, executionStyle }));
+    for (const [caseIndex, inputs] of inputBatch.entries()) {
+      results.push(await handleCompileRun({ ...payload, inputs, executionStyle, caseIndex }));
     }
     const success = results.every((result) => result.success === true);
     return {
@@ -16360,11 +16469,13 @@ async function handleCompileRunBatch(payload) {
     };
   }
 
+  const reportCaseProgress = payload?.reportCaseProgress === true;
+  const driverOptions = { executionStyle, reportCaseProgress };
   let preparedDriverSource;
   try {
     preparedDriverSource = executionStyle === 'ops-class'
-      ? buildOpsClassBatchDriverSource(source, functionName, inputBatch, { executionStyle })
-      : buildBatchDriverSource(source, functionName, inputBatch, { executionStyle });
+      ? buildOpsClassBatchDriverSource(source, functionName, inputBatch, driverOptions)
+      : buildBatchDriverSource(source, functionName, inputBatch, driverOptions);
   } catch (error) {
     return failedBatchResult(error instanceof Error ? error.message : String(error));
   }
@@ -16384,10 +16495,16 @@ async function handleCompileRunBatch(payload) {
     timings: result?.timings ?? {},
   }));
 
+  let nextCaseIndex = 0;
   const result = await compileAndRun(source, functionName, {}, {
     executionStyle,
     preparedDriverSource,
     stdinText: JSON.stringify(inputBatch),
+    onOrdinaryCaseStart: reportCaseProgress ? (caseIndex) => {
+      if (caseIndex !== nextCaseIndex || caseIndex >= inputBatch.length) return;
+      nextCaseIndex++;
+      emitRequestProgress('ordinary-case-started', { caseIndex });
+    } : undefined,
   });
 
   if (!result?.success) {

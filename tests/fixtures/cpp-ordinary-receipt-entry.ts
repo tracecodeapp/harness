@@ -297,7 +297,12 @@ export async function assertCppProductReceiptPaths() {
         code: budget.code,
         functionName: 'solve',
         executionStyle: 'solution-method',
-        traceOptions,
+        traceOptions: {
+          maxLineEvents: 12000,
+          maxSingleLineHits: 1000,
+          maxStoredEvents: 16000,
+          ...traceOptions,
+        },
         trace: true,
         cases: [{ id: 'A', input: { n: 3 }, expected: 3 }],
       });
