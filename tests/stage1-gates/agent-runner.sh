@@ -5,6 +5,17 @@ set -euo pipefail
 candidate=b025fdb8220694cdfe96b136a0b8bb82843f7371
 canonical_sha=7669429b3c0937853eb06e3afb5c51f4f9715be86d7564e4fca4e925832f5460
 canonical_tarball=${TRACECODE_STAGE1_CANONICAL_TARBALL:-/root/ci/coord-artifacts/tracecode-harness-0.20.4-b025fdb8-prelim.tgz}
+# A carried-forward step candidate: an exact commit plus its packed tarball and
+# independently pinned SHA-256 (G7: never rebuild to compare; install the carried bytes).
+if [ -n "${TRACECODE_STAGE1_SUBJECT:-}" ] && [ "${TRACECODE_STAGE1_SUBJECT}" != "$candidate" ]; then
+  if [[ "${TRACECODE_STAGE1_SUBJECT}" =~ ^[0-9a-f]{40}$ && -n "${TRACECODE_STAGE1_SUBJECT_TARBALL:-}" && "${TRACECODE_STAGE1_SUBJECT_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
+    candidate=$TRACECODE_STAGE1_SUBJECT
+    canonical_sha=$TRACECODE_STAGE1_SUBJECT_SHA256
+    canonical_tarball=$TRACECODE_STAGE1_SUBJECT_TARBALL
+  else
+    echo "A step candidate needs a 40-hex TRACECODE_STAGE1_SUBJECT plus TRACECODE_STAGE1_SUBJECT_TARBALL and TRACECODE_STAGE1_SUBJECT_SHA256" >&2; exit 2
+  fi
+fi
 job_root=$PWD
 run_id=${1:-baseline}
 filter=${2:-}
@@ -21,7 +32,7 @@ start=$SECONDS
 consumer="$job_root/gate-consumer-isolated"
 
 package_dir="$job_root/gate-package"
-tarball="$package_dir/tracecode-harness-0.20.4.tgz"
+tarball="$package_dir/tracecode-harness-subject.tgz"
 mkdir -p "$package_dir"
 printf '%s  %s\n' "$canonical_sha" "$canonical_tarball" >"$evidence/canonical-tarball.sha256"
 sha256sum --check "$evidence/canonical-tarball.sha256"
