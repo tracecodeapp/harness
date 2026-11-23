@@ -44,6 +44,7 @@ export async function runFixture(fixture, options, onReceipt) {
   let retained;
   let executionId;
   let retainedCompile;
+  let singletonGuard;
   try {
     for (const route of fixture.routes) {
       if (options.routes && !options.routes.includes(route)) continue;
@@ -71,7 +72,7 @@ export async function runFixture(fixture, options, onReceipt) {
           journal.track(route, faultFixture && transportRoutes.has(route) ? route : undefined);
           if (continuation) {
             const result = await host.execute({ executionId, tracing: { caseIds: [route.at(-1)] } });
-            record = { result, setupMs, retainedCompile };
+            record = { result, setupMs, retainedCompile, retainedExecutionId: executionId };
           } else {
             const rows = rowsFor(fixture, route);
             const trace = interactive || route === 'submit-traced';
@@ -105,6 +106,10 @@ export async function runFixture(fixture, options, onReceipt) {
               const stimulus = { bundle, ...stopFlag };
               record = { stimulus, setupMs };
               record.result = await host.evaluateAlgorithm(stimulus);
+            if (route === 'submit-omitted-B') {
+              const row = record.result.evaluation.cases[0];
+              if (row?.failure?.origin === 'limit') singletonGuard = row.failure.reason;
+            }
             }
           }
           const evaluation = record.result?.evaluation;
@@ -128,7 +133,7 @@ export async function runFixture(fixture, options, onReceipt) {
         }
       }
       await onReceipt({
-        ...record, route, transcript: journal.since(from), durationMs: performance.now() - start,
+        ...record, route, singletonGuard, transcript: journal.since(from), durationMs: performance.now() - start,
         crossOriginIsolated: globalThis.crossOriginIsolated,
       });
     }

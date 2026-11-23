@@ -22,7 +22,7 @@ function serviceCut(fixture, route) {
 }
 
 function required(fixture, route) {
-  const ids = ['compile', 'order'];
+  const ids = ['compile', 'order', 'correlation'];
   if (!route.startsWith('run-') && !continuation(route)) ids.push('aggregate', 'counts');
   if (fixture.noInterruptBuffer) ids.push('interrupt-unavailable');
   for (const row of selectedRows(fixture, route)) {
@@ -113,10 +113,25 @@ function check(fixture, route, sample, assert) {
   const compile = evaluation?.compile ?? sample.retainedCompile;
   assert('compile', compile?.status === 'compiled' && evaluation?.status === 'completed', compile ?? sample.rejection);
   assert('order', isDeepStrictEqual(published.map((row) => row.caseId), rows.map((row) => row.id)), published.map((row) => row.caseId));
+  if (evaluation) {
+    const keysValid = published.every((row) => typeof row.sessionId === 'string' && Number.isInteger(row.pid));
+    const bundle = sample.stimulus?.bundle;
+    const matchingReference = continuation(route)
+      ? typeof sample.retainedExecutionId === 'string' &&
+        (receipt.executionId === undefined || receipt.executionId === sample.retainedExecutionId)
+      : route.startsWith('run-')
+        ? evaluation.status === 'compile-failed' ? receipt.executionId === undefined : typeof receipt.executionId === 'string'
+        : receipt.bundleId === bundle?.id && receipt.workspaceDigest === bundle?.workspaceDigest;
+    assert('correlation', keysValid && matchingReference, {
+      bundleId: receipt.bundleId, workspaceDigest: receipt.workspaceDigest,
+      executionId: receipt.executionId, retainedExecutionId: sample.retainedExecutionId,
+    });
+  }
   if (!route.startsWith('run-') && !continuation(route)) {
     const passed = rows.filter((row) => desiredRow(fixture, route, row) === 'completed').length;
     const verdict = serviceCut(fixture, route) ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
-    assert('aggregate', receipt?.verdict === verdict, receipt?.verdict);
+    const ok = verdict === 'indeterminate' ? undefined : verdict === 'passed';
+    assert('aggregate', receipt?.verdict === verdict && receipt?.policy?.result === ok, [receipt?.verdict, receipt?.policy]);
     assert('counts', receipt?.passedCount === passed && receipt?.totalCount === rows.length, [receipt?.passedCount, receipt?.totalCount]);
   }
   if (fixture.noInterruptBuffer) {
@@ -128,6 +143,17 @@ function check(fixture, route, sample, assert) {
     const status = desiredRow(fixture, route, expected);
     if (row) {
       checkRow(fixture, expected, row, status, published, sample.conversions?.cases?.[published.indexOf(row)], assert);
+    }
+    if (expected.limitReasons && row) {
+      const reason = row.failure?.reason;
+      const hasStart = wire.some((event) => event.kind === 'worker-started' && event.caseId === expected.id);
+      const isClockProbe = fixture.noInterruptBuffer === true;
+      const delivered = wire.some((event) => event.kind === 'dispatch' && event.rows.includes(expected.id));
+      if (hasStart || (isClockProbe && delivered)) {
+        assert(`${expected.id}/learner-guard`, row.failure?.origin === 'limit' &&
+          expected.limitReasons.includes(reason) && (!sample.singletonGuard || reason === sample.singletonGuard),
+        { reason, singleton: sample.singletonGuard, hasStart });
+      }
     }
     if (fixture.gate === 'G4' && !continuation(route)) {
       const starts = wire.filter((event) => event.kind === 'worker-started' && event.caseId === expected.id && event.mode === 'code');
