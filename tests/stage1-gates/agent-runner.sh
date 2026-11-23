@@ -22,6 +22,7 @@ mkdir "$evidence"
 printf '%s\n' "$subject" >"$evidence/candidate.sha"
 git rev-parse HEAD >"$evidence/runner.sha"
 start=$SECONDS
+consumer="$job_root/gate-consumer-isolated"
 
 if [ ! -f "$job_root/gate-package.ready" ]; then
   mkdir "$job_root/gate-package"
@@ -42,25 +43,30 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   fi
   tarball=$(find "$job_root/gate-package" -maxdepth 1 -name '*.tgz')
   sha256sum "$tarball" >"$job_root/gate-package/tarball.sha256"
-  mkdir "$job_root/gate-consumer"
-  printf '%s\n' '{"name":"stage1-gates-consumer","private":true,"type":"module"}' >"$job_root/gate-consumer/package.json"
-  (
-    cd "$job_root/gate-consumer"
-    corepack pnpm add --prefer-offline --ignore-scripts "$tarball"
-    node node_modules/@tracecode/harness/dist/cli.cjs sync-assets "$job_root/gate-assets" --inventory
-  ) >"$evidence/install-assets.log" 2>&1 || { tail -60 "$evidence/install-assets.log"; exit 1; }
   printf '%s\n' "$subject" >"$job_root/gate-package.ready"
 fi
 [ "$(cat "$job_root/gate-package.ready")" = "$subject" ] || { echo 'Use a fresh host job for a different subject.' >&2; exit 2; }
+if [ ! -f "$consumer/.installed" ]; then
+  read -r _ tarball <"$job_root/gate-package/tarball.sha256"
+  mkdir -p "$consumer"
+  printf '%s\n' '{"name":"stage1-gates-consumer","private":true,"type":"module"}' >"$consumer/package.json"
+  (
+    cd "$consumer"
+    corepack pnpm --ignore-workspace add --prefer-offline --ignore-scripts "$tarball"
+    node node_modules/@tracecode/harness/dist/cli.cjs sync-assets "$job_root/gate-assets" --inventory
+  ) >"$evidence/install-assets.log" 2>&1 || { tail -60 "$evidence/install-assets.log"; exit 1; }
+  touch "$consumer/.installed"
+fi
 cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
+consumer="$job_root/gate-consumer-isolated"
 set +e
 if [ "$subject" = "$candidate" ]; then
   export TRACECODE_STAGE1_CANDIDATE_SOURCE="$job_root/gate-candidate"
 fi
 TRACECODE_STAGE1_SUBJECT="$subject" TRACECODE_STAGE1_FILTER="$filter" TRACECODE_STAGE1_APP_INPUT="$app_input" TRACECODE_STAGE1_MUX_INPUT="$mux_input" \
-  node tests/stage1-gates/run.mjs "$job_root/gate-consumer" "$job_root/gate-assets" "$evidence"
+  node tests/stage1-gates/run.mjs "$consumer" "$job_root/gate-assets" "$evidence"
 code=$?
 set -e
 printf 'browser_seconds=%s\ntotal_seconds=%s\nexit=%s\n' "$((SECONDS - browser_start))" "$((SECONDS - start))" "$code" | tee -a "$evidence/host-runtime.txt"
