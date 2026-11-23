@@ -19,8 +19,8 @@ import {
 import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 import type {
-  Drawing,
   RuntimeObservationCall,
+  RuntimeObservationReply,
 } from '../../packages/runtime-contracts/src/runtime-calls';
 import type {
   JudgeObservationLease,
@@ -36,7 +36,7 @@ import { VerdictReceiptStore } from '../../packages/judge/src/internal/receipt-s
 
 import type { JudgeTestBridge } from './judge-test-bridge';
 
-type ObservationRefusal = Extract<Drawing, { status: 'refused' }>;
+type ObservationRefusal = Extract<RuntimeObservationReply, { status: 'refused' }>;
 type ObservationPreparation = JudgeObservationLease | ObservationRefusal;
 
 function observationRefused(reason: ObservationRefusal['reason']): ObservationRefusal {
@@ -96,7 +96,9 @@ export class JudgeObservationSchedule<Result, Expected> {
             this.mark(event, binding.caseId, this.attempts.get(binding.caseId)?.token.token);
           }
         }
-      : undefined);
+      : undefined,
+      registration.capabilities.certification
+    );
   }
 
   recordPrepare(call: RuntimeObservationCall['program']): void {
@@ -272,7 +274,7 @@ export class JudgeObservationSchedule<Result, Expected> {
     });
   }
 
-  private async draw(caseId: string, attempt: ObservationAttempt): Promise<Drawing> {
+  private async draw(caseId: string, attempt: ObservationAttempt): Promise<RuntimeObservationReply> {
     const signal = attempt.controller.signal;
     try {
       return await this.gate.run(signal, async () => {

@@ -3,7 +3,16 @@ export * from './algorithm-evaluate';
 export * from './algorithm-model';
 export * from './algorithm-validate';
 export * from './comparison';
-export * from './comparator-strategy';
+export {
+  assertJudgeComparatorPolicy,
+  compareJudgeValues,
+  createJudgeComparator,
+  runJudgeCustomValidator,
+  type JudgeComparatorPolicy,
+  type JudgeComparatorStrategy,
+  type JudgeCompareMode,
+  type JudgeCustomValidatorId,
+} from './comparator-strategy';
 export * from './errors';
 export * from './evaluate';
 export * from './facts';
