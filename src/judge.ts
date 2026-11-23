@@ -113,6 +113,10 @@ export {
 } from '../packages/judge/src/index';
 
 export type {
+  Attachment,
+  Cut,
+  Drawing,
+  Refusal,
   JudgeAlgorithmBundle,
   JudgeAlgorithmLanguage,
   JudgeAlgorithmSourceCase,

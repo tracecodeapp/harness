@@ -12,7 +12,7 @@ import type {
 } from './runtime-capabilities';
 import type { RuntimeTrace } from './runtime-trace';
 
-/** @internal Reasons stamped at the observation boundary. */
+/** Reasons stamped at the observation boundary when recording is cut short. */
 export type Cut =
   | 'step-budget'
   | 'line-budget'
@@ -22,7 +22,7 @@ export type Cut =
   | 'observer-deadline'
   | 'depth-budget';
 
-/** @internal A refusal is an observation outcome, separate from execution. */
+/** A refusal is an observation outcome, separate from execution. */
 export type Refusal =
   | 'recorder-unavailable'
   | 'unsupported-program'
@@ -35,7 +35,7 @@ export type Refusal =
   | 'uncertified-drawing'
   | 'case-not-run';
 
-/** @internal The trusted adapter certifies the trace before returning it. */
+/** The trusted adapter certifies the trace before returning a drawing. */
 export type Drawing =
   | { status: 'drawn'; trace: RuntimeTrace }
   | { status: 'truncated'; reason: Cut; trace: RuntimeTrace; attemptedEvents: number }

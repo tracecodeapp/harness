@@ -17,3 +17,4 @@ export * from './project-evaluators';
 export * from './project-validate';
 export * from './runtime-control';
 export * from './validate';
+export type { Attachment, Cut, Drawing, Refusal } from './internal/receipt-types';

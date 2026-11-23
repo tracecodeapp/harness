@@ -31,4 +31,5 @@ export type VerdictReceipt<Result = unknown, Expected = unknown> = Frozen<
   }
 >;
 
+/** An immutable observation bound to one committed case. */
 export type Attachment = Frozen<Binding & Drawing>;

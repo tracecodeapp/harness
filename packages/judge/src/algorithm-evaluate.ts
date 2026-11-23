@@ -101,7 +101,8 @@ export function createAlgorithmJudgeReceipt<
   Result = unknown,
   Expected = unknown,
 >(
-  bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
+  bundle: JudgeAlgorithmBundle<Input, Expected, Result>
+    | Pick<JudgeAlgorithmBundle, 'id' | 'workspaceDigest' | 'policy' | 'facts'>,
   evaluation: JudgeAlgorithmReceipt<Result, Expected>['evaluation'],
   evaluatedAt = new Date().toISOString()
 ): JudgeAlgorithmReceipt<Result, Expected> {
