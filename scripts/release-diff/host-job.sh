@@ -6,6 +6,7 @@
 # RD_CATALOG (default all), RD_BASE_VERSION (default 0.17.1), RD_SKIP_BUILD=1.
 # RD_RERUN_FILE: lines "<language> <id>,<id>" rerun only those problems (with RD_OUT=rerun-out).
 # RD_NOSTOP_SIDE=1 (rerun mode): also run the target without stopAtFirstRunaway (target-nostop).
+# RD_SIDES="target target-nostop": run only the listed sides. Rerun reports are <label>-<lang>-<line>.json.
 # Output: release-diff-out/<label>-<language>.json and logs, copied back with scp.
 set -uo pipefail
 ROOT=$(pwd)
@@ -51,16 +52,21 @@ run_side() {
   echo "== $label $lang start $(date -u +%H:%M:%SZ)"
   RD_HARNESS_ROOT="$root" RD_LABEL="$label" RD_STOP_SUBMIT="$stop" RD_CORPUS="$CORPUS" \
     RD_CATALOG="${RD_CATALOG:-all}" RD_LANGUAGES="$lang" RD_PROBLEMS="${RD_PROBLEMS:-}" \
-    RD_REPORT="$OUT/$label-$lang.json" \
+    RD_REPORT="$OUT/$label-$lang${RUN_TAG:+-$RUN_TAG}.json" \
     corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-release-diff-catalog.ts \
-    </dev/null >"$OUT/$label-$lang.log" 2>&1
+    </dev/null >"$OUT/$label-$lang${RUN_TAG:+-$RUN_TAG}.log" 2>&1
   local code=$?
-  echo "== $label $lang end $(date -u +%H:%M:%SZ) exit=$code fixtures=$(grep -cE '^\[' "$OUT/$label-$lang.log")"
-  grep -E 'runner-timeout|crashed|Error' "$OUT/$label-$lang.log" | head -5
+  echo "== $label $lang${RUN_TAG:+ #$RUN_TAG} end $(date -u +%H:%M:%SZ) exit=$code fixtures=$(grep -cE '^\[' "$OUT/$label-$lang${RUN_TAG:+-$RUN_TAG}.log")"
+  grep -E 'runner-timeout|crashed|Error' "$OUT/$label-$lang${RUN_TAG:+-$RUN_TAG}.log" | head -5
   return $code
 }
 run_lang() {
   local lang=$1
+  # RD_SIDES (e.g. "target target-nostop") runs only those sides, one after another.
+  if [ -n "${RD_SIDES:-}" ]; then
+    for side in $RD_SIDES; do run_side "$lang" "$side" || status=1; done
+    return
+  fi
   if [ "${RD_PARALLEL:-0}" = 1 ]; then
     run_side "$lang" base & local b=$!
     run_side "$lang" target & local t=$!
@@ -74,9 +80,12 @@ run_lang() {
   if [ "${RD_NOSTOP_SIDE:-0}" = 1 ]; then run_side "$lang" target-nostop || status=1; fi
 }
 if [ -n "${RD_RERUN_FILE:-}" ]; then
+  line_no=0
   while read -r lang ids; do
     [ -n "$lang" ] || continue
-    RD_PROBLEMS="$ids" run_lang "$lang"
+    line_no=$((line_no + 1))
+    # Each line gets its own report files (RUN_TAG), so a line may repeat to measure a rate.
+    RUN_TAG="$line_no" RD_PROBLEMS="$ids" run_lang "$lang"
   done <"$RD_RERUN_FILE"
   echo "done $(date -u +%H:%M:%SZ)"
   exit $status
