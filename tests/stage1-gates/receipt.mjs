@@ -29,15 +29,20 @@ function withoutStack({ stack, ...error }) {
   return error;
 }
 
-export function checkPresentation(row, ordinary, traced, selected, workspaceDigest) {
+export function assertNoLegacyRefusal(result) {
   for (const field of ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun', 'providerFailure']) {
-    assert(!Object.hasOwn(row, field), `Legacy refusal field ${field}`);
+    assert(!Object.hasOwn(result, field), `Legacy refusal field ${field}`);
   }
+}
+
+export function checkPresentation(row, ordinary, traced, selected, workspaceDigest) {
+  for (const result of [row, ordinary, traced]) assertNoLegacyRefusal(result);
   for (const field of ['trace', 'traceTruncated', 'executionTimeMs']) {
     assert(!Object.hasOwn(ordinary, field), `Ordinary converter returned ${field}`);
   }
   if (ordinary.rejected) {
     assert(traced.rejected, 'Trace converter hid an ordinary provider failure');
+    assert.notEqual(ordinary.rejected.code, 'trace-unavailable');
     assert.deepEqual(withoutStack(traced.rejected), withoutStack(ordinary.rejected));
   }
   const attachment = row.attachment;

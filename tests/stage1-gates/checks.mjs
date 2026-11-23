@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { assertGraph } from './graph.mjs';
 import {
-  checkCacheHit, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
+  assertNoLegacyRefusal, checkCacheHit, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
 } from './receipt.mjs';
 import { jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 
@@ -67,17 +67,24 @@ export function checkObservation(fixture, request, observation, record, register
     }
   });
   check('@request', 'compile-footprint', () => {
+    if (registered) {
+      for (const result of [reported, evaluation, evaluation.compile].filter(defined)) {
+        assertNoLegacyRefusal(result);
+        assert(!Object.hasOwn(result, 'attachment') && !Object.hasOwn(result, 'trace'));
+      }
+      if (defined(evaluation.compile)) {
+        assert(evaluation.compile.diagnostics.every(({ kind, code }) =>
+          kind !== 'trace-truncated' && code !== 'trace-unavailable'), 'Observer diagnostic on ordinary compile');
+      }
+    }
     if (evaluation.status === 'compile-failed') {
       assert.equal(evaluation.cases.length, 0);
       assert(!defined(reported.executionId));
       assert(defined(evaluation.compile.failure));
       if (compileOnly) {
-        for (const object of [reported, evaluation, evaluation.compile]) {
-          for (const field of ['attachment', 'trace', 'traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded']) {
-            assert(!Object.hasOwn(object, field), `Unexpected ${field} on compile failure`);
-          }
-        }
         const { compileProjection, tracedCompileProjection } = observation;
+        assertNoLegacyRefusal(compileProjection);
+        assertNoLegacyRefusal(tracedCompileProjection);
         const { trace, executionTimeMs, ...tracedCompile } = tracedCompileProjection;
         assert.equal(compileProjection.kind, 'failed');
         assert.equal(compileProjection.diagnosticStage, 'compile');
@@ -142,19 +149,30 @@ export function checkObservation(fixture, request, observation, record, register
         checkRedraw(observation);
         return;
       }
-      const commands = observation.worker.filter((event) => event.action === 'command' && /execute|compile-run/.test(event.type));
+      const continuation = registered && request.mode === 'continuation';
+      const commands = observation.worker.filter(({ action, type }) => action === 'command' &&
+        (/execute|compile-run/.test(type) || (continuation && type === 'observe-execution')));
       const acknowledged = commands.filter((command) => observation.worker.some((event) => (
         event.action === 'response' && event.id === command.id && event.generation === command.generation
       )));
       if (evaluation.status === 'compile-failed') assert.equal(commands.length, 0);
-      else if (registered && request.mode === 'continuation') {
+      else if (continuation) {
         const refusedBeforeDispatch = commands.length === 0 && evaluation.cases.length === request.cases.length &&
           evaluation.cases.every((row) => row.attachment?.status === 'refused');
         if (!refusedBeforeDispatch) assert(acknowledged.length > 0, 'No acknowledged observation dispatch');
         assert(commands.every(({ role, mode }) => role !== 'ordinary' && mode !== 'code'), 'Continuation dispatched ordinary execution');
+        if (fixture.language === 'javascript' || fixture.language === 'typescript') {
+          assert(commands.every(({ type }) => type === 'observe-execution'), 'Continuation used an ordinary JavaScript execution command');
+        }
       } else assert(acknowledged.length > 0, 'No acknowledged worker execution request');
-      if (request.route === 'ses-compartment-pool') assert(acknowledged.some((command) => command.worker.includes('ses-algorithm')));
-      if (request.route === 'disposable-worker') assert(acknowledged.length && acknowledged.every((command) => !command.worker.includes('ses-algorithm')));
+      // Companions prove the ordinary route on the initial run. The cold
+      // continuation has its own observer lease with a different worker.
+      if (!continuation && request.route === 'ses-compartment-pool') {
+        assert(acknowledged.some((command) => command.worker.includes('ses-algorithm')));
+      }
+      if (!continuation && request.route === 'disposable-worker') {
+        assert(acknowledged.length && acknowledged.every((command) => !command.worker.includes('ses-algorithm')));
+      }
       if (request.mode === 'continuation') {
         assert(acknowledged.every((command) => command.trace !== false && !(Array.isArray(command.trace) && command.trace.includes(false))));
       }
@@ -221,6 +239,10 @@ export function checkObservation(fixture, request, observation, record, register
     check('@request', 'legacy-projection', () => {
       assert.equal(observation.legacy.requestId, submitted.id);
       assert.deepEqual(observation.legacy.results.map((row) => row.caseId), request.cases);
+      if (registered) {
+        assertNoLegacyRefusal(observation.legacy);
+        for (const result of observation.legacy.results) assertNoLegacyRefusal(result);
+      }
       if (compileOnly) {
         const compile = evaluation.compile;
         assert.equal(observation.legacy.compile.status, 'compile-failed');

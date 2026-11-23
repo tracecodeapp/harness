@@ -32,7 +32,7 @@ const redrawRequest = { ...drawRequest, id: 'redraw-b' };
 const mark = (phase, sequence, fields = {}) => ({ phase, sequence, ...scope, ...fields });
 const command = { action: 'command', type: 'execute', generation: 2, id: 'execute-1', mode: 'trace' };
 const response = { ...command, action: 'response' };
-const plainEvaluation = { planId: 'plan', status: 'completed', compile: { status: 'compiled' }, cases: [row] };
+const plainEvaluation = { planId: 'plan', status: 'completed', compile: { status: 'compiled', diagnostics: [] }, cases: [row] };
 const selectedEvaluation = { ...plainEvaluation, cases: [{ ...row, attachment, trace }] };
 const initial = {
   reported: { evaluation: selectedEvaluation, executionId: 'handle' }, workspaceDigest,
@@ -141,9 +141,32 @@ test('cold draw needs an observation acknowledgement or a typed pre-dispatch ref
   assert.equal(status(drawRequest, refused, 'A/console'), 'fail');
 });
 
+test('JS and TS cold continuations acknowledge their distinct observer commands', () => {
+  const observer = { ...command, type: 'observe-execution', worker: 'javascript-worker.js', mode: undefined };
+  const reply = { ...observer, type: 'execute-result', action: 'response' };
+  const result = (language, route, worker) => {
+    const assertions = [];
+    checkObservation({ ...fixture, language }, { ...drawRequest, route }, { ...draw, worker },
+      (item) => assertions.push(item), true);
+    return assertions.find(({ id }) => id.endsWith('/worker-ack')).status;
+  };
+  for (const language of ['javascript', 'typescript']) {
+    for (const route of [undefined, 'ses-compartment-pool', 'disposable-worker']) {
+      assert.equal(result(language, route, [observer, reply]), 'pass');
+      assert.equal(result(language, route, [observer, { ...reply, generation: 3 }]), 'fail');
+      assert.equal(result(language, route, [observer, reply, command, response]), 'fail');
+    }
+  }
+});
+
 test('ordinary grade and trace presentation are checked independently', () => {
   for (const key of ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun', 'providerFailure']) {
     seed(initialRequest, initial, 'A/status', (sample) => { sample.reported.evaluation.cases[0][key] = undefined; });
+    seed(initialRequest, initial, 'A/status', (sample) => {
+      sample.ordinaryProjections[0][key] = false;
+      sample.tracedProjections[0][key] = false;
+    });
+    seed(initialRequest, initial, '@request/compile-footprint', (sample) => { sample.reported.evaluation[key] = undefined; });
   }
   seed(initialRequest, initial, 'A/status', (sample) => { delete sample.reported.evaluation.cases[0].attachment; });
   seed(initialRequest, initial, 'A/status', (sample) => { sample.reported.evaluation.cases[0].attachment.caseId = 'B'; });
@@ -240,6 +263,7 @@ test('registered syntax failure checks compile-only receipts and the pinned mux 
     ['compile', (target) => { target.reported.evaluation.compile.failure.stage = 'runtime'; }],
     ['compile', (target) => { target.reported.evaluation.compile.failure.origin = 'provider'; }],
     ['compile-footprint', (target) => { target.reported.evaluation.compile.attachment = attachment; }],
+    ['compile-footprint', (target) => { target.reported.evaluation.compile.diagnostics.push({ code: 'trace-unavailable' }); }],
     ['compile-footprint', (target) => { target.tracedCompileProjection.executionTimeMs = 2; }],
     ['compile-footprint', (target) => { target.tracedCompileProjection.trace.events = trace.events; }],
     ['correlation', (target) => { target.reported.executionId = 'fake-handle'; }],
@@ -267,6 +291,9 @@ test('registered syntax failure checks compile-only receipts and the pinned mux 
   const bogusOutput = structuredClone(mux);
   bogusOutput.legacy.results[0].output = undefined;
   assert.equal(seen(muxRequest, bogusOutput).get('legacy-projection'), 'fail');
+  const legacyRetry = structuredClone(mux);
+  legacyRetry.legacy.results[0].untracedRunNeeded = false;
+  assert.equal(seen(muxRequest, legacyRetry).get('legacy-projection'), 'fail');
 
   const observations = requestMatrix([caseId], syntax).map(({ id }) => ({ request: id, ...structuredClone(sample) }));
   const compare = () => {
