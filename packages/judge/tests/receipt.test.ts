@@ -5,7 +5,6 @@ import { serialize } from 'node:v8';
 import { MessageChannel, Worker } from 'node:worker_threads';
 import { judgeCaseExecutionOutcome, judgeCompileExecutionOutcome } from '../../../src/internal/judge-execution-outcome';
 import type { Attachment, Cut, Drawing, Refusal } from '../../../src/judge';
-import type { ExecutionLimitReason } from '../../runtime-contracts/src/runtime-execution';
 import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../../runtime-contracts/src/runtime-trace';
 import { allCasesPassPolicy, createAlgorithmJudgeReceipt } from '../src/algorithm-evaluate';
 import { ALGORITHM_BUNDLE_SCHEMA, type JudgeAlgorithmBundle } from '../src/algorithm-model';
@@ -422,33 +421,48 @@ test('an observer deadline requires a retained prefix to count as truncated', ()
   }
 });
 
-test('attachment cuts map to the app-compatible traceTruncated codes', async (t) => {
-  const expected: Record<Cut, ExecutionLimitReason> = {
-    'step-budget': 'trace-limit',
-    'stored-event-budget': 'trace-limit',
-    'byte-budget': 'trace-byte-limit',
-    'line-budget': 'line-limit',
-    'single-line-budget': 'single-line-limit',
-    'depth-budget': 'recursion-limit',
-    'observer-deadline': 'trace-limit',
-  };
+const expectedTraceCutCodes = {
+  'step-budget': 'trace-limit',
+  'stored-event-budget': 'trace-limit',
+  'byte-budget': 'trace-byte-limit',
+  'line-budget': 'trace-limit',
+  'single-line-budget': 'trace-limit',
+  'depth-budget': 'trace-limit',
+  'observer-deadline': 'trace-limit',
+} satisfies Record<Cut, 'trace-limit' | 'trace-byte-limit'>;
 
-  for (const [reason, legacyCode] of Object.entries(expected)) {
+// The exhaustive record makes any addition to the exported Cut union a test
+// type error until it is included in both loops.
+const attachmentCuts = Object.keys(expectedTraceCutCodes) as Cut[];
+
+function traceTruncatedFor(reason: Cut) {
+  const store = owner();
+  const attempt = store.beginObservation('A');
+  store.commitOrdinary(a, ordinary());
+  store.seal({ status: 'completed' }, evaluatedAt);
+  assert.equal(store.publishDrawing(attempt, a, {
+    status: 'truncated', reason, trace, attemptedEvents: 1,
+  }), true);
+  const row = store.projectEvaluation(['A']).cases[0]!;
+  assert.equal(row.attachment?.status, 'truncated');
+  assert.equal(row.attachment.reason, reason);
+  const outcome = judgeCaseExecutionOutcome(row, { language: 'javascript', trace: true });
+  assert.equal(outcome.kind, 'completed');
+  return outcome.traceTruncated;
+}
+
+test('attachment cuts map to the app-compatible traceTruncated codes', async (t) => {
+  for (const reason of attachmentCuts) {
     await t.test(reason, () => {
-      const store = owner();
-      const attempt = store.beginObservation('A');
-      store.commitOrdinary(a, ordinary());
-      store.seal({ status: 'completed' }, evaluatedAt);
-      assert.equal(store.publishDrawing(attempt, a, {
-        status: 'truncated', reason, trace, attemptedEvents: 1,
-      }), true);
-      const row = store.projectEvaluation(['A']).cases[0]!;
-      assert.equal(row.attachment?.status, 'truncated');
-      assert.equal(row.attachment.reason, reason);
-      const outcome = judgeCaseExecutionOutcome(row, { language: 'javascript', trace: true });
-      assert.equal(outcome.kind, 'completed');
-      assert.equal(outcome.traceTruncated, legacyCode);
+      assert.equal(traceTruncatedFor(reason), expectedTraceCutCodes[reason]);
     });
+  }
+});
+
+test('no attachment cut becomes a learner limit', () => {
+  for (const reason of attachmentCuts) {
+    const code = traceTruncatedFor(reason);
+    assert.ok(code === 'trace-limit' || code === 'trace-byte-limit', `${reason} mapped to ${code}`);
   }
 });
 

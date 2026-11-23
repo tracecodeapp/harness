@@ -191,18 +191,17 @@ function legacyTraceTruncated(
   return legacy ? { traceTruncated: legacy.code as ExecutionLimitReason } : {};
 }
 
-// The traced-outcome reader predates attachments and uses execution limit
-// codes for presentation. The attachment still carries the exact observer cut.
-const legacyCutCode: Readonly<Record<Cut, ExecutionLimitReason>> = {
+// The app displays learner limit codes as unfinished execution.
+// Keep the exact observer cut on the attachment.
+const legacyCutCode = {
   'step-budget': 'trace-limit',
-  'line-budget': 'line-limit',
-  'single-line-budget': 'single-line-limit',
+  'line-budget': 'trace-limit',
+  'single-line-budget': 'trace-limit',
   'stored-event-budget': 'trace-limit',
   'byte-budget': 'trace-byte-limit',
-  // A presentation cutoff never reports a learner's client-timeout.
   'observer-deadline': 'trace-limit',
-  'depth-budget': 'recursion-limit',
-};
+  'depth-budget': 'trace-limit',
+} satisfies Record<Cut, 'trace-limit' | 'trace-byte-limit'>;
 
 /**
  * Converts a Judge case result into the execution outcome a learner sees,
