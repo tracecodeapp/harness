@@ -1102,7 +1102,8 @@ function executePreparedProviderBatch(
               inputBatch: cases.map((testCase) => testCase.inputs),
               signal,
               limits: options.binding.limits,
-            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId))),
+            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
+              options.owned?.acknowledgeBatchStarts),
       catch: errorFromUnknown,
     });
     if (outcomes.length !== cases.length) {

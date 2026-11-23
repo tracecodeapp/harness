@@ -180,6 +180,7 @@ const javaCompileCache = new Map();
 const javaPreparedSourceCache = new Map();
 const preparedJavaRuntimePrograms = new Map();
 const activeProtocolTokens = new Map();
+let activePreparedBatchAdmission;
 const pendingExternalJavaCompiles = new Map();
 const pendingCompilerArtifactCacheRequests = new Map();
 const STDIN_PIPE_HEADER_INTS = 3;
@@ -454,13 +455,15 @@ function postMessageResponse(message, options = {}) {
 
 self.TraceCodeJavaPreparedCaseAdmitted = (index, admissionId) => {
   const id = self.TraceCodeActiveKernelRequestId;
-  if (id && activeProtocolTokens.has(id)) {
-    postMessageResponse({
-      id,
-      type: 'runtime-progress',
-      payload: { stage: 'ordinary-case-started', detail: { caseIndex: index, admissionId } },
-    });
-  }
+  const admission = activePreparedBatchAdmission;
+  if (!admission || admission.id !== id || admission.admissionId !== admissionId ||
+    !activeProtocolTokens.has(id)) return;
+  postMessageResponse({
+    id,
+    type: 'runtime-progress',
+    payload: { stage: 'ordinary-case-started', detail: { caseIndex: index, admissionId } },
+  });
+  admission.startedCaseIndexes.push(index);
 };
 
 function javaHttpBase64FromString(value) {
@@ -9511,7 +9514,14 @@ self.onmessage = (event) => {
                 }
             : undefined
         );
+        // The execution queue owns this evidence until its terminal reply.
+        // Only starts actually posted for this command enter the attestation.
+        const admission = message.type === 'execute-prepared-runtime-program-batch' &&
+          preparedProgramMode === 'code' && Number.isSafeInteger(message.payload?.admissionId)
+          ? { id: message.id, admissionId: message.payload.admissionId, startedCaseIndexes: [] }
+          : undefined;
         self.TraceCodeActiveKernelRequestId = message.id;
+        activePreparedBatchAdmission = admission;
         let result;
         try {
           result = await withJavaUserAuthorityLockdown(
@@ -9519,6 +9529,7 @@ self.onmessage = (event) => {
             requestedAuthorityMode
           );
         } finally {
+          activePreparedBatchAdmission = undefined;
           if (self.TraceCodeActiveKernelRequestId === message.id) {
             self.TraceCodeActiveKernelRequestId = undefined;
           }
@@ -9530,6 +9541,7 @@ self.onmessage = (event) => {
           result.timings.queueMs = dequeuedAt - queuedAt;
           result.timings.setupMs = performance.now() - dequeuedAt - (result.timings.totalMs ?? 0);
         }
+        if (admission) result.startedCaseIndexes = admission.startedCaseIndexes;
         postExecutionResult(result);
       } catch (error) {
         const errorMessage = await formatWorkerErrorMessageAsync(error);
