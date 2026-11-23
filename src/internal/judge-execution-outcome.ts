@@ -199,7 +199,8 @@ const legacyCutCode: Readonly<Record<Cut, ExecutionLimitReason>> = {
   'single-line-budget': 'single-line-limit',
   'stored-event-budget': 'trace-limit',
   'byte-budget': 'trace-byte-limit',
-  'observer-deadline': 'client-timeout',
+  // A presentation cutoff never reports a learner's client-timeout.
+  'observer-deadline': 'trace-limit',
   'depth-budget': 'recursion-limit',
 };
 
