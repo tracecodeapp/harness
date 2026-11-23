@@ -1,363 +1,187 @@
 #!/usr/bin/env python3
-"""Normalize and diff two release-diff raw report sets (tests/test-release-diff-catalog.ts).
+"""Qualify raw release reports against an independently enumerated manifest.
 
-usage: compare.py <dir> <base-label> <target-label> [--rerun <dir>] [--out <dir>] [--base-current]
-
-<dir> holds <label>-<language>.json for both labels. Writes, into --out (default <dir>):
-  normalized-<label>.json   one record per (language, fixture, mode, case)
-  differences.json          every differing record with before/after and an automatic group key
-  summary.md                counts and automatic groups (input to the hand-written REPORT.md)
-With --rerun, a difference whose rerun (same labels, same case) no longer differs is marked flaky.
-
-Modes compared per case:
-  submit     host.evaluateAlgorithm, untraced (the app's Submit)
-  run        the interactive Run's initial result list (selected case traced, others untraced)
-  run-trace  the traced result of each case (initial for the first case, continuation for the rest)
-
-Compared fields: status, verdict (kind), value (canonical JSON), failure class, and the error
-diagnostic codes (both versions expose `code`; the deploy app reads `runtime-provider-error` as
-an infrastructure failure).
-0.17.1 has no `failure` object (it arrived in 0.20.0); its failure class is inferred from
-status, timedOut and diagnostic codes (see infer_legacy_failure). The target's class comes from
-failure.origin + stage/reason. `origin` (program/limit/provider/not-run/none) is the comparable
-level; the finer stage/reason is reported separately because 0.17.1 cannot state it.
+The manifest supplies appDataSha and rows of {key, graph?}. A key is the array
+[language, fixture, case, mode, stopPolicy]. Pins supply {key, before, after,
+reason, intendedOutcome, reviewer, decision}. Graph scope is per manifest row.
 """
+import argparse
 import json
-import os
-import sys
-from collections import Counter, defaultdict
-
-LANGS = ['python', 'javascript', 'typescript', 'java', 'cpp', 'csharp']
+from pathlib import Path
 
 
-def canon(value):
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+def graph_equal(left, right):
+    """Compare rooted graphs with two-way identity mapping."""
+    def index(root):
+        definitions = {}
+        refs = []
+
+        def collect(node):
+            if isinstance(node, list):
+                for value in node:
+                    collect(value)
+            if not isinstance(node, dict):
+                return
+            if "__ref__" in node:
+                if set(node) != {"__ref__"} or not isinstance(node["__ref__"], str):
+                    raise ValueError("malformed graph reference")
+                refs.append(node["__ref__"])
+                return
+            if "__id__" in node:
+                name = node["__id__"]
+                if not isinstance(name, str) or name in definitions:
+                    raise ValueError("invalid or duplicate graph definition")
+                definitions[name] = node
+            for value in node.values():
+                collect(value)
+
+        collect(root)
+        if set(refs) - definitions.keys():
+            raise ValueError("dangling graph reference")
+        return definitions
+
+    lhs, rhs = index(left), index(right)
+    forward, backward = {}, {}
+
+    def compare(a, b):
+        if type(a) is not type(b):
+            return False
+        if isinstance(a, list):
+            return len(a) == len(b) and all(compare(x, y) for x, y in zip(a, b))
+        if not isinstance(a, dict):
+            return a == b
+
+        def definition(node, definitions):
+            if "__ref__" in node:
+                return node["__ref__"], definitions[node["__ref__"]]
+            return node.get("__id__"), node
+
+        a_id, a = definition(a, lhs)
+        b_id, b = definition(b, rhs)
+        if (a_id is None) != (b_id is None):
+            return False
+        if a_id is not None:
+            if a_id in forward or b_id in backward:
+                return forward.get(a_id) == b_id and backward.get(b_id) == a_id
+            forward[a_id], backward[b_id] = b_id, a_id
+        fields = set(a) - {"__id__"}
+        return fields == set(b) - {"__id__"} and all(compare(a[name], b[name]) for name in sorted(fields))
+
+    return compare(left, right)
 
 
-def node_normal(value):
-    """The app's proposed "same returned value" rule (harness-artifacts/trace-parity/
-    compare-values-rule.py): renumber `__id__`/`__ref__` by first appearance, then drop `__id__`.
-    A difference this rule removes is counted (nodeIdsOnly), not reported."""
-    ids = {}
-
-    def number(x):
-        return ids.setdefault(x, '#%d' % len(ids))
-
-    def go(x):
-        if isinstance(x, list):
-            return [go(i) for i in x]
-        if isinstance(x, dict):
-            if isinstance(x.get('__id__'), str):
-                number(x['__id__'])
-            out = {}
-            for k, v in x.items():
-                if k == '__id__':
-                    continue
-                out[k] = number(v) if k == '__ref__' and isinstance(v, str) else go(v)
-            return out
-        return x
-
-    return go(value)
+def canonical(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def diag_codes(diagnostics):
-    return sorted({d.get('code') for d in diagnostics or [] if d.get('severity') == 'error' and d.get('code')})
+def unique(entries, name):
+    table = {}
+    for key, value in entries:
+        if key in table:
+            raise ValueError(f"release-diff/{name}/duplicate/{'/'.join(key)}")
+        table[key] = value
+    return table
 
 
-def first_error(diagnostics, fallback=None):
-    for d in diagnostics or []:
-        if d.get('severity') == 'error' and d.get('message'):
-            return d['message'][:300]
-    return (fallback or '')[:300] or None
-
-
-LIMIT_CODE_HINTS = [
-    ('trace-byte', 'trace-byte-limit'), ('single-line', 'single-line-limit'), ('line-limit', 'line-limit'),
-    ('line_limit', 'line-limit'), ('trace-limit', 'trace-limit'), ('step', 'trace-limit'),
-    ('recursion', 'recursion-limit'), ('memory', 'memory-limit'), ('serializ', 'serialization-limit'),
-    ('timeout', 'client-timeout'), ('timed-out', 'client-timeout'),
-]
-
-
-def infer_legacy_failure(case):
-    """0.17.1 failure class from what it exposes (status, timedOut, diagnostic codes)."""
-    status = case.get('status')
-    codes = ' '.join(diag_codes(case.get('diagnostics')) + [str(case.get('traceExitReason') or '')]).lower()
-    if status == 'completed':
-        return 'none', None
-    if status == 'timed-out' or case.get('timedOut'):
-        return 'limit', 'client-timeout'
-    if status == 'protocol-error':
-        return 'provider', 'protocol'
-    for hint, reason in LIMIT_CODE_HINTS:
-        if hint in codes:
-            return 'limit', reason
-    if 'provider' in codes or 'infrastructure' in codes or 'worker' in codes:
-        return 'provider', 'runtime-failure'
-    return 'program', 'runtime'
-
-
-def target_failure(case):
-    status = case.get('status')
-    if status == 'completed':
-        return 'none', None
-    if status == 'not-run':
-        nr = case.get('notRun') or {}
-        return 'not-run', nr.get('limit')
-    failure = case.get('failure')
-    if not failure:
-        return 'unlabelled', None
-    return failure.get('origin'), failure.get('stage') or failure.get('reason')
-
-
-def failure_class(case, legacy):
-    return infer_legacy_failure(case) if legacy else target_failure(case)
-
-
-def compile_record(evaluation, legacy):
-    compile_ = evaluation.get('compile') or {}
-    failure = compile_.get('failure')
-    if failure and not legacy:
-        origin, detail = failure.get('origin'), failure.get('stage') or failure.get('reason')
-    elif compile_.get('status') == 'timed-out' or compile_.get('timedOut'):
-        origin, detail = 'limit', 'client-timeout'
-    elif legacy:
-        origin, detail = 'program', None  # 0.17.1 does not say which compile stage failed
-    else:
-        origin, detail = 'program', 'compile'
-    return {
-        'status': 'compile-failed', 'verdict': None, 'value': None, 'origin': origin, 'detail': detail,
-        'message': first_error(compile_.get('diagnostics'), compile_.get('stderr')),
-        'codes': diag_codes(compile_.get('diagnostics')),
-    }
-
-
-def case_record(case, legacy):
-    if case is None:
-        return {'status': 'missing-case', 'verdict': None, 'value': None, 'origin': 'missing', 'detail': None}
-    origin, detail = failure_class(case, legacy)
-    verdict = case.get('verdict') or {}
-    record = {
-        'status': case.get('status'),
-        'verdict': verdict.get('kind'),
-        'value': canon(node_normal(case.get('value'))) if case.get('hasValue') else None,
-        'valueRaw': canon(case.get('value')) if case.get('hasValue') else None,
-        'origin': origin,
-        'detail': detail,
-        'message': (case.get('failure') or {}).get('message', '')[:300] or first_error(case.get('diagnostics'), case.get('stderr')),
-        'codes': diag_codes(case.get('diagnostics')),
-    }
-    if 'hasTrace' in case:
-        record['hasTrace'] = case.get('hasTrace')
-    return record
-
-
-def side_error(side):
-    if not isinstance(side, dict):
-        return {'status': 'no-result'}
-    if side.get('runnerError'):
-        return {'status': 'runner-error', 'message': side['runnerError'][:300]}
-    if side.get('exception'):
-        e = side['exception']
-        return {'status': 'exception', 'message': (e.get('message') or '')[:300], 'exceptionTag': e.get('tag') or e.get('name')}
-    return None
-
-
-def blank(err):
-    return {'status': err['status'], 'verdict': None, 'value': None, 'origin': err['status'], 'detail': None,
-            'message': err.get('message'), 'codes': []}
-
-
-def normalize(problem, legacy):
-    out = {}
-    submit = problem.get('submit')
-    err = side_error(submit)
-    for c in problem['submitCases']:
-        if err:
-            rec = blank(err)
-        elif submit['evaluation']['status'] == 'compile-failed':
-            rec = compile_record(submit['evaluation'], legacy)
-        else:
-            rec = case_record(submit['evaluation']['cases'].get(c['id']), legacy)
-        out[('submit', c['id'])] = rec
-    run = problem.get('run')
-    err = side_error(run)
-    run_ids = [c['id'] for c in problem['runCases']]
-    for i, cid in enumerate(run_ids):
-        if err:
-            out[('run', cid)] = blank(err)
-            out[('run-trace', cid)] = blank(err)
+def check(manifest, before, after, pins):
+    planned = unique(((tuple(row["key"]), row) for row in manifest["rows"]), "manifest")
+    reviewed = unique(((tuple(pin["key"]), pin) for pin in pins), "pins")
+    outstanding = []
+    used = set()
+    for key in sorted(planned.keys() | before.keys() | after.keys()):
+        label = "/".join(key)
+        if key not in planned:
+            outstanding.append(f"release-diff/unplanned/{label}")
             continue
-        initial = run['initial']
-        if initial['status'] == 'compile-failed':
-            out[('run', cid)] = compile_record(initial, legacy)
-            out[('run-trace', cid)] = compile_record(initial, legacy)
+        if key not in before or key not in after:
+            side = "baseline" if key not in before else "candidate"
+            outstanding.append(f"release-diff/missing/{side}/{label}")
             continue
-        out[('run', cid)] = case_record(initial['cases'].get(cid), legacy)
-        if i == 0:
-            out[('run-trace', cid)] = case_record(initial['cases'].get(cid), legacy)
-        elif cid in run.get('continuation', {}):
-            cont = run['continuation'][cid]
-            out[('run-trace', cid)] = case_record(cont, legacy) if cont.get('status') != 'missing-case' else case_record(None, legacy)
-        elif run.get('continuationError'):
-            ce = run['continuationError']
-            out[('run-trace', cid)] = blank({'status': 'continuation-error', 'message': (ce.get('exception') or {}).get('message')})
-        else:
-            out[('run-trace', cid)] = blank({'status': 'continuation-missing'})
-    return out
-
-
-def load(dirpath, label):
-    reports = {}
-    for lang in LANGS:
-        path = os.path.join(dirpath, f'{label}-{lang}.json')
-        if os.path.exists(path):
-            with open(path) as f:
-                reports[lang] = json.load(f)
-    return reports
-
-
-PRIMARY = ['status', 'verdict', 'value', 'origin']
-
-
-def diff_fields(a, b):
-    fields = [k for k in PRIMARY if a.get(k) != b.get(k)]
-    # A finer failure label only counts when both sides fail with the same origin.
-    if (not fields and a.get('origin') == b.get('origin') and a.get('origin') != 'none'
-            and a.get('detail') is not None and a.get('detail') != b.get('detail')):
-        fields.append('detail')
-    # Diagnostic error codes are exposed by both versions (0.20.0 kept them consumer-visible).
-    if not fields and a.get('origin') != 'none' and a.get('codes') != b.get('codes'):
-        fields.append('codes')
-    return fields
-
-
-def group_key(lang, mode, fields, a, b):
-    sig = []
-    for f in fields:
-        if f == 'value':
-            sig.append(f)
-        elif f == 'codes':
-            sig.append(f'codes:{",".join(a.get("codes") or []) or "-"}->{",".join(b.get("codes") or []) or "-"}')
-        else:
-            sig.append(f'{f}:{a.get(f)}->{b.get(f)}')
-    return f'{mode} | ' + '; '.join(sig)
-
-
-def compare(dirpath, base, target, legacy_base=True):
-    breports, treports = load(dirpath, base), load(dirpath, target)
-    norm = {base: {}, target: {}}
-    counts = {}
-    diffs = []
-    not_compared = []
-    for lang in LANGS:
-        if lang not in breports or lang not in treports:
-            if lang in breports or lang in treports:
-                not_compared.append({'language': lang, 'reason': 'only one side has a report'})
+        a, b = before[key], after[key]
+        if planned[key].get("graph") and "value" in a and "value" in b:
+            equal_graph = graph_equal(a["value"], b["value"])
+            if equal_graph:
+                a, b = (dict((k, v) for k, v in row.items() if k != "value") for row in (a, b))
+        if canonical(a) == canonical(b):
             continue
-        bp = {p['id']: p for p in breports[lang]['problems']}
-        tp = {p['id']: p for p in treports[lang]['problems']}
-        for side, rep in ((base, breports[lang]), (target, treports[lang])):
-            if not rep.get('complete'):
-                not_compared.append({'language': lang, 'reason': f'{side} report incomplete ({len(rep["problems"])} fixtures)'})
-            for m in rep.get('missingReferences', []):
-                not_compared.append({'language': lang, 'reason': f'{side} missing reference', **m})
-        for fid in sorted(set(bp) | set(tp)):
-            if fid not in bp or fid not in tp:
-                not_compared.append({'language': lang, 'fixture': fid, 'reason': 'fixture ran on one side only'})
-                continue
-            catalog = bp[fid]['catalog']
-            nb = normalize(bp[fid], legacy_base)
-            nt = normalize(tp[fid], False)
-            for key in sorted(set(nb) | set(nt)):
-                mode, cid = key
-                a, b = nb.get(key), nt.get(key)
-                norm[base].setdefault(lang, {}).setdefault(fid, {})[f'{mode}/{cid}'] = a
-                norm[target].setdefault(lang, {}).setdefault(fid, {})[f'{mode}/{cid}'] = b
-                c = counts.setdefault((lang, catalog, mode), {'cases': 0, 'differ': 0, 'nodeIdsOnly': 0})
-                c['cases'] += 1
-                if a is None or b is None:
-                    not_compared.append({'language': lang, 'fixture': fid, 'mode': mode, 'case': cid, 'reason': 'case on one side only'})
-                    continue
-                fields = diff_fields(a, b)
-                if not fields and a.get('valueRaw') != b.get('valueRaw'):
-                    c['nodeIdsOnly'] += 1
-                trace_note = mode == 'run-trace' and a.get('hasTrace') != b.get('hasTrace')
-                if fields or trace_note:
-                    if fields:
-                        c['differ'] += 1
-                    diffs.append({
-                        'language': lang, 'catalog': catalog, 'fixture': fid, 'mode': mode, 'case': cid,
-                        'fields': fields or ['hasTrace'],
-                        'group': group_key(lang, mode, fields, a, b) if fields else f'{mode} | hasTrace:{a.get("hasTrace")}->{b.get("hasTrace")}',
-                        'base': a, 'target': b,
-                    })
-    return norm, counts, diffs, not_compared
+        pin = reviewed.get(key)
+        if (
+            pin and pin.get("decision") == "approved" and pin.get("reviewer")
+            and pin.get("reason") and pin.get("intendedOutcome")
+            and canonical(pin.get("before")) == canonical(before[key])
+            and canonical(pin.get("after")) == canonical(after[key])
+        ):
+            used.add(key)
+        else:
+            outstanding.append(f"release-diff/unreviewed/{label}")
+    outstanding.extend(f"release-diff/stale-pin/{'/'.join(key)}" for key in sorted(reviewed.keys() - used))
+    return outstanding
 
 
-def main(argv):
-    args = [a for a in argv[1:]]
-    out = None
-    rerun = None
-    if '--out' in args:
-        i = args.index('--out'); out = args[i + 1]; del args[i:i + 2]
-    legacy = True
-    if '--base-current' in args:  # base is a 0.20.x report too (e.g. target-nostop vs target)
-        legacy = False; args.remove('--base-current')
-    if '--rerun' in args:
-        i = args.index('--rerun'); rerun = args[i + 1]; del args[i:i + 2]
-    dirpath, base, target = args
-    out = out or dirpath
-    norm, counts, diffs, not_compared = compare(dirpath, base, target, legacy)
-    if rerun:
-        _, _, rdiffs, _ = compare(rerun, base, target, legacy)
-        rkeys = {(d['language'], d['fixture'], d['mode'], d['case'], tuple(d['fields'])) for d in rdiffs}
-        rfixtures = set()
-        for lang in LANGS:
-            for label in (base, target):
-                p = os.path.join(rerun, f'{label}-{lang}.json')
-                if os.path.exists(p):
-                    with open(p) as f:
-                        rfixtures |= {(lang, x['id']) for x in json.load(f)['problems']}
-        for d in diffs:
-            k = (d['language'], d['fixture'], d['mode'], d['case'], tuple(d['fields']))
-            if (d['language'], d['fixture']) not in rfixtures:
-                d['rerun'] = 'not-rerun'
-            elif k in rkeys:
-                d['rerun'] = 'reproduced'
-            else:
-                d['rerun'] = 'did-not-reproduce'
-    os.makedirs(out, exist_ok=True)
-    for label in (base, target):
-        with open(os.path.join(out, f'normalized-{label}.json'), 'w') as f:
-            json.dump(norm[label], f, indent=1, sort_keys=True)
-    with open(os.path.join(out, 'differences.json'), 'w') as f:
-        json.dump({'base': base, 'target': target, 'differences': diffs, 'notCompared': not_compared}, f, indent=1)
-    lines = [f'# Release diff {base} -> {target} (automatic summary)', '', '| language | catalog | mode | cases | differ | node-ids only (not reported) |', '|---|---|---|---:|---:|---:|']
-    for (lang, catalog, mode), c in sorted(counts.items()):
-        lines.append(f'| {lang} | {catalog} | {mode} | {c["cases"]} | {c["differ"]} | {c["nodeIdsOnly"]} |')
-    groups = defaultdict(list)
-    for d in diffs:
-        groups[(d['language'], d['group'])].append(d)
-    lines += ['', '## Automatic groups', '']
-    for (lang, g), items in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        fixtures = Counter(d['fixture'] for d in items)
-        rr = Counter(d.get('rerun', '-') for d in items)
-        lines.append(f'- **{lang}** `{g}`: {len(items)} cases in {len(fixtures)} fixtures; rerun {dict(rr)}')
-        for d in items[:3]:
-            a, b = d['base'], d['target']
-            lines.append(f'  - `{d["fixture"]}` {d["case"]}: {a.get("status")}/{a.get("verdict")}/{a.get("origin")}:{a.get("detail")} '
-                         f'v={str(a.get("value"))[:80]} -> {b.get("status")}/{b.get("verdict")}/{b.get("origin")}:{b.get("detail")} '
-                         f'v={str(b.get("value"))[:80]}; msg {str(a.get("message"))[:100]!r} -> {str(b.get("message"))[:100]!r}')
-    lines += ['', '## Not compared', '']
-    nc = Counter(n['reason'] if 'missing reference' not in n['reason'] else n['reason'] for n in not_compared)
-    for reason, n in nc.most_common():
-        lines.append(f'- {reason}: {n}')
-    with open(os.path.join(out, 'summary.md'), 'w') as f:
-        f.write('\n'.join(lines) + '\n')
-    print('\n'.join(lines[:60]))
-    print(f'... {len(diffs)} difference records; full summary in {os.path.join(out, "summary.md")}')
+def records(directory, label, manifest):
+    results = []
+    time_bases = set()
+    for path in sorted(Path(directory).glob(f"{label}-*.json")):
+        report = json.loads(path.read_text())
+        if not report.get("complete") or report.get("missingReferences"):
+            raise ValueError(f"release-diff/incomplete/{path.name}")
+        if report.get("appDataSha") != manifest["appDataSha"]:
+            raise ValueError(f"release-diff/app-data/{path.name}")
+        time_bases.add((report["browserVersion"], canonical(report["appOptions"]["hostOptions"])))
+        for fixture in report["problems"]:
+            language, fid = fixture["language"], fixture["id"]
+            stop = "stop" if fixture.get("stopSubmitAtFirstRunaway") else "default"
+            for mode, holder, evaluation, policy in (
+                ("submit", fixture["submit"], "evaluation", stop),
+                ("run", fixture["run"], "initial", "interactive"),
+            ):
+                payload = holder.get(evaluation)
+                if not payload or holder.get("runnerError") or holder.get("continuationError"):
+                    raise ValueError(f"release-diff/unresolved/{language}/{fid}/{mode}/{policy}")
+                rows = payload["cases"]
+                order = payload["caseOrder"]
+                if order != list(rows) or len(order) != len(set(order)):
+                    raise ValueError(f"release-diff/case-order/{language}/{fid}/{mode}/{policy}")
+                header = {k: v for k, v in payload.items() if k not in {"cases", "caseOrder"}}
+                header["caseOrder"] = order
+                if "verdict" in holder:
+                    header["verdict"] = holder["verdict"]
+                results.append(((language, fid, "$evaluation", mode, policy), header))
+                for case, row in rows.items():
+                    results.append(((language, fid, case, mode, policy), row))
+            initial = fixture["run"]["initial"]["cases"]
+            drawing = fixture["run"]["continuation"]
+            if initial:
+                first = fixture["runCases"][0]["id"]
+                for case, row in {first: initial[first], **drawing}.items():
+                    if row.get("status") == "missing-case":
+                        raise ValueError(f"release-diff/unresolved/{language}/{fid}/{case}/run-trace")
+                    results.append(((language, fid, case, "run-trace", "interactive"), row))
+    if not results or len(time_bases) != 1:
+        raise ValueError(f"release-diff/inconsistent-browser-or-host-configuration/{label}")
+    return unique(results, label), time_bases
 
 
-if __name__ == '__main__':
-    main(sys.argv)
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("directory")
+    parser.add_argument("baseline")
+    parser.add_argument("candidate")
+    parser.add_argument("manifest")
+    parser.add_argument("pins")
+    args = parser.parse_args()
+    manifest = json.loads(Path(args.manifest).read_text())
+    pins = json.loads(Path(args.pins).read_text())
+    before, base_environment = records(args.directory, args.baseline, manifest)
+    after, target_environment = records(args.directory, args.candidate, manifest)
+    if base_environment != target_environment:
+        raise ValueError("release-diff/unequal-browser-or-host-configuration")
+    problems = check(manifest, before, after, pins)
+    for problem in problems:
+        print(problem)
+    print(f"release-diff: {len(before)} baseline, {len(after)} candidate, {len(problems)} outstanding")
+    return int(bool(problems))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

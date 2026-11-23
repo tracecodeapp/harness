@@ -13,7 +13,7 @@ permissions:
 jobs:
   pack:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       CANDIDATE_SHA: ${{ inputs.candidate_sha }}
     steps:
@@ -41,14 +41,24 @@ jobs:
           set -euo pipefail
           node scripts/stage1/clean-pack.mjs "$CANDIDATE_SHA" "$RUNNER_TEMP/stage1-pack" \
             2>&1 | tee "$RUNNER_TEMP/stage1-pack.log"
+      - name: Exercise the packed-byte control
+        run: bash scripts/stage1/prove-digest.sh "$RUNNER_TEMP/stage1-pack"
+      - name: Exercise the stale generated-worker control
+        run: bash scripts/stage1/prove-stale-worker.sh "$RUNNER_TEMP/stage1-pack" "$RUNNER_TEMP/stage1-stale-worker"
       - uses: actions/upload-artifact@v4
         name: Store the qualified tarball and checksums
         with:
           name: stage1-pack-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stage1-pack/
           if-no-files-found: error
-      - name: Exercise the packed-byte control
-        run: bash scripts/stage1/prove-digest.sh "$RUNNER_TEMP/stage1-pack"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage1-pack-controls-${{ env.CANDIDATE_SHA }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/stage1-stale-worker/*.status
+            ${{ runner.temp }}/stage1-stale-worker/*.diff
+            ${{ runner.temp }}/stage1-stale-worker.log
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

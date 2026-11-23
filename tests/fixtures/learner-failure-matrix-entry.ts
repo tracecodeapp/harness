@@ -155,7 +155,9 @@ function observeEvaluation(
 
 function thrown(error: unknown): MatrixObservation {
   return {
-    class: isRuntimeProviderError(error) ? 'provider' : 'unclassified',
+    class: error instanceof DOMException && error.name === 'AbortError'
+      ? 'aborted'
+      : isRuntimeProviderError(error) ? 'provider' : 'unclassified',
     status: 'host-rejected',
     ...(isRuntimeProviderError(error) ? { origin: `provider:${error.reason}`, reason: error.reason } : {}),
     message: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -425,11 +427,9 @@ export async function runLanguageMatrix(
             runMode(host, language, loop.program, mode, {}, controller.signal),
             () => [{ class: 'hung' as const }]
           );
-          observation = observations.every((candidate) => candidate.class === 'provider' && /abort/i.test(candidate.message ?? ''))
-            ? { class: 'aborted', status: 'host-rejected', message: observations[0]?.message }
-            : observations[0]!;
+          observation = observations[0] ?? { class: 'unclassified', status: 'missing-receipt' };
         } catch (error) {
-          observation = { class: 'aborted', status: 'host-rejected', message: String(error) };
+          observation = thrown(error);
         }
         const settledMs = Math.round(performance.now() - (abortedAt || startedAt));
         const healthStartedAt = performance.now();

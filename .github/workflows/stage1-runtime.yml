@@ -14,7 +14,6 @@ permissions:
 
 jobs:
   clean-pack:
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/stage1-clean-pack.yml
     with:
       candidate_sha: ${{ github.sha }}
@@ -67,7 +66,7 @@ jobs:
 
   csharp-post-pause:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,7 +81,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm materialize:csharp-role-assets
-      - run: pnpm exec tsx --tsconfig tsconfig.base.json tests/test-csharp-stale-trace-deadline-browser.ts
+      - run: bash scripts/stage1/prove-csharp-pause.sh "$RUNNER_TEMP/csharp-pause"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: csharp-post-pause-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/csharp-pause/
 
   host-history:
     runs-on: ubuntu-24.04
@@ -92,8 +96,12 @@ jobs:
       DATA_REPOSITORY: ${{ vars.HARNESS_STAGE1_DATA_REPOSITORY }}
       TRACECODE_HOST_HISTORY_REPORT: ${{ runner.temp }}/host-history.json
       TRACECODE_PARITY_REPORT: ${{ runner.temp }}/catalog-parity.json
+    defaults:
+      run:
+        working-directory: harness
     steps:
       - name: Require an immutable, CI-readable corpus
+        working-directory: ${{ github.workspace }}
         shell: bash
         run: |
           [[ "$DATA_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -101,22 +109,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          path: harness
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.DATA_REPOSITORY }}
           ref: ${{ env.DATA_SHA }}
-          path: .stage1-data
+          path: stage1-app-data
           persist-credentials: false
       - name: Verify pinned corpus
-        run: test "$(git -C .stage1-data rev-parse HEAD)" = "$DATA_SHA"
+        run: test "$(git -C ../stage1-app-data rev-parse HEAD)" = "$DATA_SHA"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.4.1
+          package_json_file: harness/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
           cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - name: Verify histories
@@ -125,7 +136,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export TRACECODE_HOST_HISTORY_APP_DATA="$PWD/.stage1-data"
+          export TRACECODE_HOST_HISTORY_APP_DATA="$GITHUB_WORKSPACE/stage1-app-data"
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             export TRACECODE_HOST_HISTORY_PROFILE=desktop
             languages=$(git diff --name-only "$PR_BASE" HEAD | node scripts/stage1/runtime-languages.mjs)
@@ -139,7 +150,7 @@ jobs:
           TRACECODE_PARITY_CATALOG: all
           TRACECODE_PARITY_SUITE: catalog
         run: |
-          export TRACECODE_PARITY_CORPUS="$PWD/.stage1-data"
+          export TRACECODE_PARITY_CORPUS="$GITHUB_WORKSPACE/stage1-app-data"
           pnpm exec tsx --tsconfig tsconfig.base.json tests/test-trace-parity-corpus.ts
       - uses: actions/upload-artifact@v4
         if: always()

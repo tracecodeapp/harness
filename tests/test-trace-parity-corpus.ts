@@ -421,7 +421,7 @@ async function main() {
     for (const problem of fixtures) {
       const remainingMs = deadline - Date.now();
       report.nextProblem = fixtureIdentity(problem);
-      const label = problem.stage === undefined ? problem.id : `${problem.id}/stage-${problem.stage}`;
+      const label = 'stage' in problem && problem.stage !== undefined ? `${problem.id}/stage-${problem.stage}` : problem.id;
       if (remainingMs <= 0) {
         await saveReport();
         throw new Error('Parity time budget exhausted before ' + label);

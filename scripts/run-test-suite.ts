@@ -553,16 +553,12 @@ async function main(): Promise<void> {
           const startedAt = performance.now();
           try {
             const receipt = await floor?.start(entry.script);
-            let tap = '';
             try {
               return await executePackageScript(cwd, entry, signal, {
                 env: receipt?.env,
-                onOutput: receipt ? (chunk) => {
-                  tap += chunk;
-                } : undefined,
               });
             } finally {
-              if (receipt) await floor?.finish(entry.script, receipt, tap);
+              if (receipt) await floor?.finish(entry.script, receipt);
             }
           } catch (error) {
             if (!keepGoing) throw error;

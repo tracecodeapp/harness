@@ -120,6 +120,6 @@ for lang in "${LANG_LIST[@]}"; do
 done
 echo "done $(date -u +%H:%M:%SZ)"
 if [ "$status" = 0 ] && [ -z "${RD_SIDES:-}" ]; then
-  python3 scripts/release-diff/qualify.py "$OUT" "v$BASE_VERSION" target "$RD_MANIFEST" "$RD_PINS" || status=$?
+  python3 scripts/release-diff/compare.py "$OUT" "v$BASE_VERSION" target "$RD_MANIFEST" "$RD_PINS" || status=$?
 fi
 exit "$status"

@@ -1,6 +1,6 @@
 import copy
 import unittest
-from qualify import check, graph_equal
+from compare import check, graph_equal
 
 
 class QualificationControls(unittest.TestCase):

@@ -371,7 +371,9 @@ public class Solution
       // re-armed deadline, then untraced cases (a verdict request).
       const warmRunner = await createHarness('runner', runnerBaseUrl);
       const warmTraced = await runTraced(warmRunner, tracePrepared, source, 19, 23);
+      const tracedPauseStartedAt = performance.now();
       await sleep(staleGapMs);
+      const tracedPauseMs = performance.now() - tracedPauseStartedAt;
       const warmUntraced = [] as Array<ReturnType<typeof summarize>>;
       for (let index = 0; index < 3; index += 1) {
         warmUntraced.push(await runUntraced(warmRunner, 19 + index, 23));
@@ -396,7 +398,9 @@ public class Solution
         }),
         primeStartedAt
       );
+      const primePauseStartedAt = performance.now();
       await sleep(staleGapMs);
+      const primePauseMs = performance.now() - primePauseStartedAt;
       const afterPrime = await runUntraced(primedRunner, 19, 23);
       primedRunner.terminate();
 
@@ -421,10 +425,12 @@ public class Solution
         traceTier: tracePrepared.preparedRunnerTier ?? null,
         freshUntraced,
         warmTraced,
+        tracedPauseMs,
         warmUntraced,
         backToBackTraced,
         backToBackUntraced,
         prime,
+        primePauseMs,
         afterPrime,
         runaway,
         afterRunaway,
@@ -448,10 +454,12 @@ public class Solution
       result.warmTraced.success && result.warmTraced.output === 42 && result.warmTraced.eventCount > 0,
       `Warm-runner traced case failed: ${JSON.stringify(result.warmTraced)}`
     );
+    assertCondition(result.tracedPauseMs > 2_000, 'G2/csharp/post-pause/traced-pause-elapsed');
+    assertCondition(result.primePauseMs > 2_000, 'G2/csharp/post-pause/prime-pause-elapsed');
     result.warmUntraced.forEach((reply, index) => {
       assertCondition(
         reply.success && reply.output === 42 + index && reply.timeoutReason === null,
-        `Untraced case ${index + 1} after a traced case on a warm runner was not run normally (stale trace deadline): ${JSON.stringify(reply)}`
+        `G2/csharp/post-pause/warm-${index + 1}: ${JSON.stringify(reply)}`
       );
     });
     assertCondition(
@@ -465,7 +473,7 @@ public class Solution
     );
     assertCondition(
       result.afterPrime.success && result.afterPrime.output === 42 && result.afterPrime.timeoutReason === null,
-      `First learner case on a primed standby runner was not run normally (stale trace deadline): ${JSON.stringify(result.afterPrime)}`
+      `G2/csharp/post-pause/standby: ${JSON.stringify(result.afterPrime)}`
     );
     assertCondition(
       !result.runaway.success && result.runaway.timeoutReason === 'client-timeout',

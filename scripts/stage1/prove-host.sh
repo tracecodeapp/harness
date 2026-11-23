@@ -79,7 +79,16 @@ PYTHON
   record baseline-suite-floor node "$job/scripts/stage1/prove-known-leaves.mjs" baseline "$baseline" "$job/stage1-receipts" || exit_status=1
   exit "$exit_status"
 ) || exit_status=1
-record candidate-suite-floor node scripts/stage1/prove-known-leaves.mjs candidate "$job" "$job/stage1-receipts" || exit_status=1
+test ! -d packages/tracekernel/dist
+if record candidate-suite-floor node scripts/stage1/prove-known-leaves.mjs candidate "$job" "$job/stage1-receipts"; then
+  mutant=0
+  record browser-short-control node scripts/stage1/prove-known-leaves.mjs browser-control "$job" "$job/stage1-receipts" || mutant=$?
+  if [ "$mutant" != 1 ] || ! grep -F 'short-circuit hit=1' "$job/stage1-receipts/browser-short-control.log"; then
+    exit_status=1
+  fi
+else
+  exit_status=1
+fi
 record python-argv-control corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-python-script-file.ts || exit_status=1
 record recorder-control bash scripts/stage1/prove-recorder.sh || exit_status=1
 exit "$exit_status"

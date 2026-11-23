@@ -1,10 +1,9 @@
-import { appendFileSync } from 'node:fs';
+import { appendSuiteEvent } from './suite-events.mjs';
 
 export function leafLedger(leaf) {
-  const path = process.env.TRACECODE_SUITE_LEDGER;
   const nonce = process.env.TRACECODE_SUITE_NONCE;
   function record(kind, id) {
-    if (path) appendFileSync(path, JSON.stringify({ leaf, nonce, pid: process.pid, kind, id }) + '\n');
+    appendSuiteEvent({ leaf, kind, id });
   }
   record('start');
   return {

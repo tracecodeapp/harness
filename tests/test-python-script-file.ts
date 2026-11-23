@@ -7,7 +7,7 @@ test('passes a generated Python program larger than Linux MAX_ARG_STRLEN by file
   const script = '# ' + 'x'.repeat(132_000) + '\nprint("fixture-end-λ:" + input())\n';
   const options = { input: 'stdin-stays-available\n', encoding: 'utf8' } as const;
   if (process.platform === 'linux') {
-    assert.equal(spawnSync('python3', ['-c', script], options).error?.code, 'E2BIG');
+    assert.equal((spawnSync('python3', ['-c', script], options).error as NodeJS.ErrnoException | undefined)?.code, 'E2BIG');
   }
   const result = withPythonScriptFile(script, (file) => spawnSync('python3', [file], options));
   assert.equal(result.error, undefined);

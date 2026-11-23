@@ -42,6 +42,7 @@ import {
   MATRIX_LANGUAGES,
   MATRIX_MODES,
   STOPPING_BATCH_MODES,
+  STOPPING_MODE_KINDS,
   baseMode,
   matrixCells,
   stopsAtFirstRunaway,
@@ -436,6 +437,26 @@ function printTable(verdicts: readonly CellVerdict[]): void {
   }
 }
 
+function assertMatrixInventory(language: MatrixLanguage, results: readonly MatrixCellResult[]) {
+  const expected = matrixCells(language).flatMap((cell) => {
+    if (KINDS && !KINDS.includes(cell.kind)) return [];
+    return MODES.filter((mode) =>
+      (!cell.modes || cell.modes.includes(baseMode(mode))) &&
+      (!STOPPING_BATCH_MODES.includes(mode) || STOPPING_MODE_KINDS.includes(cell.kind))
+    ).map((mode) => `${language}/${cell.kind}/${mode}`);
+  });
+  if (!KINDS || KINDS.includes('abort-runaway')) {
+    expected.push(...MODES.filter((mode) => mode === 'code' || mode === 'interactive')
+      .map((mode) => `${language}/abort-runaway/${mode}`));
+  }
+  const actual = results.map((row) => `${row.language}/${row.kind}/${row.mode}`);
+  if (!expected.length || expected.sort().join('\n') !== actual.sort().join('\n')) {
+    const missing = expected.filter((id) => !actual.includes(id));
+    const extra = actual.filter((id, index) => !expected.includes(id) || actual.indexOf(id) !== index);
+    throw new Error(`G3/${language}/inventory: ${JSON.stringify({ missing, extra })}`);
+  }
+}
+
 function reportVerdicts(
   results: readonly MatrixCellResult[],
   languageFailures: readonly MatrixLanguage[]
@@ -577,6 +598,7 @@ async function main(): Promise<void> {
           })])) as MatrixCellResult[];
           console.log(`${language}: ${languageResults.length} cells in ${Math.round((Date.now() - startedAt) / 1000)}s`);
           results.push(...languageResults);
+          if (!DEFAULT_LIMITS_PROBE) assertMatrixInventory(language, languageResults);
         } catch (error) {
           // A language that cannot run at all is a failure of every cell, not
           // a reason to discard the other languages' evidence.

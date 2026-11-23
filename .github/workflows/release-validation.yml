@@ -147,8 +147,12 @@ jobs:
     env:
       RD_APP_DATA_SHA: ${{ vars.HARNESS_STAGE1_DATA_SHA }}
       DATA_REPOSITORY: ${{ vars.HARNESS_STAGE1_DATA_REPOSITORY }}
+    defaults:
+      run:
+        working-directory: harness
     steps:
       - name: Require a configured immutable corpus
+        working-directory: ${{ github.workspace }}
         shell: bash
         run: |
           [[ "$RD_APP_DATA_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -156,15 +160,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_sha }}
+          path: harness
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.DATA_REPOSITORY }}
           ref: ${{ env.RD_APP_DATA_SHA }}
-          path: .stage1-data
+          path: stage1-app-data
           persist-credentials: false
       - name: Verify the corpus SHA
-        run: test "$(git -C .stage1-data rev-parse HEAD)" = "$RD_APP_DATA_SHA"
+        run: test "$(git -C ../stage1-app-data rev-parse HEAD)" = "$RD_APP_DATA_SHA"
       - uses: actions/download-artifact@v4
         with:
           name: stage1-pack-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -172,19 +177,21 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10.4.1
+          package_json_file: harness/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22.18.0
           cache: pnpm
+          cache-dependency-path: harness/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - name: Compare the published and candidate packages
         env:
           RD_PACK_RECEIPT: ${{ runner.temp }}/canonical-pack
         run: |
-          RD_CORPUS="$PWD/.stage1-data"           RD_MANIFEST="$PWD/.stage1-data/release-diff-manifest.json"           RD_PINS="$PWD/.stage1-data/release-diff-pins.json"           bash scripts/release-diff/host-job.sh
+          RD_CORPUS="$GITHUB_WORKSPACE/stage1-app-data"           RD_MANIFEST="$GITHUB_WORKSPACE/stage1-app-data/release-diff-manifest.json"           RD_PINS="$GITHUB_WORKSPACE/stage1-app-data/release-diff-pins.json"           bash scripts/release-diff/host-job.sh
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: release-diff-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: release-diff-out/
+          path: harness/release-diff-out/

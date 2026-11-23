@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { expandSuiteTask } from './suite-plan.mjs';
 import { missingEvidence } from './leaf-ledger.mjs';
+import { readSuiteEvents } from './suite-events.mjs';
 
 export const knownLeaves = {
   'tests/test-python-stopping-batch-clock-browser.ts': {
@@ -21,7 +22,7 @@ export const knownLeaves = {
     id: 'python-line-guard', assertions: ['browser-worker', 'submit', 'run'],
   },
   'tests/test-tracekernel-hardening.ts': {
-    id: 'js-destructured-iterable', assertions: ['judged-value', 'learner-assignment'],
+    id: 'js-destructured-iterable', assertions: ['judged-value', 'learner-assignment', 'healthy-sibling'],
     partial: true,
   },
 };
@@ -47,25 +48,28 @@ export async function createSuiteFloor(root, directory, scripts, completePlan) {
       const path = join(output, id + '.jsonl');
       const nonce = randomUUID();
       await writeFile(path, '', { flag: 'wx' });
-      const file = new URL('./suite-preload.mjs', import.meta.url);
+      const preload = new URL('./suite-preload.mjs', import.meta.url);
+      const reporter = new URL('./suite-reporter.mjs', import.meta.url);
       const env = {
         ...process.env,
         TRACECODE_SUITE_ROOT: root,
         TRACECODE_SUITE_LEDGER: path,
         TRACECODE_SUITE_NONCE: nonce,
-        NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${file.href}`].filter(Boolean).join(' '),
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS, `--import=${preload.href}`, `--test-reporter=${reporter.href}`,
+        ].filter(Boolean).join(' '),
       };
       return { path, nonce, env };
     },
 
-    async finish(script, { path, nonce }, outputText) {
-      const events = (await readFile(path, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse);
+    async finish(script, { path, nonce }) {
+      const events = readSuiteEvents(path);
       const paths = inventory[script].flatMap(({ leaves }) => leaves);
       const counts = new Map();
       const issues = [];
       if (events.some((event) => event.nonce !== nonce)) issues.push(`G7/suite/${script}/foreign-nonce`);
-      if (/^\s*ok\b[^\n]*#\s*(?:SKIP|TODO)\b/imu.test(outputText)) {
-        issues.push(`G7/suite/${script}/skipped-test`);
+      for (const test of events.filter((event) => event.skip || event.todo)) {
+        issues.push(`G7/suite/${test.leaf}/skipped-test/${test.name}`);
       }
       for (const leaf of paths) counts.set(leaf, (counts.get(leaf) ?? 0) + 1);
       for (const [leaf, count] of counts) {

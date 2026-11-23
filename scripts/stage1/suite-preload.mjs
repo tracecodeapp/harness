@@ -1,6 +1,6 @@
 import strict from 'node:assert/strict';
 import assert from 'node:assert';
-import { appendFileSync } from 'node:fs';
+import { appendSuiteEvent } from './suite-events.mjs';
 import { syncBuiltinESMExports } from 'node:module';
 import { isAbsolute, relative } from 'node:path';
 
@@ -11,7 +11,7 @@ const entry = process.argv[1];
 const leaf = entry && root ? relative(root, entry) : '';
 if (path && nonce && leaf && !leaf.startsWith('..') && !isAbsolute(leaf) && /(?:^|\/)tests\//u.test(leaf)) {
   function record(kind, details = {}) {
-    appendFileSync(path, JSON.stringify({ leaf, nonce, pid: process.pid, kind, ...details }) + '\n');
+    appendSuiteEvent({ leaf, kind, ...details });
   }
   record('process-start');
   const assertions = new Map();

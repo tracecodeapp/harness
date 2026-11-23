@@ -1577,71 +1577,70 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
 
   const id = 'destructured-iterable';
   const token = `destructured-iterable-${ledger.nonce}`;
-  const response = new Promise<{
+  type TracedReply = {
     success?: boolean;
     output?: unknown;
     error?: string;
     trace?: { events?: Array<{ kind?: string; line?: number; target?: { variable?: string }; value?: unknown }> };
-  }>((resolve, reject) => {
-    pending.set(id, { token, resolve: resolve as (value: unknown) => void, reject });
-  });
-  workerScope.onmessage?.({
-    data: {
-      id,
-      protocolToken: token,
-      type: 'execute-with-tracing',
-      payload: {
-        code: [
-          'function solve() {',
-          '  let pulls = 0;',
-          '  function makePair() {',
-          '    const iterator = {',
-          '      next() {',
-          '        pulls += 1;',
-          '        if (pulls === 1) return { value: 2, done: false };',
-          '        if (pulls === 2) return { value: 3, done: false };',
-          '        return { done: true };',
-          '      },',
-          '      return() { return { done: true }; },',
-          '      [Symbol.iterator]() { return this; },',
-          '    };',
-          '    return iterator;',
-          '  }',
-          '  let total = 0;',
-          '  for (const [a, b] of [makePair()]) {',
-          '    total = a * 10 + b;',
-          '  }',
-          '  let setPulls = 0;',
-          '  class GuardedSet extends Set {',
-          '    [Symbol.iterator]() {',
-          '      const iterator = super[Symbol.iterator]();',
-          '      return {',
-          '        next() {',
-          '          setPulls += 1;',
-          '          if (setPulls > 1) throw new Error("set overread");',
-          '          return iterator.next();',
-          '        },',
-          '        return() { return { done: true }; },',
-          '        [Symbol.iterator]() { return this; },',
-          '      };',
-          '    }',
-          '  }',
-          '  const buckets = [new GuardedSet([5, 6, 7])];',
-          '  let first = 0;',
-          '  for (const value of buckets[0]) {',
-          '    first = value;',
-          '    break;',
-          '  }',
-          '  return { total, pulls, first, setPulls };',
-          '}',
-        ].join('\n'),
-        functionName: 'solve',
-        inputs: {},
-        executionStyle: 'function',
-        language: 'javascript',
+  };
+  function execute(caseId: string, code: string): Promise<TracedReply> {
+    const response = new Promise<TracedReply>((resolve, reject) => {
+      pending.set(caseId, { token, resolve: resolve as (value: unknown) => void, reject });
+    });
+    workerScope.onmessage?.({
+      data: {
+        id: caseId,
+        protocolToken: token,
+        type: 'execute-with-tracing',
+        payload: { code, functionName: 'solve', inputs: {}, executionStyle: 'function', language: 'javascript' },
       },
-    },
-  });
+    });
+    return response;
+  }
+  const response = execute(id, [
+    'function solve() {',
+    '  let pulls = 0;',
+    '  function makePair() {',
+    '    const iterator = {',
+    '      next() {',
+    '        pulls += 1;',
+    '        if (pulls === 1) return { value: 2, done: false };',
+    '        if (pulls === 2) return { value: 3, done: false };',
+    '        return { done: true };',
+    '      },',
+    '      return() { return { done: true }; },',
+    '      [Symbol.iterator]() { return this; },',
+    '    };',
+    '    return iterator;',
+    '  }',
+    '  let total = 0;',
+    '  for (const [a, b] of [makePair()]) {',
+    '    total = a * 10 + b;',
+    '  }',
+    '  let setPulls = 0;',
+    '  class GuardedSet extends Set {',
+    '    [Symbol.iterator]() {',
+    '      const iterator = super[Symbol.iterator]();',
+    '      return {',
+    '        next() {',
+    '          setPulls += 1;',
+    '          if (setPulls > 1) throw new Error("set overread");',
+    '          return iterator.next();',
+    '        },',
+    '        return() { return { done: true }; },',
+    '        [Symbol.iterator]() { return this; },',
+    '      };',
+    '    }',
+    '  }',
+    '  const buckets = [new GuardedSet([5, 6, 7])];',
+    '  let first = 0;',
+    '  for (const value of buckets[0]) {',
+    '    first = value;',
+    '    break;',
+    '  }',
+    '  return { total, pulls, first, setPulls };',
+    '}',
+  ].join('\n'));
 
   const result = await response;
   assertCondition(result.success === true, `destructured iterable trace should execute: ${result.error ?? 'unknown error'}`);
@@ -1657,6 +1656,14 @@ async function testJavaScriptDestructuredIterableTracingDoesNotExhaustValues(): 
     'G7/suite/js-destructured-iterable/missing-assertion/learner-assignment'
   );
   ledger.checked('learner-assignment');
+
+  const sibling = await execute('healthy-sibling', 'function solve() {\n  return 7;\n}');
+  assertCondition(sibling.success && sibling.output === 7, 'separate traced sibling should return 7');
+  assertCondition(
+    sibling.trace?.events?.some((event) => event.kind === 'return' && event.line === 2 && event.value === 7),
+    'separate traced sibling should emit its own return event'
+  );
+  ledger.checked('healthy-sibling');
   ledger.done();
 }
 

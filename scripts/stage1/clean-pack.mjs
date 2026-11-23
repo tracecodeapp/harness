@@ -14,7 +14,7 @@ function run(cwd, command, args, capture = false) {
     cwd,
     encoding: 'utf8',
     stdio: capture ? ['ignore', 'pipe', 'inherit'] : 'inherit',
-  })?.trim();
+  })?.trimEnd();
 }
 
 async function digest(file) {
