@@ -22,16 +22,32 @@ export async function loadMux(directory, output) {
 export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, onResult) {
   let page;
   let rawReceipt;
+  let receiptProjections;
+  let selected;
   const slotId = `ga-${fixture.language}-${fixture.name}`;
   const slot = new JudgeBrowserSlot(slotId, {
     browser: {
       async createSlot() {
         page = await browser.newPage();
         return {
-          navigate: (url) => page.goto(url),
+          async navigate(url) {
+            await page.goto(url);
+            await page.evaluate(async () => {
+              const { installJudgeJournal } = await import('/gate-browser.mjs');
+              installJudgeJournal();
+            });
+          },
           async evaluate(expression) {
-            const result = await page.evaluate((source) => (0, eval)(source), expression);
-            if (result?.schema === 'tracecode.judge.algorithm-receipt.v1') rawReceipt = result;
+            const { result, projected } = await page.evaluate(async ({ source, language, selected }) => {
+              const result = await (0, eval)(source);
+              if (result?.schema !== 'tracecode.judge.algorithm-receipt.v1') return { result };
+              const { projectReceipt } = await import('/gate-browser.mjs');
+              return { result, projected: projectReceipt(result, language, selected) };
+            }, { source: expression, language: fixture.language, selected });
+            if (projected) {
+              rawReceipt = result;
+              receiptProjections = projected;
+            }
             return result;
           },
           dispose: () => page.close(),
@@ -62,8 +78,11 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
         return createAlgorithmJudgeBundle({ ...options, traceOptions: supportedTraceOptions(options.language, options.traceOptions) });
       }, options);
       rawReceipt = undefined;
+      receiptProjections = undefined;
+      selected = request.selected;
       let legacy;
       const started = performance.now();
+      const journalStart = await page.evaluate(async () => (await import('/gate-browser.mjs')).judgeJournal().length);
       try {
         if (request.id === 'algorithm') {
           const result = await slot.runAlgorithm({ requestId: id, bundle });
@@ -84,12 +103,10 @@ export async function exerciseMux(JudgeBrowserSlot, browser, origin, fixture, on
           });
         }
         assert(rawReceipt, 'Mux did not return a portable receipt');
-        const projections = await page.evaluate(async ({ receipt, language, trace }) => {
-          const { projectCases } = await import('/gate-browser.mjs');
-          return projectCases(receipt, language, trace);
-        }, { receipt: rawReceipt, language: fixture.language, trace });
+        const journal = await page.evaluate(async (start) =>
+          (await import('/gate-browser.mjs')).judgeJournal().slice(start), journalStart);
         onResult(request, {
-          reported: rawReceipt, legacy, projections,
+          reported: rawReceipt, legacy, ...receiptProjections, journal, workspaceDigest: bundle.workspaceDigest,
           submitted: { id, workspaceDigest: bundle.workspaceDigest, traceOptions: bundle.execution.traceOptions },
           wallMs: performance.now() - started,
         });

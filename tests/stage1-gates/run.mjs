@@ -7,10 +7,11 @@ import { extname, join, resolve, sep } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObservation, summarize } from './checks.mjs';
+import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObservation, compileDifferentialId, summarize } from './checks.mjs';
 import { runGraphControls } from './graph.mjs';
-import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, requestMatrix } from './requests.mjs';
+import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
+import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url), 'utf8'));
 const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
@@ -99,7 +100,9 @@ try {
 
   const filter = process.env.TRACECODE_STAGE1_FILTER ? new RegExp(process.env.TRACECODE_STAGE1_FILTER) : null;
   const matches = (row) => !filter || filter.test(`${row.gate}/${row.language}/${row.name}`);
-  const inventory = manifest.inventory.filter((id) => !filter || filter.test(id.split('/').slice(0, 3).join('/')));
+  const plannedInventory = manifest.inventory.filter((id) => !filter || filter.test(id.split('/').slice(0, 3).join('/')));
+  const inventory = new Set(plannedInventory);
+  assert.equal(inventory.size, plannedInventory.length, 'Duplicate manifest inventory ID');
   const appInput = process.env.TRACECODE_STAGE1_APP_INPUT;
   let appFixtures = [];
   if (appInput) {
@@ -131,6 +134,39 @@ try {
     assertions.push(item);
     record('assertions.jsonl', item);
   };
+  const subject = process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate;
+  const receiptLanguages = new Set((process.env.TRACECODE_STAGE1_RECEIPT_LANGUAGES ?? '').split(',').filter(Boolean));
+  function judgePath(fixture, requests, observed, options = {}) {
+    const publicRoute = !options.route || options.route === 'mux';
+    const registered = subject !== manifest.candidate &&
+      (observed.some(hasReceiptEvidence) || (publicRoute && receiptLanguages.has(fixture.language)));
+    const compileOnly = registered && fixture.syntax;
+    const applicable = requests.filter(({ mode }) => !compileOnly || mode !== 'continuation');
+    if (registered && !options.control) {
+      if (compileOnly) {
+        const path = `${fixture.gate}/${fixture.language}/${fixture.name}/${options.route ?? 'default'}/`;
+        const continuations = new Set(requests.filter(({ mode }) => mode === 'continuation').map(({ id }) => id));
+        for (const id of inventory) {
+          if (!id.startsWith(path)) continue;
+          const [requestId, caseId] = id.slice(path.length).split('/');
+          if (caseId !== '@request' || continuations.has(requestId)) inventory.delete(id);
+        }
+        if (!options.route) inventory.add(compileDifferentialId(fixture));
+      }
+      for (const request of applicable) {
+        for (const id of receiptEvidenceIds(fixture, request)) {
+          assert(!inventory.has(id), `Duplicate receipt evidence ID ${id}`);
+          inventory.add(id);
+        }
+      }
+    }
+    const byId = new Map(applicable.map((request) => [request.id, request]));
+    for (const observation of observed) {
+      const request = byId.get(observation.request);
+      if (request) checkObservation(fixture, request, observation, options.record ?? recordAssertion, registered);
+    }
+    return registered;
+  }
   const runtime = { setupMs: performance.now(), requests: 0, fixtureMs: {}, requestMs: {} };
   for (const cap of manifest.baselineCaps.filter((cap) => !filter || filter.test(`G6/${cap.language}/judged-byte-limit`))) {
     recordAssertion({ ...cap, status: 'fail', message: cap.reason, evidence: 'required-baseline-failure' });
@@ -152,9 +188,8 @@ try {
         if (!options.control) {
           runtime.requests++;
           runtime.requestMs[`${key}/${options.route ?? 'default'}/${request.id}`] = observation.wallMs;
-          observed.push(observation);
         }
-        checkObservation(fixture, request, observation, options.record ?? recordAssertion);
+        observed.push(observation);
       });
       page.on('pageerror', (error) => record('browser.jsonl', { fixture: key, error: error.message }));
       page.on('requestfailed', (request) => record('browser.jsonl', { fixture: key, url: request.url(), failure: request.failure() }));
@@ -177,8 +212,9 @@ try {
       await page.close();
       console.log(`${key} ${options.control ?? 'baseline'} ${Math.round(performance.now() - started)}ms`);
     }
+    const registered = judgePath(fixture, requests, observed, options);
     if (!options.control && !options.route && !fixture.untracedOnly && manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
-      checkDifferential(fixture, observed, recordAssertion);
+      checkDifferential(fixture, observed, recordAssertion, registered);
     }
   }
   for (const fixture of selectedFixtures) {
@@ -220,13 +256,14 @@ try {
       }
     }
     if (mux) {
+      const observed = [];
       const key = `${fixture.gate}/${fixture.language}/${fixture.name}`;
       try {
         const started = performance.now();
         await exerciseMux(mux.JudgeBrowserSlot, browser, `http://127.0.0.1:${server.address().port}`, stimulus, (request, observation) => {
           record('observations.jsonl', { fixture: key, route: 'mux', request: request.id, ...observation });
           keepConsole({ request: request.id, ...observation }, 'mux');
-          checkObservation(stimulus, request, observation, recordAssertion);
+          observed.push({ ...observation, request: request.id });
           runtime.requests++;
           runtime.requestMs[`${key}/mux/${request.id}`] = observation.wallMs;
         });
@@ -234,6 +271,7 @@ try {
       } catch (error) {
         record('browser.jsonl', { fixture: key, route: 'mux', setupError: error.message });
       }
+      judgePath(stimulus, muxRequests(fixture), observed, { route: 'mux' });
     }
     if (fixture.consolePolicy) {
       checkConsoleAcrossPaths(fixture, consoleObservations, recordAssertion, (observation) => record('console-framing.jsonl', observation));
@@ -275,7 +313,7 @@ try {
     record('controls.jsonl', { seed: control.seed, pass, good, red, preserved, correctFault, hits, targets,
       observedValues: Object.fromEntries(observedValues), results: Object.fromEntries(controlResults) });
   }
-  const result = summarize(inventory, assertions);
+  const result = summarize([...inventory], assertions);
   writeFileSync(join(evidence, 'summary.json'), JSON.stringify({ ...result, controlFailures, runtime, partial: Boolean(filter) }, null, 2) + '\n');
   console.log(JSON.stringify(result.counts));
   process.exitCode = Number(Boolean(result.missing.length || result.failed.length || result.unexpected.length || result.repeated.length || controlFailures.length));

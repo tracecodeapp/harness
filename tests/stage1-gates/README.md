@@ -34,3 +34,11 @@ Historical controls use separate host job suffixes and the same committed oracle
 ## Step candidates
 
 To gate a step candidate (any exact commit), carry its packed tarball forward instead of rebuilding. Set `TRACECODE_STAGE1_SUBJECT` to the 40-hex commit, `TRACECODE_STAGE1_SUBJECT_TARBALL` to the tarball path on the host, and `TRACECODE_STAGE1_SUBJECT_SHA256` to its independently pinned SHA-256. The runner checks the digest before and after copying, checks out the same commit as the companion source, installs the tarball into the isolated consumer and loads only the tar-member-identical `judge.js`. The manifest's `candidatePrediction` text still describes the frozen `b025fdb8` candidate. A step candidate is judged by its assertion results, where required baseline failures are expected to turn green.
+
+Registered 0.21 paths compare ordinary rows across requests and compare attachments on redraws of the same retained case. A cold continuation may dispatch an observer. A redraw must reuse the attachment with zero worker commands. The gate reads both converter overloads and keeps ordinary grade checks active when presentation refuses. The registered syntax fixture expects an ordinary compile failure with zero case rows and no handle, and checks the original failure across requests. The pinned mux legacy response still projects the compile failure onto each submitted case ID.
+
+The gate detects a registered path from an attachment or a trusted scheduler event. Set `TRACECODE_STAGE1_RECEIPT_LANGUAGES` to the candidate's comma-separated registered languages to apply the contract to default and mux routes even when a request group yields no evidence. Source companions are judged by their own observed path. The frozen candidate uses its historical oracle and assertion IDs.
+
+The `receipt-publication` and `cache-hit` IDs use the private Judge test bridge. They remain missing when the installed candidate does not supply the journal. The transport and attachment equality checks still run. The graph oracle independently accepts a bijective renaming of graph IDs and the verdict checks flag any resulting product misgrade.
+
+Run the local oracle controls with `node --test tests/stage1-gates/ga-receipt-controls.test.mjs`.

@@ -16,6 +16,22 @@ export function supportedTraceOptions(language, options) {
 }
 
 let transcript = [];
+const journal = [];
+
+export function installJudgeJournal() {
+  Object.defineProperty(globalThis, Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1'), {
+    configurable: true,
+    value: {
+      onEvent(event) {
+        journal.push({ ...event, sequence: journal.length });
+      },
+    },
+  });
+}
+
+export function judgeJournal() {
+  return journal;
+}
 let nextGeneration = 0;
 let seed;
 let seedHits;
@@ -119,6 +135,8 @@ function errorInfo(error) {
     message: error?.message ?? String(error),
     stack: error?.stack,
     cause: error?.cause ? String(error.cause) : undefined,
+    code: error?.code,
+    reason: error?.reason,
   };
 }
 
@@ -133,7 +151,7 @@ function jsonWire(value) {
   });
 }
 
-export function projectCases(receipt, language, trace) {
+function projectCases(receipt, language, trace) {
   return receipt.evaluation.cases.map((row) => {
     try {
       return judgeCaseExecutionOutcome(row, { language, trace });
@@ -143,8 +161,38 @@ export function projectCases(receipt, language, trace) {
   });
 }
 
+export function projectReceipt(receipt, language, selected) {
+  const ordinaryProjections = projectCases(receipt, language, false);
+  const tracedProjections = projectCases(receipt, language, true);
+  const compile = receipt.evaluation.compile;
+  function projectCompile(trace) {
+    try {
+      return judgeCompileExecutionOutcome(compile, { language, trace });
+    } catch (error) {
+      return { rejected: errorInfo(error) };
+    }
+  }
+  return {
+    ...(compile && compile.status !== 'compiled' ? {
+      compileProjection: projectCompile(false),
+      tracedCompileProjection: projectCompile(true),
+    } : {}),
+    ordinaryProjections,
+    tracedProjections,
+    projections: receipt.evaluation.cases.map(({ caseId }, index) =>
+      (selected.includes(caseId) ? tracedProjections : ordinaryProjections)[index]),
+    traceAliases: receipt.evaluation.cases.map(({ attachment, trace }, index) =>
+      attachment?.trace === undefined || (
+        attachment.trace === trace && Object.isFrozen(trace) &&
+        (tracedProjections[index].rejected || tracedProjections[index].trace === trace)
+      )),
+  };
+}
+
 export async function runFixture(fixture, requests, nonce, mutation) {
+  installJudgeJournal();
   const handles = new Map();
+  let drawn;
   let submitHost;
   let firstCompileFailed = false;
   let createRouteHost;
@@ -165,18 +213,17 @@ export async function runFixture(fixture, requests, nonce, mutation) {
       seed = mutation;
       seedHits = [];
       const start = performance.now();
+      const journalStart = journal.length;
       let host;
       let reported;
       let bundle;
       let skip;
-      let retainedExecutionId;
+      const retained = request.mode === 'continuation' ? handles.get('run-first') : undefined;
       try {
         if (request.mode === 'continuation') {
-          const retained = handles.get('run-first');
           if (firstCompileFailed) skip = 'initial-compile-failed';
           else if (!retained) throw new Error('Missing first interactive execution handle');
           else {
-            retainedExecutionId = retained.id;
             reported = await retained.host.execute({
               executionId: retained.id, tracing: { caseIds: request.selected },
             });
@@ -204,27 +251,21 @@ export async function runFixture(fixture, requests, nonce, mutation) {
             reported = await host.execute({ bundle, ...(request.selected.length ? { tracing: { caseIds: request.selected } } : {}) });
           } else {
             reported = await host.execute({ bundle, interactive: true, tracing: { caseIds: request.selected } });
-            if (reported.executionId) handles.set(request.id, { host, id: reported.executionId });
+            if (reported.executionId) handles.set(request.id, {
+              host, id: reported.executionId, evaluation: reported.evaluation,
+              workspaceDigest: bundle.workspaceDigest, journal: journal.slice(journalStart),
+            });
             if (request.id === 'run-first') firstCompileFailed = reported.evaluation.status === 'compile-failed';
           }
         }
-        const projections = reported?.evaluation.cases.map((row) => {
-          try {
-            return judgeCaseExecutionOutcome(row, { language: fixture.language, trace: request.selected.includes(row.caseId) });
-          } catch (error) {
-            return { rejected: errorInfo(error) };
-          }
-        });
-        let compileProjection;
-        if (reported?.evaluation.compile && reported.evaluation.compile.status !== 'compiled') {
-          try {
-            compileProjection = judgeCompileExecutionOutcome(reported.evaluation.compile, { language: fixture.language });
-          } catch (error) {
-            compileProjection = { rejected: errorInfo(error) };
-          }
-        }
+        const projected = reported && projectReceipt(reported, fixture.language, request.selected);
         await globalThis.recordGateObservation(jsonWire({
-          nonce, request: request.id, reported, projections, compileProjection, skip, retainedExecutionId, seedHits,
+          nonce, request: request.id, reported, ...projected, skip, seedHits,
+          workspaceDigest: bundle?.workspaceDigest ?? retained?.workspaceDigest,
+          retainedExecutionId: retained?.id, retainedEvaluation: retained?.evaluation, retainedJournal: retained?.journal,
+          drawnEvaluation: request.id === 'redraw-b' ? drawn?.evaluation : undefined,
+          drawnJournal: request.id === 'redraw-b' ? drawn?.journal : undefined,
+          journal: journal.slice(journalStart),
           submitted: bundle && {
             id: bundle.id, workspaceDigest: bundle.workspaceDigest,
             traceOptions: bundle.execution.traceOptions,
@@ -232,9 +273,10 @@ export async function runFixture(fixture, requests, nonce, mutation) {
           },
           worker: transcript, wallMs: performance.now() - start,
         }));
+        if (request.id === 'draw-b' && reported) drawn = { evaluation: reported.evaluation, journal: journal.slice(journalStart) };
       } catch (error) {
         await globalThis.recordGateObservation(jsonWire({
-          nonce, request: request.id, error: errorInfo(error), worker: transcript,
+          nonce, request: request.id, error: errorInfo(error), worker: transcript, journal: journal.slice(journalStart),
           wallMs: performance.now() - start,
         }));
       } finally {

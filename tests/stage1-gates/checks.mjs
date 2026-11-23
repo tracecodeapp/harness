@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { assertGraph } from './graph.mjs';
+import {
+  checkCacheHit, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
+} from './receipt.mjs';
 import { jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 
 const defined = (value) => value !== undefined && !(
@@ -25,7 +28,7 @@ function requireValue(row, field, expected, expectedField, graph = false) {
   if (present) (graph ? assertGraph : assert.deepEqual)(row[field], expected[expectedField]);
 }
 
-export function checkObservation(fixture, request, observation, record) {
+export function checkObservation(fixture, request, observation, record, registered = false) {
   const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/${request.route ?? 'default'}/${request.id}`;
   function check(caseId, assertion, comparison) {
     const id = `${prefix}/${caseId}/${assertion}`;
@@ -40,9 +43,23 @@ export function checkObservation(fixture, request, observation, record) {
   if (!defined(observation.reported)) return;
   const { reported, submitted } = observation;
   const { evaluation } = reported;
+  const compileOnly = registered && fixture.syntax;
   const rows = request.cases.map((id) => fixture.cases.find((row) => row.id === id));
-  check('@request', 'order', () => assert.deepEqual(evaluation.cases.map((row) => row.caseId), request.cases));
+  check('@request', 'order', () => {
+    assert.deepEqual(evaluation.cases.map((row) => row.caseId), compileOnly ? [] : request.cases);
+  });
   check('@request', 'compile', () => {
+    if (compileOnly) {
+      assert.equal(evaluation.status, 'compile-failed');
+      assert.equal(evaluation.compile.status, 'compile-failed');
+      assert.equal(evaluation.compile.failure.origin, 'program');
+      assert.equal(evaluation.compile.failure.stage, 'compile');
+      assert.equal(evaluation.compile.timedOut, false);
+      assert.notEqual(evaluation.compile.termination.exitCode, 0);
+      assert.equal(evaluation.compile.stdout, '');
+      assert(evaluation.compile.diagnostics.some(({ severity, source }) => severity === 'error' && source === fixture.language));
+      return;
+    }
     assert.equal(evaluation.status, 'completed');
     if (request.mode !== 'continuation' || defined(evaluation.compile)) {
       assert.equal(evaluation.compile?.status, 'compiled');
@@ -54,7 +71,24 @@ export function checkObservation(fixture, request, observation, record) {
       assert.equal(evaluation.cases.length, 0);
       assert(!defined(reported.executionId));
       assert(defined(evaluation.compile.failure));
-      if (request.route !== 'mux') assert(defined(observation.compileProjection));
+      if (compileOnly) {
+        for (const object of [reported, evaluation, evaluation.compile]) {
+          for (const field of ['attachment', 'trace', 'traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded']) {
+            assert(!Object.hasOwn(object, field), `Unexpected ${field} on compile failure`);
+          }
+        }
+        const { compileProjection, tracedCompileProjection } = observation;
+        const { trace, executionTimeMs, ...tracedCompile } = tracedCompileProjection;
+        assert.equal(compileProjection.kind, 'failed');
+        assert.equal(compileProjection.diagnosticStage, 'compile');
+        assert.equal(compileProjection.error, evaluation.compile.failure.message);
+        assert.deepEqual(compileProjection.consoleOutput, []);
+        assert.deepEqual(tracedCompile, compileProjection);
+        assert.equal(executionTimeMs, 0);
+        assert.equal(trace.language, fixture.language);
+        assert.equal(trace.runId, `${fixture.language}:compile`);
+        assert.deepEqual(trace.events, []);
+      } else if (request.route !== 'mux') assert(defined(observation.compileProjection));
     } else {
       assert.equal(evaluation.status, 'completed');
     }
@@ -65,23 +99,29 @@ export function checkObservation(fixture, request, observation, record) {
       assert.equal(reported.workspaceDigest, submitted.workspaceDigest);
       assert.equal(reported.schema, 'tracecode.judge.algorithm-receipt.v1');
     } else if (request.mode === 'initial') {
-      assert.equal(typeof reported.executionId, 'string');
+      if (compileOnly) assert(!defined(reported.executionId));
+      else assert.equal(typeof reported.executionId, 'string');
     } else if (request.mode === 'execute') {
       assert(!defined(reported.executionId));
     } else {
-      assert(!defined(reported.executionId) || reported.executionId === observation.retainedExecutionId);
+      if (registered) {
+        assert.equal(reported.executionId, observation.retainedExecutionId);
+        assert.equal(typeof reported.executionId, 'string');
+        checkRetainedRows(observation);
+      } else assert(!defined(reported.executionId) || reported.executionId === observation.retainedExecutionId);
     }
-    for (const row of evaluation.cases) {
+    for (const row of compileOnly ? [evaluation.compile] : evaluation.cases) {
       assert.equal(typeof row.sessionId, 'string');
       assert(Number.isInteger(row.pid));
     }
   });
   if (request.mode === 'submit') {
     check('@request', 'aggregate', () => {
-      const passed = rows.filter((row) => row.verdict === 'passed').length;
-      const allPassed = passed === rows.length;
+      const graded = compileOnly ? [] : rows;
+      const passed = graded.filter((row) => row.verdict === 'passed').length;
+      const allPassed = !compileOnly && passed === graded.length;
       assert.equal(reported.passedCount, passed);
-      assert.equal(reported.totalCount, rows.length);
+      assert.equal(reported.totalCount, graded.length);
       assert.equal(reported.verdict, allPassed ? 'passed' : 'failed');
       assert.equal(reported.policy.result, allPassed);
       assert.deepEqual(reported.policy.missingFacts, []);
@@ -98,12 +138,21 @@ export function checkObservation(fixture, request, observation, record) {
   }
   if (request.route !== 'mux') {
     check('@request', 'worker-ack', () => {
+      if (registered && request.id === 'redraw-b') {
+        checkRedraw(observation);
+        return;
+      }
       const commands = observation.worker.filter((event) => event.action === 'command' && /execute|compile-run/.test(event.type));
       const acknowledged = commands.filter((command) => observation.worker.some((event) => (
         event.action === 'response' && event.id === command.id && event.generation === command.generation
       )));
       if (evaluation.status === 'compile-failed') assert.equal(commands.length, 0);
-      else assert(acknowledged.length > 0, 'No acknowledged worker execution request');
+      else if (registered && request.mode === 'continuation') {
+        const refusedBeforeDispatch = commands.length === 0 && evaluation.cases.length === request.cases.length &&
+          evaluation.cases.every((row) => row.attachment?.status === 'refused');
+        if (!refusedBeforeDispatch) assert(acknowledged.length > 0, 'No acknowledged observation dispatch');
+        assert(commands.every(({ role, mode }) => role !== 'ordinary' && mode !== 'code'), 'Continuation dispatched ordinary execution');
+      } else assert(acknowledged.length > 0, 'No acknowledged worker execution request');
       if (request.route === 'ses-compartment-pool') assert(acknowledged.some((command) => command.worker.includes('ses-algorithm')));
       if (request.route === 'disposable-worker') assert(acknowledged.length && acknowledged.every((command) => !command.worker.includes('ses-algorithm')));
       if (request.mode === 'continuation') {
@@ -172,6 +221,22 @@ export function checkObservation(fixture, request, observation, record) {
     check('@request', 'legacy-projection', () => {
       assert.equal(observation.legacy.requestId, submitted.id);
       assert.deepEqual(observation.legacy.results.map((row) => row.caseId), request.cases);
+      if (compileOnly) {
+        const compile = evaluation.compile;
+        assert.equal(observation.legacy.compile.status, 'compile-failed');
+        for (const expected of rows) {
+          const result = observation.legacy.results.find(({ caseId }) => caseId === expected.id);
+          assert.equal(result.success, false);
+          assert.equal(result.passed, false);
+          assert(!Object.hasOwn(result, 'output'));
+          assert(!Object.hasOwn(result, 'trace'));
+          requireValue(result, 'expected', expected, 'expected');
+          assert.equal(result.error, compile.diagnostics.find(({ severity }) => severity === 'error')?.message);
+          assert.equal(result.errorLine, compile.diagnostics[0]?.line);
+          assert.deepEqual(result.consoleOutput, messages(compile.stdout));
+        }
+        return;
+      }
       for (const expected of rows) {
         const legacy = observation.legacy.results.find((row) => row.caseId === expected.id);
         const raw = evaluation.cases.find((row) => row.caseId === expected.id);
@@ -187,11 +252,20 @@ export function checkObservation(fixture, request, observation, record) {
     });
   }
 
+  if (registered && observation.journal?.length &&
+      (request.mode !== 'continuation' || observation.retainedJournal?.length)) {
+    check('@request', 'receipt-publication', () => checkPublication(request, observation));
+    if (request.id === 'redraw-b' && observation.drawnJournal?.length) {
+      check('@request', 'cache-hit', () => checkCacheHit(request, observation));
+    }
+  }
+
+  if (compileOnly) return;
   for (const expected of rows) {
     const index = evaluation.cases.findIndex((row) => row.caseId === expected.id);
     if (index < 0) continue;
     const row = evaluation.cases[index];
-    const consumer = observation.projections[index];
+    const consumer = (registered ? observation.ordinaryProjections : observation.projections)[index];
     check(expected.id, 'identity', () => {
       assert.equal(row.caseId, expected.id);
       requireValue(row, 'expected', expected, 'expected');
@@ -200,6 +274,11 @@ export function checkObservation(fixture, request, observation, record) {
       assert.equal(row.status, expected.status);
       const kind = expected.failure?.origin === 'limit' ? 'limit' : expected.failure ? 'failed' : 'completed';
       assert.equal(consumer.kind, kind);
+      if (registered) {
+        checkPresentation(row, consumer, observation.tracedProjections[index],
+          request.selected.includes(expected.id), observation.workspaceDigest);
+        assert.equal(observation.traceAliases[index], true, 'Trace does not share the frozen attachment trace');
+      }
     });
     check(expected.id, 'value', () => {
       requireValue(row, 'value', expected, 'actual', fixture.graph);
@@ -226,7 +305,9 @@ export function checkObservation(fixture, request, observation, record) {
       assert.equal(row.timedOut, expected.status === 'timed-out');
     });
     check(expected.id, 'diagnostics', () => {
-      const diagnostics = row.diagnostics.filter((entry) => entry.kind !== 'trace-truncated');
+      const diagnostics = registered ? row.diagnostics
+        : row.diagnostics.filter((entry) => entry.kind !== 'trace-truncated');
+      if (registered) assert(diagnostics.every((entry) => entry.kind !== 'trace-truncated' && entry.code !== 'trace-unavailable'));
       if (expected.failure) {
         assert(diagnostics.some((entry) => entry.severity === 'error'
           && entry.source === fixture.language
@@ -234,8 +315,9 @@ export function checkObservation(fixture, request, observation, record) {
           && (!expected.errorMarker || (entry.code === 'runtime' && entry.message.includes(expected.errorMarker)))));
       } else assert.deepEqual(diagnostics, expected.diagnostics);
     });
+    const trace = registered ? row.attachment?.trace : row.trace;
     if (expected.anchor && request.selected.includes(expected.id)) {
-      const events = row.trace?.events;
+      const events = trace?.events;
       check(expected.id, 'source-event', () => {
         assert(Array.isArray(events) && events.some((event) => (
           event.line === expected.anchor || event.source?.line === expected.anchor
@@ -250,7 +332,7 @@ export function checkObservation(fixture, request, observation, record) {
     }
     if (expected.instrumentedLine && request.selected.includes(expected.id)) {
       check(expected.id, 'instrumented-line', () => {
-        assert(row.trace?.events?.some((event) => event.line === expected.instrumentedLine),
+        assert(trace?.events?.some((event) => event.line === expected.instrumentedLine),
           `No recorded event on learner line ${expected.instrumentedLine}`);
       });
     }
@@ -321,7 +403,31 @@ export function checkCppDirect(fixture, route, observation, record) {
   }
 }
 
-export function checkDifferential(fixture, observations, record) {
+export function compileDifferentialId(fixture) {
+  return `${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/@request/compile`;
+}
+
+export function checkDifferential(fixture, observations, record, registered = false) {
+  if (registered && fixture.syntax) {
+    const planned = requestMatrix(fixture.cases.map(({ id }) => id), fixture).filter(({ mode }) => mode !== 'continuation');
+    const evaluations = planned.map(({ id }) => observations.find(({ request }) => request === id)?.reported?.evaluation);
+    if (evaluations.some((evaluation) => !evaluation)) return;
+    const id = compileDifferentialId(fixture);
+    function compileProjection({ sessionId, pid, startedAt, endedAt, timings, ...ordinary }) {
+      return ordinary;
+    }
+    try {
+      const baseline = compileProjection(evaluations[0].compile);
+      for (const [index, current] of evaluations.entries()) {
+        assert.equal(current.status, 'compile-failed', planned[index].id);
+        assert.deepEqual(compileProjection(current.compile), baseline, planned[index].id);
+      }
+      record({ id, status: 'pass' });
+    } catch (error) {
+      record({ id, status: 'fail', message: errorText(error) });
+    }
+    return;
+  }
   for (const expected of fixture.cases) {
     const id = `${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/${expected.id}/receipt`;
     const rows = observations.flatMap((observation) => !defined(observation.reported) ? [] : (
@@ -330,11 +436,15 @@ export function checkDifferential(fixture, observations, record) {
     const baselineRequest = fixture.playgroundScript ? 'execute-untraced' : `submit-default-${expected.id}`;
     const baseline = rows.find(({ request }) => request === baselineRequest);
     if (!baseline || rows.length < 2) continue;
-    const normalized = ({ sessionId, pid, startedAt, endedAt, timings, trace, value, ...row }) => ({
-      ...row,
-      diagnostics: row.diagnostics.filter((item) => item.kind !== 'trace-truncated'),
-      valuePresent: defined(value),
-    });
+    function normalized(result) {
+      const { sessionId, pid, startedAt, endedAt, timings, trace, value, ...row } =
+        registered ? ordinaryRow(result) : result;
+      return {
+        ...row,
+        diagnostics: registered ? row.diagnostics : row.diagnostics.filter((item) => item.kind !== 'trace-truncated'),
+        valuePresent: registered ? ownValue(result, 'value') : defined(value),
+      };
+    }
     try {
       for (const current of rows) {
         assert.deepEqual(normalized(current.row), normalized(baseline.row), current.request);
