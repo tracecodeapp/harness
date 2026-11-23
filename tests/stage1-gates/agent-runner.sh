@@ -35,6 +35,7 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   sha256sum "$tarball" >"$job_root/gate-package/tarball.sha256"
   touch "$job_root/gate-package.ready"
 fi
+sha256sum --check --status "$job_root/gate-package/tarball.sha256"
 if [ ! -f "$consumer/.installed" ]; then
   read -r _ tarball <"$job_root/gate-package/tarball.sha256"
   mkdir -p "$consumer"
@@ -49,7 +50,6 @@ fi
 cp "$job_root/gate-package/tarball.sha256" "$evidence/tarball.sha256"
 printf 'host_setup_seconds=%s\nnode=%s\npnpm=%s\n' "$((SECONDS - start))" "$(node -v)" "$(corepack pnpm -v)" | tee "$evidence/host-runtime.txt"
 browser_start=$SECONDS
-consumer="$job_root/gate-consumer-isolated"
 set +e
 TRACECODE_STAGE1_FILTER="$filter" node "tests/stage1-gates/$runner" "$consumer" "$job_root/gate-assets" "$evidence"
 code=$?
