@@ -46,7 +46,7 @@ export function createCppObservationRegistration(
         lease = await producer.prepare(call);
       } catch {
         call.signal?.throwIfAborted();
-        return refusalLease('observer-prepare');
+        lease = refusalLease('observer-prepare');
       }
       if (call.signal?.aborted) {
         await lease.dispose();
@@ -106,6 +106,8 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
   return {
     async prepare({ program, traceOptions, signal }) {
       const client = options.createObserverWorkerClient();
+      const retire = () => client.terminate();
+      signal?.addEventListener('abort', retire, { once: true });
       try {
         await client.init();
         signal?.throwIfAborted();
@@ -143,6 +145,8 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
       } catch (error) {
         client.terminate();
         throw error;
+      } finally {
+        signal?.removeEventListener('abort', retire);
       }
     },
   };
@@ -169,21 +173,36 @@ export function createSparseCppDrawingProducer(options: SparseCppDrawingOptions)
       const verified = await verifyCppStage1Artifact(artifact, call.program.code, options.verifySites, call.signal);
       call.signal?.throwIfAborted();
       if (!verified) return refusalLease('uncertified-drawing');
+      const active = new Set<() => void | Promise<void>>();
       return {
         async observe(attempt) {
           // Own the bytes of this copy. Neither a probe rewriter nor a
           // transfer to its worker can modify/detach the certified original.
+          attempt.signal?.throwIfAborted();
           const observer = options.createObserver({
             ordinaryModule: verified.ordinaryModule.slice(),
             sites: structuredClone(verified.sites),
           });
+          let disposal: Promise<void> | undefined;
+          const retire = () => {
+            active.delete(retire);
+            disposal ??= Promise.resolve().then(() => observer.dispose());
+            return disposal;
+          };
+          const abort = () => { void retire().catch(() => {}); };
+          active.add(retire);
+          attempt.signal?.addEventListener('abort', abort, { once: true });
           try {
+            attempt.signal?.throwIfAborted();
             return await observer.observe(attempt);
           } finally {
-            await observer.dispose();
+            attempt.signal?.removeEventListener('abort', abort);
+            await retire();
           }
         },
-        dispose() {},
+        async dispose() {
+          await Promise.allSettled([...active].map((retire) => retire()));
+        },
       };
     },
   };

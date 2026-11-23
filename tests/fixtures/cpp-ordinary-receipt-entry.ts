@@ -35,11 +35,37 @@ const fixtures = [
   { id: 'G5/cpp/compound-assignment',
     code: '#include <vector>\nclass Solution {public: int solve(int n){std::vector<int> v{n}; v[0]*=1.5; return v[0];}};',
     inputs: [{ n: 3 }, { n: 5 }], expected: [4, 7] },
+  { id: 'G5/cpp/step-cap',
+    code: 'class Solution {\npublic:\n int solve(int n) {\n  int total = 0;\n  for (int i = 0; i < 20000; i++) {\n   total += i;\n  }\n  return n;\n }\n};',
+    inputs: [{ n: 3 }, { n: 4 }], expected: [3, 4], maxTraceSteps: 2 },
   { id: 'G6/cpp/cpp-delete-alias',
-    code: 'class Store { int n = 0; public:\n void set(int value) { n = value; }\n int get() { return n; }\n bool deleteKey() { n = 0; return true; }\n};',
-    functionName: 'Store', executionStyle: 'ops-class' as const,
-    inputs: [3, 5].map((n) => ({ operations: ['Store', 'set', 'get', 'delete', 'get'], arguments: [[], [n], [], [], []] })),
-    expected: [[null, null, 3, true, 0], [null, null, 5, true, 0]] },
+    code: `#include <optional>
+#include <string>
+#include <unordered_map>
+
+class KeyValueStore {
+    std::unordered_map<std::string, int> store;
+
+public:
+    KeyValueStore() = default;
+
+    void set(std::string key, int value) {
+        store[key] = value;
+    }
+
+    std::optional<int> get(std::string key) {
+        auto found = store.find(key);
+        if (found == store.end()) return std::nullopt;
+        return found->second;
+    }
+
+    bool deleteKey(std::string key) {
+        return store.erase(key) > 0;
+    }
+};`,
+    functionName: 'KeyValueStore', executionStyle: 'ops-class' as const,
+    inputs: [{"operations": ["KeyValueStore", "set", "get", "delete", "get", "delete"], "arguments": [[], ["a", 1], ["a"], ["a"], ["a"], ["a"]]}, {"operations": ["KeyValueStore", "set", "get", "delete", "get", "delete"], "arguments": [[], ["b", 7], ["b"], ["c"], ["b"], ["b"]]}],
+    expected: [[null, null, 1, true, null, false], [null, null, 7, false, 7, true]] },
 ];
 
 function check(condition: unknown, message: string): asserts condition {
@@ -91,7 +117,7 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
           functionName: fixture.functionName ?? 'solve',
           executionStyle: fixture.executionStyle ?? 'solution-method' as const,
         };
-        const traceOptions = { maxTraceSteps: 4000, maxLineEvents: 12000, maxSingleLineHits: 1000, maxStoredEvents: 16000 };
+        const traceOptions = { maxTraceSteps: fixture.maxTraceSteps ?? 4000, maxLineEvents: 12000, maxSingleLineHits: 1000, maxStoredEvents: 16000 };
         const request = { program, traceOptions };
         const observation = registration.prepareObservation(request);
         const prepared = await ordinary.prepareProgram({ ...program, mode: 'code', traceOptions });
@@ -140,7 +166,7 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
     ordinary.terminate();
   }
   check(requests.some(({ role, mode }) => role === 'legacy' && mode === 'trace'), 'legacy observer was never dispatched');
-  check(requests.filter(({ role }) => role === 'ordinary').length === 18, 'expected one ordinary prepare per fixture and producer');
+  check(requests.filter(({ role }) => role === 'ordinary').length === fixtures.length * 3, 'expected one ordinary prepare per fixture and producer');
   check(requests.filter(({ role }) => role === 'ordinary').every(({ mode, traceOptions }) =>
     mode === 'code' && traceOptions === undefined), 'trace options reached ordinary preparation');
   check(requests.every(({ traceEnabled }) => traceEnabled !== false), 'recording-off trace execution');
