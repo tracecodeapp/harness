@@ -38,7 +38,8 @@ and phase receipts so a policy name alone cannot pass as evidence of separate
 capacity or clean reuse. Compare each policy with the frozen phone cells, then
 use the chosen registration for the qualification windows. If the
 registration is still open, the procedure cannot establish installed drawing
-or drawing latency coverage. Refused observations stay out of the sample count.
+or drawing latency coverage. A refusal can supply the joined verdict latency
+when ordinary correctness passed. It leaves the drawing cell without a sample.
 
 ```sh
 node benchmarks/speed-baseline-021/cpp-qualify.mjs \

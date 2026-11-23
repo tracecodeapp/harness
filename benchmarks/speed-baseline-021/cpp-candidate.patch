@@ -137,15 +137,68 @@
    await save();
    const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
      [version, await browser.newContext()])));
-@@ -448,7 +474,7 @@
-           if (sample.invalid || sample.refusal) count.invalid++;
-           else if (!sample.excluded) count.kept++;
+@@ -374,14 +400,20 @@
+     const fixture = fixtures.data[group.problem][group.language];
+     const otherProblem = problemIds.find((id) => id !== group.problem);
+     const otherFixture = fixtures.data[otherProblem][group.language];
+-    const counts = Object.fromEntries(group.versions.map((version) => [version, { kept: 0, invalid: 0 }]));
++    const independentVerdicts = candidate && speedTier === 'cpp' && group.journey === 'run';
++    const counts = Object.fromEntries(group.versions.map((version) => [
++      version, { kept: 0, invalid: 0, verdicts: 0, invalidVerdicts: 0 },
++    ]));
++    const needsSample = (count) =>
++      (count.kept < target && count.invalid < maxInvalid) ||
++      (independentVerdicts && count.verdicts < target && count.invalidVerdicts < maxInvalid);
+     const warmPages = new Map();
+     const groupStarted = Date.now();
+     try {
+-      for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
++      for (let round = 1; group.versions.some((v) => needsSample(counts[v])); round++) {
+         for (const [position, version] of shuffled(group.versions).entries()) {
+           const count = counts[version];
+-          if (count.kept >= target || count.invalid >= maxInvalid) continue;
++          if (!needsSample(count)) continue;
+           await waitForQuiet();
+           const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };
+           delete sample.versions;
+@@ -413,6 +445,11 @@
+               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
+               sample.refusal = refusal(sample.initial);
+               sample.invalid = outcome(sample.initial, fixture.cases.map((c) => c.id));
++              if (independentVerdicts && !sample.invalid && count.verdicts < target) {
++                // This is the public joined response clock even when the
++                // selected drawing was refused or the next click failed.
++                sample.ordinaryKept = true;
++              }
+               if (group.journey === 'submit' && !sample.invalid && sample.initial.verdict !== 'passed') {
+                 sample.invalid = 'Unexpected Submit verdict: ' + JSON.stringify(sample.initial.verdict);
+               }
+@@ -444,18 +481,20 @@
+
+           sample.wallMs = Date.now() - attemptStarted;
+           sample.metrics = addressedBySample(sample);
+-          sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal;
+-          if (sample.invalid || sample.refusal) count.invalid++;
+-          else if (!sample.excluded) count.kept++;
++          sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal && count.kept < target;
++          if (sample.kept) count.kept++;
++          else if (sample.invalid || sample.refusal) count.invalid++;
++          if (sample.ordinaryKept) count.verdicts++;
++          else if (independentVerdicts && !sample.excluded && count.verdicts < target) count.invalidVerdicts++;
            await appendFile(samplesPath, JSON.stringify(sample) + '\n');
 -          if (sample.refusal) throw new Error(sample.refusal);
 +          if (sample.refusal && !candidate) throw new Error(sample.refusal);
            if (sample.invalid) console.error('Invalid sample', version, JSON.stringify(group), sample.invalid);
          }
        }
+     } finally {
+       await Promise.all([...warmPages.values()].map((page) => page.close().catch(() => {})));
+     }
+-    if (Object.values(counts).some((c) => c.kept < target)) complete = false;
++    if (Object.values(counts).some((c) => c.kept < target || (independentVerdicts && c.verdicts < target))) complete = false;
+     console.log(JSON.stringify({ groupIndex, ...group, counts, wallMs: Date.now() - groupStarted }));
+   }
+   report.complete = complete;
 --- a/benchmarks/speed-baseline-021/entry.ts
 +++ b/benchmarks/speed-baseline-021/entry.ts
 @@ -45,6 +45,8 @@

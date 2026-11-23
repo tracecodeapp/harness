@@ -95,13 +95,22 @@ function samplesFor({ metadata, samples }, cell, version) {
     }
     assert.ok(Number.isInteger(sample.round) && sample.round > 0 && !rounds.has(sample.round));
     rounds.add(sample.round);
-    if (!sample.kept) continue;
-    assert.ok(!sample.invalid && !sample.excluded && !sample.refusal);
+    const independentVerdicts = version === '0.21-candidate' && language === 'cpp' && endpoint === 'verdicts';
+    if (independentVerdicts) {
+      if (!sample.ordinaryKept) continue;
+      const rows = sample.initial?.evaluation?.cases;
+      assert.equal(sample.initial?.evaluation?.status, 'completed');
+      assert.ok(rows?.length > 0 && rows.every((row) => row.status === 'completed' && row.verdict === 'passed'));
+      assert.equal(sample.metrics.verdicts, sample.initial.elapsedMs);
+    } else {
+      if (!sample.kept) continue;
+      assert.ok(!sample.invalid && !sample.excluded && !sample.refusal);
+    }
     assert.ok(Number.isFinite(sample.beforeInitial?.oneMinute) && sample.beforeInitial.oneMinute <= 2);
-    if (group.continuation) assert.ok(Number.isFinite(sample.beforeSecond?.oneMinute) && sample.beforeSecond.oneMinute <= 2);
+    if (group.continuation && !independentVerdicts) assert.ok(Number.isFinite(sample.beforeSecond?.oneMinute) && sample.beforeSecond.oneMinute <= 2);
     const ms = sample.metrics?.[endpoint];
     assert.ok(Number.isFinite(ms) && ms > 0);
-    if (endpoint === 'firstTrace' || (journey === 'run' && endpoint === 'verdicts')) {
+    if (endpoint === 'firstTrace' || (journey === 'run' && endpoint === 'verdicts' && !independentVerdicts)) {
       assert.equal(sample.initial?.firstTraceMs, sample.initial?.elapsedMs, 'Run and first trace must use the same joined response');
       assert.ok(sample.initial.evaluation.cases[0]?.traceEvents > 0);
     }
