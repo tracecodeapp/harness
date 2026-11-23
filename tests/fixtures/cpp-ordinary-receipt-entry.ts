@@ -1,3 +1,8 @@
+import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/browser-runtime-host';
+import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
+import { createAlgorithmJudgeBundle } from '../../packages/judge/src/algorithm-bundle';
+import { createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
+import type { JudgeCaseResult } from '../../packages/judge/src/model';
 import { createCppOrdinaryExecutionProvider } from '../../packages/runtime-cpp/src/cpp-prepared-provider';
 import {
   createCppObservationRegistration,
@@ -73,12 +78,18 @@ function check(condition: unknown, message: string): asserts condition {
 }
 
 export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOptions) {
+  let throwObserverCompile = false;
+  let thrownCompiles = 0;
   const requests: Array<{ role: string; mode?: string; traceEnabled?: boolean; traceOptions?: object }> = [];
   const createClient = (role: string) => {
     const client = new CppWorkerClient(options);
     const prepare = client.prepareRuntimeProgram.bind(client);
     client.prepareRuntimeProgram = async (call) => {
       requests.push({ role, mode: call.mode, traceOptions: call.traceOptions });
+      if (role === 'legacy' && throwObserverCompile) {
+        thrownCompiles++;
+        throw new Error('injected trace compiler error');
+      }
       return prepare(call);
     };
     const run = client.executePreparedTrace.bind(client);
@@ -88,7 +99,6 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
     };
     return client;
   };
-  const ordinary = createCppOrdinaryExecutionProvider({ createWorkerClient: () => createClient('ordinary') });
   const legacy = createLegacyCppDrawingProducer({
     createObserverWorkerClient: () => createClient('legacy'),
     // The rewritten artifact runs as a negative control. Its events do not
@@ -108,65 +118,102 @@ export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOpti
     },
   };
   const suites = [];
-  try {
-    for (const [name, producer] of Object.entries({ legacy, sparse, refusal })) {
-      const registration = createCppObservationRegistration(producer, 60_000);
+  for (const [name, producer] of Object.entries({ legacy, sparse, refusal })) {
+    const ordinary = createCppOrdinaryExecutionProvider({ createWorkerClient: () => createClient('ordinary') });
+    const registration = createCppObservationRegistration(producer, {
+      runtimeVersion: 'cpp-b7-test',
+      observationDeadlineMs: 60_000,
+      observationPrepareDeadlineMs: 60_000,
+    });
+    const runtimeHost = createBrowserRuntimeHost({
+      providerRegistry: createBrowserRuntimeProviderRegistry([{
+        id: 'b7-cpp-test',
+        languages: ['cpp'],
+        create: () => ({
+          preparedProviders: new Map([['cpp', ordinary]]),
+          disposeLanguage: () => ordinary.reset(),
+          dispose: () => ordinary.terminate(),
+        }),
+      }]),
+      providers: ['cpp'],
+    });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost, { receiptProviders: { cpp: registration } });
+    try {
       for (const fixture of fixtures) {
         const program = {
           code: fixture.code,
           functionName: fixture.functionName ?? 'solve',
           executionStyle: fixture.executionStyle ?? 'solution-method' as const,
         };
-        const traceOptions = { maxTraceSteps: fixture.maxTraceSteps ?? 4000, maxLineEvents: 12000, maxSingleLineHits: 1000, maxStoredEvents: 16000 };
-        const request = { program, traceOptions };
-        const observation = registration.prepareObservation(request);
-        const prepared = await ordinary.prepareProgram({ ...program, mode: 'code', traceOptions });
-        const lease = await observation;
-        try {
-          check(prepared.kind === 'prepared' && prepared.program.mode === 'code', fixture.id + '/compile');
-          const executable = prepared.program;
-          try {
-            // The same code artifact serves single, mixed selection and all
-            // selected (one-shot shape), regardless of the observation result.
-            const selected = (index: number) => lease.observe({
-              ...request, attemptToken: String(index), inputs: structuredClone(fixture.inputs[index]!),
-            });
-            const mixed = await Promise.all([
-              selected(0),
-              executable.executeBatchIsolated!({ inputBatch: fixture.inputs }),
-            ]);
-            const oneShot = await Promise.all([
-              selected(0), selected(1),
-              executable.executeBatchIsolated!({ inputBatch: fixture.inputs }),
-            ]);
-            const single = await executable.executeIsolated({ inputs: fixture.inputs[0]! });
-            const rows = [...mixed[1], ...oneShot[2], single];
-            for (const [index, row] of rows.entries()) {
-              const expected = fixture.expected[[0, 1, 0, 1, 0][index]!]!;
-              check(row.kind === 'completed' && JSON.stringify(row.output) === JSON.stringify(expected),
-                `${fixture.id}/${name}/${index}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(row)}`);
-              for (const key of ['trace', 'traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded', 'providerFailure']) {
-                check(!Object.hasOwn(row, key), `${fixture.id}/${name} leaked ${key}`);
-              }
+        const traceOptions = {
+          maxTraceSteps: fixture.maxTraceSteps ?? 4000,
+          maxLineEvents: 12000,
+          maxSingleLineHits: 1000,
+          maxStoredEvents: 16000,
+        };
+        const bundle = await createAlgorithmJudgeBundle({
+          ...program,
+          id: fixture.id,
+          language: 'cpp',
+          trace: true,
+          traceOptions,
+          cases: fixture.inputs.map((input, index) => ({
+            id: index === 0 ? 'A' : 'B',
+            input,
+            expected: fixture.expected[index]!,
+          })),
+        });
+        const checkRows = (rows: readonly JudgeCaseResult[], path: string) => {
+          check(rows.length === fixture.expected.length, fixture.id + '/' + path + '/order');
+          rows.forEach((row, index) => {
+            const expected = fixture.expected[index]!;
+            const label = `${fixture.id}/${name}/${path}/${row.caseId}`;
+            check(row.caseId === (index === 0 ? 'A' : 'B'), label + '/id');
+            check(row.status === 'completed' && row.verdict.kind === 'passed' &&
+              JSON.stringify(row.value) === JSON.stringify(expected),
+            `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(row)}`);
+            for (const key of ['trace', 'traceUnavailable', 'traceUnavailableRun', 'untracedRunNeeded', 'providerFailure']) {
+              check(!Object.hasOwn(row, key), label + ' leaked ' + key);
             }
-            check(mixed[0].status === 'refused', fixture.id + '/attachment-status');
-            if (name === 'legacy' && fixture.id.endsWith('/trace-compile')) {
-              check(mixed[0].reason === 'observer-prepare', fixture.id + '/observer-prepare');
-            }
-            suites.push(`${fixture.id}/${name}`);
-          } finally {
-            await executable.dispose();
-          }
-        } finally {
-          await lease.dispose();
+            check(row.diagnostics.every(({ code }) => code !== 'trace-unavailable'), label + '/diagnostics');
+          });
+        };
+
+        const run = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+        check(run.evaluation.status === 'completed' && run.evaluation.compile?.status === 'compiled', fixture.id + '/run-first/compile');
+        checkRows(run.evaluation.cases, 'run-first');
+        const [a, b] = run.evaluation.cases;
+        check(a?.attachment?.status === 'refused', fixture.id + '/run-first/A/attachment-status');
+        check(b && !Object.hasOwn(b, 'attachment'), fixture.id + '/run-first/B/unselected');
+        if (name === 'legacy' && fixture.id.endsWith('/trace-compile')) {
+          check(a.attachment.reason === 'observer-prepare', fixture.id + '/observer-prepare');
         }
+        check(run.executionId, fixture.id + '/run-first/handle');
+        await host.disposeExecution(run.executionId);
+
+        // The mux trace request uses the all-selected one-shot receipt path.
+        // Assert the inputs to the legacy adapter's aggregate here. Running
+        // the pinned mux adapter itself belongs to installed registration.
+        throwObserverCompile = name === 'legacy' && fixture.id.endsWith('/trace-compile');
+        const receipt = await host.evaluateAlgorithm({ bundle });
+        throwObserverCompile = false;
+        check(receipt.evaluation.status === 'completed' && receipt.evaluation.compile?.status === 'compiled',
+          fixture.id + '/one-shot/compile');
+        checkRows(receipt.evaluation.cases, 'one-shot');
+        check(receipt.verdict === 'passed' && receipt.passedCount === 2 && receipt.totalCount === 2,
+          fixture.id + '/one-shot/aggregate');
+        check(receipt.evaluation.cases.every(({ attachment }) => attachment?.status === 'refused'),
+          fixture.id + '/one-shot/attachment-status');
+        suites.push(`${fixture.id}/${name}`);
       }
+    } finally {
+      await host.dispose();
     }
-  } finally {
-    ordinary.terminate();
   }
+  check(thrownCompiles === 1, 'expected one injected observer compile throw');
   check(requests.some(({ role, mode }) => role === 'legacy' && mode === 'trace'), 'legacy observer was never dispatched');
-  check(requests.filter(({ role }) => role === 'ordinary').length === fixtures.length * 3, 'expected one ordinary prepare per fixture and producer');
+  check(requests.filter(({ role }) => role === 'ordinary').length === fixtures.length * 3 * 2,
+    'expected one ordinary prepare per evaluation');
   check(requests.filter(({ role }) => role === 'ordinary').every(({ mode, traceOptions }) =>
     mode === 'code' && traceOptions === undefined), 'trace options reached ordinary preparation');
   check(requests.every(({ traceEnabled }) => traceEnabled !== false), 'recording-off trace execution');

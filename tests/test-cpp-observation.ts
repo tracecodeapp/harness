@@ -9,7 +9,9 @@ import {
 import { RUNTIME_TRACE_SCHEMA_VERSION, type RuntimeTrace } from '../packages/runtime-contracts/src/runtime-trace';
 
 const source = 'int f() { return 0 && 1; }';
-const program = { code: source, functionName: 'f', executionStyle: 'function' } as const;
+const program = { code: source, functionName: 'f', executionStyle: 'function', runtimeVersion: 'test-cpp' } as const;
+const options = { runtimeVersion: program.runtimeVersion, observationDeadlineMs: 1000 };
+const signal = new AbortController().signal;
 const request = { program, inputs: {}, attemptToken: 'test' };
 const wasm = Uint8Array.of(
   0, 97, 115, 109, 1, 0, 0, 0, // Wasm preamble
@@ -60,8 +62,8 @@ test('sparse observation requires all three digests and independently verified c
         };
       },
     });
-    const registration = createCppObservationRegistration(producer, 1000);
-    const lease = await registration.prepareObservation({ program });
+    const registration = createCppObservationRegistration(producer, options);
+    const lease = await registration.prepareObservation(program, signal);
     const drawing = await lease.observe(request);
     assert.deepEqual(drawing, {
       status: 'refused',
@@ -85,8 +87,8 @@ test('a producer prepare throw becomes a typed refusal with no fallback', async 
     }),
     certify() { assert.fail('must not certify'); },
   });
-  const registration = createCppObservationRegistration(producer, 1000);
-  const lease = await registration.prepareObservation({ program });
+  const registration = createCppObservationRegistration(producer, options);
+  const lease = await registration.prepareObservation(program, signal);
   assert.deepEqual(await lease.observe(request), { status: 'refused', reason: 'observer-prepare' });
   await lease.dispose();
   assert.equal(starts, 1);
@@ -114,8 +116,8 @@ test('observation projection reads only Drawing fields and drops a late result a
         dispose() {},
       };
     },
-  }, 1000);
-  const lease = await registration.prepareObservation({ program });
+  }, options);
+  const lease = await registration.prepareObservation(program, signal);
   assert.deepEqual(await lease.observe(request), { status: 'drawn', trace });
   const late = lease.observe({ ...request, attemptToken: 'late' });
   await started.promise;

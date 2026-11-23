@@ -13,7 +13,10 @@ import {
   type VerifiedCppStage1Artifact,
 } from './cpp-stage1-artifact';
 
-type Preparation = Pick<RuntimeObservationCall, 'program' | 'traceOptions' | 'signal'>;
+type ObservationProgram = RuntimeObservationCall['program'] & { readonly runtimeVersion: string };
+type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
+  readonly program: ObservationProgram;
+};
 
 interface CppDrawingLease extends RuntimeObservationProvider {
   dispose(): void | Promise<void>;
@@ -35,22 +38,32 @@ function refusalLease(reason: Refusal): CppDrawingLease {
 /** Keeps the observation adapter limited to presentation data. */
 export function createCppObservationRegistration(
   producer: CppDrawingProducer,
-  observationDeadlineMs: number
+  options: {
+    readonly runtimeVersion: string;
+    readonly observationDeadlineMs: number;
+    readonly observationPrepareDeadlineMs?: number;
+  }
 ) {
+  const { runtimeVersion, ...deadlines } = options;
   return {
-    capabilities: { observationLease: 'separate' as const, observationDeadlineMs },
-    async prepareObservation(call: Preparation): Promise<CppDrawingLease> {
-      call.signal?.throwIfAborted();
+    runtimeVersion,
+    capabilities: { observationLease: 'separate' as const, ...deadlines },
+    async prepareObservation(
+      program: ObservationProgram,
+      signal: AbortSignal,
+      traceOptions?: Preparation['traceOptions']
+    ): Promise<CppDrawingLease> {
+      signal.throwIfAborted();
       let lease: CppDrawingLease;
       try {
-        lease = await producer.prepare(call);
+        lease = await producer.prepare({ program, traceOptions, signal });
       } catch {
-        call.signal?.throwIfAborted();
+        signal.throwIfAborted();
         lease = refusalLease('observer-prepare');
       }
-      if (call.signal?.aborted) {
+      if (signal.aborted) {
         await lease.dispose();
-        call.signal.throwIfAborted();
+        signal.throwIfAborted();
       }
 
       const lifetime = new AbortController();
@@ -112,7 +125,9 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
         await client.init();
         signal?.throwIfAborted();
         const preparation = await client.prepareRuntimeProgram({
-          ...program,
+          code: program.code,
+          functionName: program.functionName,
+          executionStyle: program.executionStyle,
           mode: 'trace',
           traceOptions,
           signal,
