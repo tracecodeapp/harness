@@ -58,6 +58,7 @@ try {
       sourcefile: 'stage1-browser.mjs',
     },
     outfile: bundlePath, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
+    external: ['/gate-routes.mjs'],
     metafile: true,
     define: { 'process.env.NODE_ENV': '"production"' },
   });
