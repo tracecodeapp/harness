@@ -14780,5 +14780,5 @@ var MAKE_CAUSAL_CONSOLE_FROM_LOGGER_KEY_FOR_SES_AVA = symbolFor(
 universalThis[MAKE_CAUSAL_CONSOLE_FROM_LOGGER_KEY_FOR_SES_AVA] = makeCausalConsoleFromLoggerForSesAva;
 
 // packages/runtime-javascript/src/ses-algorithm-worker-entry.ts
-lockdown();
+lockdown({ overrideTaming: "severe" });
 await Promise.resolve().then(() => (init_ses_algorithm_worker(), ses_algorithm_worker_exports));
