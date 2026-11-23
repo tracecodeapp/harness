@@ -11,6 +11,7 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { ledgerFor, ordinaryProjection } from './gb-oracle.mjs';
 import { schedulerInjection } from './gb-probe.mjs';
+import { loadMux, runMux } from './gb-mux.mjs';
 import { summarize } from './checks.mjs';
 
 const gates = dirname(fileURLToPath(import.meta.url));
@@ -111,7 +112,7 @@ async function prepareSite() {
     plugins: [{
       name: 'installed-public-judge',
       setup(builder) {
-        builder.onResolve({ filter: /^@tracecode\/harness\/judge$/ }, ({ path, pluginData }) => {
+        builder.onResolve({ filter: /^@tracecode\/harness\/(judge|tracekernel)$/ }, ({ path, pluginData }) => {
           if (pluginData?.resolvingInstalledJudge) return;
           return builder.resolve(path, {
             resolveDir: consumer, kind: 'import-statement', pluginData: { resolvingInstalledJudge: true },
@@ -225,6 +226,9 @@ async function main() {
   const browserTime = performance.now();
   let browser;
   try {
+    const mux = process.env.TRACECODE_STAGE1_MUX_INPUT && requested.some(({ route }) => route === 'mux-shape')
+      ? await loadMux(process.env.TRACECODE_STAGE1_MUX_INPUT, output) : undefined;
+    if (mux) meta.muxPin = mux.muxPin;
     browser = await chromium.launch({ channel: 'chromium', headless: true });
     meta.browser = browser.version();
     for (const fixture of new Set(requested.map((item) => item.fixture))) {
@@ -237,6 +241,9 @@ async function main() {
       try {
         page.on('requestfailed', (request) => notes.push({ label, url: request.url(), failure: request.failure() }));
         page.on('pageerror', (error) => notes.push({ label, error: error.message }));
+        if (mux && routes.includes('mux-shape')) {
+          await page.exposeFunction('gbRunMux', (bundle) => runMux(mux, page, origin + '/', fixture.language, bundle));
+        }
         await page.exposeFunction('gbReceipt', async (sample) => {
           const id = key(fixture, sample.route);
           assert(routes.includes(sample.route) && !samples.has(id), `Unexpected or duplicate browser ACK ${id}`);
@@ -266,10 +273,13 @@ async function main() {
       }
     }
   } finally {
-    await browser?.close();
-    await new Promise((done) => log.end(done));
-    server.closeAllConnections();
-    await new Promise((done) => server.close(done));
+    try {
+      await browser?.close();
+    } finally {
+      await new Promise((done) => log.end(done));
+      server.closeAllConnections();
+      await new Promise((done) => server.close(done));
+    }
   }
 
   const phases = requested.map(({ fixture, route }) => {
@@ -283,15 +293,21 @@ async function main() {
     };
   });
   const count = (status) => phases.flatMap((phase) => phase.receipts).filter((receipt) => receipt.status === status).length;
-  const inventoryReceipt = summarize(planned, phases.flatMap((phase) => phase.receipts.map((receipt) => ({
+  const step8Owned = new Set(phases.flatMap((phase) => phase.step8Owned));
+  const inventoryReceipt = summarize(planned.filter((id) => !step8Owned.has(id)), phases.flatMap((phase) => phase.receipts.map((receipt) => ({
     ...receipt, status: receipt.status === 'passed' ? 'pass' : 'fail',
   }))));
   assert.equal(inventoryReceipt.repeated.length, 0);
   assert.equal(inventoryReceipt.unexpected.length, 0);
+  for (const id of step8Owned) {
+    const counts = inventoryReceipt.counts[id.split('/').slice(0, 2).join('/')];
+    counts.expected++;
+    counts.step8Owned = (counts.step8Owned ?? 0) + 1;
+  }
   const report = {
     runId, ...meta, browserMs: performance.now() - browserTime, wallMs: performance.now() - timer,
     checks: { expected: planned.length, seen: count('passed') + count('failed'), passed: count('passed'), failed: count('failed'),
-      missing: phases.reduce((total, phase) => total + phase.missing.length, 0) },
+      missing: inventoryReceipt.missing.length, step8Owned: step8Owned.size },
     byLanguage: inventoryReceipt.counts, unexpected: inventoryReceipt.unexpected, repeated: inventoryReceipt.repeated,
     phases, notes, controls: controls(samples),
   };

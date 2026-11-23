@@ -42,12 +42,10 @@ export function installJournal(fixture) {
     journal.push({ sequence: journal.length + 1, kind, ...fields });
   }
 
-  function identify(input) {
+  function matchesInput(row, input) {
     if (!input || typeof input !== 'object') return undefined;
-    return fixture.cases.find((row) =>
-      Object.keys(row.input).length === Object.keys(input).length &&
-      Object.entries(row.input).every(([key, value]) => JSON.stringify(value) === JSON.stringify(input[key]))
-    )?.id;
+    return Object.keys(row.input).length === Object.keys(input).length &&
+      Object.entries(row.input).every(([key, value]) => JSON.stringify(value) === JSON.stringify(input[key]));
   }
 
   function deadlineMatches(ms) {
@@ -97,8 +95,13 @@ export function installJournal(fixture) {
 
     postMessage(message, ...transfer) {
       const payload = message?.payload ?? message;
-      const rows = (payload?.inputBatch ?? [payload?.inputs]).map(identify);
-      this.#trackJudgeWorker(message, payload, rows);
+      const inputs = payload?.inputBatch ?? [payload?.inputs];
+      const inPlanOrder = inputs.length === fixture.cases.length &&
+        fixture.cases.every((row, i) => matchesInput(row, inputs[i]));
+      const matches = inputs.map((input) => fixture.cases.filter((row) => matchesInput(row, input)));
+      const rows = inPlanOrder ? fixture.cases.map(({ id }) => id) : matches.map(([row]) => row?.id);
+      const proofRows = inPlanOrder ? rows : matches.map((found) => found.length === 1 ? found[0].id : undefined);
+      this.#trackJudgeWorker(message, payload, proofRows);
       if (request && rows.length && rows.every(Boolean) && /^execute/u.test(message.type)) {
         const mode = payload.mode ?? message.type;
         const wire = { request, rows, mode, message, index: 0 };
@@ -125,29 +128,31 @@ export function installJournal(fixture) {
 
     #trackJudgeWorker(message, payload, rows) {
       const cpp = fixture.language === 'cpp';
-      if ((!cpp && fixture.gate !== 'G5') || !request || typeof message.protocolToken !== 'string' ||
-          !message.protocolToken) return;
+      const js = ['javascript', 'typescript'].includes(fixture.language);
+      if (!request) return;
       const correlated = { request, generation: this.#generation, commandId: message.id };
+      const token = typeof message.protocolToken === 'string' && message.protocolToken ? message.protocolToken : undefined;
+      const track = ({ ordinary, attemptToken, terminal, ses }) => {
+        if (ordinary) record('ordinary-dispatch', {
+          ...correlated, rows, reportsStarts: !!token && payload.reportCaseProgress === true,
+        });
+        if (token) this.#judgeWire.set(message.id, { correlated, rows, ordinary, token, attemptToken, terminal, ses, cpp });
+      };
       if (cpp) {
         const single = message.type === 'execute-prepared-runtime-program';
         if (!single && message.type !== 'execute-prepared-runtime-program-batch') return;
         const ordinary = payload.mode === 'code';
         const attemptToken = single && payload.mode === 'trace' ? payload.attemptToken : undefined;
         if (!ordinary && typeof attemptToken !== 'string') return;
-        this.#judgeWire.set(message.id, {
-          correlated, rows, ordinary, token: message.protocolToken, attemptToken,
-          terminal: message.type, cpp: true,
-        });
-        if (ordinary && fixture.gate === 'G5') {
-          record('ordinary-dispatch', { ...correlated, rows, reportsStarts: payload.reportCaseProgress === true });
-        }
+        track({ ordinary, attemptToken, terminal: message.type });
         return;
       }
-      if (['javascript', 'typescript'].includes(fixture.language) && message.type === 'observe-execution' &&
-          typeof payload.attemptToken === 'string') {
-        this.#judgeWire.set(message.id, {
-          correlated, rows, token: message.protocolToken, attemptToken: payload.attemptToken,
-        });
+      if (js) {
+        if (message.type === 'observe-execution' && typeof payload.attemptToken === 'string') {
+          track({ ordinary: false, attemptToken: payload.attemptToken });
+        } else if (/^execute/u.test(message.type)) {
+          track({ ordinary: true, ses: message.type === 'execute-batch' });
+        }
         return;
       }
       if (fixture.language !== 'python') return;
@@ -156,36 +161,61 @@ export function installJournal(fixture) {
         payload.mode === 'code';
       const observation = prepared && payload.mode === 'trace' && payload.artifact?.observationOnly === true;
       if (!ordinary && !observation) return;
-      this.#judgeWire.set(message.id, { correlated, rows, ordinary, token: message.protocolToken });
-      if (ordinary) {
-        record('ordinary-dispatch', { ...correlated, rows, reportsStarts: payload.reportCaseProgress === true });
+      track({ ordinary });
+    }
+
+    terminate() {
+      // SES can retire an executing case at its deadline without a reply.
+      // The oracle still requires a correlated start for every row it sent.
+      for (const wire of this.#judgeWire.values()) {
+        if (wire.ordinary && wire.ses) record('ordinary-terminal', { ...wire.correlated, retired: true });
       }
+      this.#judgeWire.clear();
+      super.terminate();
     }
 
     #readJudgeWorker(event) {
       const { id, type, payload, protocolToken } = event.data ?? {};
       const wire = this.#judgeWire.get(id);
-      if (!wire || !event.isTrusted || protocolToken !== wire.token) return;
+      if (!wire || !event.isTrusted) return;
+      // SES keeps the existing terminal envelope for its client. Each start
+      // still carries the command token. The terminal closes that worker/id.
+      const sesTerminal = wire.ses && type === undefined && protocolToken === undefined &&
+        typeof event.data.ok === 'boolean';
+      if (protocolToken !== wire.token && !sesTerminal) return;
       if (wire.ordinary && type === 'batch-case-progress' && payload?.phase === 'started') {
         record('ordinary-start', { ...wire.correlated, caseId: wire.rows[payload.index], index: payload.index });
       }
-      if (wire.cpp && wire.ordinary && type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
+      if (wire.ordinary && type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
         const index = payload.detail?.caseIndex;
-        record(fixture.gate === 'G4' ? 'worker-started' : 'ordinary-start', {
+        record('ordinary-start', { ...wire.correlated, caseId: wire.rows[index], index });
+        if (wire.cpp && fixture.gate === 'G4') record('worker-started', {
           ...wire.correlated, caseId: wire.rows[index], index, mode: 'code',
         });
       }
       const terminal = wire.terminal ?? 'execute-result';
-      if (type !== terminal && type !== 'error') return;
+      const completed = type === terminal || (wire.ses && type === undefined && event.data.ok === true);
+      if (!completed && type !== 'error' && !(wire.ses && event.data.ok === false)) return;
       this.#judgeWire.delete(id);
+      if (wire.ordinary && completed) {
+        // Untokened SES terminal envelopes can close the command, but
+        // cannot attest anything about the set of cases that started.
+        const startedCaseIndices = payload?.startedCaseIndices;
+        record('ordinary-terminal', {
+          ...wire.correlated,
+          ...(protocolToken === wire.token && Array.isArray(startedCaseIndices)
+            ? { startedCaseIndices: [...startedCaseIndices] } : {}),
+        });
+      }
       if (wire.cpp && payload?.observation?.attemptToken !== wire.attemptToken) return;
-      if (!wire.ordinary && type === terminal) {
+      if (!wire.ordinary && completed && (wire.cpp || wire.attemptToken === undefined || payload?.attemptToken === wire.attemptToken)) {
         record('observer-reply', {
           ...wire.correlated,
           caseId: wire.rows[0],
           ...(wire.attemptToken === undefined ? {} : { attemptToken: wire.attemptToken }),
           ...(wire.attemptToken === undefined || wire.cpp ? {} : {
-            drawing: payload?.attemptToken === wire.attemptToken ? payload.drawing : null,
+            drawing: payload.drawing,
+            ...(payload.recorderDisabled === true ? { recorderDisabled: true } : {}),
           }),
           recorder: payload?.observation,
           schemaVersion: payload?.trace?.schemaVersion,

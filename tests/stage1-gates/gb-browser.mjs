@@ -1,4 +1,5 @@
 import {
+  builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
   judgeCaseExecutionOutcome,
@@ -6,6 +7,9 @@ import {
 } from '@tracecode/harness/judge';
 import { installJournal } from './gb-transport.mjs';
 import { installJudgeBridge, schedulerInjection } from './gb-probe.mjs';
+
+export { builtInProjectEvaluators, createAlgorithmJudgeBundle, createBrowserJudgeHost };
+export { resolveBuiltInTraceCCRuntimeManifest } from '@tracecode/harness/tracekernel';
 
 const transportRoutes = new Set([
   'cut-keep', 'cut-stop', 'during-keep', 'during-stop',
@@ -64,10 +68,9 @@ export async function runFixture(fixture, options, onReceipt) {
   const faultFixture = fixture.name === 'transport';
   const bridge = installJudgeBridge(fixture, journal);
   const schedulerFault = schedulerInjection(fixture.name);
-  const createHost = (mux) => createBrowserJudgeHost({
+  const createHost = () => createBrowserJudgeHost({
     assetBaseUrl: '/workers',
     providers: [fixture.language],
-    ...(mux ? { safeExecution: { workerLifecycle: 'warm-and-retire' } } : {}),
     ...(fixture.language === 'cpp' ? {
       cpp: { executionTimeoutMs: 20000, tracingTimeoutMs: 20000 },
     } : {}),
@@ -95,8 +98,8 @@ export async function runFixture(fixture, options, onReceipt) {
       let currentExecutionId;
       let record;
       try {
-        if (fixture.name === 'no-recorder') {
-          record = { unavailable: 'No installed trusted recorder-disable probe is connected' };
+        if (mux && typeof globalThis.gbRunMux !== 'function') {
+          record = { unavailable: 'The staged pinned mux adapter was unavailable' };
         } else if (faultFixture && route.startsWith('deadline-')) {
           record = { unavailable: 'Requires an ordinary commit barrier and a coordinator service-deadline ACK' };
         } else if (fixture.language === 'java' && (route.endsWith('-stop') || route.startsWith('during-')) && faultFixture) {
@@ -104,8 +107,8 @@ export async function runFixture(fixture, options, onReceipt) {
         } else if (continuation && !executionId) {
           record = { unavailable: 'The first Run returned no continuation handle', retainedCompile };
         } else {
-          host = continuation ? retained : ownHost ? createHost(mux) : (reusable ??= createHost(false));
-          if (mux || faultFixture || fixture.noInterruptBuffer) {
+          if (!mux) host = continuation ? retained : ownHost ? createHost() : (reusable ??= createHost());
+          if (faultFixture || fixture.noInterruptBuffer) {
             await host.warmLanguage(fixture.language);
           }
           const setupMs = performance.now() - start;
@@ -139,7 +142,12 @@ export async function runFixture(fixture, options, onReceipt) {
                 route === 'submit-keep' || route.endsWith('-keep') ? { stopAtFirstRunaway: false } : {};
               const stimulus = { bundle, ...stopFlag };
               record = { stimulus, setupMs };
-              record.result = await host.evaluateAlgorithm(stimulus);
+              if (mux) {
+                record.muxAdapter = await globalThis.gbRunMux(bundle);
+                record.result = record.muxAdapter.response.result;
+              } else {
+                record.result = await host.evaluateAlgorithm(stimulus);
+              }
               if (route === 'submit-omitted-B') {
                 const row = record.result.evaluation.cases[0];
                 if (row?.failure?.origin === 'limit') {
@@ -159,7 +167,7 @@ export async function runFixture(fixture, options, onReceipt) {
             journal.track(referenceRoute);
             bridge.track(referenceRoute);
             try {
-              record.prefixReference = await observeLongerPrefix(fixture, createHost(false), referenceRoute, rowsFor(fixture, route));
+              record.prefixReference = await observeLongerPrefix(fixture, createHost(), referenceRoute, rowsFor(fixture, route));
             } catch (error) {
               record.prefixReference = { rejection: describe(error) };
             } finally {
@@ -194,7 +202,7 @@ export async function runFixture(fixture, options, onReceipt) {
       }
       if ((usesRetainedHost || continuation) && record.result?.evaluation) {
         retainedEvidence.push(...transcript.filter(({ kind, request }) =>
-          request === route && (kind === 'schedule' || kind === 'observer-reply')));
+          request === route && (kind === 'schedule' || kind === 'observer-reply' || kind.startsWith('ordinary-'))));
       }
       await onReceipt({
         ...record, route, singletonGuard, singletonStderr, transcript, registeredReceiptPath, durationMs: performance.now() - start,

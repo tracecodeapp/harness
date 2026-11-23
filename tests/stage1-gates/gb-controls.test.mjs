@@ -488,3 +488,260 @@ test('G4 rejects a matching singleton guard without its stderr', () => {
     return 1;
   });
 });
+
+function addCertifiedStarts(sample, request, rows = ['A', 'B'], terminal = {}) {
+  const command = { request, commandId: 'batch', generation: 4 };
+  sample.transcript.push(
+    { ...command, kind: 'ordinary-dispatch', rows, reportsStarts: true },
+    { ...command, kind: 'ordinary-start', caseId: 'A', index: 0 },
+    { ...command, kind: 'ordinary-start', caseId: 'B', index: 1 },
+    { ...command, kind: 'ordinary-terminal', ...terminal },
+  );
+}
+
+test('G4 leaves C missing when dispatched and a plain terminal only follows A and B starts', () => {
+  const spec = fixture('javascript', 'three-rows');
+  const route = 'submit-stop';
+  const sample = referenceReceipt(spec);
+  addCertifiedStarts(sample, route, ['A', 'B', 'C']);
+  const id = 'G4/javascript/three-rows/submit-stop/C/start-proof';
+  assert(ledgerFor(spec, route, sample).missing.includes(id));
+  const terminal = sample.transcript.pop();
+  sample.transcript.push({ ...terminal, kind: 'ordinary-start', caseId: 'C', index: 2 }, terminal);
+  assert.equal(ledgerFor(spec, route, sample).receipts.find((row) => row.id === id)?.status, 'failed');
+});
+
+test('G4 proves skipped C from a dispatch containing only A and B', () => {
+  const spec = fixture('javascript', 'three-rows');
+  const route = 'submit-stop';
+  const sample = referenceReceipt(spec);
+  addCertifiedStarts(sample, route);
+  sample.transcript.pop(); // An observed start need not have a terminal reply.
+  const id = 'G4/javascript/three-rows/submit-stop/C/start-proof';
+  assert.equal(ledgerFor(spec, route, sample).receipts.find((row) => row.id === id)?.status, 'passed');
+  for (const remove of ['ordinary-dispatch', 'ordinary-start']) {
+    const partial = structuredClone(sample);
+    const index = partial.transcript.findIndex(({ kind }) => kind === remove);
+    partial.transcript.splice(index, 1);
+    assert(ledgerFor(spec, route, partial).missing.includes(id));
+  }
+  for (const mode of ['code', 'trace']) {
+    const partial = structuredClone(sample);
+    partial.transcript.push({ request: route, kind: 'dispatch', generation: 8, mode, rows: ['C'] });
+    assert(ledgerFor(spec, route, partial).missing.includes(id));
+  }
+});
+
+test('G4 proves dispatched C was skipped from the same command’s authoritative started set', () => {
+  const spec = fixture('python', 'three-rows-single-line');
+  const route = 'submit-stop';
+  const sample = referenceReceipt(spec);
+  addCertifiedStarts(sample, route, ['A', 'B', 'C'], { startedCaseIndices: [0, 1] });
+  const id = 'G4/python/three-rows-single-line/submit-stop/C/start-proof';
+  assert.equal(ledgerFor(spec, route, sample).receipts.find((row) => row.id === id)?.status, 'passed');
+  for (const fields of [
+    { commandId: 'other-batch' }, { generation: 8 }, { retired: true }, { startedCaseIndices: [0, 1, 1] },
+    { startedCaseIndices: [0, 1, 2] }, { startedCaseIndices: [0, 1, 3] },
+    { startedCaseIndices: undefined, resultsStreamed: 2 },
+  ]) {
+    const partial = structuredClone(sample);
+    Object.assign(partial.transcript.at(-1), fields);
+    assert(ledgerFor(spec, route, partial).missing.includes(id));
+  }
+});
+
+test('G5 requires correlated initial starts and a bound observer or cache hit to prove JS/TS continuation started no ordinary work', () => {
+  for (const language of ['javascript', 'typescript']) {
+    const spec = fixture(language, 'stdout');
+    const parent = observedReceipt(spec);
+    parent.transcript = parent.transcript.filter(({ kind }) => !kind.startsWith('ordinary-'));
+    addCertifiedStarts(parent, 'run-first');
+    const binding = { evaluationId: 'evaluation-1', workspaceDigest: 'workspace-1', generation: 1 };
+    const attemptToken = 'observe-b';
+    const b = parent.result.evaluation.cases[1];
+    b.attachment = { ...binding, caseId: 'B', status: 'drawn', trace: { events: [] } };
+    const reply = { kind: 'observer-reply', caseId: 'B', attemptToken, request: 'continue-B', sequence: 20 };
+    const bind = { ...binding, kind: 'schedule', phase: 'attachment-bind', caseId: 'B', attemptToken,
+      request: 'continue-B', sequence: 21 };
+    for (const route of ['continue-B', 'repeat-B']) {
+      const sample = referenceReceipt(spec);
+      sample.result.evaluation.cases = [b];
+      sample.registeredReceiptPath = true;
+      sample.retainedWorkspaceDigest = binding.workspaceDigest;
+      sample.retainedEvidence = [
+        ...parent.transcript,
+        ...(route === 'repeat-B' ? [reply, bind] : []),
+      ];
+      const hit = { ...bind, phase: 'observation-cache-hit', request: route, sequence: 22 };
+      sample.transcript.push(...(route === 'continue-B' ? [reply, bind] : [hit]), {
+        ...binding, kind: 'schedule', phase: 'public-resolve', request: route, sequence: 24,
+      });
+      requireDetected(spec, route, sample, 'ordinary-start-count', (mutant) => {
+        addCertifiedStarts(mutant, route);
+        return 1;
+      });
+      const id = `G5/${language}/stdout/${route}/ordinary-start-count`;
+      const withoutInitial = structuredClone(sample);
+      withoutInitial.retainedEvidence = withoutInitial.retainedEvidence.filter(({ kind }) => kind !== 'ordinary-start');
+      assert(ledgerFor(spec, route, withoutInitial).missing.includes(id));
+      const unwitnessedDispatch = structuredClone(sample);
+      unwitnessedDispatch.transcript.push({ request: route, kind: 'dispatch', generation: 8, type: 'execute-code', rows: ['B'] });
+      assert(ledgerFor(spec, route, unwitnessedDispatch).missing.includes(id));
+      const wrongAttempt = structuredClone(sample);
+      wrongAttempt.transcript[0].attemptToken = 'foreign-attempt';
+      assert(ledgerFor(spec, route, wrongAttempt).missing.includes(id));
+    }
+  }
+});
+
+test('G4 checks the pinned mux portable request and reserves the stored receipt for step 8', () => {
+  for (const spec of fixtures.filter(({ routes }) => routes.includes('mux-shape'))) {
+    const route = 'mux-shape';
+    const prefix = [spec.gate, spec.language, spec.name, route].join('/');
+    const sample = referenceReceipt(spec);
+    const bundle = { id: 'gb-mux', workspaceDigest: 'workspace-for-mux' };
+    sample.stimulus = { bundle };
+    sample.result = {
+      ...sample.result, schema: 'tracecode.judge.algorithm-receipt.v1',
+      bundleId: bundle.id, workspaceDigest: bundle.workspaceDigest,
+    };
+    for (const row of sample.result.evaluation.cases) {
+      row.sessionId = 'test-session';
+      row.pid = 100;
+    }
+    const unadapted = ledgerFor(spec, route, sample);
+    assert(unadapted.missing.includes(prefix + '/correlation'));
+    sample.muxAdapter = {
+      muxPin: '82888fb7bc95272e43477ab5ae62b95cc28e9008',
+      request: { requestId: bundle.id, bundle: structuredClone(bundle) },
+      response: { requestId: bundle.id, status: 'completed', result: structuredClone(sample.result) },
+    };
+    requireDetected(spec, route, sample, 'correlation', (mutant) => {
+      mutant.muxAdapter.request.bundle.workspaceDigest = 'a-different-bundle';
+      return 1;
+    });
+    const ledger = ledgerFor(spec, route, sample);
+    assert.deepEqual(ledger.step8Owned, [prefix + '/mux/stored-receipt']);
+    assert(!ledger.missing.includes(prefix + '/mux/stored-receipt'));
+    assert(!ledger.receipts.some(({ id }) => id.endsWith('/mux/stored-receipt')));
+  }
+});
+
+test('G4 stopping-clock keeps exactly the same typed diagnostic and rejects missing singleton stderr', () => {
+  const spec = fixture('python', 'stopping-clock');
+  const sample = referenceReceipt(spec);
+  const row = sample.result.evaluation.cases[1];
+  const reason = 'client-timeout';
+  const message = 'Execution timed out after 4 seconds.';
+  row.status = 'timed-out';
+  row.failure = { origin: 'limit', reason };
+  row.stderr = message + '\n';
+  row.diagnostics = [{ severity: 'error', code: reason, message }];
+  sample.singletonGuard = reason;
+  sample.singletonStderr = row.stderr;
+  requireDetected(spec, 'submit-stop', sample, 'B/console', (mutant) => {
+    delete mutant.singletonStderr;
+    return 1;
+  });
+});
+
+test('JS recorder-disable ACK needs the authenticated worker confirmation', () => {
+  const spec = fixture('javascript', 'no-recorder');
+  const sample = observedReceipt(spec, { status: 'refused', reason: 'recorder-unavailable' });
+  const [row] = sample.result.evaluation.cases;
+  delete row.attachment.trace;
+  const { evaluationId, workspaceDigest, generation, caseId } = row.attachment;
+  const attemptToken = 'disabled-attempt';
+  const reply = sample.transcript.find(({ kind }) => kind === 'observer-reply');
+  Object.assign(reply, {
+    attemptToken, recorderDisabled: true, drawing: { status: 'refused', reason: 'recorder-unavailable' },
+  });
+  const bind = sample.transcript.find(({ phase }) => phase === 'attachment-bind');
+  bind.attemptToken = attemptToken;
+  sample.transcript.push({
+    kind: 'schedule', phase: 'injection-ack', point: 'observe', fault: 'no-recorder',
+    language: 'javascript', evaluationId, workspaceDigest, generation, caseId, attemptToken,
+    request: 'run-first', sequence: reply.sequence + 0.5,
+  });
+  requireDetected(spec, 'run-first', sample, 'A/injection-ack', (mutant) => {
+    delete mutant.transcript.find(({ kind }) => kind === 'observer-reply').recorderDisabled;
+    return 1;
+  });
+});
+
+test('JS continuation inherits the bound preparation refusal without a recorder attempt', () => {
+  const spec = fixture('javascript', 'observer-compile-fault');
+  const route = 'continue-B';
+  const sample = referenceReceipt(spec);
+  const b = sample.result.evaluation.cases[1];
+  const binding = { evaluationId: 'failed-prepare', workspaceDigest: 'workspace-1', generation: 1 };
+  b.attachment = { ...binding, caseId: 'B', status: 'refused', reason: 'observer-prepare' };
+  sample.result.evaluation.cases = [b];
+  sample.retainedWorkspaceDigest = binding.workspaceDigest;
+  sample.retainedEvidence = [{
+    ...binding, kind: 'schedule', phase: 'injection-ack', point: 'prepare',
+    fault: 'prepare', language: 'javascript', request: 'run-first', sequence: 1,
+  }];
+  sample.transcript.push({
+    ...binding, kind: 'schedule', phase: 'attachment-bind', caseId: 'B',
+    attemptToken: 'refused-B', request: route, sequence: 2,
+  });
+  requireDetected(spec, route, sample, 'B/anchor', (mutant) => {
+    mutant.result.evaluation.cases[0].attachment.trace = { events: [{ kind: 'line' }] };
+    return 1;
+  });
+  requireDetected(spec, route, sample, 'B/recorder-boundary', (mutant) => {
+    mutant.transcript.push({ kind: 'observer-reply', request: route, caseId: 'B' });
+    return 1;
+  });
+  sample.retainedEvidence[0].evaluationId = 'foreign-prepare';
+  assert(ledgerFor(spec, route, sample).missing.includes('G5/javascript/observer-compile-fault/continue-B/B/recorder-boundary'));
+});
+
+test('Worker terminals close SES commands and carry started sets only with trusted protocol tokens', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const originalWorker = globalThis.Worker;
+  globalThis.Worker = class FixtureWorker {
+    addEventListener(_, listener) { this.listener = listener; }
+    postMessage() {}
+    reply(data, isTrusted = true) { this.listener({ data, isTrusted }); }
+    terminate() {}
+  };
+  const journal = installJournal(fixture('javascript', 'stdout'));
+  try {
+    journal.track('run-first');
+    const worker = new Worker('ses-worker.js');
+    worker.postMessage({
+      id: 12, type: 'execute-batch', protocolToken: 'start-12', reportCaseProgress: true, inputBatch: [{ n: 7 }],
+    });
+    const start = {
+      id: 12, type: 'runtime-progress', protocolToken: 'start-12',
+      payload: { stage: 'ordinary-case-started', detail: { caseIndex: 0 } },
+    };
+    worker.reply({ ...start, protocolToken: 'old' });
+    worker.reply(start, false);
+    worker.reply(start);
+    worker.reply({ id: 12, ok: true, value: [], payload: { startedCaseIndices: [0] } });
+    worker.reply(start);
+    const evidence = journal.since(0).filter(({ kind }) => kind.startsWith('ordinary-'));
+    assert.deepEqual(evidence.map(({ kind, commandId }) => [kind, commandId]), [
+      ['ordinary-dispatch', 12], ['ordinary-start', 12], ['ordinary-terminal', 12],
+    ]);
+    assert.equal(evidence[1].caseId, 'A');
+    assert(!Object.hasOwn(evidence[2], 'startedCaseIndices'));
+
+    worker.postMessage({
+      id: 'code', type: 'execute-code', protocolToken: 'code-token', payload: { inputs: { n: 7 } },
+    });
+    const terminal = { id: 'code', type: 'execute-result', payload: { startedCaseIndices: [] } };
+    worker.reply({ ...terminal, protocolToken: 'wrong-token' });
+    worker.reply({ ...terminal, protocolToken: 'code-token' }, false);
+    assert.equal(journal.since(0).filter(({ kind }) => kind === 'ordinary-terminal').length, 1);
+    worker.reply({ ...terminal, protocolToken: 'code-token' });
+    const startedSet = journal.since(0).find(({ kind, commandId }) => kind === 'ordinary-terminal' && commandId === 'code');
+    assert.deepEqual(startedSet?.startedCaseIndices, []);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+  }
+});

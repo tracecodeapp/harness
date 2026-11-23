@@ -1,6 +1,7 @@
 const bridgeKey = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
 
 const injections = {
+  'no-recorder': { point: 'observe', fault: 'no-recorder', reason: 'recorder-unavailable' },
   'observer-compile-fault': { point: 'prepare', fault: 'prepare', reason: 'observer-prepare' },
   'observer-encoder-fault': { point: 'encode', fault: 'encode', reason: 'observer-encode' },
   'observer-deadline': { point: 'observe', fault: 'deadline', reason: 'observer-timeout' },
