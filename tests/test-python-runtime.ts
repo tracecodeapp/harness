@@ -4009,7 +4009,7 @@ async function assertBlankFunctionSelectorRunsAsScriptUntraced(): Promise<void> 
   assertCondition(
     failed.kind === 'execution-error' &&
       failed.executionError?.message === 'ZeroDivisionError on line 2: division by zero' &&
-      failed.executionError?.line === 2,
+      failed.executionError?.line === 2 && JSON.stringify(failed.console) === JSON.stringify(['a']),
     `A script's own exception is the program's, on its line, received ${JSON.stringify(failed)}`
   );
   const blankMethod = await runPrepared('class Solution:\n    pass\n', '', 'solution-method');
@@ -4103,6 +4103,24 @@ async function assertKeylessTreeAndListNodesHaveNoneLinks(): Promise<void> {
       `Python prepared, ${testCase.label}: expected ${JSON.stringify(testCase.expected)}, received ${JSON.stringify(prepared)}`
     );
   }
+  // The first argument and left edge are forward references. The right
+  // definition also has a back-edge to the root.
+  const graph = await runPrepared(
+    'def solve(alias, root):\n    return 100 * int(alias is root.right and root.left is alias) + 10 * int(alias.left is root) + alias.val',
+    {
+      alias: { __ref__: 'c' },
+      root: {
+        __id__: 'r',
+        val: 1,
+        left: { __ref__: 'c' },
+        right: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null },
+      },
+    },
+  );
+  assertCondition(
+    graph.kind === 'success-serialized' && graph.output === 112,
+    `Prepared inputs must resolve case-wide forward references and back-edges, received ${JSON.stringify(graph)}`
+  );
   const plain = await runtime.executeCode(deps, 'def solve(point):\n    return sorted(point.keys())\n', 'solve', { point: { val: 3, label: 'a' } }, 'function', {});
   assertCondition(
     plain.success === true && JSON.stringify(plain.output) === JSON.stringify(['label', 'val']),
