@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { once } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
@@ -2986,5 +2988,782 @@ test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only
       'single-line-limit',
       label
     );
+  }
+});
+
+function controlled<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+type ObserverReply = import('../packages/runtime-contracts/src/runtime-calls').Drawing;
+type ObserverCall = import('../packages/runtime-contracts/src/runtime-calls').RuntimeObservationCall;
+
+function receiptFixture(options: {
+  ordinaryBarrier?: Promise<void>;
+  observe?: (call: ObserverCall) => Promise<ObserverReply>;
+  idleMs?: number;
+  deadlineMs?: number;
+  compileFailure?: boolean;
+  nativeStop?: boolean;
+  nativeAdmission?: boolean;
+  prepareObserver?: () => Promise<void>;
+  workerAcks?: boolean;
+} = {}) {
+  const state = makePreparedState({
+    failPreparation: options.compileFailure ?? false,
+    maxConcurrency: options.workerAcks ? 1 : 2,
+  });
+  const base = preparedProvider(state);
+  const ordinaryStarts: string[] = [];
+  const ordinarySignals: Array<AbortSignal | undefined> = [];
+  const observerCalls: ObserverCall[] = [];
+  const acknowledgements: Array<{ role: string; caseId: string; worker: number; token?: string }> = [];
+  const workers = new Map<string, Worker>();
+  const runInWorker = async (role: 'ordinary' | 'observation', caseId: string, token?: string) => {
+    if (!options.workerAcks) return;
+    let worker = workers.get(role);
+    if (!worker) {
+      worker = new Worker(`
+        const { parentPort, threadId, workerData } = require('node:worker_threads');
+        const { role, schemaVersion } = workerData;
+        parentPort.on('message', ({ caseId, token }) => {
+          const result = role === 'ordinary'
+            ? { kind: 'completed', output: caseId, consoleOutput: ['stdout:' + caseId] }
+            : {
+                status: 'drawn',
+                trace: {
+                  schemaVersion, language: 'javascript', runId: token,
+                  events: [{ kind: 'line', runId: token, line: 2 }],
+                  lineEventCount: 1, traceStepCount: 1,
+                },
+                value: 999, stdout: 'forged stdout', failure: { origin: 'program', stage: 'compile' },
+              };
+          parentPort.postMessage({ ack: { role, worker: threadId, caseId, token }, result });
+        });
+      `, { eval: true, workerData: { role, schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION } });
+      workers.set(role, worker);
+    }
+    // Requests in this test fixture are single-flight on each worker.
+    const response = once(worker, 'message');
+    worker.postMessage({ caseId, token });
+    const [{ ack, result }] = await response;
+    acknowledgements.push(ack);
+    return result as CodeExecutionResult | ObserverReply;
+  };
+  const markers: Array<{ phase: string; caseId?: string; attemptToken?: string }> = [];
+  const listeners = new Set<() => void>();
+  let observerPreparations = 0;
+  let observerReleases = 0;
+  const notify = () => { for (const receive of listeners) receive(); };
+  const waitUntil = (ready: () => boolean) => new Promise<void>((resolve) => {
+    const receive = () => {
+      if (!ready()) return;
+      listeners.delete(receive);
+      resolve();
+    };
+    listeners.add(receive);
+    receive();
+  });
+  const provider: RuntimePreparedExecutionProvider = {
+    ...base,
+    async prepareProgram(call) {
+      const outcome = await base.prepareProgram(call);
+      if (outcome.kind !== 'prepared' || outcome.program.mode !== 'code') return outcome;
+      const codeProgram = outcome.program;
+      const executeIsolated = async (request: RuntimePreparedCodeCall) => {
+        ordinaryStarts.push(String(request.inputs.label));
+        ordinarySignals.push(request.signal);
+        notify();
+        await options.ordinaryBarrier;
+        const input = request.inputs as FakeInput;
+        const workerResult = await runInWorker('ordinary', input.label);
+        if (workerResult) return workerResult as CodeExecutionResult;
+        if (input.mode === 'failed') {
+          return {
+            kind: 'failed' as const,
+            error: 'runtime exploded',
+            errorLine: 7,
+            diagnosticStage: 'runtime' as const,
+            consoleOutput: consoleOutput(input),
+          };
+        }
+        if (input.mode === 'limit') {
+          return {
+            kind: 'limit' as const,
+            reason: 'line-limit' as const,
+            error: 'line budget reached',
+            consoleOutput: consoleOutput(input),
+          };
+        }
+        if (options.ordinaryBarrier) {
+          return {
+            kind: 'completed' as const,
+            output: completedOutput(input),
+            consoleOutput: consoleOutput(input),
+          };
+        }
+        return codeProgram.executeIsolated(request);
+      };
+      return {
+        ...outcome,
+        program: {
+          ...codeProgram,
+          executeIsolated,
+          ...(options.nativeStop ? {
+            capabilities: { ...codeProgram.capabilities, stopsAtFirstRunaway: true as const },
+            async executeBatchIsolated(request: RuntimePreparedCodeBatchCall & {
+              onCaseStarted?: (index: number) => void;
+            }) {
+              state.codeBatchCalls.push(request);
+              const outcomes: CodeExecutionResult[] = [];
+              for (const [index, inputs] of request.inputBatch.entries()) {
+                if (options.nativeAdmission) request.onCaseStarted?.(index);
+                const result = await executeIsolated({ ...request, inputs });
+                outcomes.push(result);
+                if (request.stopAtFirstRunaway && result.kind === 'limit') break;
+              }
+              return outcomes;
+            },
+          } : {}),
+        },
+      };
+    },
+  };
+  const runtimeHost = browserHostFor(provider);
+  const preparedDescriptors: Array<ObserverCall['program'] & { readonly runtimeVersion: string }> = [];
+  const registration = {
+    runtimeVersion: 'receipt-fixture.v1',
+    capabilities: {
+      observationLease: 'separate' as const,
+      observationDeadlineMs: options.deadlineMs ?? 3000,
+      ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
+    },
+    async prepareObservation(program: (typeof preparedDescriptors)[number]) {
+      preparedDescriptors.push(program);
+      observerPreparations += 1;
+      await options.prepareObserver?.();
+      return {
+        async observe(call: ObserverCall) {
+          observerCalls.push(call);
+          notify();
+          const workerResult = await runInWorker('observation', String(call.inputs.label), call.attemptToken);
+          if (workerResult) return workerResult as ObserverReply;
+          return options.observe ? options.observe(call) : recordedDrawing(call);
+        },
+        dispose() { observerReleases += 1; notify(); },
+      };
+    },
+    mark(marker: (typeof markers)[number]) { markers.push(marker); notify(); },
+  };
+  const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost, {
+    interactiveExecutionIdleTimeoutMs: options.idleMs,
+    receiptProviders: { javascript: registration },
+  });
+  return {
+    host, state, ordinaryStarts, ordinarySignals, observerCalls, markers, waitUntil, acknowledgements,
+    preparedDescriptors,
+    async terminateWorkers() { await Promise.all([...workers.values()].map((worker) => worker.terminate())); },
+    observerCounts: () => [observerPreparations, observerReleases],
+  };
+}
+
+function recordedDrawing(call: ObserverCall, line = 2): ObserverReply {
+  const runId = call.attemptToken;
+  // Extra fields model poisoned transport data. The adapter can return a
+  // drawing but cannot replace the ordinary value, failure or console.
+  const poisoned = {
+    status: 'drawn' as const,
+    trace: {
+      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+      language: 'javascript' as const,
+      runId,
+      events: [{ kind: 'line' as const, runId, line }],
+      lineEventCount: 1,
+      traceStepCount: 1,
+    } satisfies RuntimeTrace,
+    value: 999,
+    stdout: 'forged stdout\n',
+    failure: { origin: 'program', stage: 'compile' },
+  };
+  return poisoned;
+}
+
+function receiptBundle(
+  cases: Array<{ id: string; input: FakeInput; expected: unknown }> = ['A', 'B', 'C'].map(
+    (label) => ({ id: label, input: { label }, expected: label })
+  )
+) {
+  return createAlgorithmJudgeBundle({
+    id: 'receipt-stdout',
+    language: 'javascript',
+    code: [
+      'function solve(label, mode) {',
+      '  console.log(label);',
+      '  if (mode === "limit") {',
+      '    while (true) {}',
+      '  }',
+      '  if (mode !== "failed") return label;',
+      '  throw new Error("runtime exploded");',
+      '}',
+    ].join('\n'),
+    functionName: 'solve',
+    trace: true,
+    traceOptions: { maxTraceBytes: 1024 },
+    cases,
+  });
+}
+
+test('G5/javascript/stdout/run-first/ordinary-start-count and GA continuation order', async () => {
+  const f = receiptFixture({ workerAcks: true });
+  try {
+    const initial = await f.host.execute({
+      bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+    });
+    assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+    assert.equal(f.state.prepareCalls[0]?.traceOptions, undefined);
+    assert.equal(f.preparedDescriptors[0]?.code, f.state.prepareCalls[0]?.code);
+    assert.equal(f.preparedDescriptors[0]?.runtimeVersion, 'receipt-fixture.v1');
+    assert.equal(Object.isFrozen(f.preparedDescriptors[0]), true);
+    assert.equal(f.observerCalls[0]?.traceOptions?.maxTraceBytes, 1024);
+    assert.deepEqual(initial.evaluation.cases.map(({ caseId }) => caseId), ['A', 'B', 'C']);
+    const [a, b, c] = initial.evaluation.cases;
+    assert.equal(a?.value, 'A');
+    assert.equal(a?.stdout, 'stdout:A\n');
+    assert.equal(a?.failure, undefined);
+    assert.equal(a?.attachment?.status, 'drawn');
+    assert.equal('value' in (a?.attachment ?? {}), false);
+    assert.equal(a?.trace, a?.attachment?.status === 'drawn' ? a.attachment.trace : undefined);
+    assert.equal(b?.attachment, undefined);
+    assert.ok(initial.executionId);
+    const request = { executionId: initial.executionId, tracing: { caseIds: ['C', 'B'] } };
+    const invalid = [[], ['B', 'B'], ['missing']];
+    for (const caseIds of invalid) {
+      await assert.rejects(f.host.execute({ ...request, tracing: { caseIds } }), /at least one|duplicate|unknown case/iu);
+    }
+    assert.deepEqual(f.observerCalls.map((call) => call.inputs.label), ['A']);
+    const clicked = await f.host.execute(request);
+    assert.equal(clicked.executionId, initial.executionId);
+    assert.deepEqual(clicked.evaluation.cases.map(({ caseId }) => caseId), ['C', 'B'], 'GA draw ordering');
+    assert.deepEqual(f.observerCalls.map((call) => call.inputs.label), ['A', 'C', 'B'], 'worker observation ACK');
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C'], 'no ordinary ACK on continuation');
+    assert.equal(f.markers.filter(({ phase }) => phase === 'ordinary-commit').length, 1);
+    assert.deepEqual(
+      f.markers.filter(({ phase }) => phase === 'ordinary-write-attempt').map(({ caseId }) => caseId),
+      ['A', 'B', 'C'],
+      'zero observer writes'
+    );
+    const { attachment: cAttachment, trace: _trace, ...originalC } = clicked.evaluation.cases[0]!;
+    assert.deepEqual(originalC, c);
+    const redraw = await f.host.execute(request);
+    assert.equal(redraw.evaluation.cases[0]?.attachment, cAttachment);
+    assert.equal(f.observerCalls.length, 3, 'verified cache hit on redraw');
+    const ordinary = f.acknowledgements.filter(({ role }) => role === 'ordinary');
+    const observed = f.acknowledgements.filter(({ role }) => role === 'observation');
+    assert.deepEqual(ordinary.map(({ caseId }) => caseId), ['A', 'B', 'C']);
+    assert.deepEqual(observed.map(({ caseId }) => caseId), ['A', 'C', 'B']);
+    assert.deepEqual(observed.map(({ token }) => token), f.observerCalls.map(({ attemptToken }) => attemptToken));
+    assert.notEqual(ordinary[0]?.worker, observed[0]?.worker);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+    assert.equal(f.state.initCalls, 1);
+    await f.host.disposeExecution(initial.executionId);
+    assert.deepEqual(f.observerCounts(), [1, 1]);
+    assert.equal(f.state.disposals, 1);
+  } finally {
+    f.host.dispose();
+    await f.terminateWorkers();
+  }
+});
+
+for (const observerFirst of [true, false]) {
+  test(`migrated scheduler binds after both branches finish (observer first: ${observerFirst})`, { timeout: 5000 }, async () => {
+    const ordinary = controlled();
+    const observation = controlled();
+    const f = receiptFixture({
+      ordinaryBarrier: ordinary.promise,
+      observe: async (call) => { await observation.promise; return recordedDrawing(call); },
+    });
+    try {
+      const pending = f.host.execute({
+        bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+      });
+      await f.waitUntil(() => f.observerCalls.length === 1 && f.ordinaryStarts.length === 1);
+      if (observerFirst) observation.resolve();
+      else ordinary.resolve();
+      const earlier = observerFirst ? 'observer-end' : 'ordinary-commit';
+      await f.waitUntil(() => f.markers.some(({ phase }) => phase === earlier));
+      assert.equal(f.markers.some(({ phase }) => phase === 'attachment-bind' || phase === 'public-resolve'), false);
+      ordinary.resolve();
+      observation.resolve();
+      await pending;
+      assert.deepEqual(
+        f.markers.filter(({ phase }) => phase !== 'ordinary-write-attempt').map(({ phase }) => phase),
+        ['observer-start', earlier, observerFirst ? 'ordinary-commit' : 'observer-end', 'attachment-bind', 'public-resolve']
+      );
+    } finally {
+      ordinary.resolve();
+      observation.resolve();
+      f.host.dispose();
+    }
+  });
+}
+
+test('migrated one-shot trace uses ordinary policy, including a drawn runtime exception', async () => {
+  const f = receiptFixture({ observe: async (call) => recordedDrawing(call, 7) });
+  try {
+    const bundle = await receiptBundle([
+      { id: 'A', input: { label: 'A' }, expected: 'A' },
+      { id: 'B', input: { label: 'B', mode: 'failed' }, expected: 'B' },
+    ]);
+    const plain = await f.host.evaluateAlgorithm({ bundle: { ...bundle, execution: { ...bundle.execution, trace: false } } });
+    assert.deepEqual(f.observerCounts(), [0, 0]);
+    const traced = await f.host.evaluateAlgorithm({ bundle });
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'A', 'B']);
+    assert.deepEqual(f.observerCalls.map((call) => call.inputs.label), ['A', 'B']);
+    assert.deepEqual(traced.policy, plain.policy);
+    assert.equal(traced.verdict, plain.verdict);
+    assert.equal(traced.passedCount, 1);
+    assert.equal(traced.totalCount, 2);
+    const failure = traced.evaluation.cases[1]!;
+    const ordinaryFailure = plain.evaluation.cases[1]!;
+    assert.deepEqual(failure.failure, ordinaryFailure.failure);
+    assert.deepEqual(failure.diagnostics, ordinaryFailure.diagnostics);
+    assert.equal(failure.diagnostics[0]?.line, 7);
+    assert.equal(failure.stdout, 'stdout:B\n');
+    assert.equal(failure.attachment?.status, 'drawn');
+    assert.equal(failure.attachment?.status === 'drawn' ? failure.attachment.trace.events.at(-1)?.line : undefined, 7);
+    assert.deepEqual(f.observerCounts(), [1, 1]);
+
+    const direct = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const judge = yield* f.host.createJudge({
+        language: 'javascript', binding: codeBinding({ sourcePath: bundle.execution.sourcePath }),
+      });
+      return yield* judge.evaluateAlgorithm(bundle);
+    })));
+    assert.deepEqual(direct.policy, plain.policy);
+    assert.deepEqual(direct.evaluation.cases.map(({ attachment }) => attachment?.status), ['drawn', 'drawn']);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'A', 'B', 'A', 'B']);
+    const directExecute = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const judge = yield* f.host.createJudge({
+        language: 'javascript',
+        binding: codeBinding({ trace: true, sourcePath: bundle.execution.sourcePath }),
+      });
+      return yield* judge.execute({ plan: bundle.plan, tracing: { caseIds: ['B'] } });
+    })));
+    assert.equal(directExecute.executionId, undefined);
+    assert.equal(directExecute.evaluation.cases[0]?.attachment, undefined);
+    assert.equal(directExecute.evaluation.cases[1]?.attachment?.status, 'drawn');
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'A', 'B', 'A', 'B', 'A', 'B']);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('migrated empty selection retains a handle but compile failure retains none', async () => {
+  const f = receiptFixture();
+  const failing = receiptFixture({ compileFailure: true });
+  try {
+    const bundle = await receiptBundle();
+    await assert.rejects(
+      f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['missing'] } }),
+      /unknown case id/u
+    );
+    assert.equal(f.state.initCalls, 0);
+    assert.deepEqual(f.observerCounts(), [0, 0]);
+    const empty = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: [] } });
+    assert.ok(empty.executionId);
+    await assert.rejects(
+      failing.host.execute({ executionId: empty.executionId, tracing: { caseIds: ['A'] } }),
+      /Unknown or disposed interactive execution/u
+    );
+    assert.deepEqual(f.observerCounts(), [0, 0]);
+    assert.deepEqual(empty.evaluation.cases.map(({ attachment }) => attachment), [undefined, undefined, undefined]);
+    const selected = await f.host.execute({ executionId: empty.executionId, tracing: { caseIds: ['B'] } });
+    assert.equal(selected.evaluation.cases[0]?.attachment?.status, 'drawn');
+    const plain = await failing.host.evaluateAlgorithm({ bundle: { ...bundle, execution: { ...bundle.execution, trace: false } } });
+    const failed = await failing.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.equal(failed.executionId, undefined);
+    assert.equal(failed.evaluation.cases.length, 0);
+    assert.deepEqual(failed.evaluation.compile?.diagnostics, plain.evaluation.compile?.diagnostics);
+    if (failed.evaluation.status !== 'compile-failed') assert.fail('compile failure required');
+    const compile = failed.evaluation.compile;
+    const codeOutcome = judgeCompileExecutionOutcome(compile, { language: RUNTIME });
+    const traceOutcome = judgeCompileExecutionOutcome(compile, { language: RUNTIME, trace: true });
+    const { trace, executionTimeMs, ...ordinaryFields } = traceOutcome;
+    assert.deepEqual(ordinaryFields, codeOutcome);
+    assert.equal(trace.runId, 'javascript:compile');
+    assert.deepEqual(trace.events, []);
+    assert.equal(executionTimeMs, 0);
+    assert.deepEqual(failing.ordinaryStarts, []);
+    assert.equal(failing.observerCalls.length, 0);
+  } finally {
+    f.host.dispose();
+    failing.host.dispose();
+  }
+});
+
+for (const nativeStop of [false, true]) {
+  test(`migrated stopping scheduler never observes a stopped suffix (native: ${nativeStop})`, async () => {
+    const f = receiptFixture({ nativeStop });
+    try {
+      const bundle = await receiptBundle([
+        { id: 'A', input: { label: 'A' }, expected: 'A' },
+        { id: 'B', input: { label: 'B', mode: 'limit' }, expected: 'B' },
+        { id: 'C', input: { label: 'C' }, expected: 'C' },
+      ]);
+      const initial = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A', 'B', 'C'] } });
+      assert.deepEqual(f.ordinaryStarts, ['A', 'B']);
+      assert.deepEqual(f.observerCalls.map((call) => call.inputs.label), ['A', 'B']);
+      const suffix = initial.evaluation.cases[2]!;
+      assert.equal(suffix.status, 'not-run');
+      assert.equal(suffix.attachment?.status, 'refused');
+      assert.equal(suffix.attachment?.status === 'refused' && suffix.attachment.reason, 'case-not-run');
+      assert.deepEqual(
+        judgeCaseExecutionOutcome(suffix, { language: RUNTIME, trace: true }),
+        judgeCaseExecutionOutcome(suffix, { language: RUNTIME })
+      );
+      const clicked = await f.host.execute({ executionId: initial.executionId!, tracing: { caseIds: ['C'] } });
+      assert.equal(clicked.evaluation.cases[0]?.attachment, suffix.attachment);
+      assert.equal(f.observerCalls.length, 2);
+      assert.equal(f.state.codeBatchCalls.length, nativeStop ? 1 : 0);
+      await f.host.evaluateAlgorithm({ bundle, stopAtFirstRunaway: false });
+      assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'A', 'B', 'C']);
+      await f.host.evaluateAlgorithm({ bundle, stopAtFirstRunaway: true });
+      assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'A', 'B', 'C', 'A', 'B']);
+    } finally {
+      f.host.dispose();
+    }
+  });
+}
+
+test('migrated continuation coalesces overlapping clicks and fences a disposed evaluation', { timeout: 5000 }, async () => {
+  const replies = [controlled<ObserverReply>(), controlled<ObserverReply>(), controlled<ObserverReply>()];
+  let replyIndex = 0;
+  const f = receiptFixture({ observe: () => replies[replyIndex++]!.promise });
+  try {
+    const bundle = await receiptBundle();
+    const initial = await f.host.execute({ bundle, interactive: true });
+    const request = { executionId: initial.executionId!, tracing: { caseIds: ['A'] } };
+    const controller = new AbortController();
+    const first = f.host.execute({ ...request, signal: controller.signal });
+    const cancelled = assert.rejects(first, { name: 'AbortError' });
+    await f.waitUntil(() => f.observerCalls.length === 1);
+    const second = f.host.execute(request);
+    const disjoint = assert.rejects(
+      f.host.execute({ ...request, tracing: { caseIds: ['B'] } }),
+      /Unknown or disposed interactive execution/u
+    );
+    controller.abort();
+    await cancelled;
+    const a = f.observerCalls[0]!;
+    assert.equal(a.signal?.aborted, false);
+    replies[0]!.resolve(recordedDrawing(a));
+    await second;
+    await f.waitUntil(() => f.observerCalls.length === 2);
+    assert.equal(f.observerCalls[1]?.inputs.label, 'B');
+
+    // A last waiter leaves while the callback still holds its old token.
+    await f.host.disposeExecution(initial.executionId!);
+    await disjoint;
+    assert.equal(f.observerCalls[1]?.signal?.aborted, true);
+    await assert.rejects(f.host.execute(request), /Unknown or disposed/u);
+    assert.equal(f.observerCounts()[1], 1);
+    const replacement = await f.host.execute({ bundle, interactive: true });
+    assert.notEqual(initial.executionId, replacement.executionId);
+    const clicked = f.host.execute({ executionId: replacement.executionId!, tracing: { caseIds: ['B'] } });
+    await f.waitUntil(() => f.observerCalls.length === 3);
+    replies[1]!.resolve(recordedDrawing(f.observerCalls[1]!, 99));
+    replies[2]!.resolve(recordedDrawing(f.observerCalls[2]!, 2));
+    const attachment = (await clicked).evaluation.cases[0]?.attachment;
+    assert.equal(attachment?.status === 'drawn' && attachment.trace.events[0]?.line, 2);
+    assert.notEqual(f.observerCalls[1]?.attemptToken, f.observerCalls[2]?.attemptToken);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C', 'A', 'B', 'C']);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('migrated retry discards a late answer after the last waiter aborts', { timeout: 5000 }, async () => {
+  const old = controlled<ObserverReply>();
+  const fresh = controlled<ObserverReply>();
+  let index = 0;
+  const f = receiptFixture({ observe: () => (++index === 1 ? old : fresh).promise });
+  try {
+    const initial = await f.host.execute({ bundle: await receiptBundle(), interactive: true });
+    const request = { executionId: initial.executionId!, tracing: { caseIds: ['A'] } };
+    const controller = new AbortController();
+    const cancelled = assert.rejects(f.host.execute({ ...request, signal: controller.signal }), { name: 'AbortError' });
+    await f.waitUntil(() => f.observerCalls.length === 1);
+    controller.abort();
+    await cancelled;
+    const retry = f.host.execute(request);
+    await f.waitUntil(() => f.observerCalls.length === 2);
+    assert.equal(f.observerCalls[0]?.signal?.aborted, true);
+    assert.notEqual(f.observerCalls[0]?.attemptToken, f.observerCalls[1]?.attemptToken);
+    old.resolve(recordedDrawing(f.observerCalls[0]!, 99));
+    fresh.resolve(recordedDrawing(f.observerCalls[1]!, 2));
+    for (const result of [await retry, await f.host.execute(request)]) {
+      const attachment = result.evaluation.cases[0]?.attachment;
+      assert.equal(attachment?.status === 'drawn' && attachment.trace.events[0]?.line, 2);
+    }
+    assert.equal(f.observerCalls.length, 2);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+for (const disposeHost of [false, true]) {
+  test(`migrated initial cancellation fences a delayed observer (host dispose: ${disposeHost})`, { timeout: 5000 }, async () => {
+    const late = controlled<ObserverReply>();
+    const ordinary = controlled();
+    const f = receiptFixture({ observe: () => late.promise, ordinaryBarrier: ordinary.promise });
+    try {
+      const controller = new AbortController();
+      const rejected = assert.rejects(f.host.execute({
+        bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] }, signal: controller.signal,
+      }), { name: 'AbortError' });
+      await f.waitUntil(() => f.observerCalls.length === 1);
+      if (disposeHost) f.host.dispose();
+      else controller.abort();
+      await rejected;
+      assert.equal(f.observerCalls[0]?.signal?.aborted, true);
+      assert.equal(f.ordinarySignals[0]?.aborted, true);
+      assert.notEqual(f.ordinarySignals[0], f.observerCalls[0]?.signal);
+      late.resolve(recordedDrawing(f.observerCalls[0]!));
+      assert.deepEqual(f.observerCounts(), [1, 1]);
+      assert.equal(f.markers.some(({ phase }) => phase === 'attachment-bind' || phase === 'public-resolve'), false);
+    } finally {
+      ordinary.resolve();
+      f.host.dispose();
+    }
+  });
+}
+
+test('migrated observer timeout leaves the ordinary lease active and renews idle on publish', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const late = controlled<ObserverReply>();
+  const ordinary = controlled();
+  const f = receiptFixture({
+    ordinaryBarrier: ordinary.promise,
+    observe: () => late.promise,
+    idleMs: 25,
+    deadlineMs: 70,
+  });
+  try {
+    const pending = f.host.execute({
+      bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+    });
+    await f.waitUntil(() => f.observerCalls.length === 1);
+    t.mock.timers.tick(70);
+    await f.waitUntil(() => f.markers.some(({ phase }) => phase === 'observer-end'));
+    assert.equal(f.observerCalls[0]?.signal?.aborted, true);
+    assert.equal(f.ordinarySignals[0]?.aborted, false);
+    ordinary.resolve();
+
+    const initial = await pending;
+    assert.ok(initial.executionId, 'initial observation is active time');
+    const request = { executionId: initial.executionId, tracing: { caseIds: ['A'] } };
+    const [row] = initial.evaluation.cases;
+    const attachment = row?.attachment;
+    assert.equal(row?.status, 'completed');
+    assert.equal(row?.value, 'A');
+    assert.equal(attachment?.status === 'refused' && attachment.reason, 'observer-timeout');
+    late.resolve(recordedDrawing(f.observerCalls[0]!));
+    assert.equal((await f.host.execute(request)).evaluation.cases[0]?.attachment, attachment);
+    assert.equal(f.observerCalls.length, 1);
+    t.mock.timers.tick(25);
+    await f.waitUntil(() => f.observerCounts()[1] === 1);
+    await assert.rejects(f.host.execute(request), /Unknown or disposed/u);
+  } finally {
+    ordinary.resolve();
+    f.host.dispose();
+  }
+});
+
+test('migrated observer deadline prefix redraw preserves the ordinary runtime failure', async () => {
+  const f = receiptFixture({
+    observe: async (call) => {
+      const drawn = recordedDrawing(call, 6);
+      assert.equal(drawn.status, 'drawn');
+      return { status: 'truncated', reason: 'observer-deadline', trace: drawn.trace, attemptedEvents: 2 };
+    },
+  });
+  try {
+    const bundle = await receiptBundle([{ id: 'A', input: { label: 'A', mode: 'failed' }, expected: 'A' }]);
+    const initial = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    const [row] = initial.evaluation.cases;
+    assert.equal(row?.status, 'runtime-error');
+    assert.equal(row?.failure?.origin, 'program');
+    assert.equal(row?.diagnostics[0]?.line, 7);
+    assert.equal(row?.stdout, 'stdout:A\n');
+    assert.equal(row?.attachment?.status === 'truncated' && row.attachment.reason, 'observer-deadline');
+    const read = judgeCaseExecutionOutcome(row!, { language: RUNTIME, trace: true });
+    assert.equal(read.kind, 'failed');
+    assert.equal(read.kind === 'failed' && read.traceTruncated, 'trace-limit');
+    const redraw = await f.host.execute({ executionId: initial.executionId!, tracing: { caseIds: ['A'] } });
+    assert.equal(redraw.evaluation.cases[0]?.attachment, row?.attachment);
+    assert.equal(f.observerCalls.length, 1);
+    assert.deepEqual(f.ordinaryStarts, ['A']);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('migrated whole-program trace unavailability publishes only bound refusals', async () => {
+  const f = receiptFixture({
+    prepareObserver: async () => {
+      throw new RuntimeProviderError('instrumentation unavailable', { code: TRACE_UNAVAILABLE_CODE });
+    },
+  });
+  try {
+    const result = await f.host.execute({ bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] } });
+    assert.equal(result.evaluation.status, 'completed');
+    assert.ok(result.executionId);
+    const continued = await f.host.execute({ executionId: result.executionId, tracing: { caseIds: ['B'] } });
+    for (const execution of [result, continued]) {
+      const row = execution.evaluation.cases[0]!;
+      assert.equal(row.status, 'completed');
+      assert.equal(row.attachment?.status, 'refused');
+      assert.equal(row.attachment?.status === 'refused' && row.attachment.reason, 'unsupported-program');
+      const outcome = judgeCaseExecutionOutcome(row, { language: RUNTIME, trace: true });
+      for (const object of [execution, execution.evaluation, row, row.attachment, outcome]) {
+        assert.equal(Object.hasOwn(object!, 'untracedRunNeeded'), false);
+        assert.equal(Object.hasOwn(object!, 'traceUnavailable'), false);
+        assert.equal(Object.hasOwn(object!, 'traceUnavailableRun'), false);
+      }
+      assert.equal(row.diagnostics.some(({ code }) => code === TRACE_UNAVAILABLE_CODE), false);
+      assert.equal(row.failure, undefined);
+      assert.equal(Object.hasOwn(row, 'providerFailure'), false);
+      assert.equal(execution.evaluation.compile?.diagnostics.some(({ code }) => code === TRACE_UNAVAILABLE_CODE), false);
+      assert.equal(Object.hasOwn(row, 'trace'), false);
+    }
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+    assert.equal(f.observerCalls.length, 0);
+    assert.deepEqual(f.observerCounts(), [1, 0]);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('migrated preparation neither blocks ordinary work nor gates the compile decision', { timeout: 5000 }, async () => {
+  const artifact = controlled();
+  const f = receiptFixture({ prepareObserver: () => artifact.promise });
+  const failing = receiptFixture({ prepareObserver: () => artifact.promise, compileFailure: true });
+  try {
+    const bundle = await receiptBundle();
+    const request = { bundle, interactive: true, tracing: { caseIds: ['A'] } };
+    const pending = f.host.execute(request);
+    await f.waitUntil(() => f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+    assert.equal(f.observerCalls.length, 0);
+
+    const failure = await failing.host.execute(request);
+    assert.equal(failure.evaluation.status, 'compile-failed');
+    assert.equal(failure.executionId, undefined);
+    artifact.resolve();
+    await pending;
+    await failing.waitUntil(() => failing.observerCounts()[1] === 1);
+    assert.deepEqual(failing.observerCounts(), [1, 1], 'late speculative artifact disposed once');
+  } finally {
+    artifact.resolve();
+    f.host.dispose();
+    failing.host.dispose();
+  }
+});
+
+test('migrated execute owns one snapshot of invocation, inputs and selection', async () => {
+  const shared = { n: 7 };
+  type Value = { n: number };
+  const ids = ['A'];
+  const f = receiptFixture({
+    observe: async (call) => {
+      assert.equal(call.inputs.left, call.inputs.right);
+      assert.notEqual(call.inputs.left, shared);
+      assert.equal((call.inputs.left as Value).n, 7);
+      (call.inputs.left as Value).n = 999;
+      return recordedDrawing(call);
+    },
+  });
+  try {
+    const bundle = await receiptBundle([
+      { id: 'A', input: { label: 'A', output: shared, left: shared, right: shared }, expected: shared },
+    ]);
+    const request = f.host.execute({ bundle, tracing: { caseIds: ids } });
+    ids.push('missing');
+    shared.n = -1;
+    const { evaluation, executionId } = await request;
+    const row = evaluation.cases[0]!;
+    assert.deepEqual(row.expected, { n: 7 });
+    assert.deepEqual(row.value, { n: 7 });
+    assert.equal((row.expected as Value).n, 7);
+    assert.equal(shared.n, -1);
+    assert.equal(executionId, undefined);
+    assert.equal(row.attachment?.status, 'drawn');
+    assert.deepEqual(f.ordinaryStarts, ['A']);
+
+    for (const execution of [
+      { functionName: null, executionStyle: 'function' as const },
+      { functionName: 'Solution.solve', executionStyle: 'solution-method' as const },
+      { functionName: 'Solver', executionStyle: 'ops-class' as const },
+    ]) {
+      const ordinaryOnly = { ...bundle, execution: { ...bundle.execution, ...execution } };
+      const result = await f.host.execute({ bundle: ordinaryOnly });
+      assert.equal(result.evaluation.cases[0]?.attachment, undefined, 'execute requires explicit selection');
+      assert.equal(f.state.prepareCalls.at(-1)?.functionName, execution.functionName ?? '');
+      assert.equal(f.state.prepareCalls.at(-1)?.executionStyle, execution.executionStyle);
+      assert.equal(f.state.prepareCalls.at(-1)?.mode, 'code');
+    }
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('migrated native stopping batch starts observation on its worker admission signal', { timeout: 5000 }, async () => {
+  const ordinary = controlled();
+  const f = receiptFixture({ nativeStop: true, nativeAdmission: true, ordinaryBarrier: ordinary.promise });
+  try {
+    const pending = f.host.execute({
+      bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+    });
+    await f.waitUntil(() => f.observerCalls.length === 1);
+    assert.deepEqual(f.ordinaryStarts, ['A']);
+    assert.equal(f.markers.some(({ phase }) => phase === 'ordinary-commit'), false);
+    ordinary.resolve();
+    await pending;
+    assert.equal(f.state.codeBatchCalls.length, 1);
+  } finally {
+    ordinary.resolve();
+    f.host.dispose();
+  }
+});
+
+test('migrated initial join holds the idle lease after ordinary commit', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const drawing = controlled<ObserverReply>();
+  const f = receiptFixture({ ordinaryBarrier: Promise.resolve(), idleMs: 25, observe: () => drawing.promise });
+  try {
+    const pending = f.host.execute({
+      bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+    });
+    await f.waitUntil(() => f.observerCalls.length === 1 && f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    t.mock.timers.tick(100);
+    const call = f.observerCalls[0]!;
+    assert.equal(call.signal?.aborted, false);
+    assert.equal(f.markers.some(({ phase }) => phase === 'public-resolve'), false);
+    drawing.resolve(recordedDrawing(call));
+    const initial = await pending;
+    assert.ok(initial.executionId);
+    assert.equal(initial.evaluation.cases[0]?.attachment?.status, 'drawn');
+    t.mock.timers.tick(25);
+    await f.waitUntil(() => f.observerCounts()[1] === 1);
+    await assert.rejects(f.host.execute({
+      executionId: initial.executionId, tracing: { caseIds: ['A'] },
+    }), /Unknown or disposed/u);
+  } finally {
+    f.host.dispose();
   }
 });
