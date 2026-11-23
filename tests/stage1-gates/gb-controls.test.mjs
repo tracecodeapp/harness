@@ -341,3 +341,30 @@ test('the G5 scheduler codec rejects a deadline ACK from a stale observation att
     });
   }
 });
+
+test('an encoder injection ACK needs a preceding anchored recorder reply for the boundary cell', () => {
+  const spec = fixture('javascript', 'observer-encoder-fault');
+  const events = [{
+    kind: 'stdout', line: spec.anchor, file: 'solution.js', text: '7',
+    callStack: [{ function: 'solve', args: { n: 7 } }],
+  }];
+  const sample = observedReceipt(spec, { events });
+  const row = sample.result.evaluation.cases[0];
+  const { evaluationId, workspaceDigest, generation, caseId } = row.attachment;
+  row.attachment = { evaluationId, workspaceDigest, generation, caseId, status: 'refused', reason: 'observer-encode' };
+  const workerReply = sample.transcript.find(({ kind }) => kind === 'observer-reply');
+  workerReply.drawing = { status: 'drawn', trace: { schemaVersion: workerReply.schemaVersion, events } };
+  sample.transcript.find(({ phase }) => phase === 'attachment-bind').attemptToken = 'attempt-a';
+  sample.transcript.push({
+    kind: 'schedule', phase: 'injection-ack', fault: 'encode', point: 'encode', language: spec.language,
+    evaluationId, workspaceDigest, generation, caseId, attemptToken: 'attempt-a', request: 'run-first', sequence: 6.5,
+  });
+  requireDetected(spec, 'run-first', sample, 'A/recorder-boundary', (mutant) => {
+    mutant.transcript.find(({ kind }) => kind === 'observer-reply').drawing.trace.events[0].text = 'wrong';
+    return 1;
+  });
+  sample.transcript = sample.transcript.filter(({ kind }) => kind !== 'observer-reply');
+  const report = ledgerFor(spec, 'run-first', sample);
+  assert(report.missing.includes('G5/javascript/observer-encoder-fault/run-first/A/recorder-boundary'));
+  assert(report.receipts.some(({ id, status }) => id.endsWith('/A/injection-ack') && status === 'passed'));
+});

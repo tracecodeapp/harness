@@ -143,7 +143,9 @@ function eventProjection(event) {
     event?.sourceSpan?.startColumn, event?.sourceSpan?.endLine, event?.sourceSpan?.endColumn,
     event?.function, event?.frameId, event?.statementId, event?.text,
     event?.target?.variable, event?.target?.objectId, event?.value, event?.args,
-    event?.callStack?.map((frame) => [frame.function, frame.line, frame.args])];
+    Array.isArray(event?.callStack)
+      ? event.callStack.map((frame) => [frame?.function, frame?.line, frame?.args])
+      : event?.callStack];
 }
 
 function checkRecorder(fixture, attachment, witness) {
@@ -234,13 +236,13 @@ function checkObservation(fixture, route, sample, rows, published, assert) {
 
 function matchesAnchor(fixture, target, attachment) {
   const n = target.input.n;
-  return attachment.events?.some((event) => {
-    const line = event.sourceSpan?.startLine ?? event.line;
+  return Array.isArray(attachment.events) && attachment.events.some((event) => {
+    const line = event?.sourceSpan?.startLine ?? event?.line;
     if (line !== fixture.anchor) return false;
     if (fixture.name === 'json-element') {
       return event.target?.variable === 'element' || event.locals?.element !== undefined;
     }
-    return event.kind === 'stdout' && event.callStack?.at(-1)?.args?.n === n &&
+    return event.kind === 'stdout' && Array.isArray(event.callStack) && event.callStack.at(-1)?.args?.n === n &&
       (event.text === String(n) || event.text === target.stdout);
   });
 }
@@ -413,7 +415,7 @@ function check(fixture, route, sample, assert) {
       } else {
         const reasonIndex = attachment.modern ? 0 : 1;
         const reason = refusalReasons.get(fixture.name)?.[reasonIndex];
-        const complete = attachment.status === 'complete' && (attachment.events?.length ?? 0) > 0;
+        const complete = attachment.status === 'complete' && Array.isArray(attachment.events) && attachment.events.length > 0;
         const validRefusal = attachment.status === 'refused' && attachment.events?.length === 0;
         const realWitnessCause = fixture.name === 'json-element' ? refusalReasons.get('observer-encoder-fault')[reasonIndex]
           : fixture.name === 'trace-compile' ? refusalReasons.get('observer-compile-fault')[reasonIndex]
@@ -438,12 +440,15 @@ function check(fixture, route, sample, assert) {
       }
       if ((fixture.anchor && !refusedFault) || (fixture.name === 'observer-encoder-fault' && refusedFault)) {
         const injectedEncoder = refusedFault && injection?.fault === 'encode' && faultAcks.length > 0;
-        if (replies.length || injectedEncoder) {
-          // A scheduler encode ACK is emitted only at the drawable-return
-          // boundary. Native encoder certification belongs to worker evidence.
+        if (replies.length) {
+          const beforeEncode = recorderEvidence(replies[0]);
+          // The scheduler ACK certifies injection at the return boundary.
+          // The authenticated worker reply supplies the learner event.
           assert(`${label}/recorder-boundary`, injectedEncoder
             ? faultAck && bound && attachment.status === 'refused' && attachment.cause === injection.reason &&
-              attachment.events?.length === 0
+              attachment.events?.length === 0 && replies.length === 1 && replies[0].sequence < ack.sequence &&
+              beforeEncode.completed && beforeEncode.schemaVersion === traceSchema &&
+              matchesAnchor(fixture, expected, beforeEncode)
             : recorder, { attachment, replies, faultAcks });
         }
       }
