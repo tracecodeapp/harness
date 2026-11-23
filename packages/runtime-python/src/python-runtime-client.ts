@@ -1,5 +1,6 @@
 import type {
   PythonPreparedProgramHandle,
+  PythonRawTraceResult,
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
@@ -8,6 +9,9 @@ import {
   PythonAlgorithmFastBatchUnavailableError,
 } from './python-worker-client';
 import type {
+  Cut,
+  Drawing,
+  Refusal,
   RuntimeClient,
   RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
@@ -17,6 +21,8 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionTimings,
   RuntimePreparedExecutionProvider,
+  RuntimeObservationCall,
+  RuntimeObservationProvider,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
@@ -531,6 +537,66 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   );
 }
 
+const PYTHON_OBSERVATION_CUTS: ReadonlySet<string> = new Set<Cut>([
+  'step-budget',
+  'line-budget',
+  'single-line-budget',
+  'stored-event-budget',
+  'byte-budget',
+  'observer-deadline',
+]);
+
+function certifyPythonDrawing(result: PythonRawTraceResult, lineCount: number): Drawing {
+  const evidence = result.observation as Record<string, unknown> | undefined;
+  if (!evidence) {
+    return {
+      status: 'refused',
+      reason: result.timeoutReason === 'client-timeout'
+        ? 'observer-timeout'
+        : result.diagnosticStage === 'runtime'
+          ? 'observer-runtime'
+          : 'recorder-unavailable',
+    };
+  }
+  const raw = result.trace as Record<string, unknown> | undefined;
+  const attemptedEvents = evidence.attemptedEvents;
+  const cut = evidence.cut;
+  if (
+    evidence.recorderCompleted !== true ||
+    typeof attemptedEvents !== 'number' ||
+    !Number.isSafeInteger(attemptedEvents) ||
+    !raw ||
+    raw.schemaVersion !== RUNTIME_TRACE_SCHEMA_VERSION ||
+    raw.language !== 'python' ||
+    !Array.isArray(raw.events) ||
+    attemptedEvents < raw.events.length ||
+    (cut !== undefined && (typeof cut !== 'string' || !PYTHON_OBSERVATION_CUTS.has(cut)))
+  ) {
+    return { status: 'refused', reason: 'observer-protocol' };
+  }
+  const trace = normalizePythonRuntimeTrace(raw);
+  if (trace.events.length !== raw.events.length) {
+    return { status: 'refused', reason: 'observer-protocol' };
+  }
+  const hasSourceEvent = trace.events.some(
+    (event) =>
+      event.kind !== 'timeout' &&
+      event.file === 'solution.py' &&
+      typeof event.line === 'number' &&
+      event.line > 0 &&
+      event.line <= lineCount
+  );
+  if (!hasSourceEvent && !(cut === 'byte-budget' && trace.events.length === 0 && attemptedEvents > 0)) {
+    return {
+      status: 'refused',
+      reason: cut === 'observer-deadline' ? 'observer-timeout' : 'uncertified-drawing',
+    };
+  }
+  return cut === undefined
+    ? { status: 'drawn', trace }
+    : { status: 'truncated', reason: cut as Cut, trace, attemptedEvents };
+}
+
 export interface PythonPreparedExecutionProviderOptions {
   readonly createWorkerClient: () => PythonWorkerClient;
   /** Replenish one clean preparation worker after the current lease retires. */
@@ -538,7 +604,7 @@ export interface PythonPreparedExecutionProviderOptions {
 }
 
 export interface PythonPreparedExecutionProviderController
-  extends RuntimePreparedExecutionProvider {
+  extends RuntimePreparedExecutionProvider, RuntimeObservationProvider {
   /** Release current programs and workers while keeping the provider reusable. */
   reset(): void;
   /**
@@ -1254,6 +1320,53 @@ class PythonPreparedExecutionProvider
       }
     );
     return raceWithAbort(underlying, controller.signal);
+  }
+
+  async observe(call: RuntimeObservationCall): Promise<Drawing> {
+    this.assertActive();
+    call.signal?.throwIfAborted();
+    try {
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+        request: 'trace',
+        executionStyle: call.program.executionStyle ?? 'function',
+        functionName: call.program.functionName,
+        traceOptions: call.traceOptions,
+      });
+    } catch {
+      return { status: 'refused', reason: 'unsupported-option' };
+    }
+
+    // Keep the ordinary warm worker and its command queue out of observation.
+    const worker = this.options.createWorkerClient();
+    this.preparationWorkers.add(worker);
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(call.signal, controller);
+    this.preparationControllers.add(controller);
+    const { signal } = controller;
+    let failure: Refusal = 'observer-prepare';
+    try {
+      const prepared = await raceWithAbort(
+        worker.prepareProgram({ ...call.program, mode: 'trace', traceOptions: call.traceOptions, signal }, true),
+        signal
+      );
+      signal.throwIfAborted();
+      if (!prepared.success) return { status: 'refused', reason: failure };
+
+      failure = 'observer-runtime';
+      const result = await raceWithAbort(
+        worker.executePreparedTrace(prepared, { inputs: call.inputs, signal }),
+        signal
+      );
+      signal.throwIfAborted();
+      return certifyPythonDrawing(result, call.program.code.split('\n').length);
+    } catch (error) {
+      if (signal.aborted) throw abortReason(signal, 'Python observation was aborted.');
+      return { status: 'refused', reason: failure };
+    } finally {
+      unlink();
+      this.preparationControllers.delete(controller);
+      this.retirePreparationWorker(worker);
+    }
   }
 
   reset(): void {

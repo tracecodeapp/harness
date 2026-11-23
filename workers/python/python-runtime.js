@@ -1505,12 +1505,48 @@ function getTraceMaxPathDepth(value) {
   return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, Math.floor(value)));
 }
 
-function getTraceMaxBytes(value) {
+function getTraceMaxBytes(value, minimum = 1024) {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_TRACE_MAX_BYTES;
   }
-  return Math.min(MAX_TRACE_MAX_BYTES, Math.max(1024, Math.floor(value)));
+  return Math.min(MAX_TRACE_MAX_BYTES, Math.max(minimum, Math.floor(value)));
 }
+
+const PYTHON_PREPARE_ENTRY_ARGUMENTS = `
+def _tracecode_prepare_call(target, values, inspect_module):
+    try:
+        signature = inspect_module.signature(target)
+    except Exception:
+        return target, [], dict(values)
+    args = []
+    kwargs = {}
+    has_varargs = any(
+        parameter.kind is inspect_module.Parameter.VAR_POSITIONAL
+        for parameter in signature.parameters.values()
+    )
+    for parameter in signature.parameters.values():
+        if parameter.name in ('self', 'cls'):
+            continue
+        kind = parameter.kind
+        if kind is inspect_module.Parameter.VAR_POSITIONAL:
+            if parameter.name in values:
+                raw = values[parameter.name]
+                args.extend(raw if isinstance(raw, (list, tuple)) else [raw])
+            continue
+        if kind is inspect_module.Parameter.VAR_KEYWORD:
+            if parameter.name in values and isinstance(values[parameter.name], dict):
+                kwargs.update(values[parameter.name])
+            continue
+        if parameter.name not in values:
+            continue
+        if kind is inspect_module.Parameter.POSITIONAL_ONLY:
+            args.append(values[parameter.name])
+        elif kind is inspect_module.Parameter.POSITIONAL_OR_KEYWORD and has_varargs:
+            args.append(values[parameter.name])
+        else:
+            kwargs[parameter.name] = values[parameter.name]
+    return target, args, kwargs
+`;
 
 function buildPythonAlgorithmFastBatchSource(
   deps,
@@ -2030,39 +2066,7 @@ def _tracecode_batch_hydrate_inputs(target, values, case_globals):
             )
             case_globals[name] = values[name]
 
-def _tracecode_batch_prepare_call(target, values):
-    try:
-        signature = _tracecode_batch_inspect.signature(target)
-    except Exception:
-        return target, [], dict(values)
-    args = []
-    kwargs = {}
-    has_varargs = any(
-        parameter.kind is _tracecode_batch_inspect.Parameter.VAR_POSITIONAL
-        for parameter in signature.parameters.values()
-    )
-    for parameter in signature.parameters.values():
-        if parameter.name in ('self', 'cls'):
-            continue
-        kind = parameter.kind
-        if kind is _tracecode_batch_inspect.Parameter.VAR_POSITIONAL:
-            if parameter.name in values:
-                raw = values[parameter.name]
-                args.extend(raw if isinstance(raw, (list, tuple)) else [raw])
-            continue
-        if kind is _tracecode_batch_inspect.Parameter.VAR_KEYWORD:
-            if parameter.name in values and isinstance(values[parameter.name], dict):
-                kwargs.update(values[parameter.name])
-            continue
-        if parameter.name not in values:
-            continue
-        if kind is _tracecode_batch_inspect.Parameter.POSITIONAL_ONLY:
-            args.append(values[parameter.name])
-        elif kind is _tracecode_batch_inspect.Parameter.POSITIONAL_OR_KEYWORD and has_varargs:
-            args.append(values[parameter.name])
-        else:
-            kwargs[parameter.name] = values[parameter.name]
-    return target, args, kwargs
+${PYTHON_PREPARE_ENTRY_ARGUMENTS}
 
 _tracecode_batch_user_tree = _tracecode_batch_ast.parse(
     __tracecode_prepared_user_source,
@@ -2127,11 +2131,11 @@ for _tracecode_batch_user_node in _tracecode_batch_ast.walk(
             'Prepared algorithm artifact contains reflective string argument: '
             + _tracecode_batch_user_node.value
         )
-_tracecode_batch_user_code = _tracecode_batch_builtins.compile(
-    __tracecode_prepared_user_source,
-    'solution.py',
-    'exec',
-)
+_tracecode_batch_user_code = globals().get('__tracecode_prepared_user_code')
+if _tracecode_batch_user_code is None:
+    _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
+        __tracecode_prepared_user_source, 'solution.py', 'exec'
+    )
 def _tracecode_batch_append_result(entry):
     global _tracecode_batch_encoded_bytes
     try:
@@ -2483,7 +2487,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
                 _tracecode_call_target,
                 _tracecode_call_args,
                 _tracecode_call_kwargs,
-            ) = _tracecode_batch_prepare_call(target, _tracecode_case_inputs)
+            ) = _tracecode_prepare_call(target, _tracecode_case_inputs, _tracecode_batch_inspect)
         finally:
             _tracecode_trusted_prep_active = False
         output = _tracecode_call_target(
@@ -2564,7 +2568,7 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
                 if formatting_limit_reason is not None
                 else error_prefix + ': ' + error_detail
             ),
-            'consoleOutput': [],
+            'consoleOutput': _tracecode_case_console,
             'timings': {
                 'runMs': (
                     _tracecode_batch_time.perf_counter() - _tracecode_case_started
@@ -2650,11 +2654,15 @@ def _tracecode_materialize_input(obj):
 `
     : '';
   return `
-def _tracecode_materialize_custom_input(obj):
+def _tracecode_materialize_custom_input(obj, _resolve=None):
+    if _resolve is not None:
+        _resolved = _resolve(obj)
+        if _resolved is not obj:
+            return _resolved
     if isinstance(obj, _builtins.list):
-        return [_tracecode_materialize_custom_input(item) for item in obj]
+        return [_tracecode_materialize_custom_input(item, _resolve) for item in obj]
     if isinstance(obj, _builtins.tuple):
-        return tuple(_tracecode_materialize_custom_input(item) for item in obj)
+        return tuple(_tracecode_materialize_custom_input(item, _resolve) for item in obj)
     if isinstance(obj, _builtins.dict):
         # A tree (list) node is marked (__type__, a tree-/list- __id__) or has
         # a child (next) key; a link it does not list becomes None.
@@ -2664,7 +2672,7 @@ def _tracecode_materialize_custom_input(obj):
         if obj.get('__type__') == 'ListNode' or 'next' in obj or _node_id.startswith(('list-', 'ListNode:')):
             return _dict_to_list(obj)
         _type_name = obj.get('__type__') if isinstance(obj.get('__type__'), _builtins.str) else obj.get('__class__')
-        _fields = {key: _tracecode_materialize_custom_input(value) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
+        _fields = {key: _tracecode_materialize_custom_input(value, _resolve) for key, value in obj.items() if key not in ('__type__', '__class__', '__id__')}
         if isinstance(_type_name, _builtins.str):
             _fields = {'__type__': _type_name, **_fields}
         _constructor_fields = {key: value for key, value in _fields.items() if key not in ('__type__', '__class__')}
@@ -2689,9 +2697,10 @@ def _tracecode_materialize_custom_input(obj):
     return obj
 
 def _tracecode_materialize_named_inputs(_names):
-    for _name in _names:
-        if _name in ${namespaceExpression}:
-            ${namespaceExpression}[_name] = _tracecode_materialize_custom_input(${namespaceExpression}[_name])
+    _values = {name: ${namespaceExpression}[name] for name in _names if name in ${namespaceExpression}}
+    _resolve = _tracecode_index_node_graph(_values.values())
+    for _name, _value in _values.items():
+        ${namespaceExpression}[_name] = _tracecode_materialize_custom_input(_value, _resolve)
 
 ${materializeInputHelper}
 ${PYTHON_LITERAL_SHAPE_ANNOTATION_HELPER}
@@ -2819,6 +2828,8 @@ def _tracecode_resolve_entry_callable(_function_name, _execution_style):
         return getattr(_solver, _function_name)
     return None
 
+${PYTHON_PREPARE_ENTRY_ARGUMENTS}
+
 def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
     import inspect as _tracecode_inspect
     _callable = _tracecode_resolve_entry_callable(_function_name, _execution_style)
@@ -2826,46 +2837,7 @@ def _tracecode_invoke_entry(_function_name, _execution_style, _input_names):
         raise NameError(f"Implement {_function_name}(...) or Solution.{_function_name}(...)")
     _namespace = ${namespaceExpression}
     _values = {_name: _namespace[_name] for _name in _input_names if _name in _namespace}
-    _fallback_kwargs = None
-    try:
-        _signature = _tracecode_inspect.signature(_callable)
-    except Exception:
-        _fallback_kwargs = _values
-        _args = []
-        _kwargs = {}
-    else:
-        _args = []
-        _kwargs = {}
-        _has_varargs = any(
-            _parameter.kind is _tracecode_inspect.Parameter.VAR_POSITIONAL
-            for _parameter in _signature.parameters.values()
-        )
-        for _parameter in _signature.parameters.values():
-            if _parameter.name in ('self', 'cls'):
-                continue
-            _kind = _parameter.kind
-            if _kind is _tracecode_inspect.Parameter.VAR_POSITIONAL:
-                if _parameter.name in _values:
-                    _raw = _values[_parameter.name]
-                    if isinstance(_raw, (_builtins.list, _builtins.tuple)):
-                        _args.extend(_raw)
-                    else:
-                        _args.append(_raw)
-                continue
-            if _kind is _tracecode_inspect.Parameter.VAR_KEYWORD:
-                if _parameter.name in _values and isinstance(_values[_parameter.name], _builtins.dict):
-                    _kwargs.update(_values[_parameter.name])
-                continue
-            if _parameter.name not in _values:
-                continue
-            if _kind is _tracecode_inspect.Parameter.POSITIONAL_ONLY:
-                _args.append(_values[_parameter.name])
-            elif _kind is _tracecode_inspect.Parameter.POSITIONAL_OR_KEYWORD and _has_varargs:
-                _args.append(_values[_parameter.name])
-            else:
-                _kwargs[_parameter.name] = _values[_parameter.name]
-    if _fallback_kwargs is not None:
-        return _callable(**_fallback_kwargs)
+    _, _args, _kwargs = _tracecode_prepare_call(_callable, _values, _tracecode_inspect)
     return _callable(*_args, **_kwargs)
 
 def _resolve_inplace_result():
@@ -2913,7 +2885,8 @@ for _tracecode_input_name, _tracecode_input_value in _tracecode_raw_inputs.items
   const maxSingleLineHits = options.maxSingleLineHits || 500;
   const minimalTrace = options.minimalTrace === true;
   const maxPathDepth = getTraceMaxPathDepth(options.maxPathDepth);
-  const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes);
+  const observationOnly = prepared?.observationOnly === true;
+  const maxTraceBytes = getTraceMaxBytes(options.maxTraceBytes, observationOnly ? 1 : 1024);
   // Keep stdout capture deterministic for the app UI; worker-console mirroring
   // can cause recursive print chains across mixed runs in dev.
   const mirrorPrintToConsole = false;
@@ -2938,6 +2911,7 @@ _trace_events = []
 # Native tracer module (loaded late, see the arm site); None = python paths.
 _TC_NATIVE = None
 _trace_line_event_count = 0
+_tracecode_store_budget_exhausted = False
 from time import perf_counter as _tracecode_perf_counter
 
 # PEP 669 tracing: sys.monitoring keeps the specializing interpreter, which
@@ -3119,7 +3093,7 @@ _internal_locals = {
     '_globals_dict', '_k', '_preserve', '_real_globals', '_real_list',
     '__tracecode_tree', '__tracecode_compiled'
 }
-_max_trace_steps = ${effectiveMaxTraceSteps}
+_max_trace_steps = ${observationOnly ? maxTraceSteps : effectiveMaxTraceSteps}
 _max_stored_events = ${maxStoredEvents}
 _max_trace_bytes = ${maxTraceBytes}
 _max_trace_event_bytes = min(256 * 1024, _max_trace_bytes)
@@ -3865,12 +3839,13 @@ def __tracecode_access_value(step, access):
 
 def _tc_native_sync_limit():
     # Mirror a native-side budget trip onto the python flags.
-    global _trace_limit_exceeded, _timeout_reason
+    global _trace_limit_exceeded, _timeout_reason, _tracecode_store_budget_exhausted
     if not _trace_limit_exceeded:
         _trace_limit_exceeded = True
         _tracecode_start_grace()
         reason = _TC_NATIVE.counters().get('timeoutReason') if _TC_NATIVE is not None else ''
         _timeout_reason = reason or 'trace-limit'
+        _tracecode_store_budget_exhausted = _timeout_reason == 'trace-limit'
     _pending_accesses.clear()
 
 def __tracecode_append_runtime_event(event):
@@ -3878,7 +3853,7 @@ def __tracecode_append_runtime_event(event):
     # event dict is not retained, so later frame mutation cannot leak into
     # already-recorded events and the final export embeds these strings
     # without re-serializing the whole trace.
-    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _trace_line_event_count
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _tracecode_store_budget_exhausted, _trace_line_event_count
     if _TC_NATIVE is not None:
         try:
             event_json = _TC_JSON_ENCODER.encode(event)
@@ -3895,6 +3870,7 @@ def __tracecode_append_runtime_event(event):
             _trace_limit_exceeded = True
             _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
+            _tracecode_store_budget_exhausted = True
         _pending_accesses.clear()
         return False
     try:
@@ -3927,7 +3903,7 @@ def __tracecode_append_runtime_event(event):
 def __tracecode_append_runtime_event_json(event_json):
     # Raw-string twin of __tracecode_append_runtime_event for callers that
     # assemble the json by fragment splicing (never 'line' events).
-    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes
+    global _trace_limit_exceeded, _timeout_reason, _trace_stored_bytes, _tracecode_store_budget_exhausted
     if _TC_NATIVE is not None:
         if _TC_NATIVE.append_event_json(event_json, False):
             return True
@@ -3938,6 +3914,7 @@ def __tracecode_append_runtime_event_json(event_json):
             _trace_limit_exceeded = True
             _tracecode_start_grace()
             _timeout_reason = 'trace-limit'
+            _tracecode_store_budget_exhausted = True
         _pending_accesses.clear()
         return False
     event_bytes = (
@@ -7091,6 +7068,9 @@ def __tracecode_compact_last_step(kind=None):
         return compact
     return None
 
+${observationOnly
+  ? "__tracecode_result_json = 'null'\n__tracecode_result_limit_reason = None"
+  : `
 # The returned value is judged, so it is serialized by the same call Submit
 # makes for this case, with the same class roots, deadline checkpoint and
 # byte accounting. A prepared algorithm-fast case is Submit's fast batch:
@@ -7170,6 +7150,7 @@ except __TracecodeJudgedTimeout:
 __tracecode_judged_value = None
 __tracecode_judged_entry = None
 __tracecode_judged_encoded = None
+`}
 
 __tracecode_execution_result_json = (
     '{"traceSummary":' + json.dumps({
@@ -7185,6 +7166,16 @@ __tracecode_execution_result_json = (
     + ',"traceStepCount":' + str(
         _TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events)
     ) + '}'
+${observationOnly ? `
+    + ',"observation":' + json.dumps({
+        'recorderCompleted': True,
+        'attemptedEvents': (
+            (_TC_NATIVE.stored_event_count() if _TC_NATIVE is not None else len(_trace_events))
+            + int(_trace_limit_exceeded)
+        ),
+        'storedEventBudgetExhausted': _tracecode_store_budget_exhausted,
+    })
+` : ''}
     + ',"result":' + __tracecode_result_json
     + ',"resultLimitReason":' + json.dumps(__tracecode_result_limit_reason)
     + ',"console":' + json.dumps(_console_output)
@@ -7524,7 +7515,7 @@ async function executeWithTracing(
     prepared ? {} : inputs,
     executionStyle,
     options,
-    prepared ? { bindings: true } : undefined
+    prepared ? { bindings: true, observationOnly: prepared.observationOnly } : undefined
   );
   const tracingCode = generated.code;
   const userCodeStartLine = prepared ? 1 : generated.userCodeStartLine;
@@ -7724,6 +7715,26 @@ async function executeWithTracing(
       ),
       executionTimeMs,
       consoleOutput: result.console,
+      ...(result.observation
+        ? {
+            observation: {
+              recorderCompleted: result.observation.recorderCompleted,
+              attemptedEvents: result.observation.attemptedEvents,
+              cut: {
+                'trace-limit': result.observation.storedEventBudgetExhausted
+                  ? 'stored-event-budget'
+                  : 'step-budget',
+                'trace-byte-limit': 'byte-budget',
+                'line-limit': 'line-budget',
+                'single-line-limit': 'single-line-budget',
+              }[result.traceLimitReason] ?? (
+                result.executionAborted && timeoutReason === 'client-timeout'
+                  ? 'observer-deadline'
+                  : undefined
+              ),
+            },
+          }
+        : {}),
       traceLimitExceeded: result.traceLimitExceeded,
       // The trace budget that stopped recording, also when a guard then
       // stopped the program and timeoutReason names that guard. The client
@@ -7801,7 +7812,7 @@ async function executeCode(
   // Prepared executors are compiled once, so their guard code must be present
   // even when the first case has no limits. Each execution decides whether to
   // enable it from its own immutable limits binding.
-  const interviewGuardEnabled = options.interviewGuard === true || usesPreparedBindings;
+  const interviewGuardEnabled = options.interviewGuard === true || usesPreparedBindings || scriptMode;
   const interviewGuardConfig = {
     maxLineEvents: Math.max(10000, options.maxLineEvents ?? deps.INTERVIEW_GUARD_DEFAULTS.maxLineEvents),
     maxSingleLineHits: Math.max(1000, options.maxSingleLineHits ?? deps.INTERVIEW_GUARD_DEFAULTS.maxSingleLineHits),
@@ -7982,7 +7993,7 @@ _interview_tracemalloc_started = False
 _INTERVIEW_GUARD_ENABLED = ${
   usesPreparedBindings
     ? `_builtins.bool(_tracecode_case_limits.get('interviewGuard', False))`
-    : 'True'
+    : options.interviewGuard === true ? 'True' : 'False'
 }
 _INTERVIEW_GUARD_MAX_LINE_EVENTS = ${
   usesPreparedBindings
@@ -8241,7 +8252,7 @@ ${executionCallInNestedTry}
             raise _InterviewGuardTriggered(
                 'INTERVIEW_GUARD_TRIGGERED:' + _interview_timeout_reason
             )
-        if not ${usesPreparedBindings ? 'True' : 'False'}:
+        if not ${usesPreparedBindings || scriptMode ? 'True' : 'False'}:
             raise
         _tracecode_execution_frames = _tracecode_execution_traceback.extract_tb(
             _tracecode_execution_error.__traceback__
@@ -8295,7 +8306,7 @@ elif _tracecode_execution_failure is not None:
     _tracecode_raw_result = {
         "kind": "execution-error",
         "executionError": _tracecode_execution_failure,
-        "console": [],
+        "console": _console_output,
     }
 elif _tracecode_serialization_limit:
     _tracecode_raw_result = {
@@ -8386,7 +8397,7 @@ if _tracecode_result_kind == "guard":
 elif _tracecode_result_kind == "execution-error":
     _tracecode_final_result = {
         "executionError": _tracecode_raw_result.get("executionError"),
-        "console": [],
+        "console": _tracecode_raw_result.get("console", []),
     }
 elif _tracecode_result_kind == "serialization-limit":
     _tracecode_final_result = {
@@ -8537,7 +8548,7 @@ _json_out
         ...(Number.isInteger(result.executionError.line)
           ? { errorLine: result.executionError.line }
           : {}),
-        consoleOutput: [],
+        consoleOutput: Array.isArray(result.console) ? result.console : [],
         timings: { totalMs: deps.performanceNow() - startedAt },
       };
     }
@@ -8586,6 +8597,7 @@ async function prepareProgram(
     functionName,
     executionStyle = 'function',
     traceOptions = {},
+    observationOnly = false,
   }
 ) {
   const startedAt = deps.performanceNow();
@@ -8645,7 +8657,7 @@ async function prepareProgram(
         {},
         executionStyle,
         traceOptions,
-        { compileOnly: true }
+        { compileOnly: true, observationOnly }
       );
       executorCode = await compilePythonProgram(
         deps,
@@ -8680,7 +8692,7 @@ async function prepareProgram(
       throw new Error(`Unsupported prepared Python mode: ${String(mode)}`);
     }
 
-    if (isolationProfile.tier === 'algorithm-fast') {
+    if (isolationProfile.tier === 'algorithm-fast' && !observationOnly) {
       const batchDriverCompileStartedAt = deps.performanceNow();
       algorithmFastBatchCode = await compilePythonProgram(
         deps,
@@ -8706,6 +8718,7 @@ async function prepareProgram(
       executionStyle,
       traceOptions,
       onDemandTracing: mode === 'trace',
+      ...(observationOnly ? { observationOnly: true } : {}),
       isolationProfile,
       ...(algorithmFastBatchCode
         ? {
@@ -8776,6 +8789,7 @@ function assertPythonPreparedArtifact(deps, artifact) {
       artifact.isolationProfile.tier !== 'hard-isolated') ||
     !Array.isArray(artifact.isolationProfile.reasons) ||
     (artifact.isolationProfile.tier === 'algorithm-fast' &&
+      artifact.observationOnly !== true &&
       typeof artifact.algorithmFastBatchCode !== 'string')
   ) {
     throw new Error(
@@ -8862,6 +8876,7 @@ async function executePreparedProgram(
             userCodeObject,
             limits,
             tracingEnabled: tracingEnabled !== false,
+            observationOnly: artifact.observationOnly === true,
             isolationTier,
           }
         )
@@ -9000,8 +9015,8 @@ async function executePreparedProgramBatch(
   let algorithmFastBatchCode;
   try {
     // Deserialize only the immutable artifacts used by the selected path.
-    // The fast batch has its own driver and does not pay to hydrate the
-    // compatibility executor or the separately marshaled learner code.
+    // The fast batch has its own lease driver and uses the same compiled
+    // learner code as the compatibility executor.
     const isAlgorithmFastArtifact =
       artifact.isolationProfile.tier === 'algorithm-fast' &&
       typeof artifact.algorithmFastBatchCode === 'string';
@@ -9169,12 +9184,16 @@ async function executePreparedProgramBatch(
           deps,
           artifact.algorithmFastBatchCode
         );
+        if (artifact.mode === 'code') {
+          userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
+        }
         const resultJson = await runCompiledPythonInFreshExecutionScope(
           deps,
           algorithmFastBatchCode,
           '_json_out',
           {
             __tracecode_prepared_user_source: artifact.code,
+            ...(userCodeObject ? { __tracecode_prepared_user_code: userCodeObject } : {}),
             __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
             __tracecode_limits_literal: preparedPythonLiteral(
               deps,

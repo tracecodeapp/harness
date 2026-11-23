@@ -24,7 +24,10 @@ import {
  * normalizes and lifts this into the outcome union (`liftTraceOutcome`);
  * the worker client deliberately passes it through untyped-trace and all.
  */
-export type PythonRawTraceResult = RawExecutionPayload & { trace?: unknown };
+export type PythonRawTraceResult = RawExecutionPayload & {
+  trace?: unknown;
+  observation?: unknown;
+};
 export type PythonRawTraceBatchResult = {
   results?: PythonRawTraceResult[];
   error?: string;
@@ -160,6 +163,7 @@ export interface PythonPreparedProgramArtifact {
   readonly executionStyle: RuntimeProgramPreparationCall['executionStyle'];
   readonly traceOptions: RuntimeProgramPreparationCall['traceOptions'];
   readonly onDemandTracing?: boolean;
+  readonly observationOnly?: true;
   readonly isolationProfile: {
     readonly tier: 'algorithm-fast' | 'judge-compatible' | 'hard-isolated';
     readonly reasons: readonly string[];
@@ -646,7 +650,8 @@ export class PythonWorkerClient {
   }
 
   async prepareProgram(
-    call: RuntimeProgramPreparationCall
+    call: RuntimeProgramPreparationCall,
+    observationOnly = false
   ): Promise<PythonPreparedProgramResult> {
     const program = this.warmupEffect().pipe(
       Effect.andThen(
@@ -659,6 +664,7 @@ export class PythonWorkerClient {
               functionName: call.functionName,
               executionStyle: call.executionStyle ?? 'function',
               traceOptions: call.traceOptions ?? {},
+              ...(observationOnly ? { observationOnly: true } : {}),
             },
             null
           ),
