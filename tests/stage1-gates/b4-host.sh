@@ -2,12 +2,14 @@
 # Run inside the build host's ar-harness job under heavy.
 set -euo pipefail
 
-candidate=$(git rev-parse HEAD)
+candidate=$(git rev-parse "${TRACECODE_B4_SUBJECT:-HEAD}")
+export TRACECODE_B4_SUBJECT="$candidate"
 artifact="/root/ci/coord-artifacts/feat-b4-js-ts-${candidate:0:12}.tgz"
 build_output=$(mktemp -d)
 trap 'rm -rf "$build_output"' EXIT
 
 if [[ ! -e "$artifact" ]]; then
+  [[ "$candidate" == "$(git rev-parse HEAD)" ]]
   git diff --exit-code HEAD
   corepack pnpm build >b4-build.log 2>&1 || { tail -60 b4-build.log; exit 1; }
   git diff --exit-code HEAD
@@ -21,6 +23,7 @@ if [[ ! -e "$artifact" ]]; then
   printf '%s  %s\n' "$digest" "$artifact" >"$artifact.sha256"
   chmod 0444 "$artifact.sha256"
 fi
+git diff --exit-code "$candidate" -- packages src workers runtime-assets.lock.json
 sha256sum --check "$artifact.sha256"
 read -r digest _ <"$artifact.sha256"
 printf 'candidate=%s\nartifact=%s\nsha256=%s\n' "$candidate" "$artifact" "$digest"

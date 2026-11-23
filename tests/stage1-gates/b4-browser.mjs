@@ -36,7 +36,7 @@ export async function runFixture(fixture, fault) {
           return;
         }
         if (data.type === 'b4-injection-ack') {
-          journal.push({ worker: this.generation, type: data.type, token: data.token, fault: data.fault });
+          journal.push({ worker: this.generation, type: data.type, token: data.token, fault: data.fault, anchor: data.anchor });
           return;
         }
         const dispatch = this.inFlight.get(data.id);
@@ -102,20 +102,33 @@ export async function runFixture(fixture, fault) {
     check('run-first', 'B/unselected', b && !Object.hasOwn(b, 'attachment') && !Object.hasOwn(b, 'trace'), b?.attachment);
     const attachment = a?.attachment;
     if (fault) {
-      check('run-first', 'A/attachment', attachment?.status === 'refused' && attachment.reason === faults[fault], attachment);
+      check('run-first', 'A/attachment-status', attachment?.status === 'refused' && attachment.reason === faults[fault], attachment);
       const injected = journal.filter(({ type }) => type === 'b4-injection-ack');
       const dispatch = journal.find(({ type }) => type === 'observe-execution');
       check('run-first', 'A/injection-ack', injected.length === 1 && injected[0].token === dispatch?.token &&
         injected[0].worker === dispatch?.worker && injected[0].fault === fault, injected);
+      if (fault === 'observer-encoder-fault') {
+        check('run-first', 'A/recorder-boundary', injected.length === 1 &&
+          injected[0].anchor?.kind === 'stdout' && injected[0].anchor?.line === 2 &&
+          injected[0].anchor?.text === String(fixture.cases[0].input.n), injected);
+      }
     } else if (fixture.name === 'stdout') {
       check('run-first', 'A/anchor', attachment?.status === 'drawn' &&
-        attachment.trace.events.some((event) => event.kind === 'stdout' && event.line === 2), attachment);
+        attachment.trace.events.some((event) =>
+          event.kind === 'stdout' && event.line === 2 &&
+          event.text === String(fixture.cases[0].input.n) &&
+          event.callStack?.at(-1)?.args?.n === fixture.cases[0].input.n
+        ), attachment);
     } else {
       const byteCap = fixture.name === 'byte-cap';
-      check('run-first', 'A/attachment', attachment?.status === 'truncated' &&
+      check('run-first', 'A/attachment-status', attachment?.status === 'truncated' &&
         attachment.reason === (byteCap ? 'byte-budget' : 'step-budget') &&
         (byteCap ? attachment.trace.events.length === 0 : attachment.trace.events.length > 0) &&
         attachment.attemptedEvents > attachment.trace.events.length, attachment);
+      if (byteCap) {
+        check('run-first', 'A/attempted-events', attachment?.status === 'truncated' &&
+          attachment.attemptedEvents > 0 && attachment.trace.events.length === 0, attachment);
+      }
     }
     const initialDispatch = journal.filter(({ type }) => type === 'observe-execution' || type === 'execute-batch' || type === 'execute-code');
     const ordinary = initialDispatch.filter(({ mode }) => mode === 'code');
@@ -128,7 +141,7 @@ export async function runFixture(fixture, fault) {
       journal.some(({ type, worker, token }) =>
         type === 'observation-started' && worker === observers[0].worker && token === observers[0].token) &&
       journal.some(({ type, token }) => type === 'reply' && token === observers[0].token), initialDispatch);
-    if (!fault && executionId) {
+    if (executionId) {
       continuation = await host.execute({ executionId, tracing: { caseIds: ['B'] } });
       const countBeforeRedraw = journal.length;
       repeated = await host.execute({ executionId, tracing: { caseIds: ['B'] } });

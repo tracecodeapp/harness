@@ -12,6 +12,7 @@ const reportPath = resolve(process.env.TRACECODE_B4_REPORT ?? 'b4-installed-repo
 const [, , tarball, digest] = process.argv;
 assert(tarball && /^[0-9a-f]{64}$/u.test(digest ?? ''), 'Provide the canonical tarball path and SHA-256');
 const fixtures = JSON.parse(await readFile(new URL('./b4-fixtures.json', import.meta.url), 'utf8'));
+assert.equal(fixtures.length, 6, 'two languages with stdout, step and byte cap fixtures');
 const sandbox = await mkdtemp(join(tmpdir(), 'tracecode-b4-installed-'));
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
@@ -40,7 +41,8 @@ try {
     join(sandbox, 'workers'), '--languages', 'javascript,typescript'], sandbox);
   const lock = JSON.parse(await readFile(join(installed, 'runtime-assets.lock.json'), 'utf8'));
   const identity = {
-    candidate: run('git', ['rev-parse', 'HEAD']),
+    candidate: process.env.TRACECODE_B4_SUBJECT ?? run('git', ['rev-parse', 'HEAD']),
+    runner: run('git', ['rev-parse', 'HEAD']),
     tarball: sha(await readFile(tarball)),
     judge: sha(await readFile(judge)),
     workers: {},
@@ -63,8 +65,9 @@ try {
       '  const instance = recorder(options); const snapshot = instance.getRuntimeTrace;\n' +
       '  instance.getRuntimeTrace = (...args) => {\n' +
       '    const trace = snapshot(...args);\n' +
-      '    if (trace.events.some((event) => event.kind === "stdout")) {\n' +
-      '      self.postMessage({ type: "b4-injection-ack", token: payload.attemptToken, fault: "observer-encoder-fault" });\n' +
+      '    const anchor = trace.events.find((event) => event.kind === "stdout");\n' +
+      '    if (anchor) {\n' +
+      '      postWorkerMessage({ type: "b4-injection-ack", token: payload.attemptToken, fault: "observer-encoder-fault", anchor });\n' +
       '      throw new Error("B4 test encoder fault");\n' +
       '    }\n' +
       '    return trace;\n' +
@@ -74,14 +77,16 @@ try {
     // Mutant overlays are test bytes with their own digests. Ordinary worker
     // commands in those variants still use the exact installed implementation.
     const mutated = source.replace(insertion, [
-      '          {',
+      '          if (payload.inputs?.n === 7) {',
       inject.replace('payload = ', 'const observerPayload = '),
       fault === 'observer-encoder-fault' ? '' :
-        `self.postMessage({ type: 'b4-injection-ack', token: payload.attemptToken, fault: ${JSON.stringify(fault)} });`,
+        `postWorkerMessage({ type: 'b4-injection-ack', token: payload.attemptToken, fault: ${JSON.stringify(fault)} });`,
       fault === 'observer-compile-fault'
         ? insertion.replace('...payload', '...observerPayload')
         : insertion,
       fault === 'observer-compile-fault' ? '' : 'createTraceRecorder = recorder;',
+      '          } else {',
+      insertion,
       '          }',
     ].filter(Boolean).join('\n'));
     await writeFile(join(workerPath, `b4-${fault}.js`), mutated);
