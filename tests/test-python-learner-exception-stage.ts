@@ -61,10 +61,16 @@ async function loadPythonRuntime(): Promise<PythonRuntime> {
 
 function runTracingProgramLikePyodide(code: string): string {
   // Pyodide returns the value of the named result binding; host CPython prints it.
+  // The program goes in on stdin: as one argument it can pass Linux's 128 KiB
+  // limit on a single argument (MAX_ARG_STRLEN) and fail with E2BIG.
   return execFileSync(
     'python3',
-    ['-c', `${code.trimEnd()}\nprint(__tracecode_execution_result_json)`],
-    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }
+    ['-'],
+    {
+      input: `${code.trimEnd()}\nprint(__tracecode_execution_result_json)\n`,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+    }
   ).trimEnd();
 }
 

@@ -85,9 +85,12 @@ async function main(): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-trace-cutoff-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
-    await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', 'python'], root);
+    await runCommand('pnpm', ['exec', 'tsx', '--tsconfig', 'tsconfig.base.json', 'src/cli.ts', 'sync-assets', join(tempRoot, 'workers'), '--languages', 'python'], root);
     await build({
       absWorkingDir: root,
+      // The workspace source aliases: the suite runs this before the build
+      // phase, when no workspace package has a dist to resolve to.
+      tsconfig: join(root, 'tsconfig.base.json'),
       entryPoints: [join(root, 'tests/fixtures/python-trace-cutoff-guard-entry.ts')],
       outfile: join(tempRoot, 'entry.mjs'),
       bundle: true,
