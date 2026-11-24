@@ -5832,11 +5832,11 @@ async function main(): Promise<void> {
     assertCondition(listNodeOutput.success, `C# worker ListNode output case should succeed: ${listNodeOutput.error ?? 'unknown error'}`);
     assertCondition(
       JSON.stringify(listNodeOutput.output) === JSON.stringify({
+        __type__: 'ListNode',
         val: 4,
-        value: 4,
-        next: { val: 5, value: 5, next: null },
+        next: { __type__: 'ListNode', val: 5, next: null },
       }),
-      `C# worker ListNode output case should serialize node fields with value alias, received ${JSON.stringify(listNodeOutput.output)}`
+      `C# worker ListNode output case should serialize typed node fields, received ${JSON.stringify(listNodeOutput.output)}`
     );
 
     const treeNodeOutput = await runWorkerCase(
@@ -5855,12 +5855,12 @@ async function main(): Promise<void> {
     assertCondition(treeNodeOutput.success, `C# worker TreeNode output case should succeed: ${treeNodeOutput.error ?? 'unknown error'}`);
     assertCondition(
       JSON.stringify(treeNodeOutput.output) === JSON.stringify({
+        __type__: 'TreeNode',
         val: 4,
-        value: 4,
-        left: { val: 5, value: 5, left: null, right: null },
-        right: { val: 6, value: 6, left: null, right: null },
+        left: { __type__: 'TreeNode', val: 5, left: null, right: null },
+        right: { __type__: 'TreeNode', val: 6, left: null, right: null },
       }),
-      `C# worker TreeNode output case should serialize node fields with value alias, received ${JSON.stringify(treeNodeOutput.output)}`
+      `C# worker TreeNode output case should serialize typed node fields, received ${JSON.stringify(treeNodeOutput.output)}`
     );
 
     const listNodeCycleOutput = await runWorkerCase(

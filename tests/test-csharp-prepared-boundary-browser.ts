@@ -133,6 +133,11 @@ async function main(): Promise<void> {
     const page = await browser.newPage();
     await page.goto(`${origin}/tests/fixtures/csharp-worker/blank.html`);
     const judgedProbe = process.env.TRACECODE_CSHARP_JUDGED_OUTPUT_PROBE;
+    if (judgedProbe) {
+      page.on('console', (message) => {
+        if (message.type() === 'log') console.log(message.text());
+      });
+    }
     const failures = await page.evaluate(async ({ runnerAssetPath, judgedProbe }) => {
       const moduleUrl: string = '/csharp-warm-resubmit.mjs';
       const { probeCSharpJudgedOutputs } = await import(moduleUrl);
