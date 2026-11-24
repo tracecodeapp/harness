@@ -115,7 +115,11 @@ for (const [source, token, line, column] of [
   ['A::A() try : x(0) {} catch (...) {}', 'try', 1, 8],
   ['int f() try { return 0; } catch (...) {}', 'try', 1, 9],
   ['#define RAISE throw', 'throw', 1, 15],
-  ['// catch \\\nthrow\n  th\\\nrow 7;', 'throw', 3, 3],
+  [['auto s = R"delim(try)de\\', 'lim";  throw 7;'].join('\n'), 'throw', 2, 8],
+  [['auto s = R"delim(catch)delim\\', '";  throw 7;'].join('\n'), 'throw', 2, 5],
+  [['auto s = R"de\\', 'lim(catch)delim";  throw 7;'].join('\n'), 'throw', 2, 20],
+  [['  thr\\', 'ow 7;'].join('\r\n'), 'throw', 1, 3],
+  [['// catch \\', 'throw;', '  try {}'].join('\n'), 'try', 3, 3],
   [mixedExceptionSource, 'throw', 4, 16],
 ] as const) {
   const classification = classifyCppExceptionUse(source);
@@ -133,6 +137,7 @@ for (const source of [
   '/* try */\n// throw \\\ncatch\nint n;',
   `"try \\"throw" L"catch" u"try" U"throw" u8"catch" '\\'' L'try' u't' U'c' u8't'`,
   'R"(throw)" u8R"x(try " // catch)x" LR"_(catch)_" uR"(throw)" UR"(try)"',
+  ['auto s = R"delim()de\\', 'lim" throw )delim";'].join('\n'),
   'auto n = 1\'000; auto x = 1.2e-3; // throw',
   '#include <example/throw>',
   '# /* comment */ include /* comment */ <example/throw>',

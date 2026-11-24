@@ -49,14 +49,15 @@ export function classifyCppExceptionUse(source) {
     const [token, delimiter] = match;
     if (delimiter !== undefined) {
       const endMarker = `)${delimiter}"`;
-      // Raw string contents retain physical newlines, including splices.
-      const end = source.indexOf(endMarker, physicalOffset(tokens.lastIndex - 1) + 1);
-      if (end === -1) break;
-      tokens.lastIndex = end + endMarker.length;
-      for (const splice of splices) {
-        if (splice.offset >= tokens.lastIndex) break;
-        tokens.lastIndex -= splice.length;
+      const firstEnd = text.indexOf(endMarker, tokens.lastIndex);
+      if (firstEnd === -1) break;
+      // A splice inside valid raw-string content can resemble a closer.
+      // Prefer a physical closer and recover at a spliced one if necessary.
+      let end = firstEnd;
+      while (end !== -1 && splices.some(({ offset }) => end < offset && offset < end + endMarker.length)) {
+        end = text.indexOf(endMarker, end + 1);
       }
+      tokens.lastIndex = (end === -1 ? firstEnd : end) + endMarker.length;
       literalSuffix.lastIndex = tokens.lastIndex;
       if (literalSuffix.test(text)) tokens.lastIndex = literalSuffix.lastIndex;
     } else if (token === 'throw' || token === 'try' || token === 'catch') {
