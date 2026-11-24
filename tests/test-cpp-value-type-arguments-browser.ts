@@ -462,19 +462,28 @@ async function main(): Promise<void> {
     '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
     '        self.send_header("Cache-Control", "no-cache")',
     '        super().end_headers()',
+    // No per-request log: the pipes below are drained, but a log line per
+    // request has no reader that needs it.
+    '    def log_message(self, format, *args):',
+    '        pass',
     `os.chdir(${JSON.stringify(tempRoot)})`,
     `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
   ].join('\n')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Drain the server's output. An unread pipe fills after a few hundred
+  // requests and blocks the server mid-response, which surfaces as a worker
+  // that never loads (WorkerReadyTimeoutError) or a page that never navigates.
+  server.stdout.resume();
+  server.stderr.resume();
 
   const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
   try {
     await waitForHttp(origin, 30_000);
-    // Scenarios run in chunks, each in a fresh page with its own compiler and
-    // worker clients, so one page never accumulates workers across the whole
-    // suite (the C++ worker's ready timeout is a fixed 10 s).
+    // All scenarios share one page by default. TRACECODE_VALUE_TYPE_CHUNK=n
+    // runs them n at a time, each chunk in a fresh page with its own compiler
+    // and worker clients, to separate scenarios while diagnosing.
     const results: Record<string, PathResults> = {};
     const timings: Record<string, Record<string, number>> = {};
-    const CHUNK = Number(process.env.TRACECODE_VALUE_TYPE_CHUNK ?? 10);
+    const CHUNK = Number(process.env.TRACECODE_VALUE_TYPE_CHUNK ?? scenarios.length);
     for (let offset = 0; offset < scenarios.length; offset += CHUNK) {
     const chunk = scenarios.slice(offset, offset + CHUNK);
     console.log(`chunk ${offset / CHUNK + 1}: ${chunk.map(({ name }) => name).join(' | ')}`);

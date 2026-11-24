@@ -306,9 +306,18 @@ async function main(): Promise<void> {
     '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
     '        self.send_header("Cache-Control", "no-cache")',
     '        super().end_headers()',
+    // No per-request log: the pipes below are drained, but a log line per
+    // request has no reader that needs it.
+    '    def log_message(self, format, *args):',
+    '        pass',
     `os.chdir(${JSON.stringify(tempRoot)})`,
     `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
   ].join('\n')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Drain the server's output. An unread pipe fills after a few hundred
+  // requests and blocks the server mid-response, which surfaces as a worker
+  // that never loads (WorkerReadyTimeoutError) or a page that never navigates.
+  server.stdout.resume();
+  server.stderr.resume();
 
   const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
   try {
