@@ -58,7 +58,7 @@ test('observer export requires the matching recorder frame and retains an empty 
   assert.equal(valid.events.length, 0);
 });
 
-function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', observeTwice = false } = {}) {
+function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', observeTwice = false, admissionId = 73 } = {}) {
   const calls = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -109,7 +109,9 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
       program: {}, executions: 0, algorithmIsolationProfile: { tier: profile },
     });
     self.TraceCodeActiveKernelRequestId = 'request';
-    self.TraceCodeJavaPreparedCaseAdmitted = (index) => record('admit', index);
+    self.TraceCodeJavaPreparedCaseAdmitted = (index, id) => record('admit', index, id);
+    self.TraceCodeJavaPreparedCaseFinished = (index, id, report) =>
+      record('finish', index, id, report.output ?? report.timeoutReason);
     if (observeTwice) {
       (async () => {
         const observe = async (caseId) => JSON.parse(await traceJVMRunPreparedRuntimeProgramBatch(
@@ -125,11 +127,11 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
     traceJVMRunPreparedRuntimeProgramBatch(
       'p', 'Traced', '1', '[{"caseId":"first"},{"caseId":"second"},{"caseId":"suffix"}]',
       '500', '', '', mode === 'ordinary' ? '[false,false,false]' : '[false,true,false]',
-      'Clean', String(stop), mode
+      'Clean', String(stop), mode, String(admissionId)
     );
     }
   `, {
-    self, client, stop, mode, profile, observeTwice, record: (...event) => calls.push(event), URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, mode, profile, observeTwice, admissionId, record: (...event) => calls.push(event), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;
@@ -174,8 +176,9 @@ test('ordinary admission precedes each start and excludes a stopped suffix', asy
   assert.equal(report.runnerProcessCount, 1);
   assert.equal(report.results[1].timeoutReason, 'client-timeout');
   assert.deepEqual(calls, [
-    ['admit', 0], ['run', 1, 'first', 'Clean'], ['reset'],
-    ['admit', 1], ['run', 1, 'second', 'Clean'], ['dispose', 1], ['close'],
+    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['finish', 0, 73, 'first'], ['reset'],
+    ['admit', 1, 73], ['run', 1, 'second', 'Clean'], ['dispose', 1],
+    ['finish', 1, 73, 'client-timeout'], ['close'],
   ]);
 });
 
@@ -248,5 +251,29 @@ test('a nonstopping batch drains a cancelled case and isolates a tainted runner'
     ['run', 1, 'first', 'Clean'], ['dispose', 1], ['reset'],
     ['run', 2, 'second', 'Traced'], ['dispose', 2], ['drained'], ['reset'],
     ['run', 3, 'suffix', 'Clean'], ['dispose', 3], ['close'],
+  ]);
+});
+
+test('ordinary batch keeps its admission id across compatibility JVM replacements', async () => {
+  const { calls, result } = testBatch(({ caseId }) => completed(output(caseId)), {
+    mode: 'ordinary', profile: 'compatibility', stop: false,
+  });
+  assert.equal((await result).runnerProcessCount, 3);
+  assert.deepEqual(calls, [
+    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['dispose', 1], ['finish', 0, 73, 'first'], ['reset'],
+    ['admit', 1, 73], ['run', 2, 'second', 'Clean'], ['dispose', 2], ['finish', 1, 73, 'second'], ['reset'],
+    ['admit', 2, 73], ['run', 3, 'suffix', 'Clean'], ['dispose', 3], ['finish', 2, 73, 'suffix'], ['close'],
+  ]);
+});
+
+test('System.exit(0) without the runner result does not finish or dispatch the suffix', async () => {
+  const { calls, result } = testBatch(({ caseId }) =>
+    completed(caseId === 'second' ? 'printed before System.exit(0)' : output(caseId)), {
+    mode: 'ordinary', profile: 'compatibility', stop: false,
+  });
+  await assert.rejects(result, /without a Harness result marker/);
+  assert.deepEqual(calls.filter(([event]) => ['admit', 'finish', 'run'].includes(event)), [
+    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['finish', 0, 73, 'first'],
+    ['admit', 1, 73], ['run', 2, 'second', 'Clean'],
   ]);
 });
