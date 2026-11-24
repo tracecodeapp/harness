@@ -13,9 +13,9 @@ const expandedPlan = expandWarmRepeatGroups(
 
 export const pythonFreshAaPlan = Object.freeze([
   ...expandedPlan.filter(({ language, problem, csharpWarmMode }) =>
-    language === 'csharp' && problem === 'binary-search' && csharpWarmMode === 'repeat-run'),
+    language === 'csharp' && problem === 'permutations' && csharpWarmMode === 'repeat-run'),
   ...expandedPlan.filter(({ language, problem, csharpWarmMode }) =>
-    !(language === 'csharp' && problem === 'binary-search' && csharpWarmMode === 'repeat-run')),
+    language === 'python'),
 ]);
 
 export function pythonFreshAaFailFast(groupIndex, group, sample) {

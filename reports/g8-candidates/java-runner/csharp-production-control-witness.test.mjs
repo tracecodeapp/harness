@@ -54,3 +54,46 @@ test('rejects learner commands on a recognized replenishment worker', () => {
   assert.match(csharpProductionControlOutcome(result, 'trusted-warmup'),
     /trusted standby|single-worker/);
 });
+
+function promotedOrdinaryResult(caseCount = 3) {
+  const learnerKey = 'learner-algorithm-fast';
+  return { csharp: { phases: [
+    { worker: 1, workerKind: 'compiler', role: 'observer', type: 'prepare-program',
+      tier: 'algorithm-fast', artifactKey: learnerKey, received: 0 },
+    ...trustedReplenishment(),
+    ...Array.from({ length: caseCount }, () => ({
+      worker: 9, workerKind: 'runner', role: 'ordinary', type: 'execute-prepared-trace',
+      tier: 'algorithm-fast', artifactKey: learnerKey, received: 4,
+      timings: {
+        executionRealm: 'retained-worker-collectible-context',
+        compileCacheHit: true,
+        artifactCacheHit: true,
+      },
+    })),
+  ] } };
+}
+
+test('accepts only the exact measured-path promotion of the trusted standby worker', () => {
+  const result = promotedOrdinaryResult();
+  assert.equal(csharpProductionControlOutcome(result, 'trusted-warmup', { caseCount: 3 }),
+    undefined);
+
+  result.csharp.phases.at(-1).artifactKey = 'other-learner-artifact';
+  assert.equal(csharpProductionControlOutcome(result, 'trusted-warmup', { caseCount: 3 }),
+    'C# trusted standby replenishment witness differs');
+});
+
+test('rejects extra learner workers and per-case restarts beside a promoted worker', () => {
+  const extraWorker = promotedOrdinaryResult();
+  extraWorker.csharp.phases.push({
+    worker: 10, workerKind: 'runner', role: 'ordinary', type: 'execute-prepared-trace',
+    tier: 'compatibility', artifactKey: 'learner-algorithm-fast', received: 5,
+  });
+  assert.equal(csharpProductionControlOutcome(extraWorker, 'trusted-warmup', { caseCount: 3 }),
+    'Published C# single-worker witness differs');
+
+  const restarted = promotedOrdinaryResult();
+  restarted.csharp.phases.at(-1).worker = 10;
+  assert.equal(csharpProductionControlOutcome(restarted, 'trusted-warmup', { caseCount: 3 }),
+    'C# trusted standby replenishment witness differs');
+});

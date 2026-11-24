@@ -337,9 +337,10 @@ async function openPage(context, version, url, group) {
 }
 
 function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
-  priorResult) {
+  priorResult, context = {}) {
   if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
-    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
+    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey,
+      context.allowCsharpTrustedPromotion ? { caseCount } : undefined);
     return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount,
       priorResult === undefined ? undefined :
         pythonProductionControlWorker(priorResult.python?.phases ?? []));
@@ -704,7 +705,10 @@ try {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
                   role === 'run' ? fixture.cases[0].id : undefined, version, group.language,
-                  sample.trustedCsharpArtifactKey);
+                  sample.trustedCsharpArtifactKey, undefined, {
+                    allowCsharpTrustedPromotion: group.language === 'csharp' &&
+                      group.csharpWarmMode === csharpWarmModes.repeatRun,
+                  });
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
