@@ -1,4 +1,4 @@
-import { matchesPythonReply, replyRowCount } from 'stage1-worker-evidence';
+import { matchesWorkerReply, replyRowCount } from 'stage1-worker-evidence';
 import {
   builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
@@ -46,15 +46,17 @@ class ObservedWorker extends NativeWorker {
     const pythonWorker = pathname.endsWith('/python-worker.js');
     const javaWorker = /\/java(?:-runtime)?-worker\.js$/.test(pathname);
     const cppWorker = pathname.endsWith('/cpp-worker.js');
+    const csharpWorker = pathname.endsWith('/csharp-worker.js');
     const pending = new Map();
     const programs = new Map();
     this.addEventListener('message', (event) => {
       const data = event.data;
       const command = pending.get(data?.id);
       if (command) {
-        if (pythonWorker && command.protocolToken !== undefined && !matchesPythonReply(event, command)) return;
-        if (command.cppProtocolToken) {
-          if (!event.isTrusted || data.protocolToken !== command.cppProtocolToken) return;
+        if (pythonWorker && command.protocolToken !== undefined && !matchesWorkerReply(event, command)) return;
+        if (command.cppProtocolToken || command.csharpProtocol) {
+          if (command.csharpProtocol ? !matchesWorkerReply(event, command)
+            : !event.isTrusted || data.protocolToken !== command.cppProtocolToken) return;
           if (data.type === 'runtime-progress' && data.payload?.stage === 'ordinary-case-started') {
             transcript.push({ action: 'ordinary-start', worker, generation, id: data.id, caseIndex: data.payload.detail?.caseIndex });
             return;
@@ -101,6 +103,11 @@ class ObservedWorker extends NativeWorker {
             cppTerminal: true,
             recorder: data.payload?.observation?.attemptToken === command.attemptToken ? data.payload?.observation : undefined,
           } : {}),
+          ...(command.csharpProtocol ? {
+            csharpTerminal: true,
+            startedCaseIndexes: data.payload?.startedCaseIndexes,
+            recorderToken: data.payload?.observation?.attemptToken,
+          } : {}),
         });
       }
     });
@@ -144,10 +151,16 @@ class ObservedWorker extends NativeWorker {
         command.reportsStarts = payload.reportCaseProgress === true;
         command.attemptToken = payload.attemptToken;
       }
+      const csharpProtocol = csharpWorker && (payload.reportCaseProgress === true || payload.observation !== undefined);
+      if (csharpProtocol) {
+        command.csharpProtocol = true;
+        command.reportsStarts = payload.reportCaseProgress === true;
+        command.attemptToken = payload.observation?.attemptToken;
+      }
       if (command.id) pending.set(command.id, {
         ...command,
         ...(cppProtocol ? { cppProtocolToken: data.protocolToken } : {}),
-        ...(pythonWorker ? { protocolToken: data.protocolToken } : {}),
+        ...(pythonWorker || csharpProtocol ? { protocolToken: data.protocolToken } : {}),
       });
       transcript.push(command);
       post(data, options);

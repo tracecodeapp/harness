@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { requestMatrix } from './requests.mjs';
-import { matchesPythonReply, replyRowCount, retainedControlTargets } from './worker-evidence.mjs';
+import { matchesWorkerReply, replyRowCount, retainedControlTargets } from './worker-evidence.mjs';
 
 test('streamed delivery count requires a trusted, token-matched Python batch terminal', () => {
   const command = { id: 'request', type: 'execute-prepared-program-batch', protocolToken: 'current' };
@@ -12,7 +12,7 @@ test('streamed delivery count requires a trusted, token-matched Python batch ter
     { id: 'other' }, { protocolToken: 'stale' }, { protocolToken: undefined },
   ]) {
     const forged = { ...event, data: { ...data, ...patch } };
-    assert.equal(matchesPythonReply(forged, command), false);
+    assert.equal(matchesWorkerReply(forged, command), false);
     assert.equal(replyRowCount(forged, command), undefined);
     assert.equal(replyRowCount({ ...forged, data: { ...forged.data, payload: { results: [{}, {}] } } }, command), undefined);
   }

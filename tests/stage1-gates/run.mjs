@@ -268,7 +268,10 @@ try {
       }
     }
     const cppExceptionRefusal = cppExceptionRefusalApplies(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'));
-    const stimulus = { traceOptions: manifest.traceOptions, ...fixture, cppExceptionRefusal };
+    const csharpAcknowledgements = fixture.language === 'csharp' && subject !== manifest.candidate &&
+      subject !== '440dbd828870901be49cf0caefb0ade9bd88c034' &&
+      (subject === '09378c5d0306c49b435de85c56e001444b7a4820' || receiptLanguages.has('csharp'));
+    const stimulus = { traceOptions: manifest.traceOptions, ...fixture, cppExceptionRefusal, csharpAcknowledgements };
     if (cppExceptionRefusal) {
       const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/`;
       for (const id of inventory) {

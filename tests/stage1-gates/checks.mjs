@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { checkCppExceptionCompile, checkCppExceptionProjection, checkCppRefusalWorkerLog } from './cpp-refusal.mjs';
+import { checkCsharpAcknowledgement } from './csharp-evidence.mjs';
 import { assertGraph } from './graph.mjs';
 import {
   assertNoLegacyRefusal, checkCacheHit, checkCppStarts, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
@@ -187,10 +188,17 @@ export function checkObservation(fixture, request, observation, record, register
         return;
       }
       if (registered && request.id === 'redraw-b') {
+        if (fixture.csharpAcknowledgements && (!Array.isArray(observation.worker) ||
+            !defined(observation.drawnEvaluation))) return missingEvidence;
         checkRedraw(observation);
         return;
       }
       const continuation = registered && request.mode === 'continuation';
+      if (fixture.csharpAcknowledgements && evaluation.status !== 'compile-failed') {
+        const admittedCount = evaluation.cases.filter(({ status }) => status !== 'not-run').length;
+        if (!checkCsharpAcknowledgement(observation, continuation, admittedCount)) return missingEvidence;
+        return;
+      }
       const commands = observation.worker.filter(({ action, type }) => action === 'command' &&
         (/execute|compile-run/.test(type) || (continuation && type === 'observe-execution')));
       const acknowledged = commands.filter((command) => observation.worker.some((event) => (
