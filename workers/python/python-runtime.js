@@ -2144,11 +2144,10 @@ for _tracecode_batch_user_node in _tracecode_batch_ast.walk(
             'Prepared algorithm artifact contains reflective string argument: '
             + _tracecode_batch_user_node.value
         )
-_tracecode_batch_user_code = globals().get('__tracecode_prepared_user_code')
-if _tracecode_batch_user_code is None:
-    _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
-        __tracecode_prepared_user_source, 'solution.py', 'exec'
-    )
+# Execute the exact tree that passed the fast-tier audit.
+_tracecode_batch_user_code = _tracecode_batch_builtins.compile(
+    _tracecode_batch_user_tree, 'solution.py', 'exec'
+)
 def _tracecode_batch_append_result(entry):
     global _tracecode_batch_encoded_bytes
     try:
@@ -9150,14 +9149,12 @@ async function executePreparedProgramBatch(
           deps,
           artifact.algorithmFastBatchCode
         );
-        userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
         const resultJson = await runCompiledPythonInFreshExecutionScope(
           deps,
           algorithmFastBatchCode,
           '_json_out',
           {
             __tracecode_prepared_user_source: artifact.code,
-            __tracecode_prepared_user_code: userCodeObject,
             __tracecode_input_batch_literal: preparedPythonLiteral(deps, cases),
             __tracecode_limits_literal: preparedPythonLiteral(
               deps,
