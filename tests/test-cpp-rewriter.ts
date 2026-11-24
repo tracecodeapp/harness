@@ -62,6 +62,7 @@ globalThis.__tracecodeCppRewriter = {
   buildPreparedOpsClassDriverSource,
   instrumentCppSourceForTracing,
   parseCppFunctionSignatures,
+  cppOperationMacroRefusal,
 };`,
   context,
   { filename: 'cpp-worker.js' }
@@ -106,6 +107,7 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
     options?: Record<string, unknown>
   ) => string;
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
+  cppOperationMacroRefusal: (source: string, className: string, executionStyle: string, start: number) => unknown;
   parseCppFunctionSignatures: (source: string) => Array<{ name: string; line: number }>;
 };
 
@@ -875,6 +877,72 @@ assertCondition(
   unusableDriver.includes("static_assert(std::is_default_constructible_v<__tc_self>, \"TraceCode cannot build C++ type 'Bag' from test input"),
   'a type with neither a default nor a scalar constructor should be refused at compile time, naming the type'
 );
+
+// Operation names defined with #define (owner ruling A', 2026-11-24). An
+// ops-class program whose #define defines or redefines one of its operation
+// names (a public method, the reserved `delete`, or its alias deleteKey) is
+// refused before compilation on every handler, like C++ exceptions. Unrelated
+// macros (types, constants, function-like helpers, include guards), dead
+// macros and solution-method programs are not.
+const OPERATION_MACRO_MESSAGE = 'C++ operation names defined with #define are not supported yet. Write the method name directly.';
+const operationMacroSource = [
+  '#include <string>',
+  '#include <unordered_map>',
+  '#define delete removeKey',
+  'class KeyValueStore {',
+  '  std::unordered_map<std::string, int> store;',
+  'public:',
+  '  void set(std::string key, int value) { store[key] = value; }',
+  '  bool removeKey(std::string key) { return store.erase(key) > 0; }',
+  '  bool deleteKey(std::string key) { store.clear(); return false; }',
+  '};',
+].join('\n');
+const operationMacroCall = { functionName: 'KeyValueStore', executionStyle: 'ops-class' };
+const operationMacroOps = { operations: ['KeyValueStore', 'set', 'delete'], arguments: [[], ['a', 1], ['a']] };
+for (const [handler, payload] of [
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'code' }],
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'trace' }],
+  [rewriter.handleCompileRun, { inputs: operationMacroOps }],
+  [rewriter.handleExecuteWithTracing, { inputs: operationMacroOps }],
+  [rewriter.handleCompileRunBatch, { inputBatch: [operationMacroOps, operationMacroOps] }],
+  [rewriter.handleExecuteTraceBatch, { inputBatch: [operationMacroOps, operationMacroOps] }],
+] as const) {
+  const result = await handler({ ...payload, ...operationMacroCall, code: operationMacroSource });
+  const diagnostic = result.diagnostic as { code?: string; file?: string; line?: number; column?: number } | undefined;
+  assertCondition(result.success === false && result.diagnosticStage === 'compile' && result.errorLine === 3 &&
+    result.error === OPERATION_MACRO_MESSAGE &&
+    diagnostic?.code === 'cpp-macro-operation-unsupported' && diagnostic.file === 'solution.cpp' &&
+    diagnostic.line === 3 && diagnostic.column === 1 &&
+    (!('results' in result) || JSON.stringify(result.results) === '[]'),
+  `C++ operation macro refusal: ${JSON.stringify(result)}`);
+}
+const classOf = (body: string[]) => ['class Store {', 'public:', '  int get() { return 1; }', '  int getValue() { return 2; }', '  bool deleteKey(int k) { return k > 0; }', ...body, '};'];
+const opsCall = { functionName: 'Store', executionStyle: 'ops-class' };
+const refused = (code: string, call: { functionName: string; executionStyle: string } = opsCall) =>
+  (rewriter.cppOperationMacroRefusal(code, call.functionName, call.executionStyle, 0) as { diagnostic?: { line?: number } } | undefined);
+for (const [label, code, line] of [
+  ['an operation renamed to a method', ['#define getValue get', ...classOf([])].join('\n'), 1],
+  ['the reserved delete', ['#define delete getValue', ...classOf([])].join('\n'), 1],
+  ['the deleteKey alias', ['#define deleteKey getValue', ...classOf([])].join('\n'), 1],
+  ['a function-like macro named after an operation', ['#define get() getValue()', ...classOf([])].join('\n'), 1],
+  ['a macro after the class', [...classOf([]), '#define get getValue'].join('\n'), 7],
+  ['a redefinition after #undef', ['#define get getValue', '#undef get', '#define get getValue', ...classOf([])].join('\n'), 3],
+] as const) {
+  assertCondition(refused(code)?.diagnostic?.line === line, `C++ operation macro refusal should fire for ${label} at line ${line}`);
+}
+for (const [label, code, call] of [
+  ['a type macro', ['#define ll long long', ...classOf(['  ll total() { return 1; }'])].join('\n'), opsCall],
+  ['a constant', ['#define MAXN 100005', ...classOf(['  int cap() { return MAXN; }'])].join('\n'), opsCall],
+  ['a function-like helper', ['#define SQR(x) ((x) * (x))', ...classOf(['  int sq(int v) { return SQR(v); }'])].join('\n'), opsCall],
+  ['an include guard', ['#ifndef STORE_H', '#define STORE_H', ...classOf([]), '#endif'].join('\n'), opsCall],
+  ['a dead macro', ['#define get getValue', '#undef get', ...classOf([])].join('\n'), opsCall],
+  ['a macro in #if 0', ['#if 0', '#define get getValue', '#endif', ...classOf([])].join('\n'), opsCall],
+  ['a macro named like an operation inside a comment', ['// #define get getValue', '/* #define delete x */', ...classOf([])].join('\n'), opsCall],
+  ['a private method name', ['#define helper other', 'class Store {', '  int helper() { return 0; }', 'public:', '  int get() { return 1; }', '};'].join('\n'), opsCall],
+  ['a solution-method program', operationMacroSource.replace('class KeyValueStore {', 'class Solution {'), { functionName: 'set', executionStyle: 'solution-method' }],
+] as const) {
+  assertCondition(refused(code, call) === undefined, `C++ operation macro refusal should not fire for ${label}`);
+}
 
 console.log('PASS: C++ rewriter source snapshots');
 
