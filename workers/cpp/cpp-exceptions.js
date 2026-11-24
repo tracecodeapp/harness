@@ -1,10 +1,12 @@
 // C++ preprocessing tokens needed to distinguish exception keywords from
 // comments, literals, identifiers, and header names. No macro expansion.
-const CPP_IDENTIFIER = String.raw`[$_\p{ID_Start}][$\p{ID_Continue}]*`;
+const CPP_UNIVERSAL_CHARACTER = String.raw`\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|U[\da-fA-F]{8}|N\{[^{}\r\n]+\})`;
+const CPP_IDENTIFIER = String.raw`(?:[$_\p{ID_Start}]|${CPP_UNIVERSAL_CHARACTER})(?:[$\p{ID_Continue}]|${CPP_UNIVERSAL_CHARACTER})*`;
 const CPP_RAW_STRING_START = String.raw`(?:u8|[uUL])?R"([^ ()\\\t\v\f\r\n]{0,16})\(`;
 const CPP_QUOTED_LITERAL = String.raw`(?:u8|[uUL])?(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$|\r))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$|\r)))`;
 const CPP_NUMBER = String.raw`(?:[0-9]|\.[0-9])(?:[eEpP][+-]|'[$\p{ID_Continue}]|[.$\p{ID_Continue}])*`;
-const CPP_HEADER_NAME = String.raw`^[\t ]*(?:#|%:)[\t ]*(?:include|include_next|import)[\t ]*<[^>\r\n]*>`;
+const CPP_DIRECTIVE_SPACE = String.raw`(?:[\t\v\f ]|/\*(?:[^*\r\n]|\*(?!/))*\*/)*`;
+const CPP_HEADER_NAME = String.raw`^${CPP_DIRECTIVE_SPACE}(?:#|%:)${CPP_DIRECTIVE_SPACE}(?:include|include_next|import)${CPP_DIRECTIVE_SPACE}<[^>\r\n]*>`;
 
 /**
  * Look only at the learner's written tokens. A literal keyword in a macro

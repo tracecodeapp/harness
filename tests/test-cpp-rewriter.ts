@@ -118,7 +118,8 @@ for (const [source, token, line, column] of [
   ['// catch \\\nthrow\n  th\\\nrow 7;', 'throw', 3, 3],
   [mixedExceptionSource, 'throw', 4, 16],
 ] as const) {
-  const match = classifyCppExceptionUse(source).firstToken;
+  const classification = classifyCppExceptionUse(source);
+  const match = classification.usesExceptions ? classification.firstToken : undefined;
   assertCondition(
     match?.token === token && match.line === line && match.column === column,
     `C++ exception token/location for ${JSON.stringify(source)}: ${JSON.stringify(match)}`,
@@ -128,11 +129,13 @@ for (const source of [
   'int f() noexcept(noexcept(std::stoi("7"))) { return 0; }',
   'v.at(10); std::stoi(s); map.at(k); auto p = new int;',
   'auto thrower = retry + catchup + _throw + throw2 + πthrow + catchπ;',
+  String.raw`auto throw\u03c0 = \u03c0try + catch\U000003C0;`,
   '/* try */\n// throw \\\ncatch\nint n;',
   `"try \\"throw" L"catch" u"try" U"throw" u8"catch" '\\'' L'try' u't' U'c' u8't'`,
   'R"(throw)" u8R"x(try " // catch)x" LR"_(catch)_" uR"(throw)" UR"(try)"',
   'auto n = 1\'000; auto x = 1.2e-3; // throw',
   '#include <example/throw>',
+  '# /* comment */ include /* comment */ <example/throw>',
 ]) {
   assertCondition(!classifyCppExceptionUse(source).usesExceptions, `False C++ exception refusal: ${source}`);
 }
