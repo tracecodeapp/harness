@@ -48,9 +48,11 @@ export function csharpCandidateCacheReceipt(result, trustedArtifactKey) {
   return { ...receipt, ...(replenishment.length > 0 && { replenishment }) };
 }
 
-export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey) {
+export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey,
+  replenishmentOptions) {
   const journal = phases(result);
-  const replenishment = csharpReplenishmentOutcome(journal, trustedArtifactKey);
+  const replenishment = csharpReplenishmentOutcome(
+    journal, trustedArtifactKey, replenishmentOptions);
   if (replenishment.error) return replenishment.error;
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'prepare-program');

@@ -262,3 +262,30 @@ test('rejects a learner command sent to the trusted replenishment worker', () =>
   assert.match(csharpCandidateOutcome(result, 'run', 10, 'selected', 'trusted-warmup'),
     /trusted standby|assembly, reset/);
 });
+
+test('pending trusted prime is scoped to an explicit Submit-after-Run allowance', () => {
+  const result = addTrustedReplenishment(runResult(2, 3, 10));
+  result.csharp.phases = result.csharp.phases.filter(({ role }) => role !== 'observer');
+  const prime = result.csharp.phases.find(({ artifactKey }) => artifactKey === 'trusted-warmup');
+  delete prime.received;
+  delete prime.timings;
+
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10, undefined, 'trusted-warmup'),
+    'C# trusted standby replenishment witness differs');
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10, undefined, 'trusted-warmup', {
+    allowPendingTrustedPrime: true,
+  }), undefined);
+
+  result.csharp.phases.push({
+    worker: prime.worker,
+    workerKind: 'runner',
+    role: 'ordinary',
+    type: 'execute-prepared-code',
+    tier: 'algorithm-fast',
+    artifactKey: 'ordinary-2',
+    received: 4,
+  });
+  assert.match(csharpCandidateOutcome(result, 'submit', 10, undefined, 'trusted-warmup', {
+    allowPendingTrustedPrime: true,
+  }), /trusted standby|assembly, reset/);
+});

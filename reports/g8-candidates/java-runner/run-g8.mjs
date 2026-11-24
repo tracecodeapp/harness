@@ -377,14 +377,16 @@ async function openPage(context, version, url, group) {
 
 function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
   priorResult, context = {}) {
+  const replenishmentOptions = language === 'csharp' ? {
+    ...(context.allowCsharpTrustedPromotion && { caseCount }),
+    ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
+  } : undefined;
+  const selectedReplenishmentOptions = replenishmentOptions &&
+    Object.keys(replenishmentOptions).length > 0 ? replenishmentOptions : undefined;
   if (fixedWarmWitness && repeatPenaltyLanguages.includes(language)) {
     if (language === 'csharp') {
-      const replenishmentOptions = {
-        ...(context.allowCsharpTrustedPromotion && { caseCount }),
-        ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
-      };
-      return csharpProductionControlOutcome(result, trustedArtifactKey,
-        Object.keys(replenishmentOptions).length > 0 ? replenishmentOptions : undefined);
+      return csharpProductionControlOutcome(
+        result, trustedArtifactKey, selectedReplenishmentOptions);
     }
     return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount,
       priorResult === undefined ? undefined :
@@ -392,14 +394,16 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
   }
   if (isLiveWitnessControl(version, language)) {
     if (language === 'java') return javaProductionControlOutcome(result, role, caseCount);
-    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
+    if (language === 'csharp') return csharpProductionControlOutcome(
+      result, trustedArtifactKey, selectedReplenishmentOptions);
     if (language === 'python') return pythonProductionControlOutcome(
       result.python?.phases ?? [], role, caseCount);
     return;
   }
   if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
   if (testedLanguage === 'csharp') {
-    return csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey);
+    return csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey,
+      selectedReplenishmentOptions);
   }
   return pythonCandidateOutcome(result, role, caseCount,
     role === 'run' || version === 'candidate-main');
