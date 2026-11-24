@@ -60,10 +60,27 @@ function waitForSignal<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 
 interface ObservationAttempt {
   readonly controller: AbortController;
+  /**
+   * Ends this attempt as `observer-timeout` once its case's ordinary run has
+   * been stopped by the wall clock and the observer has had the same budget.
+   * Separate from `controller`, whose abort discards the attempt instead.
+   */
+  readonly expiry: AbortController;
   readonly token: ReturnType<VerdictReceiptStore['beginObservation']>;
   done: Promise<void>;
   waiters: number;
   settled: boolean;
+  /** `performance.now()` at `observer-start`. */
+  startedAt?: number;
+  /** Observer budget set by an ordinary client-timeout, in ms from `startedAt`. */
+  expiresAfterMs?: number;
+  expiryTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** The ordinary role's own wall clock stopped this row. */
+function stoppedByOrdinaryClock(row: JudgeEvaluationResult['cases'][number]): boolean {
+  return row.status === 'timed-out' && row.failure.origin === 'limit' &&
+    row.failure.reason === 'client-timeout';
 }
 
 /** Owns one prepare journal and the observation lifetime for a committed evaluation. */
@@ -75,6 +92,13 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly inputs: ReadonlyMap<string, Record<string, unknown>>;
   private readonly receipt: VerdictReceiptStore;
   private readonly binding: Omit<Binding, 'caseId'>;
+  /**
+   * The per-case wall clock the ordinary run had. An observer of a case that
+   * clock stopped gets the same budget from its own start, then expires.
+   */
+  private readonly ordinaryClockMs: number;
+  /** Committed cases the ordinary wall clock stopped. */
+  private readonly clockStopped = new Set<string>();
   private program?: JudgeObservationProgram;
   private artifact?: Promise<ObservationPreparation>;
   private lease?: JudgeObservationLease;
@@ -90,6 +114,9 @@ export class JudgeObservationSchedule<Result, Expected> {
   ) {
     this.binding = { evaluationId, workspaceDigest: bundle.workspaceDigest, generation: 1 };
     this.inputs = new Map(bundle.plan.cases.map(({ id, input }) => [id, input]));
+    // A certified producer can never attach a drawing to a row that did not
+    // complete (`#certify`), so waiting for its observer gains nothing.
+    this.ordinaryClockMs = registration.capabilities.certification ? 0 : bundle.plan.run.timeoutMs ?? 0;
     this.receipt = new VerdictReceiptStore(this.binding, bundle, registration.mark || testBridge
       ? ({ event, binding }) => {
           if (event === 'attachment-bind' || event === 'ordinary-write-attempt') {
@@ -125,9 +152,41 @@ export class JudgeObservationSchedule<Result, Expected> {
     this.mark('ordinary-commit');
     if (evaluation.status === 'compile-failed') {
       this.receipt.seal({ status: 'compile-failed', compile: evaluation.compile });
-    } else {
-      this.receipt.seal({ status: 'completed', compile: evaluation.compile });
+      return;
     }
+    this.receipt.seal({ status: 'completed', compile: evaluation.compile });
+    // The verdict is now fixed. A selected case the ordinary clock stopped
+    // keeps whatever its observer already delivered (sealing bound it). A
+    // pending observer gets the ordinary budget from its own start and then
+    // settles as `observer-timeout`, so Run is released at the ordinary
+    // deadline rather than the observer backstop.
+    // A later click-to-draw on such a case gets the same budget (`attempt`).
+    for (const row of evaluation.cases) {
+      if (!stoppedByOrdinaryClock(row)) continue;
+      this.clockStopped.add(row.caseId);
+      const attempt = this.attempts.get(row.caseId);
+      if (attempt && !attempt.settled) this.limitObservation(row.caseId, attempt, this.ordinaryClockMs);
+    }
+  }
+
+  /** Arm or fire the ordinary-budget expiry of a pending observation attempt. */
+  private limitObservation(caseId: string, attempt: ObservationAttempt, budgetMs: number): void {
+    attempt.expiresAfterMs = budgetMs;
+    // Not started (preparing, or queued behind another selected case): the
+    // budget runs from observer-start, unless there is no budget to wait for.
+    if (attempt.startedAt === undefined && budgetMs > 0) return;
+    const remaining = attempt.startedAt === undefined
+      ? 0
+      : attempt.startedAt + budgetMs - globalThis.performance.now();
+    const expire = () => {
+      attempt.expiryTimer = undefined;
+      if (attempt.settled || attempt.expiry.signal.aborted || attempt.controller.signal.aborted) return;
+      this.mark('observer-expire', caseId, attempt.token.token);
+      attempt.expiry.abort(new DOMException('Observation reached the ordinary time limit.', 'TimeoutError'));
+    };
+    clearTimeout(attempt.expiryTimer);
+    if (remaining <= 0) expire();
+    else attempt.expiryTimer = setTimeout(expire, remaining);
   }
 
   async initial(signal: AbortSignal) {
@@ -223,6 +282,7 @@ export class JudgeObservationSchedule<Result, Expected> {
     if (existing) return existing;
     const attempt: ObservationAttempt = {
       controller: new AbortController(),
+      expiry: new AbortController(),
       token: this.receipt.beginObservation(caseId),
       done: Promise.resolve(),
       waiters: 0,
@@ -231,6 +291,8 @@ export class JudgeObservationSchedule<Result, Expected> {
     this.attempts.set(caseId, attempt);
     attempt.done = this.draw(caseId, attempt).then((drawing) => {
       attempt.settled = true;
+      clearTimeout(attempt.expiryTimer);
+      attempt.expiryTimer = undefined;
       if (this.attempts.get(caseId) === attempt && !attempt.controller.signal.aborted) {
         this.receipt.publishDrawing(
           attempt.token,
@@ -240,6 +302,7 @@ export class JudgeObservationSchedule<Result, Expected> {
         );
       }
     });
+    if (this.clockStopped.has(caseId)) this.limitObservation(caseId, attempt, this.ordinaryClockMs);
     return attempt;
   }
 
@@ -284,7 +347,10 @@ export class JudgeObservationSchedule<Result, Expected> {
   }
 
   private async draw(caseId: string, attempt: ObservationAttempt): Promise<RuntimeObservationReply> {
-    const signal = attempt.controller.signal;
+    // Expiry ends the attempt with a terminal refusal; the controller's abort
+    // discards it. Either stops the observer.
+    const signal = AbortSignal.any([attempt.controller.signal, attempt.expiry.signal]);
+    const expired = () => attempt.expiry.signal.aborted && !attempt.controller.signal.aborted;
     try {
       return await this.gate.run(signal, async () => {
         const lease = await waitForSignal(this.prepareObserver(), signal);
@@ -298,6 +364,10 @@ export class JudgeObservationSchedule<Result, Expected> {
         );
         const attemptToken = attempt.token.token;
         this.mark('observer-start', caseId, attemptToken);
+        attempt.startedAt = globalThis.performance.now();
+        if (attempt.expiresAfterMs !== undefined) {
+          this.limitObservation(caseId, attempt, attempt.expiresAfterMs);
+        }
         try {
           const context = this.testBridge?.faultAt && this.faultContext(caseId, attemptToken);
           const fault = context && this.testBridge?.faultAt?.({ ...context, point: 'observe' });
@@ -334,7 +404,7 @@ export class JudgeObservationSchedule<Result, Expected> {
           }
           return drawing;
         } catch (cause) {
-          if (deadline.signal.aborted) return observationRefused('observer-timeout');
+          if (deadline.signal.aborted || expired()) return observationRefused('observer-timeout');
           return observationRefused(isTraceUnavailableError(cause) ? 'unsupported-program' : 'observer-runtime');
         } finally {
           clearTimeout(timer);
@@ -342,7 +412,8 @@ export class JudgeObservationSchedule<Result, Expected> {
         }
       });
     } catch {
-      return observationRefused('observer-runtime');
+      // Expired while preparing or queued: the observer never got to run.
+      return observationRefused(expired() ? 'observer-timeout' : 'observer-runtime');
     }
   }
 }

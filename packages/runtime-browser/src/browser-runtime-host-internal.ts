@@ -50,6 +50,7 @@ export type JudgeSchedulePhase =
   | 'ordinary-write-attempt'
   | 'ordinary-commit'
   | 'observer-start'
+  | 'observer-expire'
   | 'observer-end'
   | 'attachment-bind'
   | 'observation-cache-hit'
