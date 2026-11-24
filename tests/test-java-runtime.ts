@@ -7091,22 +7091,23 @@ class Solution {
     console.log('PASS: java worker respects ops-class constructor signatures');
 
     const resultParameterCode = `class Solution {
-  boolean canTransform(String start, String result) {
-    return start.length() == result.length();
+  boolean canTransform(String __tracecode_inputs, String result) {
+    return __tracecode_inputs.length() == result.length();
   }
 }`;
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: resultParameterCode,
       functionName: 'canTransform',
-      inputs: { start: 'RX', result: 'XR' },
+      inputs: { __tracecode_inputs: 'RX', result: 'XR' },
       executionStyle: 'function',
     });
     const resultParameterRewrite = harness.rewriteCalls.at(-1);
     assertCondition(
-        resultParameterRewrite?.exportsSource.includes('String result = ((String) readJsonInput(') &&
-        resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(start, result);') &&
+        resultParameterRewrite?.exportsSource.includes('var __tracecode_inputs1 = new tracecode.browser.PreparedInputs();') &&
+        resultParameterRewrite.exportsSource.includes('String result = ((String) __tracecode_inputs1.readJsonInput(') &&
+        resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(__tracecode_inputs, result);') &&
         resultParameterRewrite.exportsSource.includes('return TraceHooks.serializeOutputResult(__tracecode_result);'),
-      'Java worker should avoid colliding with user parameter names when storing return values'
+      'Java worker should avoid collisions between generated locals and user parameter names'
     );
     console.log('PASS: java worker avoids wrapper local name collisions');
 
