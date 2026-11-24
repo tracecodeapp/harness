@@ -290,7 +290,7 @@ async function openPage(context, version, url, group) {
 
 function candidateOutcome(result, role, caseCount, caseId, version, language) {
   if (liveControl && version === '0.17.1') {
-    if (language === 'java') return javaProductionControlOutcome(result, role, caseCount, caseId);
+    if (language === 'java') return javaProductionControlOutcome(result, role, caseCount);
     if (language === 'csharp') return csharpProductionControlOutcome(result);
     if (language === 'python') return pythonProductionControlOutcome(
       result.python?.phases ?? [], role, caseCount);
