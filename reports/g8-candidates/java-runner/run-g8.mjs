@@ -827,9 +827,15 @@ try {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
                       (group.csharpWarmMode === csharpWarmModes.repeatRun || group.state === 'cold'),
                     csharpPromotedExecutionType: group.language === 'csharp' &&
-                      group.state === 'cold' ? 'execute-prepared-code' : undefined,
+                      group.state === 'cold'
+                      ? group.journey === 'submit'
+                        ? 'execute-prepared-code'
+                        : 'execute-prepared-trace'
+                      : undefined,
                     csharpPromotedPrepareRole: group.language === 'csharp' &&
-                      group.state === 'cold' ? 'ordinary' : undefined,
+                      group.state === 'cold'
+                      ? group.journey === 'submit' ? 'ordinary' : 'observer'
+                      : undefined,
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
                       group.csharpWarmMode === csharpWarmModes.submitAfterRun,
                   });
