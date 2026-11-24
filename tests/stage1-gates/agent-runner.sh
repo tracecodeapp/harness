@@ -19,6 +19,7 @@ case "$subject" in
       echo "Unrecognized gate subject $subject (a step candidate needs a 40-hex SHA plus TRACECODE_STAGE1_SUBJECT_TARBALL and TRACECODE_STAGE1_SUBJECT_SHA256)" >&2; exit 2
     fi ;;
 esac
+companion_repo=${TRACECODE_STAGE1_COMPANION_REPO:-/root/ci/harness.git}
 job_root=$PWD
 run_id=${1:-baseline}
 filter=${2:-}
@@ -41,7 +42,7 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   if [ "$subject" = "$candidate" ]; then
     printf '%s  %s\n' "$canonical_sha" "$canonical_tarball" | sha256sum --check
     cp "$canonical_tarball" "$job_root/gate-package/tracecode-harness-0.20.4.tgz"
-    git clone --quiet --no-checkout /root/ci/harness.git "$job_root/gate-candidate"
+    git clone --quiet --no-checkout "$companion_repo" "$job_root/gate-candidate"
     git -C "$job_root/gate-candidate" checkout --quiet --detach "$subject"
     git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/companion-source.sha"
     corepack pnpm --dir "$job_root/gate-candidate" install --frozen-lockfile --prefer-offline \
@@ -49,7 +50,7 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   elif [ "$carried" = 1 ]; then
     printf '%s  %s\n' "$carried_sha" "$carried_tarball" | sha256sum --check
     cp "$carried_tarball" "$job_root/gate-package/tracecode-harness-candidate.tgz"
-    git clone --quiet --no-checkout /root/ci/harness.git "$job_root/gate-candidate"
+    git clone --quiet --no-checkout "$companion_repo" "$job_root/gate-candidate"
     git -C "$job_root/gate-candidate" checkout --quiet --detach "$subject"
     git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/companion-source.sha"
     [ "$(cat "$evidence/companion-source.sha")" = "$subject" ]
@@ -58,7 +59,7 @@ if [ ! -f "$job_root/gate-package.ready" ]; then
   elif [ "$subject" = published-0.17.1 ]; then
     npm pack @tracecode/harness@0.17.1 --ignore-scripts --pack-destination "$job_root/gate-package" >"$evidence/build.log" 2>&1 || { tail -60 "$evidence/build.log"; exit 1; }
   else
-    git clone --quiet --no-checkout /root/ci/harness.git "$job_root/gate-candidate"
+    git clone --quiet --no-checkout "$companion_repo" "$job_root/gate-candidate"
     git -C "$job_root/gate-candidate" checkout --quiet --detach "$subject"
     git -C "$job_root/gate-candidate" rev-parse HEAD >"$evidence/packed-source.sha"
     [ "$(cat "$evidence/packed-source.sha")" = "$subject" ]

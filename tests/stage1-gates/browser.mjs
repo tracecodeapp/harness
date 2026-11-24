@@ -254,6 +254,10 @@ export async function runFixture(fixture, requests, nonce, mutation) {
       providers: [fixture.language],
       assetBaseUrl: location.origin + '/workers',
       safeExecution: { workerLifecycle: 'warm-and-retire' },
+      ...(fixture.naturalShape ? { cpp: {
+        executionTimeoutMs: fixture.limits.wallClockMs,
+        tracingTimeoutMs: fixture.limits.wallClockMs,
+      } } : {}),
     });
   }
   try {
@@ -278,7 +282,8 @@ export async function runFixture(fixture, requests, nonce, mutation) {
             });
           }
         } else {
-          host = request.mode === 'submit' ? (submitHost ??= freshHost()) : freshHost();
+          const reuseHost = request.mode === 'submit' && !fixture.naturalShape;
+          host = reuseHost ? (submitHost ??= freshHost()) : freshHost();
           bundle = await createAlgorithmJudgeBundle({
             id: `${fixture.gate}-${fixture.language}-${fixture.name}-${request.id}`,
             language: fixture.language,
@@ -331,7 +336,7 @@ export async function runFixture(fixture, requests, nonce, mutation) {
           wallMs: performance.now() - start,
         }));
       } finally {
-        if ((request.mode === 'initial' || request.mode === 'execute') && host) {
+        if (host && (request.mode === 'initial' || request.mode === 'execute' || fixture.naturalShape)) {
           const handle = handles.get(request.id);
           if (request.id !== 'run-first' || !handle) {
             try {

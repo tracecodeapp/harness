@@ -44,3 +44,28 @@ The `receipt-publication` and `cache-hit` IDs use the private Judge test bridge.
 The C++ `print-then-throw` fixture checks the 0.21 exception refusal on step 7's final pin and on subsequent candidates registered with `TRACECODE_STAGE1_RECEIPT_LANGUAGES=cpp`. It requires the same typed compile failure across Run, Submit, mux and both direct modes. Frozen, 0.17.1 and the two earlier carried C++ step 7 pins retain the runtime oracle.
 
 Run the local oracle controls with `node --test tests/stage1-gates/ga-receipt-controls.test.mjs`.
+
+For the C-CPP pin `46943f54`, `cpp-delete-macro` checks the owner-approved A′
+compile refusal on Run, Submit, mux and both C++ direct routes. The gate
+checks the typed diagnostic at the `#define`, the empty Judge case array and
+the absence of a handle or case execution. The direct batch check requires
+the full returned diagnostic alongside the empty result array. Step 7 and
+the frozen candidate retain their historical macro oracle.
+
+The 18 learner-shaped programs in `tests/fixtures/cpp-natural-shapes.json`
+come from C-CPP commit `53f9536d`. The C-CPP and final step-7 packages each have
+90 new G6 IDs covering the three Run selections, Submit and traced Submit.
+C-CPP must pass every case. On step 7, each path must match the fixture's
+recorded `on571139f0` outcome.
+
+Use one ordinary AgentRunner slot for the two complete C++ matrices. Prepare
+a private local Git mirror on the host containing the gate commit and both
+pinned companion commits. Pass the externally staged app fixture manifest and
+the pinned mux directory. The script checks the adjacent package hashes and
+runs the pins serially, with independent installs and evidence. It writes each
+gate exit code even when the gate reports known failures.
+
+```bash
+bash tests/stage1-gates/run-c-cpp-pins.sh /local/private-source GATE_COMMIT \
+  /external/app-stage-manifest.json /external/mux /job/new-ga-cpp-output
+```

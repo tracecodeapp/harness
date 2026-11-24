@@ -12,7 +12,8 @@ import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObserv
 import { runGraphControls } from './graph.mjs';
 import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 import { installAppTraceArchive } from './app-trace-archive.mjs';
-import { cppExceptionRefusalApplies } from './cpp-refusal.mjs';
+import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNaturalShapes } from './cpp-natural-shapes.mjs';
+import { cppRefusalFor } from './cpp-refusal.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 import { retainedControlTargets } from './worker-evidence.mjs';
@@ -152,7 +153,8 @@ try {
       record('browser.jsonl', { route: 'app-fixtures', setupError: error.message });
     }
   }
-  const selectedFixtures = [...manifest.fixtures, ...appFixtures].filter(matches);
+  const subject = process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate;
+  const selectedFixtures = [...manifest.fixtures, ...appFixtures, ...cppNaturalShapes(subject)].filter(matches);
   const muxPath = process.env.TRACECODE_STAGE1_MUX_INPUT;
   let mux;
   if (muxPath) {
@@ -169,13 +171,24 @@ try {
     assertions.push(item);
     record('assertions.jsonl', item);
   };
-  const subject = process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate;
   const receiptLanguages = new Set((process.env.TRACECODE_STAGE1_RECEIPT_LANGUAGES ?? '').split(',').filter(Boolean));
   function judgePath(fixture, requests, observed, options = {}) {
+    if (fixture.naturalShape) {
+      const byId = new Map(requests.map((request) => [request.id, request]));
+      for (const request of requests) {
+        const id = cppNaturalShapeId(fixture, request);
+        assert(!inventory.has(id), `Duplicate natural shape assertion ID ${id}`);
+        inventory.add(id);
+      }
+      for (const observation of observed) {
+        checkCppNaturalShape(fixture, byId.get(observation.request), observation, recordAssertion);
+      }
+      return;
+    }
     const publicRoute = !options.route || options.route === 'mux';
-    const registered = fixture.cppExceptionRefusal || (subject !== manifest.candidate &&
+    const registered = Boolean(fixture.cppRefusal) || (subject !== manifest.candidate &&
       (observed.some(hasReceiptEvidence) || (publicRoute && receiptLanguages.has(fixture.language))));
-    const compileOnly = registered && (fixture.syntax || fixture.cppExceptionRefusal);
+    const compileOnly = registered && (fixture.syntax || fixture.cppRefusal);
     const applicable = requests.filter(({ mode }) => !compileOnly || mode !== 'continuation');
     if (registered && !options.control) {
       if (compileOnly) {
@@ -187,7 +200,7 @@ try {
           if (caseId !== '@request' || continuations.has(requestId)) inventory.delete(id);
         }
         if (!options.route) inventory.add(compileDifferentialId(fixture));
-        if (fixture.cppExceptionRefusal) {
+        if (fixture.cppRefusal) {
           for (const id of continuations) inventory.add(`${path}${id}/@request/skipped`);
         }
       }
@@ -198,7 +211,7 @@ try {
         }
       }
     }
-    const byId = new Map((fixture.cppExceptionRefusal ? requests : applicable).map((request) => [request.id, request]));
+    const byId = new Map((fixture.cppRefusal ? requests : applicable).map((request) => [request.id, request]));
     for (const observation of observed) {
       const request = byId.get(observation.request);
       if (request) checkObservation(fixture, request, observation, options.record ?? recordAssertion, registered);
@@ -253,13 +266,17 @@ try {
       console.log(`${key} ${options.control ?? 'baseline'} ${Math.round(performance.now() - started)}ms`);
     }
     const registered = judgePath(fixture, requests, observed, options);
-    if (!options.control && !options.route && !fixture.cppExceptionRefusal && !fixture.untracedOnly &&
+    if (!options.control && !options.route && !fixture.cppRefusal && !fixture.untracedOnly &&
         manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
       checkDifferential(fixture, observed, recordAssertion, registered);
     }
     return registered;
   }
   for (const fixture of selectedFixtures) {
+    if (fixture.naturalShape) {
+      await exercise(fixture, cppNaturalShapeRequests(fixture));
+      continue;
+    }
     if (fixture.name === 'ses-constructor-key') {
       for (const row of fixture.cases) {
         const actual = runInNewContext(`${fixture.code}\nnew Solution().detectDrift(snapshot)`, row.input);
@@ -267,12 +284,12 @@ try {
         record('controls.jsonl', { fixture: fixture.name, language: fixture.language, case: row.id, actual, route: 'ordinary-node' });
       }
     }
-    const cppExceptionRefusal = cppExceptionRefusalApplies(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'));
+    const cppRefusal = cppRefusalFor(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'));
     const csharpAcknowledgements = fixture.language === 'csharp' && subject !== manifest.candidate &&
       subject !== '440dbd828870901be49cf0caefb0ade9bd88c034' &&
       (subject === '09378c5d0306c49b435de85c56e001444b7a4820' || receiptLanguages.has('csharp'));
-    const stimulus = { traceOptions: manifest.traceOptions, ...fixture, cppExceptionRefusal, csharpAcknowledgements };
-    if (cppExceptionRefusal) {
+    const stimulus = { traceOptions: manifest.traceOptions, ...fixture, cppRefusal, csharpAcknowledgements };
+    if (cppRefusal) {
       const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/`;
       for (const id of inventory) {
         if (!id.startsWith(prefix)) continue;
@@ -282,14 +299,14 @@ try {
       }
       for (const route of cppDirectRoutes(fixture)) inventory.add(`${prefix}${route}/code/@request/compile`);
     }
-    const consoleObservations = [];
-    const keepConsole = (observation, route = 'default') => {
-      if (fixture.consolePolicy) consoleObservations.push({ ...observation, route });
+    const crossPathObservations = [];
+    const keepCrossPath = (observation, route = 'default') => {
+      if (cppRefusal || fixture.consolePolicy) crossPathObservations.push({ ...observation, route });
     };
-    await exercise(stimulus, requestMatrix(fixture.cases.map(({ id }) => id), fixture), { onObservation: keepConsole });
+    await exercise(stimulus, requestMatrix(fixture.cases.map(({ id }) => id), fixture), { onObservation: keepCrossPath });
     if (candidateSource) {
       for (const { route, requests } of jsRouteRequests(fixture)) {
-        await exercise({ ...stimulus, algorithmExecution: route }, requests, { route, onObservation: (observation) => keepConsole(observation, route) });
+        await exercise({ ...stimulus, algorithmExecution: route }, requests, { route, onObservation: (observation) => keepCrossPath(observation, route) });
       }
       for (const route of cppDirectRoutes(fixture)) {
         const started = performance.now();
@@ -318,7 +335,7 @@ try {
         const started = performance.now();
         await exerciseMux(mux.JudgeBrowserSlot, browser, `http://127.0.0.1:${server.address().port}`, stimulus, (request, observation) => {
           record('observations.jsonl', { fixture: key, route: 'mux', request: request.id, ...observation });
-          keepConsole({ request: request.id, ...observation }, 'mux');
+          keepCrossPath({ request: request.id, ...observation }, 'mux');
           observed.push({ ...observation, request: request.id });
           runtime.requests++;
           runtime.requestMs[`${key}/mux/${request.id}`] = observation.wallMs;
@@ -329,10 +346,10 @@ try {
       }
       judgePath(stimulus, muxRequests(fixture), observed, { route: 'mux' });
     }
-    if (cppExceptionRefusal) {
-      checkDifferential(stimulus, consoleObservations, recordAssertion, true);
+    if (cppRefusal) {
+      checkDifferential(stimulus, crossPathObservations, recordAssertion, true);
     } else if (fixture.consolePolicy) {
-      checkConsoleAcrossPaths(fixture, consoleObservations, recordAssertion, (observation) => record('console-framing.jsonl', observation));
+      checkConsoleAcrossPaths(fixture, crossPathObservations, recordAssertion, (observation) => record('console-framing.jsonl', observation));
     }
   }
   const baseline = new Map(assertions.map((item) => [item.id, item.status]));

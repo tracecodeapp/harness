@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { checkCppDirect, checkDifferential, checkObservation } from './checks.mjs';
-import { cppExceptionRefusalApplies } from './cpp-refusal.mjs';
+import { cCppSubject, cppRefusalFor, cppStep7Subject } from './cpp-refusal.mjs';
 import { muxRequests, requestMatrix } from './requests.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url)));
-const fixture = { ...manifest.fixtures.find(({ language, name }) => language === 'cpp' && name === 'print-then-throw'),
-  cppExceptionRefusal: true };
+const exceptionFixture = manifest.fixtures.find(({ language, name }) => language === 'cpp' && name === 'print-then-throw');
+const fixture = { ...exceptionFixture, cppRefusal: cppRefusalFor(exceptionFixture, '9b30ad9bc203ad2ba2f159d96dfaef62940262c7',
+  manifest.candidate, false) };
 const message = 'C++ exceptions are not supported yet';
 const diagnostic = { code: 'cpp-exceptions-unsupported', path: 'solution.cpp', line: 10, column: 5,
   severity: 'error', message, source: 'cpp' };
@@ -38,11 +39,11 @@ function status(request, observed, hook) {
 }
 
 test('CPP refusal profile is fixed by the subject, independently of its reply', () => {
-  assert(cppExceptionRefusalApplies(fixture, '9b30ad9bc203ad2ba2f159d96dfaef62940262c7', frozen, false));
-  assert(cppExceptionRefusalApplies(fixture, 'subsequent', frozen, true));
+  assert(cppRefusalFor(fixture, '9b30ad9bc203ad2ba2f159d96dfaef62940262c7', frozen, false));
+  assert(cppRefusalFor(fixture, 'subsequent', frozen, true));
   for (const historical of [frozen, 'published-0.17.1',
     '63f1ccd1b884594eac79149e4e8d60874628e3dc', 'a637ce6c297e5fc44b8799260dbb3acf1ed899da']) {
-    assert(!cppExceptionRefusalApplies(fixture, historical, frozen, true));
+    assert(!cppRefusalFor(fixture, historical, frozen, true));
   }
 });
 
@@ -104,4 +105,49 @@ test('CPP refusal differential checks every public and mux request', () => {
   assert.equal(results[1].status, 'fail');
   checkDifferential(fixture, evidence.slice(0, -1), (row) => results.push(row), true);
   assert.equal(results.length, 2);
+});
+
+test('C-CPP alone expects the exact macro refusal on the define line', () => {
+  const macroFixture = manifest.fixtures.find(({ name }) => name === 'cpp-delete-macro');
+  const rule = cppRefusalFor(macroFixture, cCppSubject, frozen, true);
+  assert.match(macroFixture.code.split('\n')[rule.line - 1], /^#define delete\s/);
+  for (const historical of [frozen, 'published-0.17.1', cppStep7Subject]) {
+    assert.equal(cppRefusalFor(macroFixture, historical, frozen, true), undefined);
+  }
+  const expected = { ...macroFixture, cppRefusal: rule };
+  const compileFailure = structuredClone(observation);
+  const { message, code, line, column } = rule;
+  const expectedDiagnostic = { ...diagnostic, message, code, line, column };
+  Object.assign(compileFailure.reported.evaluation.compile.failure, { message, line });
+  compileFailure.reported.evaluation.compile.diagnostics = [expectedDiagnostic];
+  compileFailure.compileProjection = { ...projection, diagnostic: expectedDiagnostic, error: message, errorLine: line };
+  compileFailure.tracedCompileProjection = { ...observation.tracedCompileProjection, ...compileFailure.compileProjection };
+  const checks = (sample) => {
+    const statuses = {};
+    checkObservation(expected, runFirst, sample, ({ id, status }) => { statuses[id.split('/').at(-1)] = status; }, true);
+    return statuses;
+  };
+  assert.equal(checks(compileFailure).compile, 'pass');
+  assert.equal(checks(compileFailure)['compile-footprint'], 'pass');
+  for (const field of ['code', 'message', 'line', 'column', 'path']) {
+    const mutant = structuredClone(compileFailure);
+    mutant.reported.evaluation.compile.diagnostics[0][field] = 'other';
+    assert.equal(checks(mutant).compile, 'fail', field);
+  }
+  for (const projectionRoute of ['ordinary-single', 'generated-batch']) {
+    const { path, ...directDiagnostic } = expectedDiagnostic;
+    const reply = { ...compileFailure.compileProjection, diagnostic: { ...directDiagnostic, file: path } };
+    const directSample = projectionRoute === 'ordinary-single' ? { results: [reply, reply] }
+      : { results: [], batchResult: { ...reply, results: [] } };
+    function directCompile(observed) {
+      const rows = [];
+      checkCppDirect(expected, projectionRoute, observed, (row) => rows.push(row));
+      return rows.find(({ id }) => id.endsWith('/@request/compile'))?.status;
+    }
+    assert.equal(directCompile(directSample), 'pass', projectionRoute);
+    const mutant = structuredClone(directSample);
+    (mutant.batchResult ?? mutant.results[0]).diagnostic.code = 'cpp-exceptions-unsupported';
+    assert.equal(directCompile(mutant), 'fail', projectionRoute);
+    if (projectionRoute === 'generated-batch') assert.equal(directCompile({ results: [] }), undefined);
+  }
 });
