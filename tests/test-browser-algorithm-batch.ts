@@ -8,6 +8,7 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, firefox, webkit } from 'playwright';
 import { runCommand } from './example-app-smoke';
+import type { PythonInteractiveWorker } from './fixtures/browser-algorithm-batch-entry';
 
 type BatchLanguage =
   | 'python'
@@ -56,6 +57,7 @@ interface BatchLanguageResult {
     readonly backgroundTraceEventCounts: readonly number[];
     readonly maximumActiveWorkers: number;
     readonly workerUrls: readonly string[];
+    readonly pythonWorkers?: readonly PythonInteractiveWorker[];
   };
   readonly compatibilityIsolation?: ReceiptSummary;
   readonly compatibilityIsolationWorkerUrls?: readonly string[];
@@ -273,6 +275,45 @@ function assertBoundedWorkers(
   );
 }
 
+function assertPythonInteractiveWorkers(result: BatchLanguageResult): void {
+  const workers = result.interactive.pythonWorkers ?? [];
+  const roles = workers.map(({ url, createdDuringRun, commands }) => {
+    const executions = commands.filter(({ type }) => type.startsWith('execute-'));
+    const imageWorker = new URL(url, 'http://localhost').searchParams.get('tracecodePythonRole') === 'runtime-image';
+    if (imageWorker && commands.length === 1 && commands[0]?.type === 'build-runtime-image') {
+      return { role: 'runtime-image', createdDuringRun, executions };
+    }
+    if (executions.length === 1 && executions[0]?.type === 'execute-prepared-program-batch' &&
+        executions[0].mode === 'code' && executions[0].batchSize === algorithmCaseCount) {
+      return { role: 'ordinary', createdDuringRun, executions };
+    }
+    if (executions.length === algorithmCaseCount && executions.every(({ type, mode, observationOnly }) =>
+      type === 'execute-prepared-program' && mode === 'trace' && observationOnly === true)) {
+      return { role: 'observer', createdDuringRun, executions };
+    }
+    if (!imageWorker && createdDuringRun && commands.every(({ type }) => type === 'init' || type === 'warmup')) {
+      return { role: 'replacement-standby', createdDuringRun, executions };
+    }
+    return { role: 'unexpected', createdDuringRun, executions };
+  });
+  const actual = roles.map(({ role }) => role).sort();
+  const expected = ['observer', 'ordinary'];
+  if (result.warmMode === 'cold') expected.push('runtime-image');
+  if (workerLifecycle === 'warm-and-retire') expected.push('replacement-standby');
+  assertCondition(
+    JSON.stringify(actual) === JSON.stringify(expected.sort()),
+    `Python interactive Run must keep one ordinary worker and one observer across all ${algorithmCaseCount} cases: ${JSON.stringify(workers)}`
+  );
+  console.log(JSON.stringify({
+    fixture: 'Python interactive worker roles',
+    algorithmCaseCount,
+    pythonCompatibilityCaseCount,
+    workers: roles.map(({ role, createdDuringRun, executions }) => ({
+      role, createdDuringRun, executionRequests: executions.length,
+    })),
+  }));
+}
+
 async function main(): Promise<void> {
   const tempRoot = await mkdtemp(
     join(tmpdir(), 'tracecode-browser-algorithm-batch-')
@@ -438,14 +479,18 @@ async function main(): Promise<void> {
           languageResult.traceMaximumActiveWorkers,
           languageResult.csharpBatchConcurrency
         );
-        assertBoundedWorkers(
-          language,
-          'interactive execution',
-          languageResult.interactive.workerUrls,
-          languageResult.warmMode === 'cold',
-          languageResult.interactive.maximumActiveWorkers,
-          languageResult.csharpBatchConcurrency
-        );
+        if (language === 'python') {
+          assertPythonInteractiveWorkers(languageResult);
+        } else {
+          assertBoundedWorkers(
+            language,
+            'interactive execution',
+            languageResult.interactive.workerUrls,
+            languageResult.warmMode === 'cold',
+            languageResult.interactive.maximumActiveWorkers,
+            languageResult.csharpBatchConcurrency
+          );
+        }
         console.log(
           JSON.stringify({
             language,
