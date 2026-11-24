@@ -4142,6 +4142,17 @@ async function drainTurns(turns = 20): Promise<void> {
   }
 }
 
+/**
+ * Under mocked timers, let queued work settle without moving the clock:
+ * Effect's scheduler can yield through a zero-delay setTimeout.
+ */
+async function pumpTurns(timers: { tick(ms: number): void }, turns = 20): Promise<void> {
+  for (let index = 0; index < turns; index += 1) {
+    timers.tick(0);
+    await drainTurns(2);
+  }
+}
+
 /** Under mocked timers, run zero-delay turns (case hand-offs) without moving the clock. */
 async function pumpUntil(
   timers: { tick(ms: number): void },
@@ -4205,7 +4216,7 @@ for (const shape of [
       // The ordinary budget, measured from the observer's own start, is the
       // only clock that moves. The 20 s backstop never gets a chance to fire.
       t.mock.timers.tick(RUN_LIMIT.wallClockMs);
-      await drainTurns();
+      await pumpTurns(t.mock.timers);
       assert.equal(resolved, true, 'Run must resolve at the ordinary deadline, not wait for the observer backstop');
       const initial = await pending;
       assert.deepEqual(f.ordinaryStarts, ['A', 'B']);
@@ -4293,7 +4304,7 @@ test('runaway-release: a loop prefix that arrives after ordinary commit but insi
       f.markers.some(({ phase }) => phase === 'ordinary-commit'));
     // The observer started late relative to ordinary: it still gets its budget.
     t.mock.timers.tick(RUN_LIMIT.wallClockMs - 100);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(f.observerCalls[0]?.signal?.aborted, false);
     prefix.resolve(truncatedPrefix(f.observerCalls[0]!));
     const [row] = (await pending).evaluation.cases;
@@ -4356,7 +4367,7 @@ test('runaway-release: an unselected runaway never shortens the selected healthy
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1 &&
       f.markers.some(({ phase }) => phase === 'ordinary-commit'));
     t.mock.timers.tick(RUN_LIMIT.wallClockMs * 4);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, false, 'the healthy selected drawing keeps its own clock');
     assert.equal(f.observerCalls[0]?.signal?.aborted, false);
     drawing.resolve(recordedDrawing(f.observerCalls[0]!));
@@ -4393,7 +4404,7 @@ test('runaway-release: after an expired observer, redraw, click draw, the next R
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1 &&
       f.markers.some(({ phase }) => phase === 'ordinary-commit'));
     t.mock.timers.tick(RUN_LIMIT.wallClockMs);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, true, 'Run must resolve at the ordinary deadline');
     const first = await pending;
     const expiredToken = f.observerCalls[0]!.attemptToken;
@@ -4405,7 +4416,7 @@ test('runaway-release: after an expired observer, redraw, click draw, the next R
 
     // The killed observer answers late with a drawing: fenced by its token.
     killed.resolve(recordedDrawing(f.observerCalls[0]!, 99));
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
 
     // Redraw of the timed-out case returns the settled refusal from cache.
     const marks = f.markers.length;
@@ -4492,7 +4503,7 @@ test('runaway-release: click draw on an unselected clock runaway gets the ordina
       .finally(() => { resolved = true; });
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 2);
     t.mock.timers.tick(RUN_LIMIT.wallClockMs);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, true, 'the click resolves at the ordinary budget, not the observer backstop');
     const clicked = (await click).evaluation.cases[0];
     assertOrdinaryClock(clicked, 'B');
@@ -4537,10 +4548,10 @@ for (const shape of [
       await pumpUntil(t.mock.timers, () => f.markers.some(({ phase }) => phase === 'ordinary-commit'));
       assert.equal(f.markers.some(({ phase }) => phase === 'observer-start'), false, 'observer still preparing at commit');
       t.mock.timers.tick(RUN_LIMIT.wallClockMs - 1);
-      await drainTurns();
+      await pumpTurns(t.mock.timers);
       assert.equal(resolved, false, 'the pre-start budget has not run out');
       t.mock.timers.tick(1);
-      await drainTurns();
+      await pumpTurns(t.mock.timers);
       assert.equal(resolved, true, 'Run must resolve at commit + budget, not wait for observer preparation');
       const [row] = (await pending).evaluation.cases;
       assertOrdinaryClock(row, 'A');
@@ -4552,7 +4563,7 @@ for (const shape of [
       ]);
       // Preparation finishing later neither observes nor rebinds the case.
       prepared.resolve();
-      await drainTurns();
+      await pumpTurns(t.mock.timers);
       assert.equal(f.observerCalls.length, 0);
     } finally {
       prepared.resolve();
@@ -4583,7 +4594,7 @@ test('runaway-release: an observer still preparing at commit that starts within 
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1);
     // Past commit + budget, but inside the observer's own budget.
     t.mock.timers.tick(RUN_LIMIT.wallClockMs - 100);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, false);
     assert.equal(f.observerCalls[0]?.signal?.aborted, false);
     prefix.resolve(truncatedPrefix(f.observerCalls[0]!));
@@ -4617,10 +4628,10 @@ test('runaway-release: an observer that starts late and stalls expires at its ow
     prepared.resolve();
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1);
     t.mock.timers.tick(RUN_LIMIT.wallClockMs - 1);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, false, 'inside the observer\'s own budget');
     t.mock.timers.tick(1);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, true, 'Run must resolve at observer-start + budget');
     const [row] = (await pending).evaluation.cases;
     assert.equal(row?.attachment?.status === 'refused' && row.attachment.reason, 'observer-timeout');
@@ -4647,7 +4658,7 @@ test('runaway-release: a pending observer of a row another limit stopped is neve
     await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1 &&
       f.markers.some(({ phase }) => phase === 'ordinary-commit'));
     t.mock.timers.tick(RUN_LIMIT.wallClockMs * 4);
-    await drainTurns();
+    await pumpTurns(t.mock.timers);
     assert.equal(resolved, false, 'a line limit is not the ordinary clock');
     drawing.resolve(truncatedPrefix(f.observerCalls[0]!));
     const [row] = (await pending).evaluation.cases;
