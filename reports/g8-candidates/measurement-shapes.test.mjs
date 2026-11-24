@@ -5,6 +5,7 @@ import {
   measurementShapeKey,
   selectShapeProbeSchedule,
 } from './measurement-shapes.mjs';
+import { capturedShapeKeys } from './shape-captures.mjs';
 
 const scopes = ['desktop', 'phone', 'spot'];
 const versions = ['0.17.1', 'candidate-main'];
@@ -63,4 +64,10 @@ test('probe selection runs exactly one attempt for each requested combination', 
   ]);
   assert.throws(() => selectShapeProbeSchedule('desktop', [group], [key]),
     /absent from this schedule/);
+});
+
+test('S(Python) inventory freezes 96 unique real-capture keys', () => {
+  assert.equal(capturedShapeKeys.length, 96);
+  assert.equal(new Set(capturedShapeKeys).size, 96);
+  assert.ok(capturedShapeKeys.every((key) => key.split('|').length === 10));
 });
