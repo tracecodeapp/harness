@@ -17,6 +17,7 @@ target="$stage/java-74dc029d"
 printf '%s  %s\n' "$expected" "$archive" | sha256sum --strict -c -
 
 if [[ ! -e "$target" ]]; then
+  mkdir -p "$target"
   node "$stage/stage.mjs" "$archive" "$expected" "$head" "$target/vcandidate"
   cp "$target"/vcandidate/tracecode-harness-*.tgz "$target/vcandidate/candidate.tgz"
 fi
