@@ -18,7 +18,9 @@ import {
 } from './aa-control.mjs';
 import { csharpCandidateCacheReceipt, csharpCandidateOutcome } from './csharp-candidate-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
+import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
+import { liveControlVersions, liveRoundOrder } from '../live-control.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -36,6 +38,7 @@ const candidateScope = process.env.SPEED_JAVA_SCOPE;
 const releaseVersion = process.env.SPEED_G8_RELEASE;
 const aaControl = process.env.SPEED_G8_AA === '1';
 const aaClosing = process.env.SPEED_G8_AA_CLOSING === '1';
+const liveControl = process.env.SPEED_G8_LIVE_CONTROL === '1';
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
 assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
@@ -44,6 +47,7 @@ assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requir
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 const staged = candidateScope ? await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
+assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
 async function jsonCandidate() {
   return JSON.parse(await readFile(join(out, releaseVersion ? 'vrelease' : 'vcandidate', 'candidate.json'), 'utf8'));
 }
@@ -66,8 +70,9 @@ const appRefs = {
   '0.17.1': '083bf3f4aec34a353dd6da749d691ca29ed601e8',
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
+const candidateVersions = ['candidate-main', 'candidate-deploy'];
 const versions = aaClosing ? aaClosingVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
-  ? ['candidate-main', 'candidate-deploy'] : Object.keys(appRefs);
+  ? liveControl ? liveControlVersions(candidateVersions) : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
@@ -269,7 +274,8 @@ async function openPage(context, version, url, group) {
   }, {
     language: group.language,
     stopSubmit: version === '0.20.1' || version === 'candidate-main',
-    candidate: version.startsWith('candidate-') && group.language === testedLanguage,
+    candidate: group.language === testedLanguage &&
+      (version.startsWith('candidate-') || liveControl && version === '0.17.1'),
   });
     return page;
   } catch (error) {
@@ -279,6 +285,11 @@ async function openPage(context, version, url, group) {
 }
 
 function candidateOutcome(result, role, caseCount, caseId, version) {
+  if (liveControl && version === '0.17.1') {
+    assert.equal(testedLanguage, 'java',
+      'Published live-control witnesses for C# and Python are not yet enabled');
+    return javaProductionControlOutcome(result, role, caseCount, caseId);
+  }
   if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
   if (testedLanguage === 'csharp') return csharpCandidateOutcome(result, role, caseCount, caseId);
   return pythonCandidateOutcome(result, role, caseCount,
@@ -374,7 +385,9 @@ function plan() {
   if (candidateScope === 'spot') {
     return groups.filter(({ problem, state, journey }) =>
       problem === 'binary-search' && state === 'warm' && journey === 'run')
-      .map((group) => ({ ...group, versions: [releaseVersion ? 'release-deploy' : 'candidate-main'], continuation: false }));
+      .map((group) => ({ ...group,
+        versions: liveControl ? versions : releaseVersion ? ['release-deploy'] : candidateVersions,
+        continuation: false }));
   }
   if (aaClosing) return aaClosingControlPlan(groups);
   if (aaControl) return aaControlPlan(groups);
@@ -430,6 +443,9 @@ const report = {
   ...(aaClosing && { aaClosing: {
     languages: aaLanguages, versions: aaClosingVersions, fixedOrderPerRound: true,
   } }),
+  ...(liveControl && { liveControl: {
+    control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
+  } }),
   ...(groupSelector !== undefined && {
     groupSelector,
     runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -469,7 +485,8 @@ try {
     const groupStarted = Date.now();
     try {
       for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
-        const roundVersions = aaClosing ? group.versions : shuffled(group.versions);
+        const roundVersions = aaClosing ? group.versions : liveControl
+          ? liveRoundOrder(group.versions, round) : shuffled(group.versions);
         for (const [position, version] of roundVersions.entries()) {
           const count = counts[version];
           if (count.kept >= target || count.invalid >= maxInvalid) continue;
@@ -510,7 +527,9 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if (group.language === testedLanguage && candidate && !sample.invalid && !sample.refusal) {
+              if (group.language === testedLanguage && candidate &&
+                  (version.startsWith('candidate-') || liveControl && version === '0.17.1') &&
+                  !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
                   role === 'run' ? fixture.cases[0].id : undefined, version);
@@ -524,7 +543,9 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if (group.language === testedLanguage && candidate && !sample.invalid && !sample.refusal) {
+                  if (group.language === testedLanguage && candidate &&
+                      (version.startsWith('candidate-') || liveControl && version === '0.17.1') &&
+                      !sample.invalid && !sample.refusal) {
                     sample.invalid = candidateOutcome(sample.second, 'click', 1, fixture.cases[1].id, version);
                   }
                 }
@@ -541,7 +562,7 @@ try {
             }
           }
 
-          if (group.language === testedLanguage && candidate) {
+          if (group.language === testedLanguage && candidate && version.startsWith('candidate-')) {
             sample.cache = {
               initial: candidateCacheReceipt(sample.initial),
               ...(sample.second && { second: candidateCacheReceipt(sample.second) }),

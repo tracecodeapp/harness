@@ -52,7 +52,7 @@ import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-ca
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
-const versions = [...Object.keys(appRefs), ...candidateVersions];
+const versions = ['0.17.1', ...candidateVersions];
 `);
 edit('assert.equal(manifest.version, version);', 'assert.equal(manifest.version, candidateInstalls[version]?.packageVersion ?? version);');
 edit("const tarball = 'tracecode-harness-' + version + '.tgz';", "const tarball = 'tracecode-harness-' + manifest.version + '.tgz';");
@@ -70,10 +70,11 @@ edit("const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 1
 edit("const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];", "const cheapFirst = ['python'];");
 edit("versions: ['0.20.1']", "versions: ['0.20.1', 'concurrent']");
 edit('        for (const [position, version] of shuffled(group.versions).entries()) {', `
-          for (const [position, version] of (windowName === 'phone'
-            ? (round % 2 === 1 ? group.versions : [...group.versions].reverse())
-            : shuffled(group.versions)).entries()) {
+          for (const [position, version] of (round % 2 === 1
+            ? group.versions : [...group.versions].reverse()).entries()) {
 `);
+edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-baseline.v1',
+  liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true },`);
 edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();
   assert.match(report.browser.version, /^145\\./u, 'Expected frozen Chromium major 145');

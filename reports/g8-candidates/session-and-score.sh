@@ -9,6 +9,9 @@ out="$stage/$language"
 
 (cd "$stage" && sha256sum --strict -c runner.sha256) || exit 2
 (cd "$baseline" && sha256sum --strict -c "$stage/baseline-results.sha256") || exit 2
+if [[ "${SPEED_G8_LIVE_CONTROL:-}" == 1 ]]; then
+  bash "$stage/stage-live-control.sh" "$language" || exit 2
+fi
 
 session_status=0
 /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 \
