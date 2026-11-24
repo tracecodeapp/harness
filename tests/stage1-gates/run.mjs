@@ -12,6 +12,7 @@ import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObserv
 import { runGraphControls } from './graph.mjs';
 import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 import { installAppTraceArchive } from './app-trace-archive.mjs';
+import { cppExceptionRefusalApplies } from './cpp-refusal.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 import { retainedControlTargets } from './worker-evidence.mjs';
@@ -172,9 +173,9 @@ try {
   const receiptLanguages = new Set((process.env.TRACECODE_STAGE1_RECEIPT_LANGUAGES ?? '').split(',').filter(Boolean));
   function judgePath(fixture, requests, observed, options = {}) {
     const publicRoute = !options.route || options.route === 'mux';
-    const registered = subject !== manifest.candidate &&
-      (observed.some(hasReceiptEvidence) || (publicRoute && receiptLanguages.has(fixture.language)));
-    const compileOnly = registered && fixture.syntax;
+    const registered = fixture.cppExceptionRefusal || (subject !== manifest.candidate &&
+      (observed.some(hasReceiptEvidence) || (publicRoute && receiptLanguages.has(fixture.language))));
+    const compileOnly = registered && (fixture.syntax || fixture.cppExceptionRefusal);
     const applicable = requests.filter(({ mode }) => !compileOnly || mode !== 'continuation');
     if (registered && !options.control) {
       if (compileOnly) {
@@ -186,6 +187,9 @@ try {
           if (caseId !== '@request' || continuations.has(requestId)) inventory.delete(id);
         }
         if (!options.route) inventory.add(compileDifferentialId(fixture));
+        if (fixture.cppExceptionRefusal) {
+          for (const id of continuations) inventory.add(`${path}${id}/@request/skipped`);
+        }
       }
       for (const request of applicable) {
         for (const id of receiptEvidenceIds(fixture, request)) {
@@ -194,7 +198,7 @@ try {
         }
       }
     }
-    const byId = new Map(applicable.map((request) => [request.id, request]));
+    const byId = new Map((fixture.cppExceptionRefusal ? requests : applicable).map((request) => [request.id, request]));
     for (const observation of observed) {
       const request = byId.get(observation.request);
       if (request) checkObservation(fixture, request, observation, options.record ?? recordAssertion, registered);
@@ -249,7 +253,8 @@ try {
       console.log(`${key} ${options.control ?? 'baseline'} ${Math.round(performance.now() - started)}ms`);
     }
     const registered = judgePath(fixture, requests, observed, options);
-    if (!options.control && !options.route && !fixture.untracedOnly && manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
+    if (!options.control && !options.route && !fixture.cppExceptionRefusal && !fixture.untracedOnly &&
+        manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
       checkDifferential(fixture, observed, recordAssertion, registered);
     }
     return registered;
@@ -262,7 +267,18 @@ try {
         record('controls.jsonl', { fixture: fixture.name, language: fixture.language, case: row.id, actual, route: 'ordinary-node' });
       }
     }
-    const stimulus = { traceOptions: manifest.traceOptions, ...fixture };
+    const cppExceptionRefusal = cppExceptionRefusalApplies(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'));
+    const stimulus = { traceOptions: manifest.traceOptions, ...fixture, cppExceptionRefusal };
+    if (cppExceptionRefusal) {
+      const prefix = `${fixture.gate}/${fixture.language}/${fixture.name}/`;
+      for (const id of inventory) {
+        if (!id.startsWith(prefix)) continue;
+        const [route, request, caseId] = id.slice(prefix.length).split('/');
+        if (route === 'all-routes' || request === 'path-differential' ||
+            (route !== 'default' && route !== 'mux' && caseId !== '@request')) inventory.delete(id);
+      }
+      for (const route of cppDirectRoutes(fixture)) inventory.add(`${prefix}${route}/code/@request/compile`);
+    }
     const consoleObservations = [];
     const keepConsole = (observation, route = 'default') => {
       if (fixture.consolePolicy) consoleObservations.push({ ...observation, route });
@@ -283,7 +299,7 @@ try {
             return observeCppDirect(fixture, batch);
           }, { fixture: stimulus, batch: route === 'generated-batch' });
           record('observations.jsonl', { fixture: key, route, ...observation });
-          checkCppDirect(fixture, route, observation, recordAssertion);
+          checkCppDirect(stimulus, route, observation, recordAssertion);
         } catch (error) {
           record('browser.jsonl', { fixture: key, route, setupError: error.message });
         } finally {
@@ -310,7 +326,9 @@ try {
       }
       judgePath(stimulus, muxRequests(fixture), observed, { route: 'mux' });
     }
-    if (fixture.consolePolicy) {
+    if (cppExceptionRefusal) {
+      checkDifferential(stimulus, consoleObservations, recordAssertion, true);
+    } else if (fixture.consolePolicy) {
       checkConsoleAcrossPaths(fixture, consoleObservations, recordAssertion, (observation) => record('console-framing.jsonl', observation));
     }
   }

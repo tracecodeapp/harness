@@ -37,10 +37,13 @@ export async function runCppDirect(fixture, batch) {
   };
   try {
     const inputBatch = fixture.cases.map(({ input }) => structuredClone(input));
-    if (batch) return (await client.executeCodeBatch({ ...source, inputBatch })).results;
+    if (batch) {
+      const batchResult = await client.executeCodeBatch({ ...source, inputBatch });
+      return { results: batchResult.results, ...(fixture.cppExceptionRefusal ? { batchResult } : {}) };
+    }
     const results = [];
     for (const inputs of inputBatch) results.push(await client.executeCode({ ...source, inputs }));
-    return results;
+    return { results };
   } finally {
     client.terminate();
     compiler.terminate();

@@ -347,6 +347,5 @@ export async function runFixture(fixture, requests, nonce, mutation) {
 export async function observeCppDirect(fixture, batch) {
   transcript = [];
   const { runCppDirect } = await import(/* @vite-ignore */ '/gate-routes.mjs');
-  const results = await runCppDirect(fixture, batch);
-  return { results, worker: transcript };
+  return { ...await runCppDirect(fixture, batch), worker: transcript };
 }

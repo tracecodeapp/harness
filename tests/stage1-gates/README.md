@@ -41,4 +41,6 @@ The gate detects a registered path from an attachment or a trusted scheduler eve
 
 The `receipt-publication` and `cache-hit` IDs use the private Judge test bridge. They remain missing when the installed candidate does not supply the journal. The transport and attachment equality checks still run. The graph oracle independently accepts a bijective renaming of graph IDs and the verdict checks flag any resulting product misgrade.
 
+The C++ `print-then-throw` fixture checks the 0.21 exception refusal on step 7's final pin and on subsequent candidates registered with `TRACECODE_STAGE1_RECEIPT_LANGUAGES=cpp`. It requires the same typed compile failure across Run, Submit, mux and both direct modes. Frozen, 0.17.1 and the two earlier carried C++ step 7 pins retain the runtime oracle.
+
 Run the local oracle controls with `node --test tests/stage1-gates/ga-receipt-controls.test.mjs`.

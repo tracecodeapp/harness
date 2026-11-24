@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { checkCppExceptionCompile, checkCppExceptionProjection, checkCppRefusalWorkerLog } from './cpp-refusal.mjs';
 import { assertGraph } from './graph.mjs';
 import {
   assertNoLegacyRefusal, checkCacheHit, checkCppStarts, checkPresentation, checkPublication, checkRedraw, checkRetainedRows, ordinaryRow,
@@ -41,10 +42,20 @@ export function checkObservation(fixture, request, observation, record, register
     }
   }
 
+  const cppRefusal = fixture.cppExceptionRefusal;
+  if (cppRefusal && request.mode === 'continuation') {
+    check('@request', 'skipped', () => {
+      assert(!defined(observation.reported), 'Compile refusal yielded a continuation receipt');
+      assert.equal(observation.skip, 'initial-compile-failed');
+      if (!Array.isArray(observation.worker)) return missingEvidence;
+      assert(!observation.worker.some(({ action }) => action === 'command'), 'Skipped continuation dispatched a worker command');
+    });
+    return;
+  }
   if (!defined(observation.reported)) return;
   const { reported, submitted } = observation;
   const { evaluation } = reported;
-  const compileOnly = registered && fixture.syntax;
+  const compileOnly = registered && (fixture.syntax || cppRefusal);
   const rows = request.cases.map((id) => fixture.cases.find((row) => row.id === id));
   check('@request', 'order', () => {
     assert.deepEqual(evaluation.cases.map((row) => row.caseId), compileOnly ? [] : request.cases);
@@ -59,6 +70,7 @@ export function checkObservation(fixture, request, observation, record, register
       assert.notEqual(evaluation.compile.termination.exitCode, 0);
       assert.equal(evaluation.compile.stdout, '');
       assert(evaluation.compile.diagnostics.some(({ severity, source }) => severity === 'error' && source === fixture.language));
+      if (cppRefusal) checkCppExceptionCompile(evaluation.compile);
       return;
     }
     assert.equal(evaluation.status, 'completed');
@@ -91,6 +103,7 @@ export function checkObservation(fixture, request, observation, record, register
         assert.equal(compileProjection.diagnosticStage, 'compile');
         assert.equal(compileProjection.error, evaluation.compile.failure.message);
         assert.deepEqual(compileProjection.consoleOutput, []);
+        if (cppRefusal) checkCppExceptionProjection(compileProjection, 'path');
         assert.deepEqual(tracedCompile, compileProjection);
         assert.equal(executionTimeMs, 0);
         assert.equal(trace.language, fixture.language);
@@ -168,6 +181,11 @@ export function checkObservation(fixture, request, observation, record, register
     }
   } else if (request.route !== 'mux') {
     check('@request', 'worker-ack', () => {
+      if (cppRefusal) {
+        if (!Array.isArray(observation.worker)) return missingEvidence;
+        checkCppRefusalWorkerLog(observation.worker);
+        return;
+      }
       if (registered && request.id === 'redraw-b') {
         checkRedraw(observation);
         return;
@@ -451,13 +469,17 @@ export function checkCppDirect(fixture, route, observation, record) {
   function check(caseId, assertion, compare) {
     const id = `${prefix}/${caseId}/${assertion}`;
     try {
-      compare();
+      if (compare() === missingEvidence) return;
       record({ id, status: 'pass' });
     } catch (error) {
       record({ id, status: 'fail', message: errorText(error) });
     }
   }
   check('@request', 'worker-ack', () => {
+    if (fixture.cppExceptionRefusal) {
+      if (!Array.isArray(observation.worker)) return missingEvidence;
+      checkCppRefusalWorkerLog(observation.worker, true);
+    }
     const type = route === 'generated-batch' ? 'compile-run-batch' : 'compile-run';
     const commands = observation.worker.filter((item) => item.type === type && item.action === 'command');
     assert.equal(commands.length, route === 'generated-batch' ? 1 : fixture.cases.length);
@@ -471,7 +493,26 @@ export function checkCppDirect(fixture, route, observation, record) {
     });
     checkCppStarts(observation.worker, admittedInputs);
   });
-  check('@request', 'cardinality', () => assert.equal(observation.results.length, fixture.cases.length));
+  const batch = route === 'generated-batch';
+  check('@request', 'cardinality', () => assert.equal(observation.results.length,
+    fixture.cppExceptionRefusal && batch ? 0 : fixture.cases.length));
+  if (fixture.cppExceptionRefusal) {
+    check('@request', 'compile', () => {
+      if (batch) {
+        const result = observation.batchResult;
+        if (!result) return missingEvidence;
+        assert.deepEqual(result.results, []);
+        checkCppExceptionProjection(result);
+      } else {
+        assert.equal(observation.results.length, fixture.cases.length);
+        for (const row of observation.results) {
+          assert.equal(row.kind, 'failed');
+          checkCppExceptionProjection(row);
+        }
+      }
+    });
+    return;
+  }
   for (const [index, expected] of fixture.cases.entries()) {
     const row = observation.results[index];
     if (!row) continue;
@@ -492,9 +533,14 @@ export function compileDifferentialId(fixture) {
 }
 
 export function checkDifferential(fixture, observations, record, registered = false) {
-  if (registered && fixture.syntax) {
-    const planned = requestMatrix(fixture.cases.map(({ id }) => id), fixture).filter(({ mode }) => mode !== 'continuation');
-    const evaluations = planned.map(({ id }) => observations.find(({ request }) => request === id)?.reported?.evaluation);
+  if (registered && (fixture.syntax || fixture.cppExceptionRefusal)) {
+    const planned = [
+      ...requestMatrix(fixture.cases.map(({ id }) => id), fixture).filter(({ mode }) => mode !== 'continuation'),
+      ...(fixture.cppExceptionRefusal ? muxRequests(fixture) : []),
+    ];
+    const evaluations = planned.map(({ id, route = 'default' }) => observations.find(
+      (item) => item.request === id && (item.route ?? 'default') === route
+    )?.reported?.evaluation);
     if (evaluations.some((evaluation) => !evaluation)) return;
     const id = compileDifferentialId(fixture);
     function compileProjection({ sessionId, pid, startedAt, endedAt, timings, ...ordinary }) {
@@ -504,6 +550,11 @@ export function checkDifferential(fixture, observations, record, registered = fa
       const baseline = compileProjection(evaluations[0].compile);
       for (const [index, current] of evaluations.entries()) {
         assert.equal(current.status, 'compile-failed', planned[index].id);
+        if (fixture.cppExceptionRefusal) {
+          assert.deepEqual(current.cases, []);
+          assert.equal(current.compile.stdout, '');
+          checkCppExceptionCompile(current.compile);
+        }
         assert.deepEqual(compileProjection(current.compile), baseline, planned[index].id);
       }
       record({ id, status: 'pass' });
