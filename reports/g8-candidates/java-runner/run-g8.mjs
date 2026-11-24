@@ -823,7 +823,7 @@ try {
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
                   role === 'run' ? fixture.cases[0].id : undefined, version, group.language,
                   sample.trustedCsharpArtifactKey,
-                  group.language === 'csharp' ? sample.prime : undefined, {
+                  group.language === 'csharp' ? sample.prime ?? sample.setupRun : undefined, {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
                       (group.csharpWarmMode === csharpWarmModes.repeatRun || group.state === 'cold'),
                     csharpPromotedExecutionType: group.language === 'csharp' &&
@@ -839,7 +839,8 @@ try {
                         : 'observer'
                       : undefined,
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
-                      group.csharpWarmMode === csharpWarmModes.submitAfterRun,
+                      (group.csharpWarmMode === csharpWarmModes.submitAfterRun ||
+                        group.state === 'switched' && group.journey === 'submit'),
                   });
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
