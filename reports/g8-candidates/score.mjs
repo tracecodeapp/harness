@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { medianRegressionClass, scoreThresholds } from './score-thresholds.mjs';
+import {
+  expectedLiveControlMetadata,
+  medianRegressionClass,
+  scoreThresholds,
+} from './score-thresholds.mjs';
 import { liveCellScoreWithControls, liveObservationVersion } from './live-control.mjs';
 import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 
@@ -155,13 +159,12 @@ for (const scope of ['desktop', 'phone', 'spot']) {
     if (scopeLiveControl) {
       pairedCandidateControls = observed.metadata.liveControl.pairedCandidateControls === true;
       const pairedRepeatControls = observed.metadata.liveControl.pairedRepeatControls === true;
-      assert.deepEqual(observed.metadata.liveControl, {
-        control: '0.17.1', candidateVersions: expectedCandidateVersions,
-        alternatingOrderPerRound: true,
-        ...(pairedCandidateControls && { pairedCandidateControls: true }),
-        ...(pairedRepeatControls && { pairedRepeatControls: true }),
-        ...(primary === 'python' && scope !== 'spot' && { pythonWarmSubmitControl: '0.20.1' }),
-      });
+      assert.deepEqual(observed.metadata.liveControl, expectedLiveControlMetadata(
+        primary,
+        scope,
+        expectedCandidateVersions,
+        { pairedCandidateControls, pairedRepeatControls },
+      ));
       if (pairedCandidateControls) {
         assert.ok(scope === 'phone' || scope === 'spot');
         for (const group of observed.metadata.schedule) {

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { medianRegressionClass, scoreThresholds } from './score-thresholds.mjs';
+import {
+  expectedLiveControlMetadata,
+  medianRegressionClass,
+  scoreThresholds,
+} from './score-thresholds.mjs';
 
 test('seeded control derives identical unrounded thresholds for equivalent frozen cells', () => {
   const history = [
@@ -19,4 +23,17 @@ test('background speed classification opens fix-forward only above ten percent m
   assert.deepEqual(medianRegressionClass(110, 100),
     { classification: 'record', ratio: 1.1 });
   assert.equal(medianRegressionClass(110.01, 100).classification, 'fix-forward');
+});
+
+test('Python 0.20.1 Submit control is desktop-only', () => {
+  const versions = ['concurrent', 'sequential'];
+  assert.deepEqual(expectedLiveControlMetadata('python', 'phone', versions), {
+    control: '0.17.1',
+    candidateVersions: versions,
+    alternatingOrderPerRound: true,
+  });
+  assert.equal(expectedLiveControlMetadata('python', 'desktop', versions)
+    .pythonWarmSubmitControl, '0.20.1');
+  assert.equal(expectedLiveControlMetadata('python', 'spot', versions)
+    .pythonWarmSubmitControl, undefined);
 });

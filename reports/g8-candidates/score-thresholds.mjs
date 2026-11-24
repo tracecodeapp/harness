@@ -11,3 +11,17 @@ export function medianRegressionClass(candidateMedian, controlMedian) {
   if (ratio > 1.05) return { classification: 'record', ratio };
   return { classification: 'within-five-percent', ratio };
 }
+
+export function expectedLiveControlMetadata(primary, scope, candidateVersions,
+  { pairedCandidateControls = false, pairedRepeatControls = false } = {}) {
+  return {
+    control: '0.17.1',
+    candidateVersions,
+    alternatingOrderPerRound: true,
+    ...(pairedCandidateControls && { pairedCandidateControls: true }),
+    ...(pairedRepeatControls && { pairedRepeatControls: true }),
+    ...(primary === 'python' && scope === 'desktop' && {
+      pythonWarmSubmitControl: '0.20.1',
+    }),
+  };
+}
