@@ -149,7 +149,11 @@ public static partial class PreparedExecutionHost
                 recordTrace ? request.MaxSingleLineHits : null,
                 recordTrace ? request.MaxStoredEvents : null,
                 recordTrace && request.MinimalTrace,
-                recordTrace
+                recordTrace,
+                request.ObservationMaxTraceBytes,
+                request.ObservationMaxTraceBytes > 0
+                    ? TraceResponseJson.CreateTraceEventMeasurer(JsonOptions)
+                    : null
             );
 
             double runStartedAt = stopwatch.Elapsed.TotalMilliseconds;
@@ -166,7 +170,7 @@ public static partial class PreparedExecutionHost
                 {
                     // Converting the program's returned value runs its
                     // accessors and applies output limits to it: the program's.
-                    normalizedOutput = NormalizeOutput(output);
+                    normalizedOutput = request.ObservationOnly ? null : NormalizeOutput(output);
                 }
                 catch (Exception error)
                     when (error is not TraceClrProgramFailedException)
@@ -213,7 +217,7 @@ public static partial class PreparedExecutionHost
                 stopwatch,
                 capturedOut,
                 traceLimitExceeded: RuntimeTraceSink.TraceLimitExceeded,
-                timeoutReason: "client-timeout",
+                timeoutReason: RuntimeTraceSink.TimeoutReason ?? "client-timeout",
                 timings: timings
             );
         }
@@ -235,6 +239,8 @@ public static partial class PreparedExecutionHost
                 failure.ProgramException.GetBaseException().Message,
                 stopwatch,
                 capturedOut,
+                traceLimitExceeded: RuntimeTraceSink.TraceLimitExceeded,
+                timeoutReason: RuntimeTraceSink.TimeoutReason,
                 timings: timings
             );
         }
@@ -666,6 +672,7 @@ public static partial class PreparedExecutionHost
 
     private static string Serialize(PreparedResponse response)
     {
+        if (RuntimeTraceSink.ObserverEncodingFailed) return TraceResponseJson.ObserverEncodeFailure;
         // Reflection-based System.Text.Json cannot be AOT-compiled for these
         // object-graph payloads and runs interpreted under wasm, costing
         // ~40us per trace event on heavy responses. The known response and
@@ -691,7 +698,10 @@ public static partial class PreparedExecutionHost
             writer.WriteStartArray("events");
             foreach (RuntimeTraceEvent traceEvent in response.Events)
             {
-                TraceResponseJson.WriteTraceEvent(writer, traceEvent, JsonOptions);
+                if (!TraceResponseJson.TryWriteTraceEvent(writer, traceEvent, JsonOptions))
+                {
+                    return TraceResponseJson.ObserverEncodeFailure;
+                }
             }
             writer.WriteEndArray();
             writer.WriteNumber("executionTimeMs", response.ExecutionTimeMs);
@@ -914,6 +924,10 @@ public static partial class PreparedExecutionHost
 
         [JsonPropertyName("trace")]
         public bool Trace { get; set; }
+
+        public bool ObservationOnly { get; set; }
+
+        public int ObservationMaxTraceBytes { get; set; }
 
         [JsonPropertyName("recordTrace")]
         public bool? RecordTrace { get; set; }

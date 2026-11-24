@@ -16,11 +16,14 @@ public static class RuntimeTraceSink
     private static readonly Stack<Dictionary<string, string>> VariableAliasScopes = new();
     private static readonly Stack<IReadOnlyList<string?>?> ScopedIndexSources = new();
     private static readonly Dictionary<object, string> TraceReferenceIds = new(ReferenceEqualityComparer.Instance);
-    private static DateTime deadlineUtc;
+    private static DateTime? deadlineUtc;
     private static int? maxTraceSteps;
     private static int? maxLineEvents;
     private static int? maxSingleLineHits;
     private static int? maxStoredEvents;
+    private static Func<RuntimeTraceEvent, int>? measureTraceEvent;
+    private static int remainingTraceBytes;
+    private static bool observerEncodingFailed;
     private static int currentLine;
     private static int scopedSourceLine;
     private static int lineEventCount;
@@ -42,23 +45,20 @@ public static class RuntimeTraceSink
         VariableAliasScopes.Clear();
         ScopedIndexSources.Clear();
         TraceReferenceIds.Clear();
-        deadlineUtc = DateTime.UtcNow.AddSeconds(2);
+        deadlineUtc = null;
         maxTraceSteps = null;
         maxLineEvents = null;
         maxSingleLineHits = null;
         maxStoredEvents = null;
+        measureTraceEvent = null;
+        remainingTraceBytes = 0;
+        observerEncodingFailed = false;
         currentLine = 0;
         scopedSourceLine = 0;
         lineEventCount = 0;
         timeoutReason = null;
         minimalTrace = false;
         traceLimitExceeded = false;
-        // A reset sink is idle, as on a fresh worker: only Configure turns
-        // recording (and with it the deadline check) on. Reset also runs in
-        // every execution's finally; leaving recording on there armed the
-        // two-second deadline above for the next request on a retained
-        // worker, so an untraced case that never configures the sink timed
-        // out on its first instrumented line.
         recordingEnabled = false;
         nextTraceReferenceId = 0;
     }
@@ -70,15 +70,19 @@ public static class RuntimeTraceSink
         int? singleLineHitLimit = null,
         int? storedEventLimit = null,
         bool minimalTraceEnabled = false,
-        bool traceRecordingEnabled = true
+        bool traceRecordingEnabled = true,
+        int traceByteLimit = 0,
+        Func<RuntimeTraceEvent, int>? traceEventMeasurer = null
     )
     {
-        int clampedTimeoutMs = Math.Clamp(timeoutMs, 100, 20_000);
-        deadlineUtc = DateTime.UtcNow.AddMilliseconds(clampedTimeoutMs);
+        ConfigureExecutionDeadline(timeoutMs);
         maxTraceSteps = PositiveBudget(traceStepLimit);
         maxLineEvents = PositiveBudget(lineEventLimit);
         maxSingleLineHits = PositiveBudget(singleLineHitLimit);
         maxStoredEvents = PositiveBudget(storedEventLimit);
+        measureTraceEvent = traceByteLimit > 0 ? traceEventMeasurer : null;
+        remainingTraceBytes = Math.Max(0, traceByteLimit - 2); // JSON array delimiters
+        observerEncodingFailed = false;
         minimalTrace = minimalTraceEnabled;
         recordingEnabled = traceRecordingEnabled;
         lineEventCount = 0;
@@ -86,6 +90,12 @@ public static class RuntimeTraceSink
         LineHitCounts.Clear();
         SnapshottedVariablesInCurrentLine.Clear();
         traceLimitExceeded = false;
+    }
+
+    public static void ConfigureExecutionDeadline(int timeoutMs)
+    {
+        int clampedTimeoutMs = Math.Clamp(timeoutMs, 100, 20_000);
+        deadlineUtc = DateTime.UtcNow.AddMilliseconds(clampedTimeoutMs);
     }
 
     public static List<RuntimeTraceEvent> Snapshot()
@@ -96,6 +106,8 @@ public static class RuntimeTraceSink
     public static bool TraceLimitExceeded => traceLimitExceeded;
 
     public static bool RecordingEnabled => recordingEnabled;
+
+    public static bool ObserverEncodingFailed => observerEncodingFailed;
 
     public static string? TimeoutReason => timeoutReason;
 
@@ -1049,8 +1061,7 @@ public static class RuntimeTraceSink
 
     public static void CheckTimeout()
     {
-        if (!recordingEnabled) return;
-        if (DateTime.UtcNow <= deadlineUtc)
+        if (deadlineUtc is not DateTime deadline || DateTime.UtcNow <= deadline)
         {
             return;
         }
@@ -1065,7 +1076,7 @@ public static class RuntimeTraceSink
 
     private static void Add(RuntimeTraceEvent traceEvent, bool enforceTraceBudget = true)
     {
-        if (!recordingEnabled) return;
+        if (!recordingEnabled || observerEncodingFailed || timeoutReason == "trace-byte-limit") return;
         if (ShouldSuppressForMinimalTrace(traceEvent))
         {
             return;
@@ -1079,6 +1090,22 @@ public static class RuntimeTraceSink
 
         AttachCallStack(traceEvent);
         NormalizeTraceEvent(traceEvent);
+        if (measureTraceEvent is not null)
+        {
+            int eventBytes = measureTraceEvent(traceEvent);
+            if (eventBytes < 0)
+            {
+                observerEncodingFailed = true;
+                return;
+            }
+            int separatorBytes = Events.Count > 0 ? 1 : 0;
+            if (eventBytes > remainingTraceBytes - separatorBytes)
+            {
+                MarkTraceBudgetExceeded("trace-byte-limit");
+                return;
+            }
+            remainingTraceBytes -= eventBytes + separatorBytes;
+        }
         Events.Add(traceEvent);
     }
 

@@ -6,6 +6,9 @@ import type {
   RuntimeExecuteRequest,
   RuntimeExecuteResponse,
   RuntimeExecuteResult,
+  Drawing,
+  RuntimeObservationCall,
+  RuntimeObservationProvider,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgram,
@@ -13,6 +16,7 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
   RuntimeTraceCall,
+  TraceExecutionOptions,
 } from '@tracecode/runtime-contracts';
 import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
@@ -63,6 +67,8 @@ export interface CSharpPreparedWorkerAuthority {
   warmup(): Promise<{ success: boolean; loadTimeMs: number }>;
   createRunner(tier: CSharpPreparedRunnerTier): CSharpWorkerClient;
   releaseRunner(runner: CSharpWorkerClient): void;
+  createObserverRunner?(): CSharpWorkerClient;
+  releaseObserverRunner?(runner: CSharpWorkerClient): void;
 }
 
 export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
@@ -206,9 +212,108 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     return this.workerClient.executeCode(call);
   }
 
-  async prepareProgram(
+  async prepareObservation(
+    program: RuntimeObservationCall['program'],
+    signal?: AbortSignal,
+    traceOptions?: Readonly<TraceExecutionOptions>
+  ): Promise<(RuntimeObservationProvider & { dispose(): Promise<void> }) | Extract<Drawing, { status: 'refused' }>> {
+    const authority = this.preparedAuthority;
+    const { maxTraceBytes, traceProfile, ...compilerOptions } = traceOptions ?? {};
+    if (traceProfile !== undefined ||
+        (maxTraceBytes !== undefined && (!Number.isSafeInteger(maxTraceBytes) || maxTraceBytes < 0))) {
+      return { status: 'refused', reason: 'unsupported-option' };
+    }
+    signal?.throwIfAborted();
+    const create = authority?.createObserverRunner?.bind(authority);
+    if (!create) return { status: 'refused', reason: 'recorder-unavailable' };
+
+    const compiler = this.preparedCompiler;
+    const lifetime = new AbortController();
+    let artifact: CSharpPreparedProgramArtifact | undefined;
+    let retainedRunner: CSharpWorkerClient | undefined;
+    let retainedCases = 0;
+    let tail = Promise.resolve();
+    let disposal: Promise<void> | undefined;
+    const release = (runner: CSharpWorkerClient): void => {
+      if (retainedRunner === runner) {
+        retainedRunner = undefined;
+        retainedCases = 0;
+      }
+      runner.terminate();
+      authority?.releaseObserverRunner?.(runner);
+    };
+
+    // The façade can acquire this lease before Roslyn has started on a cold
+    // host. Submit the companion to the shared compiler only after Judge
+    // admits a case from the successfully prepared ordinary assembly.
+    const prepareCompanion = async () => {
+      const prepared = await this.prepareArtifact({
+        ...program,
+        mode: 'trace',
+        traceOptions: compilerOptions,
+        signal: lifetime.signal,
+      });
+      return prepared.kind === 'artifact' ? prepared.artifact : undefined;
+    };
+    let companion: ReturnType<typeof prepareCompanion> | undefined;
+    const observe = async (call: RuntimeObservationCall): Promise<Drawing> => {
+      const signal = call.signal
+        ? AbortSignal.any([call.signal, lifetime.signal])
+        : lifetime.signal;
+      signal.throwIfAborted();
+      try {
+        artifact = await (companion ??= prepareCompanion());
+      } catch {
+        signal.throwIfAborted();
+        return { status: 'refused', reason: 'observer-prepare' };
+      }
+      signal.throwIfAborted();
+      if (!artifact) return { status: 'refused', reason: 'observer-prepare' };
+
+      const fast = artifact.preparedRunnerTier === 'algorithm-fast';
+      const runner = retainedRunner ?? create();
+      try {
+        const drawing = await runner.observePrepared(artifact, {
+          ...call,
+          traceOptions: traceOptions ?? call.traceOptions,
+          signal,
+        });
+        signal.throwIfAborted();
+        if (fast && drawing.status !== 'refused' &&
+            ++retainedCases < CSHARP_ALGORITHM_FAST_MAX_CASES_PER_RUNNER) {
+          retainedRunner = runner;
+        } else {
+          release(runner);
+        }
+        return drawing;
+      } catch (error) {
+        release(runner);
+        throw error;
+      }
+    };
+
+    return {
+      observe(call): Promise<Drawing> {
+        if (lifetime.signal.aborted) return Promise.reject(lifetime.signal.reason);
+        const execution = tail.then(() => observe(call));
+        tail = execution.then(() => undefined, () => undefined);
+        return execution;
+      },
+      dispose() {
+        if (disposal) return disposal;
+        lifetime.abort();
+        disposal = tail.then(async () => {
+          if (retainedRunner) release(retainedRunner);
+          if (artifact) await compiler.disposePreparedProgram(artifact);
+        });
+        return disposal;
+      },
+    };
+  }
+
+  private async prepareArtifact(
     call: RuntimeProgramPreparationCall
-  ): Promise<RuntimeProgramPreparationResult> {
+  ) {
     const executionStyle = call.executionStyle ?? 'solution-method';
     const functionName = call.functionName ?? '';
     assertRuntimeRequestSupported(getLanguageRuntimeProfile('csharp'), {
@@ -239,10 +344,10 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         throw new RuntimeProviderError(String(result.error));
       }
       return {
-        kind: 'failed',
+        kind: 'failed' as const,
         error: result.error ?? 'C# preparation failed',
         ...(diagnostic ? { errorLine: diagnostic.line, diagnostic } : {}),
-        diagnosticStage: 'compile',
+        diagnosticStage: 'compile' as const,
         consoleOutput: result.consoleOutput ?? [],
         timings: result.timings,
       };
@@ -276,7 +381,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       );
     }
 
-    let artifact: CSharpPreparedProgramArtifact | undefined = Object.freeze({
+    const artifact: CSharpPreparedProgramArtifact = Object.freeze({
       mode: call.mode,
       code: call.code,
       functionName,
@@ -307,6 +412,21 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           }
         : {}),
     });
+    return {
+      kind: 'artifact' as const,
+      artifact,
+      consoleOutput: result.consoleOutput ?? [],
+      timings: result.timings,
+    };
+  }
+
+  async prepareProgram(
+    call: RuntimeProgramPreparationCall
+  ): Promise<RuntimeProgramPreparationResult> {
+    const preparation = await this.prepareArtifact(call);
+    if (preparation.kind === 'failed') return preparation;
+    let artifact: CSharpPreparedProgramArtifact | undefined = preparation.artifact;
+    const { preparedRunnerTier } = artifact;
     let disposed = false;
     let disposePromise: Promise<void> | undefined;
     const activeExecutions = new Set<{
@@ -560,8 +680,8 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
     return {
       kind: 'prepared',
       program: Object.freeze(program),
-      consoleOutput: result.consoleOutput ?? [],
-      timings: result.timings,
+      consoleOutput: preparation.consoleOutput,
+      timings: preparation.timings,
     };
   }
 

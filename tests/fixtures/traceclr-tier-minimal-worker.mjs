@@ -54,7 +54,8 @@ self.onmessage = (event) => {
           event.data.maxSingleLineHits,
           event.data.maxStoredEvents,
           event.data.minimalTrace,
-          event.data.recordTrace
+          event.data.recordTrace,
+          0
         )
       );
       self.postMessage({

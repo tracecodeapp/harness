@@ -1,3 +1,4 @@
+using System;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -13,8 +14,12 @@ public static class TraceClrAlgorithmResponseJson
             MaxDepth = 256,
         };
 
+    public static Func<RuntimeTraceEvent, int>? CreateTraceEventMeasurer(int maxTraceBytes) =>
+        maxTraceBytes > 0 ? TraceResponseJson.CreateTraceEventMeasurer(FallbackOptions) : null;
+
     public static string Serialize(TraceClrAlgorithmExecutionResult result)
     {
+        if (result.ObserverEncodingFailed) return TraceResponseJson.ObserverEncodeFailure;
         using MemoryStream buffer = new();
         using (Utf8JsonWriter writer = new(buffer))
         {
@@ -35,11 +40,10 @@ public static class TraceClrAlgorithmResponseJson
             writer.WriteStartArray("events");
             foreach (RuntimeTraceEvent traceEvent in result.Events)
             {
-                TraceResponseJson.WriteTraceEvent(
-                    writer,
-                    traceEvent,
-                    FallbackOptions
-                );
+                if (!TraceResponseJson.TryWriteTraceEvent(writer, traceEvent, FallbackOptions))
+                {
+                    return TraceResponseJson.ObserverEncodeFailure;
+                }
             }
             writer.WriteEndArray();
             writer.WriteBoolean(

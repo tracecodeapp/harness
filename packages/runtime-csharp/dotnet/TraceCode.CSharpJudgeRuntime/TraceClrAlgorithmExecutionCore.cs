@@ -10,7 +10,8 @@ public sealed record TraceClrAlgorithmExecutionResult(
     List<RuntimeTraceEvent> Events,
     bool TraceLimitExceeded,
     string? TimeoutReason,
-    string? Error
+    string? Error,
+    bool ObserverEncodingFailed
 );
 
 /// <summary>
@@ -54,26 +55,25 @@ public static class TraceClrAlgorithmExecutionCore
         string artifactKey,
         string artifactBase64,
         string artifactSha256,
-        byte[] inputBytes
+        byte[] inputBytes,
+        int timeoutMs
     )
     {
         lastProgramFailureJson = null;
-        // The learner's code is instrumented even untraced. An earlier traced
-        // case on this retained worker must not leave its recording or
-        // deadline on for this one: an untraced case never records, and its
-        // wall clock is the client's.
+        // Clear recorder state before binding a fresh clock to the ordinary entry.
         RuntimeTraceSink.Reset();
         byte[] assemblyBytes = DecodeAndValidateArtifact(
             artifactBase64,
             artifactSha256
         );
+        RuntimeTraceSink.ConfigureExecutionDeadline(timeoutMs);
         try
         {
             return InvokeDriver(
                 assemblyBytes,
                 artifactKey,
                 inputBytes,
-                static () => { }
+                RuntimeTraceSink.CheckTimeout
             );
         }
         catch (TraceClrProgramFailedException failure)
@@ -89,6 +89,10 @@ public static class TraceClrAlgorithmExecutionCore
                 }
             );
             return Array.Empty<byte>();
+        }
+        finally
+        {
+            RuntimeTraceSink.Reset();
         }
     }
 
@@ -133,7 +137,9 @@ public static class TraceClrAlgorithmExecutionCore
         int? maxSingleLineHits,
         int? maxStoredEvents,
         bool minimalTrace,
-        bool recordTrace
+        bool recordTrace,
+        int maxTraceBytes,
+        Func<RuntimeTraceEvent, int>? traceEventMeasurer
     )
     {
         byte[] assemblyBytes = DecodeAndValidateArtifact(
@@ -148,7 +154,9 @@ public static class TraceClrAlgorithmExecutionCore
             recordTrace ? maxSingleLineHits : null,
             recordTrace ? maxStoredEvents : null,
             recordTrace && minimalTrace,
-            recordTrace
+            recordTrace,
+            maxTraceBytes,
+            traceEventMeasurer
         );
         try
         {
@@ -168,7 +176,8 @@ public static class TraceClrAlgorithmExecutionCore
                 RuntimeTraceSink.TraceLimitExceeded
                     ? RuntimeTraceSink.TimeoutReason
                     : null,
-                null
+                null,
+                RuntimeTraceSink.ObserverEncodingFailed
             );
         }
         catch (TraceClrProgramFailedException failure)
@@ -224,8 +233,9 @@ public static class TraceClrAlgorithmExecutionCore
             null,
             events,
             RuntimeTraceSink.TraceLimitExceeded,
-            null,
-            error
+            RuntimeTraceSink.TimeoutReason,
+            error,
+            RuntimeTraceSink.ObserverEncodingFailed
         );
     }
 
@@ -244,8 +254,9 @@ public static class TraceClrAlgorithmExecutionCore
             null,
             events,
             RuntimeTraceSink.TraceLimitExceeded,
-            timeoutReason,
-            error
+            RuntimeTraceSink.TimeoutReason ?? timeoutReason,
+            error,
+            RuntimeTraceSink.ObserverEncodingFailed
         );
     }
 

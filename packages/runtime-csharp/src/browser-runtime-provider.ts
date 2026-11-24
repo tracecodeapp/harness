@@ -1,3 +1,4 @@
+import { TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-contracts';
 import type {
   Language,
   RuntimePreparedExecutionProvider,
@@ -5,8 +6,11 @@ import type {
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
-  BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
+import type {
+  BrowserRuntimeJudgeReceiptLease,
+  JudgeReceiptProvider,
+} from '../../runtime-browser/src/browser-runtime-host-internal';
 import { createCSharpRuntimeClient } from './csharp-runtime-client';
 import {
   CSharpWorkerClient,
@@ -39,7 +43,7 @@ export function createCSharpBrowserRuntimeProvider(
   return {
     id: '@tracecode/runtime-csharp',
     languages: ['csharp'],
-    create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
+    create(context: BrowserRuntimeProviderContext): BrowserRuntimeJudgeReceiptLease {
       const preparedBatchConcurrency =
         options.preparedBatchConcurrency ?? DEFAULT_PREPARED_BATCH_CONCURRENCY;
       if (
@@ -289,6 +293,10 @@ export function createCSharpBrowserRuntimeProvider(
           if (runner === standbyRunner) standbyRunner = undefined;
           return runner;
         },
+        createObserverRunner: createRunnerClient,
+        releaseObserverRunner(runner: CSharpWorkerClient): void {
+          activeRunners.delete(runner);
+        },
         releaseRunner(runner: CSharpWorkerClient): void {
           activeRunners.delete(runner);
           if (
@@ -332,8 +340,18 @@ export function createCSharpBrowserRuntimeProvider(
         retireCapacity();
       };
 
+      const observation: JudgeReceiptProvider = {
+        runtimeVersion: TRACECODE_HARNESS_VERSION,
+        capabilities: {
+          observationLease: 'separate',
+          observationDeadlineMs: 35_000,
+        },
+        prepareObservation: (program, signal, traceOptions) =>
+          preparedProvider.prepareObservation(program, signal, traceOptions),
+      };
       return {
         preparedProviders,
+        judgeReceiptProviders: new Map([['csharp', observation]]),
         disposeLanguage,
         dispose: disposeLease,
       };

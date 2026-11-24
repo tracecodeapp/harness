@@ -23,14 +23,16 @@ public static partial class AlgorithmExecutionHost
         string artifactKey,
         string artifactBase64,
         string artifactSha256,
-        byte[] inputBytes
+        byte[] inputBytes,
+        int timeoutMs
     )
     {
         return TraceClrAlgorithmExecutionCore.ExecutePrepared(
             artifactKey,
             artifactBase64,
             artifactSha256,
-            inputBytes
+            inputBytes,
+            timeoutMs
         );
     }
 
@@ -57,7 +59,8 @@ public static partial class AlgorithmExecutionHost
         int maxSingleLineHits,
         int maxStoredEvents,
         bool minimalTrace,
-        bool recordTrace
+        bool recordTrace,
+        int maxTraceBytes
     )
     {
         TraceClrAlgorithmExecutionResult result =
@@ -73,7 +76,9 @@ public static partial class AlgorithmExecutionHost
                 PositiveOrNull(maxSingleLineHits),
                 PositiveOrNull(maxStoredEvents),
                 minimalTrace,
-                recordTrace
+                recordTrace,
+                maxTraceBytes,
+                TraceClrAlgorithmResponseJson.CreateTraceEventMeasurer(maxTraceBytes)
             );
         return TraceClrAlgorithmResponseJson.Serialize(result);
     }
