@@ -6,6 +6,7 @@ import {
   csharpWarmModes,
   expandCsharpWarmGroups,
   openIsolatedCsharpWarmAttempt,
+  requiresTrustedCsharpWarmArtifact,
 } from './csharp-warm-policy.mjs';
 
 const group = (journey) => ({
@@ -61,4 +62,16 @@ test('C# isolation closes a page when its primer fails', async () => {
     close: async (page) => events.push(['close', page.id]),
   }), /primer failed/);
   assert.deepEqual(events, [['close', 2]]);
+});
+
+test('trusted standby evidence is required only on witness-validated C# paths', () => {
+  const required = (overrides = {}) => requiresTrustedCsharpWarmArtifact({
+    language: 'csharp', version: 'candidate-main', testedLanguage: 'java',
+    fixedWarmWitness: false, liveControl: true, ...overrides,
+  });
+  assert.equal(required({ version: '0.17.1' }), true);
+  assert.equal(required({ testedLanguage: 'csharp' }), true);
+  assert.equal(required({ version: 'release-deploy', fixedWarmWitness: true }), true);
+  assert.equal(required(), false, 'a Java candidate C# spot policy has no C# candidate witness');
+  assert.equal(required({ language: 'python', version: '0.17.1' }), false);
 });

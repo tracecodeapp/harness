@@ -19,6 +19,7 @@ const read = (folder, prefix) => ({
   samples: records(join(folder, prefix + '-samples.jsonl')),
 });
 const closing = read(raw, 'java-closing');
+const closingSpot = read(raw, 'java-closing-spot');
 const desktop = read(raw, 's-java-desktop');
 const frozenDesktop = read(archive, 'speed-desktop-a-with-topup');
 const frozenPhone = read(archive, 'speed-phone');
@@ -27,7 +28,12 @@ assert.deepEqual(closing.metadata.javaClosing, {
   target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
   freshPageSpotLanguages: ['python', 'csharp'], alternatingOrderPerRound: true,
 });
-assert.equal(closing.metadata.complete, true);
+assert.deepEqual(closingSpot.metadata.schedule, javaClosingPlan.slice(2));
+assert.deepEqual(closingSpot.metadata.javaClosing, {
+  target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
+  freshPageSpotLanguages: ['python', 'csharp'], alternatingOrderPerRound: true, phase: 'spot',
+});
+assert.equal(closingSpot.metadata.complete, true);
 
 function stats(values = []) {
   const ordered = [...values].sort((a, b) => a - b);
@@ -86,8 +92,9 @@ for (const { language, cpu, policy, frozen } of reruns) {
     pairedControlFor: policy };
   const frozenMatch = { language, cpu, problem: 'binary-search', state: 'warm', journey: 'run' };
   for (const endpoint of language === 'java' ? ['verdicts', 'firstTrace'] : ['verdicts']) {
+    const corpus = language === 'java' ? closing : closingSpot;
     rows.push(verdict(`${language}/${cpu}/binary-search/warm/${endpoint}/${policy}`,
-      measured(closing, match, policy, endpoint), measured(closing, match, '0.17.1', endpoint),
+      measured(corpus, match, policy, endpoint), measured(corpus, match, '0.17.1', endpoint),
       measured(frozen, frozenMatch, '0.17.1', endpoint)));
   }
 }

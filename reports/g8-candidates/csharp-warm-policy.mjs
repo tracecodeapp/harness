@@ -6,6 +6,15 @@ export const csharpWarmModes = Object.freeze({
   submitAfterRun: 'submit-after-run',
 });
 
+export function requiresTrustedCsharpWarmArtifact({
+  language, version, testedLanguage, fixedWarmWitness, liveControl,
+}) {
+  if (language !== 'csharp') return false;
+  return fixedWarmWitness ||
+    version.startsWith('candidate-') && testedLanguage === 'csharp' ||
+    liveControl && version === '0.17.1';
+}
+
 export function csharpWarmAttemptPlan(group) {
   const mode = group.csharpWarmMode;
   if (mode === undefined) return { freshPage: false, primeJourney: undefined };

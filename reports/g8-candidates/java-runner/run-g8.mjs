@@ -38,7 +38,7 @@ import { releasePythonWarmPlan } from '../release-python-warm.mjs';
 import {
   pythonWarmModes,
 } from '../python-warm-policy.mjs';
-import { csharpWarmModes } from '../csharp-warm-policy.mjs';
+import { csharpWarmModes, requiresTrustedCsharpWarmArtifact } from '../csharp-warm-policy.mjs';
 import {
   expandWarmRepeatGroups,
   isSubmitAfterRunWarmMode,
@@ -89,6 +89,7 @@ const pythonLocalDiagnostic = process.env.SPEED_PYTHON_LOCAL_DIAGNOSTIC === '1';
 const pythonFreshAa = process.env.SPEED_PYTHON_FRESH_AA === '1';
 const submitAa = process.env.SPEED_SUBMIT_AA === '1';
 const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
+const javaClosingPhase = process.env.SPEED_JAVA_CLOSING_PHASE;
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -109,6 +110,8 @@ const candidate = releaseVersion === undefined ? staged : undefined;
 assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
 assert.ok(!javaClosing || liveControl && candidate && testedLanguage === 'java' &&
   candidateScope === 'desktop', 'Java closing requires the staged Java candidate and live control');
+assert.ok(javaClosingPhase === undefined || javaClosing && javaClosingPhase === 'spot',
+  'Java closing phase must be unset or spot');
 assert.ok(!pythonLocalDiagnostic || liveControl && candidate && testedLanguage === 'python',
   'The local Python diagnostic requires a staged Python candidate and live control');
 if (pythonLocalDiagnostic) assert.notEqual(hostname(), 'agentrunner', 'Run the phase diagnostic locally');
@@ -142,7 +145,7 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = javaClosing ? 'java-closing-' : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = javaClosing ? `java-closing${javaClosingPhase ? '-' + javaClosingPhase : ''}-` : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -442,7 +445,8 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
-  if (javaClosing) return structuredClone(javaClosingPlan);
+  if (javaClosing) return structuredClone(javaClosingPhase === 'spot'
+    ? javaClosingPlan.slice(2) : javaClosingPlan);
   if (submitAa) return structuredClone(submitAaPlan);
   if (pythonFreshAa) return structuredClone(pythonFreshAaPlan);
   if (pythonLocalDiagnostic) return expandWarmRepeatGroups([
@@ -585,6 +589,7 @@ const report = {
   ...(javaClosing && { javaClosing: {
     target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
     freshPageSpotLanguages: ['python', 'csharp'], alternatingOrderPerRound: true,
+    ...(javaClosingPhase && { phase: javaClosingPhase }),
   }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
@@ -669,7 +674,9 @@ try {
                   sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
                   if (group.language === 'csharp') {
                     sample.trustedCsharpArtifactKey = csharpTrustedArtifactKey(sample.setupWarm);
-                    if (!sample.trustedCsharpArtifactKey) {
+                    if (!sample.trustedCsharpArtifactKey && requiresTrustedCsharpWarmArtifact({
+                      language: group.language, version, testedLanguage, fixedWarmWitness, liveControl,
+                    })) {
                       throw new Error('C# warmup did not identify one trusted standby artifact');
                     }
                   }
