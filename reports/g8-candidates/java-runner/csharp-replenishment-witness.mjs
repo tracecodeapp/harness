@@ -12,18 +12,21 @@ export function isTrustedCsharpPrime(phase, trustedArtifactKey) {
     phase.artifactKey === trustedArtifactKey;
 }
 
-function isPromotedOrdinaryWorker(phases, workerPhases, trustedPrime, caseCount) {
+function isPromotedOrdinaryWorker(phases, workerPhases, trustedPrime, options) {
+  const caseCount = options?.caseCount;
   if (!Number.isSafeInteger(caseCount) || caseCount < 1) return false;
+  const executionType = options?.promotedExecutionType ?? 'execute-prepared-trace';
+  const prepareRole = options?.promotedPrepareRole ?? 'observer';
   const learner = workerPhases.filter((phase) => phase !== trustedPrime &&
     !['init', 'warmup'].includes(phase.type));
-  if (learner.length !== caseCount || !learner.every(({ type }) => type === 'execute-prepared-trace')) {
+  if (learner.length !== caseCount || !learner.every(({ type }) => type === executionType)) {
     return false;
   }
   const learnerKeys = new Set(learner.map(({ artifactKey }) => artifactKey));
   if (learnerKeys.size !== 1) return false;
   const [learnerKey] = learnerKeys;
   const matchingPrepare = phases.filter(({ type, role, workerKind, artifactKey }) =>
-    type === 'prepare-program' && role === 'observer' && workerKind === 'compiler' &&
+    type === 'prepare-program' && role === prepareRole && workerKind === 'compiler' &&
     artifactKey === learnerKey);
   const primeIndex = phases.indexOf(trustedPrime);
   return typeof learnerKey === 'string' && learnerKey.length > 0 &&
@@ -71,8 +74,7 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) 
       return true;
     }
     if (!Number.isFinite(primes[0].received)) return false;
-    if (isPromotedOrdinaryWorker(phases, workerPhases, primes[0],
-      options?.caseCount)) {
+    if (isPromotedOrdinaryWorker(phases, workerPhases, primes[0], options)) {
       promotedOrdinaryWorkers.add(worker);
       return true;
     }

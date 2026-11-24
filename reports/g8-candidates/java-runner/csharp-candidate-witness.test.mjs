@@ -322,3 +322,32 @@ test('a primer observer disposal is accepted only by its exact prior artifact', 
     previousObserverArtifactKey: 'primer-observer',
   }), 'C# assembly, reset or observer witness differs');
 });
+
+test('cold inline promotion is exact and still rejects per-case worker replacement', () => {
+  const result = runResult(2, 3, 10);
+  result.csharp.phases = result.csharp.phases.filter(({ role }) => role !== 'observer');
+  result.csharp.phases.unshift(
+    { worker: 2, workerKind: 'runner', role: 'ordinary', type: 'init', received: 1 },
+    { worker: 2, workerKind: 'runner', role: 'ordinary', type: 'warmup', received: 2 },
+    { worker: 2, workerKind: 'runner', role: 'ordinary', type: 'execute-prepared-code',
+      tier: 'compatibility', artifactKey: 'trusted-warmup', received: 3 },
+    { worker: 1, workerKind: 'compiler', role: 'ordinary', type: 'init', received: 4 },
+    { worker: 1, workerKind: 'compiler', role: 'ordinary', type: 'warmup', received: 5 },
+  );
+  result.csharp.phases.filter(({ artifactKey }) => artifactKey === 'ordinary-2')
+    .forEach((phase, index) => { phase.received = 10 + index; });
+  const options = {
+    caseCount: 10,
+    promotedExecutionType: 'execute-prepared-code',
+    promotedPrepareRole: 'ordinary',
+    allowColdCompilerInitialization: true,
+  };
+  assert.equal(csharpCandidateOutcome(
+    result, 'submit', 10, undefined, 'trusted-warmup', options), undefined);
+
+  const learner = result.csharp.phases.filter(({ artifactKey }) => artifactKey === 'ordinary-2');
+  learner.at(-1).worker = 99;
+  assert.equal(csharpCandidateOutcome(
+    result, 'submit', 10, undefined, 'trusted-warmup', options),
+  'C# trusted standby replenishment witness differs');
+});

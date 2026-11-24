@@ -385,6 +385,11 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
     ? [...priorCsharpObserverKeys][0] : undefined;
   const replenishmentOptions = language === 'csharp' ? {
     ...(context.allowCsharpTrustedPromotion && { caseCount }),
+    ...(context.csharpPromotedExecutionType && {
+      promotedExecutionType: context.csharpPromotedExecutionType,
+      promotedPrepareRole: context.csharpPromotedPrepareRole,
+      allowColdCompilerInitialization: true,
+    }),
     ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
     ...(previousObserverArtifactKey && { previousObserverArtifactKey }),
   } : undefined;
@@ -693,6 +698,7 @@ try {
     [version, await browser.newContext()])));
   let complete = true;
   const capturedSubmitAfterRun = new Set();
+  const trustedCsharpArtifactKeys = new Map();
   for (const [groupIndex, group] of schedule.entries()) {
     const { target } = group;
     const fixture = fixtures.data[group.problem][group.language];
@@ -729,6 +735,9 @@ try {
                   sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
                   if (group.language === 'csharp') {
                     sample.trustedCsharpArtifactKey = csharpTrustedArtifactKey(sample.setupWarm);
+                    if (sample.trustedCsharpArtifactKey) {
+                      trustedCsharpArtifactKeys.set(version, sample.trustedCsharpArtifactKey);
+                    }
                     if (!sample.trustedCsharpArtifactKey && requiresTrustedCsharpWarmArtifact({
                       language: group.language, version, testedLanguage, fixedWarmWitness, liveControl,
                     })) {
@@ -770,10 +779,16 @@ try {
               sample.setupWarm = await bounded(page.evaluate(() => window.bench.warm()), 'Warmup');
               if (group.language === 'csharp') {
                 sample.trustedCsharpArtifactKey = csharpTrustedArtifactKey(sample.setupWarm);
+                if (sample.trustedCsharpArtifactKey) {
+                  trustedCsharpArtifactKeys.set(version, sample.trustedCsharpArtifactKey);
+                }
               }
               sample.refusal = refusal({ warm: sample.setupWarm });
               if (sample.refusal || sample.setupWarm.success !== true) throw new Error(sample.refusal ?? 'Warmup returned success=false');
               warmPages.set(version, page);
+            }
+            if (group.language === 'csharp' && !sample.trustedCsharpArtifactKey) {
+              sample.trustedCsharpArtifactKey = trustedCsharpArtifactKeys.get(version);
             }
             if (group.state === 'switched') {
               sample.previousProblem = otherProblem;
@@ -810,7 +825,11 @@ try {
                   sample.trustedCsharpArtifactKey,
                   group.language === 'csharp' ? sample.prime : undefined, {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
-                      group.csharpWarmMode === csharpWarmModes.repeatRun,
+                      (group.csharpWarmMode === csharpWarmModes.repeatRun || group.state === 'cold'),
+                    csharpPromotedExecutionType: group.language === 'csharp' &&
+                      group.state === 'cold' ? 'execute-prepared-code' : undefined,
+                    csharpPromotedPrepareRole: group.language === 'csharp' &&
+                      group.state === 'cold' ? 'ordinary' : undefined,
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
                       group.csharpWarmMode === csharpWarmModes.submitAfterRun,
                   });

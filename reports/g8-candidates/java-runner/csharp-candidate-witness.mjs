@@ -56,8 +56,19 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedA
   if (replenishment.error) return replenishment.error;
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'prepare-program');
-  const allOrdinaryExecutions = journal.filter(({ role: phaseRole, type }) =>
-    phaseRole === 'ordinary' && type === 'execute-prepared-code');
+  const ordinaryCompilerWorker = ordinaryPrepares[0]?.worker;
+  const compilerSetup = journal.filter(({ worker, type }) =>
+    worker === ordinaryCompilerWorker && ['init', 'warmup'].includes(type));
+  const coldCompilerSetupValid = witnessOptions?.allowColdCompilerInitialization === true
+    ? compilerSetup.length === 2 && compilerSetup[0].type === 'init' &&
+      compilerSetup[1].type === 'warmup' &&
+      compilerSetup.every(({ workerKind, received }) =>
+        workerKind === 'compiler' && Number.isFinite(received)) &&
+      journal.indexOf(compilerSetup[1]) < journal.indexOf(ordinaryPrepares[0])
+    : compilerSetup.length === 0;
+  const allOrdinaryExecutions = journal.filter((phase) =>
+    phase.role === 'ordinary' && phase.type === 'execute-prepared-code' &&
+    !isTrustedCsharpPrime(phase, trustedArtifactKey));
   const observerPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'observer' && type === 'prepare-program');
   const observerExecutions = journal.filter(({ role: phaseRole, type }) =>
@@ -118,9 +129,13 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedA
   ]);
   const unknownRolePhase = journal.some(({ worker, role: phaseRole, type }) =>
     ['ordinary', 'observer'].includes(phaseRole) && !expectedTypes.has(type) &&
-    !(replenishment.trustedWorkers.has(worker) && ['init', 'warmup'].includes(type)));
+    !((replenishment.trustedWorkers.has(worker) ||
+      replenishment.promotedOrdinaryWorkers.has(worker) ||
+      witnessOptions?.allowColdCompilerInitialization === true &&
+        worker === ordinaryCompilerWorker) &&
+      ['init', 'warmup'].includes(type)));
 
-  if (!ordinaryValid || !observerValid || !distinct || unknownRolePhase) {
+  if (!coldCompilerSetupValid || !ordinaryValid || !observerValid || !distinct || unknownRolePhase) {
     return WITNESS_ERROR;
   }
   const selected = result.evaluation?.cases.find(({ id }) => caseId === id);
