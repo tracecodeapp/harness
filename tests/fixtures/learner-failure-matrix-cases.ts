@@ -831,7 +831,8 @@ const CPP: readonly Draft[] = [
       '};'
     ),
     faultText: 'throw std::runtime_error',
-    expected: ['runtime'],
+    expected: ['compile'],
+    messageIncludes: ['C++ exceptions are not supported yet'],
   },
   {
     kind: 'helper-exception',
@@ -849,7 +850,8 @@ const CPP: readonly Draft[] = [
       '};'
     ),
     faultText: 'throw std::invalid_argument',
-    expected: ['runtime'],
+    expected: ['compile'],
+    messageIncludes: ['C++ exceptions are not supported yet'],
   },
   {
     // C++ checks argument counts at compile time.

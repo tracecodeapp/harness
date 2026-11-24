@@ -168,7 +168,7 @@ async function main(): Promise<void> {
     const exceptionProbe = await page.evaluate(`(async () => {
       const { probeCppExceptionPolicy } = await import('/cpp-ordinary-receipt.js');
       return probeCppExceptionPolicy(${exceptionBaseline});
-    })()`);
+    })()`) as Awaited<ReturnType<typeof import('./fixtures/cpp-ordinary-receipt-entry').probeCppExceptionPolicy>>;
     console.log('C++ library trap results: ' + JSON.stringify(exceptionProbe.trapConsole));
     if (exceptionBaseline) return;
     if (process.env.TRACECC_EXCEPTION_SAMPLE) {

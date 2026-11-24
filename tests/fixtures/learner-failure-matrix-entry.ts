@@ -37,6 +37,7 @@ interface DiagnosticLike {
 const LEARNER_STAGES = new Set(['runtime', 'trace']);
 const COMPILE_STAGES = new Set([
   'compile',
+  'cpp-exceptions-unsupported',
   'driver-compile',
   'trace-driver-compile',
   'driver-link',

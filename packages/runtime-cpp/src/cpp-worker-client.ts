@@ -1850,7 +1850,7 @@ export class CppWorkerClient {
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
-          this.core.sendMessageEffect<RawExecutionBatchPayload & CppBatchCompileFailure & { results?: CppRawTraceResult[] }>(
+          this.core.sendMessageEffect<Omit<RawExecutionBatchPayload, 'results'> & CppBatchCompileFailure & { results?: CppRawTraceResult[] }>(
             'execute-trace-batch',
             {
               code,
