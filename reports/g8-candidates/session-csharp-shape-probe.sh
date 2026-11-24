@@ -7,8 +7,12 @@ case "$scope" in phone|desktop|spot) ;; *) exit 2 ;; esac
 [[ "$minutes" =~ ^[1-9][0-9]*$ ]] || exit 2
 stage="$(cd "$(dirname "$0")" && pwd)"
 out="$stage/csharp"
+runner_checkout="${SPEED_G8_RUNNER_CHECKOUT:-/root/ci/work-harness-speed-g8-csharp}"
 source "$stage/session-process-group.sh"
-test -r "$probe_file" -a -r "$out/vcandidate/candidate.json"
+test -r "$probe_file" -a -r "$out/vcandidate/candidate.json" -a \
+  -d "$runner_checkout/.git" -a -d "$runner_checkout/node_modules"
+ln -sfn "$runner_checkout/node_modules" "$stage/node_modules"
+export GIT_DIR="$runner_checkout/.git"
 (cd "$stage" && sha256sum --strict -c runner.sha256)
 bash "$stage/stage-live-control.sh" csharp
 
