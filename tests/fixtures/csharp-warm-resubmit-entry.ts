@@ -442,3 +442,139 @@ export async function assertCSharpObservationBoundary(
     globalThis.Worker = NativeWorker;
   }
 }
+
+export async function probeCSharpJudgedOutputs(
+  workerUrl: string,
+  runnerAssetBaseUrl: string
+) {
+  const { CSharpWorkerClient } = await import('../../packages/runtime-csharp/src/csharp-worker-client');
+  const { createCSharpRuntimeClient } = await import('../../packages/runtime-csharp/src/csharp-runtime-client');
+  const compiler = new CSharpWorkerClient({
+    workerUrl, runtimeRole: 'compiler', assetBaseUrl: '/workers/vendor/csharp',
+  });
+  const runtime = createCSharpRuntimeClient(compiler, {
+    compiler,
+    batchConcurrency: 1,
+    warmup: () => compiler.init(),
+    createRunner: () => new CSharpWorkerClient({
+      workerUrl, runtimeRole: 'runner', assetBaseUrl: runnerAssetBaseUrl,
+    }),
+    releaseRunner() {},
+  });
+  const failures: string[] = [];
+  async function check(
+    name: string,
+    code: string,
+    inspect: (result: Awaited<ReturnType<
+      import('../../packages/runtime-contracts/src/runtime-calls').RuntimePreparedProgram['executeIsolated']
+    >>) => void,
+    inputs: Record<string, unknown> = {},
+    maxBytes?: number
+  ) {
+    const call = {
+      mode: 'code' as const,
+      code,
+      functionName: 'solve',
+      ...(maxBytes === undefined ? {} : {
+        judgedOutputPolicy: { maxBytes, maxItems: 250_000, maxNodes: 750_000, maxDepth: 128 },
+      }),
+    };
+    const prepared = await runtime.prepareProgram(call);
+    if (prepared.kind !== 'prepared') {
+      failures.push(`${name} [prepare]: ${JSON.stringify(prepared)}`);
+      return;
+    }
+    const program = prepared.program;
+    try {
+      const result = await program.executeIsolated({ inputs });
+      const tier = result.timings?.preparedRunnerTier ?? program.capabilities.profile;
+      try {
+        inspect(result);
+        console.log(`${name} [${tier}]: pass`);
+      } catch (error) {
+        failures.push(`${name} [${tier}]: ${String(error)}`);
+      }
+    } catch (error) {
+      failures.push(`${name} [provider rejection]: ${String(error)}`);
+    } finally {
+      await program.dispose();
+    }
+  }
+
+  function equals(actual: unknown, expected: unknown): void {
+    const normalize = (value: unknown) => JSON.stringify(value, (_key, entry) =>
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]]))
+        : entry);
+    if (normalize(actual) !== normalize(expected)) {
+      throw new Error(`expected ${normalize(expected)}, received ${normalize(actual)}`);
+    }
+  }
+
+  function list(length: number): unknown {
+    let next: unknown = null;
+    for (let val = length; val >= 1; val--) next = { __type__: 'ListNode', val, next };
+    return next;
+  }
+
+  try {
+    await check('G6 graph output', 'public class Solution { public TreeNode solve(TreeNode root) => root; }',
+      (result) => {
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        const root = result.output as { __id__: string; left: { __id__: string } };
+        if (!root.__id__ || !root.left.__id__ || root.__id__ === root.left.__id__) {
+          throw new Error('Expected distinct IDs for the root and shared child.');
+        }
+        equals(root, {
+          __type__: 'TreeNode', __id__: root.__id__, val: 1,
+          left: {
+            __type__: 'TreeNode', __id__: root.left.__id__, val: 2,
+            left: { __ref__: root.__id__ }, right: null,
+          },
+          right: { __ref__: root.left.__id__ },
+        });
+      }, { root: { __id__: 'r', val: 1, left: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null }, right: { __ref__: 'c' } } });
+    for (const n of [20, 70]) {
+      await check(`G6 deep list (${n} nodes)`,
+        'public class Solution { public ListNode solve(ListNode head) => head; }',
+        (result) => {
+          if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+          equals(result.output, list(n));
+        }, { head: list(n) });
+    }
+    await check('built-in ListNode.value write updates val',
+      'public class Solution { public int solve() { var node = new ListNode(1); node.value = 7; return node.val; } }',
+      (result) => equals(result.kind === 'completed' ? result.output : result, 7));
+    await check('built-in TreeNode.val write is visible to reads of value',
+      'public class Solution { public int solve() { var node = new TreeNode(1); node.val = 9; return node.value; } }',
+      (result) => equals(result.kind === 'completed' ? result.output : result, 9));
+    await check('learner class and dictionary keep value',
+      'public class TreeNode { public int val; public int value = 7; public TreeNode left; public TreeNode right; public TreeNode(int val) { this.val = val; } } public class Solution { public object solve() => new Dictionary<string, object> { ["value"] = 3, ["node"] = new TreeNode(1) }; }',
+      (result) => equals(result.kind === 'completed' ? result.output : result,
+        { value: 3, node: { val: 1, value: 7, left: null, right: null } }));
+    await check('G6 TraceCLR collection ceiling',
+      'public class Solution { public int[] solve(int n) { return new int[n]; } }',
+      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
+      { n: 1_000_001 });
+    await check('learner exception with the writer limit text stays a program failure',
+      'public class Solution { public int[] solve(int n) { if (n == 0) throw new InvalidOperationException("Invalid TraceCLR collection length."); return new int[n]; } }',
+      (result) => {
+        equals(result.kind, 'failed');
+        if (result.kind === 'failed') equals(result.diagnosticStage, 'runtime');
+      }, { n: 0 });
+    await check('compatibility output depth is a typed limit',
+      'public class Box { public Box next; } public class Solution { public object solve() { var box = new Box(); for (int i = 0; i < 70; i++) box = new Box { next = box }; return box; } }',
+      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'));
+    for (const n of [64, 2_048, 400]) {
+      await check(`G6 judged UTF-8 cap (${n} characters)`,
+        'public class Solution { public string solve(int n) => new string(n == 400 ? \'雪\' : \'x\', n); }',
+        (result) => {
+          if (n === 64) equals(result.kind === 'completed' ? result.output : result, 'x'.repeat(n));
+          else equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit');
+        }, { n }, 1_024);
+    }
+    return failures;
+  } finally {
+    compiler.terminate();
+  }
+}
