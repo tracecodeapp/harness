@@ -417,7 +417,12 @@ async function main(): Promise<void> {
   const workersRoot = join(tempRoot, 'workers');
   const port = 5600 + Math.floor(Math.random() * 200);
   const origin = `http://127.0.0.1:${port}`;
-  const scenarios = SCENARIOS;
+  // TRACECODE_VALUE_TYPE_FROM (1-based) and TRACECODE_VALUE_TYPE_ONLY (a name
+  // substring) narrow the run while diagnosing one scenario.
+  const from = Number(process.env.TRACECODE_VALUE_TYPE_FROM ?? 1);
+  const only = process.env.TRACECODE_VALUE_TYPE_ONLY;
+  const scenarios = SCENARIOS.filter((scenario, index) => index + 1 >= from && (!only || scenario.name.includes(only)));
+  assertCondition(scenarios.length > 0, 'no scenario matches TRACECODE_VALUE_TYPE_FROM / TRACECODE_VALUE_TYPE_ONLY');
   const traceccAssets = await resolveTraceCCAssets(root);
   const compilerIntegrity = {
     assets: traceccAssets.files.map((file) => ({
@@ -468,15 +473,20 @@ async function main(): Promise<void> {
     // worker clients, so one page never accumulates workers across the whole
     // suite (the C++ worker's ready timeout is a fixed 10 s).
     const results: Record<string, PathResults> = {};
+    const timings: Record<string, Record<string, number>> = {};
     const CHUNK = Number(process.env.TRACECODE_VALUE_TYPE_CHUNK ?? 10);
     for (let offset = 0; offset < scenarios.length; offset += CHUNK) {
     const chunk = scenarios.slice(offset, offset + CHUNK);
     console.log(`chunk ${offset / CHUNK + 1}: ${chunk.map(({ name }) => name).join(' | ')}`);
     const page = await browser.newPage();
     page.setDefaultTimeout(600_000);
+    page.on('console', (message) => {
+      if (message.type() === 'warning' || message.type() === 'error') console.log(`[page ${message.type()}] ${message.text().slice(0, 400)}`);
+    });
     await page.goto(origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
-    Object.assign(results, await page.evaluate(`(async () => {
+    const chunkStarted = Date.now();
+    const chunkOut = await page.evaluate(`(async () => {
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
       const { createCppPreparedExecutionProvider } = await import('/cpp-prepared-provider.js');
       const { TraceCCCompilerService } = await import('/tracecc-compiler-service.js');
@@ -516,8 +526,12 @@ async function main(): Promise<void> {
       const failure = (error) => ({ ok: false, raw: 'threw: ' + (error && error.message ? error.message : String(error)) });
       const client = new CppWorkerClient(workerOptions);
       const out = {};
+      const timings = {};
       for (const scenario of scenarios) {
         const paths = {};
+        const times = timings[scenario.name] = {};
+        let mark = performance.now();
+        const lap = (name) => { const now = performance.now(); times[name] = (times[name] || 0) + Math.round(now - mark); mark = now; };
         const base = { code: scenario.code, functionName: scenario.functionName, executionStyle: scenario.executionStyle };
 
         paths.singleCase = [];
@@ -525,8 +539,10 @@ async function main(): Promise<void> {
         for (const inputs of scenario.cases) {
           try { paths.singleCase.push(summarize(await client.executeCode({ ...base, inputs }))); }
           catch (error) { paths.singleCase.push(failure(error)); }
+          lap('singleCase');
           try { paths.singleCaseTraced.push(summarize(await client.executeWithTracing({ ...base, inputs, traceOptions }))); }
           catch (error) { paths.singleCaseTraced.push(failure(error)); }
+          lap('singleCaseTraced');
         }
         try {
           const batch = await client.executeCodeBatch({ ...base, inputBatch: scenario.cases });
@@ -534,6 +550,7 @@ async function main(): Promise<void> {
         } catch (error) {
           paths.batch = scenario.cases.map(() => failure(error));
         }
+        lap('batch');
 
         const codeProvider = createCppPreparedExecutionProvider({ createWorkerClient: () => new CppWorkerClient(workerOptions) });
         // A provider that cannot start fails this scenario's prepared paths,
@@ -541,8 +558,11 @@ async function main(): Promise<void> {
         let prepared;
         try {
           await codeProvider.init();
+          lap('preparedInit');
           prepared = await codeProvider.prepareProgram({ mode: 'code', ...base });
+          lap('preparedCompile');
         } catch (error) {
+          lap('preparedStartFailed');
           prepared = { kind: 'threw', error: String(error && error.message ? error.message : error) };
         }
         if (prepared.kind !== 'prepared') {
@@ -554,12 +574,14 @@ async function main(): Promise<void> {
             try { paths.prepared.push(summarize(await prepared.program.executeIsolated({ inputs }))); }
             catch (error) { paths.prepared.push(failure(error)); }
           }
+          lap('prepared');
           try {
             const batch = await prepared.program.executeBatchIsolated({ inputBatch: scenario.cases });
             paths.preparedBatch = batch.map(summarize);
           } catch (error) {
             paths.preparedBatch = scenario.cases.map(() => failure(error));
           }
+          lap('preparedBatch');
           await prepared.program.dispose();
         }
 
@@ -567,8 +589,11 @@ async function main(): Promise<void> {
         let preparedTrace;
         try {
           await traceProvider.init();
+          lap('preparedTraceInit');
           preparedTrace = await traceProvider.prepareProgram({ mode: 'trace', ...base, traceOptions });
+          lap('preparedTraceCompile');
         } catch (error) {
+          lap('preparedTraceStartFailed');
           preparedTrace = { kind: 'threw', error: String(error && error.message ? error.message : error) };
         }
         if (preparedTrace.kind !== 'prepared') {
@@ -585,6 +610,7 @@ async function main(): Promise<void> {
             try { paths.preparedTraceNotRecording.push(summarize(await preparedTrace.program.executeIsolated({ inputs, recordTrace: false }))); }
             catch (error) { paths.preparedTraceNotRecording.push(failure(error)); }
           }
+          lap('preparedTraceIsolated');
           try {
             const batch = await preparedTrace.program.executeBatchIsolated({
               inputBatch: scenario.cases,
@@ -594,6 +620,7 @@ async function main(): Promise<void> {
           } catch (error) {
             paths.preparedTraceBatchMixed = scenario.cases.map(() => failure(error));
           }
+          lap('preparedTraceBatchMixed');
           await preparedTrace.program.dispose();
         }
         out[scenario.name] = paths;
@@ -602,8 +629,11 @@ async function main(): Promise<void> {
       }
       client.terminate();
       compiler.terminate();
-      return out;
-    })()`) as Record<string, PathResults>);
+      return { out, timings };
+    })()`) as { out: Record<string, PathResults>; timings: Record<string, Record<string, number>> };
+    Object.assign(results, chunkOut.out);
+    Object.assign(timings, chunkOut.timings);
+    console.log(`chunk ${offset / CHUNK + 1} done in ${Date.now() - chunkStarted} ms`);
     await page.close();
     }
 
@@ -640,7 +670,11 @@ async function main(): Promise<void> {
           failures.push(`${scenario.name} / preparedTraceNotRecording / case ${index + 1}: recorded ${silent.events} events`);
         }
       }
-      console.log(`${scenario.name}: ${Object.keys(paths).length} paths x ${scenario.cases.length} cases`);
+      const perPath = Object.entries(paths)
+        .map(([pathName, runs]) => `${pathName}=${runs.filter((run) => run.ok).length}/${runs.length}`)
+        .join(' ');
+      const times = Object.entries(timings[scenario.name] ?? {}).map(([name, ms]) => `${name}=${ms}`).join(' ');
+      console.log(`${SCENARIOS.indexOf(scenario) + 1}. ${scenario.name}: ${Object.keys(paths).length} paths x ${scenario.cases.length} cases; ok ${perPath}; ms ${times}`);
     }
     assertCondition(failures.length === 0, `C++ value-type arguments diverged:\n${failures.join('\n')}`);
     console.log(`PASS: C++ value-type arguments decode alike on every driver (${scenarios.length} scenarios)`);
