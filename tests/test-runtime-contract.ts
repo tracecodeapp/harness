@@ -1503,6 +1503,33 @@ function assertWorkerProtocolDeclarations(): void {
   }
 }
 
+/**
+ * Only C# opts out of releasing a clock runaway's Run at the ordinary budget:
+ * its trace companion compiles inside observe(), after observer-start, so it
+ * keeps the observation backstop. Every other receipt provider takes the
+ * default. Each receipt provider's capabilities live in one of these files.
+ */
+function assertRunawayObservationReleaseDeclarations(): void {
+  const declared = /runawayObservationRelease:\s*'([^']+)'/gu;
+  const sources = {
+    csharp: 'packages/runtime-csharp/src/browser-runtime-provider.ts',
+    javascript: 'packages/runtime-javascript/src/browser-runtime-provider.ts',
+    python: 'packages/runtime-python/src/browser-runtime-provider.ts',
+    java: 'packages/runtime-java/src/java-prepared-provider.ts',
+    cpp: 'packages/runtime-cpp/src/cpp-observation.ts',
+  };
+  for (const [language, path] of Object.entries(sources)) {
+    const source = readFileSync(path, 'utf8');
+    assertCondition(source.includes('observationDeadlineMs'), `${path} should declare ${language}'s receipt capabilities`);
+    const values = [...source.matchAll(declared)].map((match) => match[1]);
+    const expected = language === 'csharp' ? ['backstop'] : [];
+    assertCondition(
+      JSON.stringify(values) === JSON.stringify(expected),
+      `${language} runawayObservationRelease should be ${JSON.stringify(expected)}, got ${JSON.stringify(values)}`
+    );
+  }
+}
+
 function assertJavaScriptObservationProtocol(): void {
   const worker = readFileSync('workers/javascript/javascript-worker.js', 'utf8');
   const ses = readFileSync('packages/runtime-javascript/src/ses-algorithm-worker.ts', 'utf8');
@@ -1871,6 +1898,8 @@ async function main(): Promise<void> {
 
   assertWorkerProtocolDeclarations();
   assertJavaScriptObservationProtocol();
+  assertRunawayObservationReleaseDeclarations();
+  console.log('PASS: only C# keeps the observation backstop for a clock runaway');
   console.log('PASS: worker protocol declarations match client sends and worker handlers');
 
   const profiles = getSupportedLanguageProfiles();
