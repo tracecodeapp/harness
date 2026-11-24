@@ -1,0 +1,1754 @@
+{
+ "schema": "tracecode.test.cpp-natural-shapes.v1",
+ "note": "Correct learner solutions in natural C++ shapes (public fields with only an argument constructor, a nested-type field, a hand-written value type) and their controls. Cases are synthetic, not app data. Each fixture records its outcome on 571139f0 (C++-identical to the step-7 pin): the compile diagnostic, a wrong answer, or a pass for the controls.",
+ "fixtures": [
+  {
+   "name": "lru-node-argctor",
+   "shape": 1,
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-1-public-fields-no-default-ctor/ops-helper--lru-cache.cpp",
+   "code": "#include <unordered_map>\n\nstruct Node {\n    int key, val;\n    Node* prev;\n    Node* next;\n    Node(int k, int v) : key(k), val(v), prev(nullptr), next(nullptr) {}\n};\n\nclass LRUCache {\n    int capacity;\n    std::unordered_map<int, Node*> map;\n    Node* head;\n    Node* tail;\n\n    void unlink(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    void pushFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int capacity) : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        auto it = map.find(key);\n        if (it == map.end()) return -1;\n        unlink(it->second);\n        pushFront(it->second);\n        return it->second->val;\n    }\n\n    void put(int key, int value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->val = value;\n            unlink(it->second);\n            pushFront(it->second);\n            return;\n        }\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;\n            unlink(lru);\n            map.erase(lru->key);\n            delete lru;\n        }\n        Node* node = new Node(key, value);\n        map[key] = node;\n        pushFront(node);\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
+  },
+  {
+   "name": "lru-node-defaultctor",
+   "shape": "control",
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/lru-cache--node-default-ctor-still-fails-list-node-decoder.cpp",
+   "code": "#include <unordered_map>\n\nstruct Node {\n    int key, val;\n    Node* prev;\n    Node* next;\n    Node(int k, int v) : key(k), val(v), prev(nullptr), next(nullptr) {}\n    Node() : key(0), val(0), prev(nullptr), next(nullptr) {}\n};\n\nclass LRUCache {\n    int capacity;\n    std::unordered_map<int, Node*> map;\n    Node* head;\n    Node* tail;\n\n    void unlink(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    void pushFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int capacity) : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        auto it = map.find(key);\n        if (it == map.end()) return -1;\n        unlink(it->second);\n        pushFront(it->second);\n        return it->second->val;\n    }\n\n    void put(int key, int value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->val = value;\n            unlink(it->second);\n            pushFront(it->second);\n            return;\n        }\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;\n            unlink(lru);\n            map.erase(lru->key);\n            delete lru;\n        }\n        Node* node = new Node(key, value);\n        map[key] = node;\n        pushFront(node);\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
+  },
+  {
+   "name": "lru-node-defaultargs",
+   "shape": "control",
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/lru-cache--node-default-args.cpp",
+   "code": "#include <unordered_map>\n\nstruct Node {\n    int key, val;\n    Node* prev;\n    Node* next;\n    Node(int k = 0, int v = 0) : key(k), val(v), prev(nullptr), next(nullptr) {}\n};\n\nclass LRUCache {\n    int capacity;\n    std::unordered_map<int, Node*> map;\n    Node* head;\n    Node* tail;\n\n    void unlink(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    void pushFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int capacity) : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        auto it = map.find(key);\n        if (it == map.end()) return -1;\n        unlink(it->second);\n        pushFront(it->second);\n        return it->second->val;\n    }\n\n    void put(int key, int value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->val = value;\n            unlink(it->second);\n            pushFront(it->second);\n            return;\n        }\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;\n            unlink(lru);\n            map.erase(lru->key);\n            delete lru;\n        }\n        Node* node = new Node(key, value);\n        map[key] = node;\n        pushFront(node);\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "passes": true
+   }
+  },
+  {
+   "name": "lru-node-value-argctor",
+   "shape": 1,
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/(no-default sibling of controls/lru-cache--node-default-ctor-no-val-next.cpp)",
+   "code": "#include <unordered_map>\n\nstruct Node {\n    int key, value;\n    Node* prev;\n    Node* next;\n    Node(int k, int v) : key(k), value(v), prev(nullptr), next(nullptr) {}\n};\n\nclass LRUCache {\n    int capacity;\n    std::unordered_map<int, Node*> map;\n    Node* head;\n    Node* tail;\n\n    void unlink(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    void pushFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int capacity) : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        auto it = map.find(key);\n        if (it == map.end()) return -1;\n        unlink(it->second);\n        pushFront(it->second);\n        return it->second->value;\n    }\n\n    void put(int key, int value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->value = value;\n            unlink(it->second);\n            pushFront(it->second);\n            return;\n        }\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;\n            unlink(lru);\n            map.erase(lru->key);\n            delete lru;\n        }\n        Node* node = new Node(key, value);\n        map[key] = node;\n        pushFront(node);\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
+  },
+  {
+   "name": "lru-node-value-defaultctor",
+   "shape": "control",
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/lru-cache--node-default-ctor-no-val-next.cpp",
+   "code": "#include <unordered_map>\n\nstruct Node {\n    int key, value;\n    Node* prev;\n    Node* next;\n    Node(int k, int v) : key(k), value(v), prev(nullptr), next(nullptr) {}\n    Node() : key(0), value(0), prev(nullptr), next(nullptr) {}\n};\n\nclass LRUCache {\n    int capacity;\n    std::unordered_map<int, Node*> map;\n    Node* head;\n    Node* tail;\n\n    void unlink(Node* node) {\n        node->prev->next = node->next;\n        node->next->prev = node->prev;\n    }\n\n    void pushFront(Node* node) {\n        node->next = head->next;\n        node->prev = head;\n        head->next->prev = node;\n        head->next = node;\n    }\n\npublic:\n    LRUCache(int capacity) : capacity(capacity), head(new Node(0, 0)), tail(new Node(0, 0)) {\n        head->next = tail;\n        tail->prev = head;\n    }\n\n    int get(int key) {\n        auto it = map.find(key);\n        if (it == map.end()) return -1;\n        unlink(it->second);\n        pushFront(it->second);\n        return it->second->value;\n    }\n\n    void put(int key, int value) {\n        auto it = map.find(key);\n        if (it != map.end()) {\n            it->second->value = value;\n            unlink(it->second);\n            pushFront(it->second);\n            return;\n        }\n        if ((int)map.size() == capacity) {\n            Node* lru = tail->prev;\n            unlink(lru);\n            map.erase(lru->key);\n            delete lru;\n        }\n        Node* node = new Node(key, value);\n        map[key] = node;\n        pushFront(node);\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "passes": true
+   }
+  },
+  {
+   "name": "lru-public-fields-argctor",
+   "shape": 1,
+   "kind": "ops class itself",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/(fixture only)",
+   "code": "#include <list>\n#include <unordered_map>\n#include <utility>\n\nclass LRUCache {\npublic:\n    int capacity;\n    std::list<std::pair<int, int>> order;\n    std::unordered_map<int, std::list<std::pair<int, int>>::iterator> where;\n\n    LRUCache(int capacity) : capacity(capacity) {}\n\n    int get(int key) {\n        auto it = where.find(key);\n        if (it == where.end()) return -1;\n        order.splice(order.begin(), order, it->second);\n        return it->second->second;\n    }\n\n    void put(int key, int value) {\n        auto it = where.find(key);\n        if (it != where.end()) {\n            it->second->second = value;\n            order.splice(order.begin(), order, it->second);\n            return;\n        }\n        if ((int)order.size() == capacity) {\n            where.erase(order.back().first);\n            order.pop_back();\n        }\n        order.emplace_front(key, value);\n        where[key] = order.begin();\n    }\n};\n",
+   "functionName": "LRUCache",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        4,
+        4
+       ],
+       [
+        1
+       ],
+       [
+        3
+       ],
+       [
+        4
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      1,
+      null,
+      -1,
+      null,
+      -1,
+      3,
+      4
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "LRUCache",
+       "put",
+       "put",
+       "put",
+       "get",
+       "put",
+       "get",
+       "get"
+      ],
+      "arguments": [
+       [
+        2
+       ],
+       [
+        1,
+        1
+       ],
+       [
+        2,
+        2
+       ],
+       [
+        1,
+        10
+       ],
+       [
+        1
+       ],
+       [
+        3,
+        3
+       ],
+       [
+        2
+       ],
+       [
+        1
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      10,
+      null,
+      -1,
+      10
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'LRUCache'"
+   }
+  },
+  {
+   "name": "minstack-entry-argctor",
+   "shape": 1,
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-1-public-fields-no-default-ctor/ops-helper--min-stack.cpp",
+   "code": "#include <algorithm>\n#include <vector>\n\nstruct Entry {\n    int val;\n    int min;\n    Entry(int v, int m) : val(v), min(m) {}\n};\n\nclass MinStack {\n    std::vector<Entry> stack;\n\npublic:\n    MinStack() {}\n\n    void push(int val) {\n        int m = stack.empty() ? val : std::min(val, stack.back().min);\n        stack.emplace_back(val, m);\n    }\n\n    void pop() { stack.pop_back(); }\n\n    int top() { return stack.back().val; }\n\n    int getMin() { return stack.back().min; }\n};\n",
+   "functionName": "MinStack",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "MinStack",
+       "push",
+       "push",
+       "push",
+       "getMin",
+       "pop",
+       "top",
+       "getMin"
+      ],
+      "arguments": [
+       [],
+       [
+        -2
+       ],
+       [
+        0
+       ],
+       [
+        -3
+       ],
+       [],
+       [],
+       [],
+       []
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      -3,
+      null,
+      0,
+      -2
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "MinStack",
+       "push",
+       "push",
+       "getMin",
+       "push",
+       "getMin",
+       "pop",
+       "getMin",
+       "top"
+      ],
+      "arguments": [
+       [],
+       [
+        5
+       ],
+       [
+        3
+       ],
+       [],
+       [
+        7
+       ],
+       [],
+       [],
+       [],
+       []
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      3,
+      null,
+      3,
+      null,
+      3,
+      3
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Entry'"
+   }
+  },
+  {
+   "name": "minstack-entry-defaultctor",
+   "shape": "control",
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/min-stack--entry-default-ctor.cpp",
+   "code": "#include <algorithm>\n#include <vector>\n\nstruct Entry {\n    int val;\n    int min;\n    Entry(int v, int m) : val(v), min(m) {}\n    Entry() : val(0), min(0) {}\n};\n\nclass MinStack {\n    std::vector<Entry> stack;\n\npublic:\n    MinStack() {}\n\n    void push(int val) {\n        int m = stack.empty() ? val : std::min(val, stack.back().min);\n        stack.emplace_back(val, m);\n    }\n\n    void pop() { stack.pop_back(); }\n\n    int top() { return stack.back().val; }\n\n    int getMin() { return stack.back().min; }\n};\n",
+   "functionName": "MinStack",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "MinStack",
+       "push",
+       "push",
+       "push",
+       "getMin",
+       "pop",
+       "top",
+       "getMin"
+      ],
+      "arguments": [
+       [],
+       [
+        -2
+       ],
+       [
+        0
+       ],
+       [
+        -3
+       ],
+       [],
+       [],
+       [],
+       []
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      null,
+      -3,
+      null,
+      0,
+      -2
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "MinStack",
+       "push",
+       "push",
+       "getMin",
+       "push",
+       "getMin",
+       "pop",
+       "getMin",
+       "top"
+      ],
+      "arguments": [
+       [],
+       [
+        5
+       ],
+       [
+        3
+       ],
+       [],
+       [
+        7
+       ],
+       [],
+       [],
+       [],
+       []
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      3,
+      null,
+      3,
+      null,
+      3,
+      3
+     ]
+    }
+   ],
+   "on571139f0": {
+    "passes": true
+   }
+  },
+  {
+   "name": "trie-node-nested-enum",
+   "shape": 2,
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-2-nested-type-field/ops-helper--implement-trie.cpp",
+   "code": "#include <string>\n#include <unordered_map>\n\nstruct TrieNode {\n    enum class Mark { Prefix, Word };\n    Mark mark = Mark::Prefix;\n    std::unordered_map<char, TrieNode*> children;\n};\n\nclass Trie {\n    TrieNode* root = new TrieNode();\n\n    TrieNode* walk(const std::string& s) {\n        TrieNode* node = root;\n        for (char c : s) {\n            auto it = node->children.find(c);\n            if (it == node->children.end()) return nullptr;\n            node = it->second;\n        }\n        return node;\n    }\n\npublic:\n    Trie() {}\n\n    void insert(std::string word) {\n        TrieNode* node = root;\n        for (char c : word) {\n            TrieNode*& next = node->children[c];\n            if (!next) next = new TrieNode();\n            node = next;\n        }\n        node->mark = TrieNode::Mark::Word;\n    }\n\n    bool search(std::string word) {\n        TrieNode* node = walk(word);\n        return node && node->mark == TrieNode::Mark::Word;\n    }\n\n    bool startsWith(std::string prefix) {\n        return walk(prefix) != nullptr;\n    }\n};\n",
+   "functionName": "Trie",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "Trie",
+       "insert",
+       "search",
+       "search",
+       "startsWith",
+       "insert",
+       "search"
+      ],
+      "arguments": [
+       [],
+       [
+        "apple"
+       ],
+       [
+        "apple"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      true,
+      false,
+      true,
+      null,
+      true
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "Trie",
+       "insert",
+       "insert",
+       "search",
+       "startsWith",
+       "search",
+       "startsWith"
+      ],
+      "arguments": [
+       [],
+       [
+        "car"
+       ],
+       [
+        "cat"
+       ],
+       [
+        "ca"
+       ],
+       [
+        "ca"
+       ],
+       [
+        "cat"
+       ],
+       [
+        "dog"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      false,
+      true,
+      true,
+      false
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "unknown type name 'Mark'"
+   }
+  },
+  {
+   "name": "trie-node-plain",
+   "shape": "control",
+   "kind": "ops-class helper",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/implement-trie--no-nested-type.cpp",
+   "code": "#include <string>\n#include <unordered_map>\n\nstruct TrieNode {\n    bool isWord = false;\n    std::unordered_map<char, TrieNode*> children;\n};\n\nclass Trie {\n    TrieNode* root = new TrieNode();\n\n    TrieNode* walk(const std::string& s) {\n        TrieNode* node = root;\n        for (char c : s) {\n            auto it = node->children.find(c);\n            if (it == node->children.end()) return nullptr;\n            node = it->second;\n        }\n        return node;\n    }\n\npublic:\n    Trie() {}\n\n    void insert(std::string word) {\n        TrieNode* node = root;\n        for (char c : word) {\n            TrieNode*& next = node->children[c];\n            if (!next) next = new TrieNode();\n            node = next;\n        }\n        node->isWord = true;\n    }\n\n    bool search(std::string word) {\n        TrieNode* node = walk(word);\n        return node && node->isWord;\n    }\n\n    bool startsWith(std::string prefix) {\n        return walk(prefix) != nullptr;\n    }\n};\n",
+   "functionName": "Trie",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "Trie",
+       "insert",
+       "search",
+       "search",
+       "startsWith",
+       "insert",
+       "search"
+      ],
+      "arguments": [
+       [],
+       [
+        "apple"
+       ],
+       [
+        "apple"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ],
+       [
+        "app"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      true,
+      false,
+      true,
+      null,
+      true
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "Trie",
+       "insert",
+       "insert",
+       "search",
+       "startsWith",
+       "search",
+       "startsWith"
+      ],
+      "arguments": [
+       [],
+       [
+        "car"
+       ],
+       [
+        "cat"
+       ],
+       [
+        "ca"
+       ],
+       [
+        "ca"
+       ],
+       [
+        "cat"
+       ],
+       [
+        "dog"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      null,
+      null,
+      false,
+      true,
+      true,
+      false
+     ]
+    }
+   ],
+   "on571139f0": {
+    "passes": true
+   }
+  },
+  {
+   "name": "twosum-helper-argctor",
+   "shape": 1,
+   "kind": "unused helper, function style",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/controls/two-sum--unused-helper-function-style.cpp",
+   "code": "#include <algorithm>\n#include <vector>\n\nstruct Item {\n    int value;\n    int index;\n    Item(int v, int i) : value(v), index(i) {}\n};\n\nclass Solution {\npublic:\n    std::vector<int> twoSum(std::vector<int>& nums, int target) {\n        std::vector<Item> items;\n        for (int i = 0; i < (int)nums.size(); ++i) items.emplace_back(nums[i], i);\n        std::sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.value < b.value; });\n        int lo = 0, hi = (int)items.size() - 1;\n        while (lo < hi) {\n            int sum = items[lo].value + items[hi].value;\n            if (sum == target) {\n                std::vector<int> result{items[lo].index, items[hi].index};\n                std::sort(result.begin(), result.end());\n                return result;\n            }\n            if (sum < target) {\n                ++lo;\n            } else {\n                --hi;\n            }\n        }\n        return {};\n    }\n};\n",
+   "functionName": "twoSum",
+   "executionStyle": "solution-method",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "nums": [
+       2,
+       7,
+       11,
+       15
+      ],
+      "target": 9
+     },
+     "expected": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "nums": [
+       3,
+       2,
+       4
+      ],
+      "target": 6
+     },
+     "expected": [
+      1,
+      2
+     ]
+    }
+   ],
+   "on571139f0": {
+    "passes": true
+   }
+  },
+  {
+   "name": "currency-s1",
+   "shape": 1,
+   "kind": "function argument",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-1-public-fields-no-default-ctor/function-arg--currency-arbitrage-detector.cpp",
+   "code": "#include <cmath>\n#include <string>\n#include <unordered_map>\n#include <vector>\n\nstruct Value {\n    std::string text;\n    double number;\n    Value(const std::string& s) : text(s), number(0) {}\n    Value(double d) : number(d) {}\n};\n\nclass Solution {\npublic:\n    bool detectArbitrage(std::vector<std::string>& currencies, std::vector<std::vector<Value>>& rates) {\n        std::unordered_map<std::string, int> id;\n        for (int i = 0; i < (int)currencies.size(); ++i) id[currencies[i]] = i;\n        int n = currencies.size();\n        std::vector<double> dist(n, 0.0);\n        for (int round = 0; round < n; ++round) {\n            bool changed = false;\n            for (auto& rate : rates) {\n                int from = id[rate[0].text];\n                int to = id[rate[1].text];\n                double weight = -std::log(rate[2].number);\n                if (dist[from] + weight < dist[to] - 1e-12) {\n                    dist[to] = dist[from] + weight;\n                    changed = true;\n                }\n            }\n            if (!changed) return false;\n        }\n        return true;\n    }\n};\n",
+   "functionName": "detectArbitrage",
+   "executionStyle": "solution-method",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "currencies": [
+       "X",
+       "Y"
+      ],
+      "rates": [
+       [
+        "X",
+        "Y",
+        2
+       ],
+       [
+        "Y",
+        "X",
+        0.6
+       ]
+      ]
+     },
+     "expected": true
+    },
+    {
+     "id": "B",
+     "input": {
+      "currencies": [
+       "P",
+       "Q",
+       "R"
+      ],
+      "rates": [
+       [
+        "P",
+        "Q",
+        0.5
+       ],
+       [
+        "Q",
+        "R",
+        1.5
+       ],
+       [
+        "R",
+        "P",
+        1.2
+       ]
+      ]
+     },
+     "expected": false
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Value'"
+   }
+  },
+  {
+   "name": "currency-s2",
+   "shape": 2,
+   "kind": "function argument",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-2-nested-type-field/function-arg--currency-arbitrage-detector.cpp",
+   "code": "#include <cmath>\n#include <string>\n#include <unordered_map>\n#include <vector>\n\nstruct Value {\n    enum class Kind { Text, Number };\n    Kind kind;\n    std::string text;\n    double number;\n    Value() : kind(Kind::Number), number(0) {}\n    Value(const std::string& s) : kind(Kind::Text), text(s), number(0) {}\n    Value(double d) : kind(Kind::Number), number(d) {}\n};\n\nclass Solution {\npublic:\n    bool detectArbitrage(std::vector<std::string>& currencies, std::vector<std::vector<Value>>& rates) {\n        std::unordered_map<std::string, int> id;\n        for (int i = 0; i < (int)currencies.size(); ++i) id[currencies[i]] = i;\n        int n = currencies.size();\n        std::vector<double> dist(n, 0.0);\n        for (int round = 0; round < n; ++round) {\n            bool changed = false;\n            for (auto& rate : rates) {\n                int from = id[rate[0].text];\n                int to = id[rate[1].text];\n                double weight = -std::log(rate[2].number);\n                if (dist[from] + weight < dist[to] - 1e-12) {\n                    dist[to] = dist[from] + weight;\n                    changed = true;\n                }\n            }\n            if (!changed) return false;\n        }\n        return true;\n    }\n};\n",
+   "functionName": "detectArbitrage",
+   "executionStyle": "solution-method",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "currencies": [
+       "X",
+       "Y"
+      ],
+      "rates": [
+       [
+        "X",
+        "Y",
+        2
+       ],
+       [
+        "Y",
+        "X",
+        0.6
+       ]
+      ]
+     },
+     "expected": true
+    },
+    {
+     "id": "B",
+     "input": {
+      "currencies": [
+       "P",
+       "Q",
+       "R"
+      ],
+      "rates": [
+       [
+        "P",
+        "Q",
+        0.5
+       ],
+       [
+        "Q",
+        "R",
+        1.5
+       ],
+       [
+        "R",
+        "P",
+        1.2
+       ]
+      ]
+     },
+     "expected": false
+    }
+   ],
+   "on571139f0": {
+    "compileError": "use of undeclared identifier 'Kind'"
+   }
+  },
+  {
+   "name": "currency-s3",
+   "shape": 3,
+   "kind": "function argument",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-3-scalar-ctor-value-type/function-arg--currency-arbitrage-detector.cpp",
+   "code": "#include <cmath>\n#include <string>\n#include <unordered_map>\n#include <vector>\n\nstruct Value {\n    std::string text;\n    double number;\n    Value() : number(0) {}\n    Value(const std::string& s) : text(s), number(0) {}\n    Value(double d) : number(d) {}\n};\n\nclass Solution {\npublic:\n    bool detectArbitrage(std::vector<std::string>& currencies, std::vector<std::vector<Value>>& rates) {\n        std::unordered_map<std::string, int> id;\n        for (int i = 0; i < (int)currencies.size(); ++i) id[currencies[i]] = i;\n        int n = currencies.size();\n        std::vector<double> dist(n, 0.0);\n        for (int round = 0; round < n; ++round) {\n            bool changed = false;\n            for (auto& rate : rates) {\n                int from = id[rate[0].text];\n                int to = id[rate[1].text];\n                double weight = -std::log(rate[2].number);\n                if (dist[from] + weight < dist[to] - 1e-12) {\n                    dist[to] = dist[from] + weight;\n                    changed = true;\n                }\n            }\n            if (!changed) return false;\n        }\n        return true;\n    }\n};\n",
+   "functionName": "detectArbitrage",
+   "executionStyle": "solution-method",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "currencies": [
+       "X",
+       "Y"
+      ],
+      "rates": [
+       [
+        "X",
+        "Y",
+        2
+       ],
+       [
+        "Y",
+        "X",
+        0.6
+       ]
+      ]
+     },
+     "expected": true
+    },
+    {
+     "id": "B",
+     "input": {
+      "currencies": [
+       "P",
+       "Q",
+       "R"
+      ],
+      "rates": [
+       [
+        "P",
+        "Q",
+        0.5
+       ],
+       [
+        "Q",
+        "R",
+        1.5
+       ],
+       [
+        "R",
+        "P",
+        1.2
+       ]
+      ]
+     },
+     "expected": false
+    }
+   ],
+   "on571139f0": {
+    "wrongAnswer": true
+   }
+  },
+  {
+   "name": "numarray-s1",
+   "shape": 1,
+   "kind": "ops class itself",
+   "origin": "harness-artifacts/root-cause-0.21/cpp-natural-shapes/shape-1-public-fields-no-default-ctor/ops-class-itself--range-sum-query-immutable.cpp",
+   "code": "#include <vector>\n\nclass NumArray {\npublic:\n    std::vector<int> prefix;\n\n    NumArray(std::vector<int>& nums) : prefix(nums.size() + 1, 0) {\n        for (size_t i = 0; i < nums.size(); ++i) prefix[i + 1] = prefix[i] + nums[i];\n    }\n\n    int sumRange(int left, int right) {\n        return prefix[right + 1] - prefix[left];\n    }\n};\n",
+   "functionName": "NumArray",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "NumArray",
+       "sumRange",
+       "sumRange"
+      ],
+      "arguments": [
+       [
+        [
+         1,
+         2,
+         3,
+         4
+        ]
+       ],
+       [
+        0,
+        3
+       ],
+       [
+        1,
+        2
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      10,
+      5
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "NumArray",
+       "sumRange",
+       "sumRange",
+       "sumRange"
+      ],
+      "arguments": [
+       [
+        [
+         -1,
+         4,
+         -2
+        ]
+       ],
+       [
+        0,
+        0
+       ],
+       [
+        0,
+        2
+       ],
+       [
+        1,
+        2
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      -1,
+      1,
+      2
+     ]
+    }
+   ],
+   "untracedOnly": "traced vector member rewritten to tracecode::Vector, which has no (count, value) constructor (runtime header limit, also on 571139f0)",
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'NumArray'"
+   }
+  },
+  {
+   "name": "parking-lot-public-field",
+   "shape": 1,
+   "kind": "ops class itself",
+   "origin": "C-CPP",
+   "code": "#include <string>\n#include <unordered_map>\n\nclass ParkingLot {\npublic:\n    std::unordered_map<std::string, int> free;\n\n    ParkingLot(int small, int medium, int large) {\n        free[\"small\"] = small;\n        free[\"medium\"] = medium;\n        free[\"large\"] = large;\n    }\n\n    bool park(std::string size) {\n        auto slot = free.find(size);\n        if (slot == free.end() || slot->second == 0) return false;\n        --slot->second;\n        return true;\n    }\n\n    int available(std::string size) {\n        return free.count(size) ? free[size] : 0;\n    }\n};",
+   "functionName": "ParkingLot",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "ParkingLot",
+       "park",
+       "park",
+       "park",
+       "available"
+      ],
+      "arguments": [
+       [
+        1,
+        1,
+        0
+       ],
+       [
+        "small"
+       ],
+       [
+        "small"
+       ],
+       [
+        "large"
+       ],
+       [
+        "small"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      true,
+      false,
+      false,
+      0
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "ParkingLot",
+       "available",
+       "park",
+       "available"
+      ],
+      "arguments": [
+       [
+        0,
+        2,
+        1
+       ],
+       [
+        "medium"
+       ],
+       [
+        "medium"
+       ],
+       [
+        "medium"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      2,
+      true,
+      1
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'ParkingLot'"
+   }
+  },
+  {
+   "name": "scheduler-task-nested-kind",
+   "shape": 2,
+   "kind": "ops-class method argument",
+   "origin": "C-CPP",
+   "code": "#include <string>\n\nstruct Task {\n    enum class Kind { Cpu, Io };\n    Kind kind = Kind::Cpu;\n    std::string name;\n    int cost = 0;\n};\n\nclass Scheduler {\n    int total = 0;\n    int jobs = 0;\n\npublic:\n    Scheduler() = default;\n\n    int add(Task task) {\n        total += task.cost;\n        ++jobs;\n        return total;\n    }\n\n    int count() {\n        return jobs;\n    }\n};",
+   "functionName": "Scheduler",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "Scheduler",
+       "add",
+       "add",
+       "count"
+      ],
+      "arguments": [
+       [],
+       [
+        {
+         "name": "build",
+         "cost": 3
+        }
+       ],
+       [
+        {
+         "name": "test",
+         "cost": 4
+        }
+       ],
+       []
+      ]
+     },
+     "expected": [
+      null,
+      3,
+      7,
+      2
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "Scheduler",
+       "count",
+       "add"
+      ],
+      "arguments": [
+       [],
+       [],
+       [
+        {
+         "name": "lint",
+         "cost": 1
+        }
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      0,
+      1
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "use of undeclared identifier 'Kind'"
+   }
+  },
+  {
+   "name": "ledger-hand-written-value",
+   "shape": 3,
+   "kind": "ops-class method argument",
+   "origin": "C-CPP",
+   "code": "#include <string>\n#include <variant>\n\nclass Value {\n    std::variant<long long, std::string> data;\n\npublic:\n    Value(long long number) : data(number) {}\n    Value(const std::string& text) : data(text) {}\n\n    bool isNumber() const { return std::holds_alternative<long long>(data); }\n    long long number() const { return std::get<long long>(data); }\n    std::string text() const { return std::get<std::string>(data); }\n};\n\nclass Ledger {\n    long long total = 0;\n    std::string last;\n\npublic:\n    Ledger() = default;\n\n    std::string record(Value value) {\n        if (value.isNumber()) {\n            total += value.number();\n            return std::to_string(total);\n        }\n        last = value.text();\n        return last;\n    }\n};",
+   "functionName": "Ledger",
+   "executionStyle": "ops-class",
+   "cases": [
+    {
+     "id": "A",
+     "input": {
+      "operations": [
+       "Ledger",
+       "record",
+       "record",
+       "record"
+      ],
+      "arguments": [
+       [],
+       [
+        5
+       ],
+       [
+        "rent"
+       ],
+       [
+        3000000000
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      "5",
+      "rent",
+      "3000000005"
+     ]
+    },
+    {
+     "id": "B",
+     "input": {
+      "operations": [
+       "Ledger",
+       "record"
+      ],
+      "arguments": [
+       [],
+       [
+        "food"
+       ]
+      ]
+     },
+     "expected": [
+      null,
+      "food"
+     ]
+    }
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of"
+   }
+  }
+ ]
+}

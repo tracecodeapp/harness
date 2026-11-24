@@ -651,7 +651,7 @@ function failureDiagnostic(
   }
   const detail = outcome.diagnostic;
   if (runtime === 'cpp' && stage === 'compile' && detail && typeof detail === 'object' &&
-      'code' in detail && detail.code === 'cpp-exceptions-unsupported' &&
+      'code' in detail && (detail.code === 'cpp-exceptions-unsupported' || detail.code === 'cpp-macro-operation-unsupported') &&
       'file' in detail && typeof detail.file === 'string' &&
       'line' in detail && typeof detail.line === 'number' &&
       'column' in detail && typeof detail.column === 'number') {

@@ -5833,6 +5833,81 @@ function cppExceptionRefusal(source, start) {
   };
 }
 
+// Operation names defined with #define (owner ruling A', 2026-11-24). The
+// drivers dispatch an ops-class operation by its name and cannot see what the
+// preprocessor makes of that name: `#define delete removeKey` sent `delete` to
+// the decoy deleteKey on Run and Submit. An ops-class program whose #define
+// defines or redefines one of its operation names (a public method of the
+// class, the reserved `delete`, or deleteKey, the method `delete` dispatches
+// to) is refused before compilation, like C++ exceptions. The scan reads the
+// learner's text: comments and literals are blanked, #undef ends a macro and
+// #if 0 blocks are skipped. Macros with other names (types, constants,
+// function-like helpers, include guards) are never refused.
+const CPP_MACRO_OPERATION_MESSAGE = 'C++ operation names defined with #define are not supported yet. Write the method name directly.';
+const CPP_RESERVED_OPERATION_NAMES = Object.freeze(['delete', 'deleteKey']);
+
+function cppOperationMacroRefusal(source, className, executionStyle, start) {
+  if (executionStyle !== 'ops-class' || typeof className !== 'string' || !className.trim()) return undefined;
+  const lines = cppCodeOnlySource(String(source || '')).split('\n');
+  const active = new Map();
+  const conditionals = [];
+  lines.forEach((text, index) => {
+    const directive = text.match(/^\s*#\s*(\w+)\b(.*)$/);
+    if (!directive) return;
+    const [, name, rest] = directive;
+    if (name === 'if' || name === 'ifdef' || name === 'ifndef') {
+      const zero = name === 'if' && /^\s*(?:0|false)\s*$/.test(rest);
+      conditionals.push({ zero, skip: zero });
+      return;
+    }
+    if (name === 'else' || name === 'elif') {
+      const top = conditionals[conditionals.length - 1];
+      if (top?.zero && name === 'else') top.skip = !top.skip;
+      return;
+    }
+    if (name === 'endif') {
+      conditionals.pop();
+      return;
+    }
+    if (conditionals.some((entry) => entry.skip)) return;
+    const macro = rest.match(/^\s+([A-Za-z_]\w*)/)?.[1];
+    if (!macro) return;
+    if (name === 'undef') active.delete(macro);
+    if (name === 'define') active.set(macro, { macro, line: index + 1, column: text.indexOf('#') + 1 });
+  });
+  if (active.size === 0) return undefined;
+  const operations = new Set([
+    ...CPP_RESERVED_OPERATION_NAMES,
+    ...collectPreparedOpsClassSignatures(source, className)
+      .filter((signature) => signature.name !== className && signature.access !== 'private' && signature.access !== 'protected')
+      .map((signature) => signature.name),
+  ]);
+  const definition = [...active.values()]
+    .filter(({ macro }) => operations.has(macro))
+    .sort((left, right) => left.line - right.line)[0];
+  if (!definition) return undefined;
+  return {
+    success: false,
+    error: CPP_MACRO_OPERATION_MESSAGE,
+    diagnosticStage: 'compile',
+    errorLine: definition.line,
+    diagnostic: {
+      code: 'cpp-macro-operation-unsupported',
+      file: CPP_USER_SOURCE_FILE,
+      line: definition.line,
+      column: definition.column,
+    },
+    consoleOutput: [],
+    timings: { totalMs: elapsedMs(start) },
+  };
+}
+
+// Source-level refusals every handler applies before building a driver.
+function cppSourceRefusal(source, payload, start) {
+  return cppExceptionRefusal(source, start) ??
+    cppOperationMacroRefusal(source, payload?.functionName, payload?.executionStyle, start);
+}
+
 function normalizeCppUserSource(source) {
   return String(source || '')
     .split(/\r?\n/)
@@ -6795,6 +6870,7 @@ function collectCppNestedTypes(source, ownerName = 'Solution') {
       access,
       qualifiedName: `${ownerName}::${name}`,
       fields: parseCppPublicDataFields(typeBody, kind),
+      body: typeBody,
     });
     pattern.lastIndex = closeBrace + 1;
   }
@@ -6822,6 +6898,8 @@ function collectCppTopLevelTypes(source) {
       access: 'public',
       qualifiedName: name,
       fields: parseCppPublicDataFields(typeBody, kind),
+      body: typeBody,
+      templated: /\btemplate\s*<[^;{}]*>\s*$/.test(cleaned.slice(Math.max(0, match.index - 400), match.index)),
     });
   }
   return types;
@@ -6880,7 +6958,7 @@ function buildCppDriverTypeContext(source, ownerName = 'Solution', signature = n
     }
   }
   const jsonTypes = availableTypes.filter(signatureUsesType);
-  const publicJsonTypes = jsonTypes.filter((type) => type.access === 'public' && type.fields.length > 0);
+  const publicJsonTypes = jsonTypes.filter((type) => cppTypeHasJsonAdapter(type, aliases, ownerName));
   return {
     ownerName,
     topLevelTypes,
@@ -6913,38 +6991,380 @@ function qualifyCppSignatureForDriver(signature, context, aliases = new Map()) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Learner value types as call arguments.
+//
+// A learner-declared type (`struct Value { Value(int); Value(std::string); }`)
+// can arrive as a JSON object (decoded field by field) or as a JSON scalar
+// (decoded through one of its one-argument constructors). Every driver uses one
+// plan for this: the generated `JsonObjectAdapter<T>::from()` that the batch,
+// prepared and dynamic single-case drivers reach through `json_to`, and the
+// literal the single-case ops-class driver writes into its source. A value the
+// type cannot be built from fails with a message naming the type; it is never
+// replaced by a default-constructed `T`.
+//
+// Constructor choice by JSON kind, over the public, non-deleted constructors
+// callable with one argument (copy and move constructors excluded):
+//   integer number  -> an integer parameter, else a floating-point one
+//   other number    -> a floating-point parameter
+//   bool            -> a bool parameter
+//   string          -> a string parameter (std::string, std::string_view,
+//                      const char*), else a char parameter
+// Within the first family that has candidates, one candidate wins outright; of
+// several, the one whose parameter is the type a C++ literal of that value has
+// (int, double, const char*) wins, as overload resolution would choose it for
+// the literal. Otherwise the constructors are ambiguous for that kind, which is
+// a compile-stage diagnostic naming the type. An aggregate with exactly one
+// public field takes a scalar into that field. When the class has templated or
+// inherited constructors the text cannot enumerate, an unresolved kind is left
+// to the compiler with the literal's natural type.
+// ---------------------------------------------------------------------------
+
+const CPP_VALUE_SCALAR_KINDS = ['integer', 'floating', 'bool', 'string'];
+const CPP_VALUE_KIND_LABELS = {
+  integer: 'an integer',
+  floating: 'a non-integer number',
+  bool: 'a bool',
+  string: 'a string',
+};
+
+// The type of one declared parameter, with or without a parameter name.
+function cppDeclaredParameterType(parameterSource) {
+  const text = String(parameterSource).replace(/\s+/g, ' ').trim();
+  const match = text.match(/^(.*?[\s*&>])\s*([A-Za-z_]\w*)$/);
+  if (!match) return text;
+  const prefix = match[1].trim();
+  // `long long`, `unsigned int` and `const string` name no parameter: the last
+  // word is part of the type when it is a builtin type word or when only
+  // cv-qualifiers precede it.
+  if (!prefix || /^(?:(?:const|volatile)\s*)+$/.test(prefix)) return text;
+  if (/^(?:int|long|short|char|bool|float|double|unsigned|signed|wchar_t|char8_t|char16_t|char32_t)$/.test(match[2])) return text;
+  return prefix;
+}
+
+function cppConstructorParameterFamily(type, aliases) {
+  const normalized = normalizeCppType(type, aliases).replace(/^std::/, '');
+  if (normalized === 'bool') return 'bool';
+  if (normalized === 'char') return 'char';
+  if (normalized === 'string' || normalized === 'string_view' || normalized === 'char*') return 'string';
+  if (isCppFloatingNumericType(normalized)) return 'floating';
+  if (
+    isCppIntegerNumericType(normalized) ||
+    /^(?:u?int(?:8|16|32|64|max|ptr)?_t|ptrdiff_t|ssize_t)$/.test(normalized)
+  ) {
+    return 'integer';
+  }
+  return 'other';
+}
+
+// Constructors declared at the top level of a class body.
+function collectCppTypeConstructors(type, aliases = new Map()) {
+  const body = typeof type.body === 'string' ? type.body : '';
+  const constructors = [];
+  // `using Base::Base;` inherits constructors this text cannot enumerate.
+  let opaque = /\busing\s+(?:[\w:]*::)?([A-Za-z_]\w*)(?:\s*<[^;]*>)?\s*::\s*\1\s*;/.test(body);
+  const initialAccess = type.kind === 'struct' ? 'public' : 'private';
+  const pattern = new RegExp(`(^|[^\\w~:.>])${escapeRegExp(type.name)}\\s*\\(`, 'g');
+  let match;
+  while ((match = pattern.exec(body))) {
+    const nameIndex = match.index + match[1].length;
+    if (cppBraceDepthBefore(body, nameIndex) !== 0) continue;
+    const open = body.indexOf('(', nameIndex);
+    const close = findMatchingParen(body, open);
+    if (close < 0) break;
+    pattern.lastIndex = close + 1;
+    const statementStart = Math.max(
+      body.lastIndexOf(';', nameIndex),
+      body.lastIndexOf('{', nameIndex),
+      body.lastIndexOf('}', nameIndex)
+    );
+    const head = body.slice(statementStart + 1, nameIndex).replace(/\b(?:public|private|protected)\s*:/g, '').trim();
+    // Only specifiers may precede a constructor's name; anything else is a
+    // return type, so this is a member function or a call.
+    if (head && !/^(?:(?:explicit(?:\s*\([^)]*\))?|constexpr|consteval|inline|template\s*<[^]*>)\s*)+$/.test(head)) continue;
+    const tail = body.slice(close + 1).match(/^\s*(?:noexcept(?:\s*\([^)]*\))?\s*)?(=\s*(delete|default)\b)?/);
+    const access = cppMemberAccessAt(body, nameIndex, initialAccess);
+    const parameters = splitTopLevelCommaList(body.slice(open + 1, close))
+      .filter((parameter) => parameter.trim() !== 'void')
+      .map((parameter) => {
+        const assignment = parameter.search(/=(?!=)/);
+        const declaration = assignment >= 0 ? parameter.slice(0, assignment) : parameter;
+        return { type: cppDeclaredParameterType(declaration), hasDefault: assignment >= 0 };
+      });
+    const templated = /\btemplate\s*</.test(head);
+    constructors.push({
+      access,
+      deleted: tail?.[2] === 'delete',
+      templated,
+      parameters,
+      explicit: /\bexplicit\b/.test(head),
+    });
+    if (templated && access === 'public') opaque = true;
+  }
+  return { constructors, opaque };
+}
+
+function cppIsSelfParameter(parameterType, type, aliases) {
+  const normalized = normalizeCppType(parameterType, aliases);
+  return normalized === type.name || normalized === type.qualifiedName;
+}
+
+function cppValueTypeDecodePlan(type, aliases = new Map()) {
+  const { constructors, opaque } = collectCppTypeConstructors(type, aliases);
+  const usable = constructors.filter((ctor) => ctor.access === 'public' && !ctor.deleted && !ctor.templated);
+  const unary = usable.filter((ctor) =>
+    ctor.parameters.length >= 1 &&
+    ctor.parameters.slice(1).every((parameter) => parameter.hasDefault) &&
+    !cppIsSelfParameter(ctor.parameters[0].type, type, aliases)
+  ).map((ctor) => ({
+    type: ctor.parameters[0].type,
+    family: cppConstructorParameterFamily(ctor.parameters[0].type, aliases),
+    normalized: normalizeCppType(ctor.parameters[0].type, aliases).replace(/^std::/, ''),
+  }));
+  const aggregateField = constructors.length === 0 && !opaque && type.fields.length === 1 ? type.fields[0] : null;
+  if (aggregateField) {
+    unary.push({
+      type: aggregateField.type,
+      family: cppConstructorParameterFamily(aggregateField.type, aliases),
+      normalized: normalizeCppType(aggregateField.type, aliases).replace(/^std::/, ''),
+      aggregate: true,
+    });
+  }
+  // Two declarations of one parameter type (an overload pair such as
+  // `const std::string&` and `std::string&&`) are one choice here.
+  const distinctOf = (family) => [...new Map(unary
+    .filter((candidate) => candidate.family === family)
+    .map((candidate) => [candidate.normalized, candidate])).values()];
+  // Pick the candidate whose parameter is the literal's own type, else the only
+  // candidate, else the constructors are ambiguous for that literal.
+  const pick = (candidates, literalTypes) => {
+    if (candidates.length === 0) return null;
+    const exact = candidates.find((candidate) => literalTypes.includes(candidate.normalized));
+    if (exact) return { kind: 'ctor', parameter: exact };
+    if (candidates.length === 1) return { kind: 'ctor', parameter: candidates[0] };
+    return { kind: 'ambiguous', candidates: candidates.map((candidate) => candidate.type) };
+  };
+  const integers = distinctOf('integer');
+  const floats = distinctOf('floating');
+  const opaqueOr = (selection) => selection ?? (opaque ? { kind: 'compiler' } : { kind: 'none' });
+  const floating = opaqueOr(pick(floats, ['double']));
+  // A decimal integer literal has the first of int, long and long long that
+  // holds it; which one depends on the target (wasm32's long is 32 bits), so
+  // the adapter tests the value against each type's real range.
+  const integerFor = (literalTypes) => integers.length > 0 ? pick(integers, literalTypes) : floating;
+  const scalar = {
+    integer: {
+      kind: 'integer',
+      int: opaqueOr(integerFor(['int', 'signed', 'signedint', 'int32_t'])),
+      long: opaqueOr(integerFor(['long', 'longint', 'signedlong', 'signedlongint'])),
+      longLong: opaqueOr(integerFor(['longlong', 'longlongint', 'signedlonglong', 'signedlonglongint', 'int64_t'])),
+    },
+    floating,
+    bool: opaqueOr(pick(distinctOf('bool'), ['bool'])),
+    string: opaqueOr(pick(distinctOf('string'), ['char*']) ?? pick(distinctOf('char'), ['char'])),
+  };
+  const formOf = (selection) => selection.kind !== 'none';
+  const hasScalarForm = formOf(scalar.integer.int) || formOf(scalar.integer.long) || formOf(scalar.integer.longLong) ||
+    formOf(scalar.floating) || formOf(scalar.bool) || formOf(scalar.string);
+  return { scalar, hasScalarForm };
+}
+
+// A type gets an adapter when it has public fields or declares constructors.
+// Without one, json_to falls back to a default-constructed `T` for any input,
+// so a class whose only constructors are private or non-scalar would decode a
+// scalar silently. An adapter's to_json for a type without public fields
+// writes "{}", which is what the runtime writes for it without one. The
+// driver's owner class (Solution, or the ops class it constructs) is never an
+// argument, so it gets no constructor-only adapter.
+function cppTypeHasJsonAdapter(type, aliases = new Map(), ownerName = null) {
+  if (type.access !== 'public' || type.templated) return false;
+  if (type.fields.length > 0) return true;
+  if (ownerName && type.qualifiedName === ownerName) return false;
+  const { constructors, opaque } = collectCppTypeConstructors(type, aliases);
+  return constructors.length > 0 || opaque;
+}
+
+function cppValueDecodeMessage(typeName, kind) {
+  return `TraceCode cannot build C++ type '${typeName}' from ${CPP_VALUE_KIND_LABELS[kind] ?? kind} argument: it has no public one-argument constructor that takes it.`;
+}
+
+function cppValueAmbiguityMessage(typeName, kind, candidates) {
+  return `TraceCode cannot build C++ type '${typeName}' from ${CPP_VALUE_KIND_LABELS[kind]} argument: its constructors taking ${candidates.join(' and ')} are equally good matches.`;
+}
+
+function cppValueRangeMessage(typeName) {
+  return `TraceCode cannot build C++ type '${typeName}' from an integer argument: none of its integer constructors can hold the value.`;
+}
+
+// Whether the JSON number `__tc_number` lies in type P's range (P's maximum
+// plus one is exact as a double for every integer type).
+function cppNumberFitsExpression(materialized) {
+  return `(__tc_number >= static_cast<double>(std::numeric_limits<${materialized}>::min()) && ` +
+    `__tc_number < static_cast<double>(std::numeric_limits<${materialized}>::max()) + 1.0)`;
+}
+
+// The C++ argument for a chosen constructor parameter, from
+// `const tracecode::JsonValue& __tc_value` of a matching kind.
+function cppValueConstructorArgument(parameter, aliases) {
+  const normalized = parameter.normalized;
+  if (parameter.family === 'string') {
+    if (normalized === 'char*') return '__tc_value.string_value.c_str()';
+    if (normalized === 'string_view') return 'std::string_view(__tc_value.string_value)';
+    return 'std::string(__tc_value.string_value)';
+  }
+  const materialized = materializedCppType(parameter.type, aliases);
+  if (parameter.family === 'integer' || parameter.family === 'floating') return `static_cast<${materialized}>(__tc_number)`;
+  return `tracecode::json_to<${materialized}>(__tc_value)`;
+}
+
+// The argument a C++ literal of the value would be, for constructors left to
+// the compiler (templated or inherited).
+function cppValueNaturalArgument(kind, literalType) {
+  if (kind === 'integer') return `static_cast<${literalType}>(__tc_number)`;
+  if (kind === 'floating') return '__tc_number';
+  if (kind === 'bool') return '__tc_value.bool_value';
+  return '__tc_value.string_value.c_str()';
+}
+
+function cppValueScalarBranch(typeName, kind, selection, aliases, literalType = null) {
+  const message = cppStringLiteral(cppValueDecodeMessage(typeName, kind));
+  if (selection.kind === 'ctor') {
+    const argument = cppValueConstructorArgument(selection.parameter, aliases);
+    const build = selection.parameter.aggregate ? `return __tc_self{ ${argument} };` : `return __tc_self(${argument});`;
+    if (kind !== 'integer' || selection.parameter.family !== 'integer') return build;
+    // An integer reaches an integer parameter only when the parameter holds it.
+    const fits = cppNumberFitsExpression(materializedCppType(selection.parameter.type, aliases));
+    return `if (${fits}) { ${build} } tracecode::json_error(${cppStringLiteral(cppValueRangeMessage(typeName))});`;
+  }
+  if (selection.kind === 'ambiguous') {
+    return `tracecode::json_error(${cppStringLiteral(cppValueAmbiguityMessage(typeName, kind, selection.candidates))});`;
+  }
+  if (selection.kind === 'compiler') {
+    const argument = cppValueNaturalArgument(kind, literalType);
+    return `if constexpr (requires { __tc_self(${argument}); }) { return __tc_self(${argument}); } else { tracecode::json_error(${message}); }`;
+  }
+  return `tracecode::json_error(${message});`;
+}
+
+// The integer arm: the literal's type is the first of int, long and long long
+// whose range holds the value on this target.
+function cppValueIntegerBranch(typeName, plan, aliases) {
+  const { int, long, longLong } = plan.scalar.integer;
+  return `if (${cppNumberFitsExpression('int')}) {
+            ${cppValueScalarBranch(typeName, 'integer', int, aliases, 'int')}
+          }
+          if (${cppNumberFitsExpression('long')}) {
+            ${cppValueScalarBranch(typeName, 'integer', long, aliases, 'long')}
+          }
+          if (${cppNumberFitsExpression('long long')}) {
+            ${cppValueScalarBranch(typeName, 'integer', longLong, aliases, 'long long')}
+          }
+          tracecode::json_error(${cppStringLiteral(cppValueRangeMessage(typeName))});`;
+}
+
+// A learner value type written as a literal by a single-case driver decodes
+// through its adapter, exactly as on the batch and prepared drivers: the JSON
+// text is parsed once into a value that lives as long as the program (a
+// constructor may keep a pointer into it).
+function cppJsonText(value) {
+  if (typeof value === 'bigint') return value.toString();
+  if (Array.isArray(value)) return `[${value.map(cppJsonText).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value).map(([key, child]) => `${JSON.stringify(key)}:${cppJsonText(child)}`).join(',')}}`;
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function cppStaticJsonValueExpression(value) {
+  return `([]() -> const tracecode::JsonValue& { static const tracecode::JsonValue __tc_literal = tracecode::parse_json(${cppStringLiteral(cppJsonText(value))}); return __tc_literal; }())`;
+}
+
+// The adapter types a driver emits, keyed by its alias map, so literal
+// builders route a value type through json_to only when its adapter exists.
+const cppAdapterTypeNamesByAliases = new WeakMap();
+
+function registerCppAdapterTypes(context, aliases) {
+  const adapterTypes = (context?.jsonTypes ?? context?.nestedTypes ?? [])
+    .filter((type) => cppTypeHasJsonAdapter(type, aliases, context?.ownerName));
+  cppAdapterTypeNamesByAliases.set(aliases, new Set(adapterTypes.map((type) => type.qualifiedName)));
+  return adapterTypes;
+}
+
+function buildCppValueAdapterLiteral(value, typeName, aliases) {
+  if (!cppAdapterTypeNamesByAliases.get(aliases)?.has(typeName)) return null;
+  return `tracecode::json_to<${typeName}>(${cppStaticJsonValueExpression(value)})`;
+}
+
 function buildCppJsonObjectAdapters(context, aliases = new Map()) {
-  const adapterTypes = (context?.jsonTypes ?? context?.nestedTypes ?? []).filter((type) => type.access === 'public' && type.fields.length > 0);
+  const adapterTypes = registerCppAdapterTypes(context, aliases);
   if (adapterTypes.length === 0) return '';
   const adapters = adapterTypes.map((type) => {
-    const fieldReads = type.fields.flatMap((field) => {
-      const fieldType = qualifyCppTypeForDriver(field.type, context);
-      return [
-        `    if (const JsonValue* found = object_get(value, ${cppStringLiteral(field.name)})) {`,
-        `      out.${field.name} = tracecode::json_to<${materializedCppType(fieldType, aliases)}>(*found);`,
-        '    }',
-      ];
-    });
+    const typeName = type.qualifiedName;
+    const plan = cppValueTypeDecodePlan(type, aliases);
+    // The member's declared type, so a type nested in T (`Value::Kind`) needs
+    // no spelling here.
+    const fieldReads = type.fields.flatMap((field) => [
+      `        if (const JsonValue* __tc_found = object_get(__tc_value, ${cppStringLiteral(field.name)})) {`,
+      `          __tc_out.${field.name} = tracecode::json_to<std::remove_cvref_t<decltype(__tc_out.${field.name})>>(*__tc_found);`,
+      '        }',
+    ]);
     const jsonLines = type.fields.flatMap((field, index) => [
       `    if (${index} > 0) json += ",";`,
       `    json += tracecode::to_json(std::string(${cppStringLiteral(field.name)}));`,
       `    json += ":";`,
       `    json += tracecode::to_json(value.${field.name});`,
     ]);
+    const noDefault = (form) => cppStringLiteral(`TraceCode cannot build C++ type '${typeName}' from ${form}: it has no default constructor to fill field by field.`);
+    // from() is a template so that it is instantiated, and its diagnostics
+    // fire, only for a type a driver actually decodes. Its names carry the
+    // reserved __tc_ prefix so they cannot hide a learner type.
     return `template <>
-struct JsonObjectAdapter<${type.qualifiedName}> {
+struct JsonObjectAdapter<${typeName}> {
   static constexpr bool available = true;
   static const JsonValue& field(const JsonValue& value, const char* name) {
     static const JsonValue null_value;
     const JsonValue* found = object_get(value, name);
     return found ? *found : null_value;
   }
-  static ${type.qualifiedName} from(const JsonValue& value) {
-    ${type.qualifiedName} out{};
+  template <typename __tc_json = JsonValue>
+  static ${typeName} from(const __tc_json& __tc_value) {
+    // Dependent, so a branch this type cannot take is discarded unchecked.
+    using __tc_self = std::conditional_t<sizeof(__tc_json) != 0, ${typeName}, void>;
+${plan.hasScalarForm ? '' : `    static_assert(std::is_default_constructible_v<__tc_self>, ${cppStringLiteral(`TraceCode cannot build C++ type '${typeName}' from test input: it has no default constructor and no public one-argument constructor from a number, bool or string.`)});\n`}    switch (__tc_value.kind) {
+      case JsonValue::Kind::Object: {
+        if constexpr (std::is_default_constructible_v<__tc_self>) {
+          __tc_self __tc_out{};
 ${fieldReads.join('\n')}
-    return out;
+          return __tc_out;
+        } else {
+          tracecode::json_error(${noDefault('a JSON object')});
+        }
+      }
+      case JsonValue::Kind::Null: {
+        if constexpr (std::is_default_constructible_v<__tc_self>) {
+          return __tc_self{};
+        } else {
+          tracecode::json_error(${noDefault('null')});
+        }
+      }
+      case JsonValue::Kind::Number: {
+        const double __tc_number = __tc_value.number_value;
+        if (std::isfinite(__tc_number) && std::floor(__tc_number) == __tc_number) {
+          ${cppValueIntegerBranch(typeName, plan, aliases)}
+        }
+        ${cppValueScalarBranch(typeName, 'floating', plan.scalar.floating, aliases)}
+      }
+      case JsonValue::Kind::Bool: {
+        ${cppValueScalarBranch(typeName, 'bool', plan.scalar.bool, aliases)}
+      }
+      case JsonValue::Kind::String: {
+        ${cppValueScalarBranch(typeName, 'string', plan.scalar.string, aliases)}
+      }
+      default:
+        tracecode::json_error(${cppStringLiteral(`TraceCode cannot build C++ type '${typeName}' from a JSON array argument.`)});
+    }
   }
-  static std::string to_json(const ${type.qualifiedName}& value) {
+  static std::string to_json(const ${typeName}& value) {
     std::string json = "{";
 ${jsonLines.join('\n')}
     json += "}";
@@ -7458,6 +7878,11 @@ function buildCustomCppObjectLiteral(value, type, aliases = new Map()) {
   const constructorName = cppTypeConstructorName(type, aliases);
   const valueConstructorName = pointer ? constructorName.replace(/\*$/, '').trim() : constructorName;
   const wrap = (args) => pointer ? `new ${valueConstructorName}(${args})` : `${constructorName}{ ${args} }`;
+  // A learner value type with an adapter decodes as on every other driver.
+  if (!pointer) {
+    const adapted = buildCppValueAdapterLiteral(value, constructorName, aliases);
+    if (adapted) return adapted;
+  }
 
   if (Array.isArray(value)) {
     const nestedElementType = nestedListElementType(objectType);
@@ -7598,6 +8023,12 @@ function toCppLiteral(value, type, aliases = new Map()) {
   if (normalized === 'string') return quoteCppString(value);
   if (normalized === 'char') return quoteCppString(String(value)[0] || '\0').replace(/^"/, "'").replace(/"$/, "'");
   if (normalized === 'bool') return value ? 'true' : 'false';
+  if (!normalized.endsWith('*')) {
+    // Every JSON value for a learner value type with an adapter (scalar,
+    // object, array or null) goes through that adapter.
+    const adapted = buildCppValueAdapterLiteral(value, cppTypeConstructorName(type, aliases), aliases);
+    if (adapted) return adapted;
+  }
   if (value === null || value === undefined) return 'nullptr';
   if (normalized === 'auto') {
     if (typeof value === 'number' || typeof value === 'bigint') {
@@ -10189,6 +10620,10 @@ function normalizeOpsArguments(value) {
 function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
   userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
+  // Learner value types in arguments decode through the same adapters as the
+  // batch and prepared drivers, so Run and Submit agree.
+  const typeContext = buildCppDriverTypeContext(userCode, className, null, aliases);
+  registerCppAdapterTypes(typeContext, aliases);
   const { operations, argumentsList } = getOpsClassInputs(inputs || {});
   let firstOperationIndex = 1;
   let constructorArgumentIndex = 0;
@@ -10286,6 +10721,7 @@ ${buildTracecodeFallbackAliases(userCode)}
 
 #line 1 "${CPP_USER_SOURCE_FILE}"
 ${sourceForDriver}
+${buildCppJsonObjectAdapters(typeContext, aliases)}
 
 #line 1 "TraceCodeDriver.cpp"
 int main() {
@@ -10991,6 +11427,7 @@ function buildDriverSource(userCode, functionName, inputs, options = {}) {
   const typeContext = sourceDeclaresSolutionClass(userCode)
     ? buildCppDriverTypeContext(userCode, 'Solution', signature, aliases)
     : buildCppDriverTypeContext(userCode, functionName, signature, aliases);
+  registerCppAdapterTypes(typeContext, aliases);
   const driverSignature = qualifyCppSignatureForDriver(signature, typeContext, aliases);
   const skipTraceParameterNames = new Set(
     signature.parameters
@@ -15651,7 +16088,7 @@ async function handlePrepareRuntimeProgram(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return refusal;
 
   const driverStartedAt = now();
@@ -16135,7 +16572,7 @@ async function handleCompileRun(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, now());
+  const refusal = cppSourceRefusal(source, payload, now());
   if (refusal) return { ...refusal, output: null };
 
   try {
@@ -16256,7 +16693,7 @@ async function handleCompileRunBatch(payload) {
     return failedBatchResult('C++ named execution requires a function name.');
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return { ...refusal, results: [] };
 
   if (!functionName.trim() && executionStyle === 'function') {
@@ -16315,12 +16752,16 @@ async function handleCompileRunBatch(payload) {
     batchCaseCount: inputBatch.length,
   });
 
+  // One program runs every case, so its failure is every case's. Keep its
+  // classification: without a stage each entry is a protocol violation.
   const failedBatchEntries = (result) => inputBatch.map(() => ({
     success: false,
     output: null,
     error: result?.error ?? 'C++ batch execution failed.',
     consoleOutput: result?.consoleOutput ?? [],
     timings: result?.timings ?? {},
+    ...(result?.diagnosticStage ? { diagnosticStage: result.diagnosticStage } : {}),
+    ...(result?.timeoutReason ? { timeoutReason: result.timeoutReason } : {}),
   }));
 
   let nextCaseIndex = 0;
@@ -16421,7 +16862,7 @@ async function handleExecuteTraceBatch(payload) {
     return failedBatchResult('C++ named tracing requires a function name.');
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return { ...refusal, results: [] };
 
   const fallbackPerCase = async (reason) => {
@@ -16562,7 +17003,7 @@ async function handleExecuteWithTracing(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, now());
+  const refusal = cppSourceRefusal(source, payload, now());
   if (refusal) return { ...refusal, output: null };
 
   try {

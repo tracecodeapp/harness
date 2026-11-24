@@ -56,6 +56,8 @@ interface Scenario {
    * logged, not asserted.
    */
   preparedOnly?: boolean;
+  /** Every path must fail, and its report include this text (a compile-stage refusal). */
+  refusal?: string;
 }
 
 const KV_SOURCE = [
@@ -98,6 +100,26 @@ const DEAD_MACRO_SOURCE = [
   '};',
 ].join('\n');
 
+// An operation name defined by #define (the GA cpp-delete-macro fixture). The
+// drivers cannot see what the preprocessor makes of an operation name, so the
+// program is refused before compilation on every driver (owner ruling A',
+// 2026-11-24) instead of sending delete to the decoy deleteKey.
+const MACRO_SOURCE = [
+  '#include <string>',
+  '#include <unordered_map>',
+  '#define delete removeKey',
+  '',
+  'class KeyValueStore {',
+  '    std::unordered_map<std::string, int> store;',
+  '',
+  'public:',
+  '    void set(std::string key, int value) { store[key] = value; }',
+  '    int size() { return static_cast<int>(store.size()); }',
+  '    bool removeKey(std::string key) { return store.erase(key) > 0; }',
+  '    bool deleteKey(std::string key) { store.clear(); return false; }',
+  '};',
+].join('\n');
+
 const KV_CASES: OpsCase[] = [
   {
     operations: ['KeyValueStore', 'set', 'get', 'delete', 'get', 'delete'],
@@ -132,6 +154,19 @@ const INLINE_SCENARIOS: Scenario[] = [
     ],
     expected: [[null, 1, 2]],
     preparedOnly: true,
+  },
+  {
+    name: 'operation renamed by #define is refused',
+    className: 'KeyValueStore',
+    code: MACRO_SOURCE,
+    cases: [
+      {
+        operations: ['KeyValueStore', 'set', 'set', 'delete', 'size', 'delete'],
+        arguments: [[], ['a', 1], ['b', 2], ['a'], [], ['z']],
+      },
+    ],
+    expected: [null],
+    refusal: 'C++ operation names defined with #define are not supported yet. Write the method name directly.',
   },
   {
     name: 'unknown operation still unresolved',
@@ -271,9 +306,18 @@ async function main(): Promise<void> {
     '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
     '        self.send_header("Cache-Control", "no-cache")',
     '        super().end_headers()',
+    // No per-request log: the pipes below are drained, but a log line per
+    // request has no reader that needs it.
+    '    def log_message(self, format, *args):',
+    '        pass',
     `os.chdir(${JSON.stringify(tempRoot)})`,
     `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
   ].join('\n')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  // Drain the server's output. An unread pipe fills after a few hundred
+  // requests and blocks the server mid-response, which surfaces as a worker
+  // that never loads (WorkerReadyTimeoutError) or a page that never navigates.
+  server.stdout.resume();
+  server.stderr.resume();
 
   const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
   try {
@@ -336,7 +380,10 @@ async function main(): Promise<void> {
         }
         try {
           const batch = await client.executeCodeBatch({ ...base, inputBatch: scenario.cases });
-          paths.batch = scenario.cases.map((_inputs, index) => summarize(batch.results[index]));
+          // A program refused before compilation has no per-case results; the
+          // batch's own failure is every case's.
+          paths.batch = scenario.cases.map((_inputs, index) =>
+            summarize(batch.results.length === 0 ? batch : batch.results[index]));
         } catch (error) {
           paths.batch = scenario.cases.map(() => failure(error));
         }
@@ -410,6 +457,12 @@ async function main(): Promise<void> {
         scenario.expected.forEach((expected, index) => {
           const run = runs[index];
           const label = `${scenario.name} / ${pathName} / case ${index + 1}`;
+          if (scenario.refusal) {
+            if (run.ok || !run.raw.includes(scenario.refusal)) {
+              failures.push(`${label}: expected the refusal "${scenario.refusal}", got ${run.raw}`);
+            }
+            return;
+          }
           if (expected === null) {
             // Only the prepared driver dispatches at run time; the single-case
             // and batch drivers reject an unknown method while generating.

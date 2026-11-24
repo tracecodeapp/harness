@@ -58,9 +58,11 @@ globalThis.__tracecodeCppRewriter = {
   finalizePreparedObservation,
   buildDriverSource,
   buildOpsClassDriverSource,
+  buildOpsClassBatchDriverSource,
   buildPreparedOpsClassDriverSource,
   instrumentCppSourceForTracing,
   parseCppFunctionSignatures,
+  cppOperationMacroRefusal,
 };`,
   context,
   { filename: 'cpp-worker.js' }
@@ -93,12 +95,19 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
     inputs: Record<string, unknown>,
     options?: Record<string, unknown>
   ) => string;
+  buildOpsClassBatchDriverSource: (
+    source: string,
+    className: string,
+    inputBatch: readonly Record<string, unknown>[],
+    options?: Record<string, unknown>
+  ) => string;
   buildPreparedOpsClassDriverSource: (
     source: string,
     className: string,
     options?: Record<string, unknown>
   ) => string;
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
+  cppOperationMacroRefusal: (source: string, className: string, executionStyle: string, start: number) => unknown;
   parseCppFunctionSignatures: (source: string) => Array<{ name: string; line: number }>;
 };
 
@@ -760,6 +769,180 @@ assertCondition(
     /emit_serialized_call_event\(7, "deleteKey", __tc_args_json_7_7\)/.test(tracedPreparedDelete),
   `traced ops-class drivers should record the aliased call as deleteKey in both drivers:\n${tracedSingleDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}\n${tracedPreparedDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}`
 );
+
+// Learner value types as arguments (GA G6 cpp-value-default and
+// cpp-value-no-default): a JSON scalar reaches the type through its
+// one-argument constructor on every driver, and no driver default-constructs
+// a type that has no default constructor.
+const valueTypeSource = (withDefault: boolean, owner: 'solution' | 'ops') => [
+  '#include <string>',
+  '#include <vector>',
+  'struct Value {',
+  '  int number;',
+  '  std::string text;',
+  withDefault ? '  Value() : number(0) {}' : '',
+  '  Value(int n) : number(n) {}',
+  '  Value(const std::string& s) : number(0), text(s) {}',
+  '};',
+  ...(owner === 'solution'
+    ? [
+        'class Solution {',
+        'public:',
+        '  int solve(std::vector<std::vector<Value>> operations) {',
+        '    return operations[0][0].text == "add" ? operations[0][1].number : -1;',
+        '  }',
+        '};',
+      ]
+    : [
+        'class Ledger {',
+        '  int total = 0;',
+        'public:',
+        '  Ledger() = default;',
+        '  int add(Value amount) {',
+        '    total += amount.number;',
+        '    return total;',
+        '  }',
+        '  std::string label(Value name) {',
+        '    return name.text;',
+        '  }',
+        '};',
+      ]),
+].join('\n');
+const valueOps = { operations: ['Ledger', 'add', 'label'], arguments: [[], [7], ['rent']] };
+for (const withDefault of [false, true]) {
+  for (const tracing of [false, true]) {
+    const solution = valueTypeSource(withDefault, 'solution');
+    const ops = valueTypeSource(withDefault, 'ops');
+    const adapterDrivers: Record<string, string> = {
+      single: rewriter.buildDriverSource(solution, 'solve', { operations: [['add', 7]] }, { tracing }),
+      batch: rewriter.buildBatchDriverSource(solution, 'solve', [{ operations: [['add', 7]] }], { tracing }),
+      prepared: rewriter.buildBatchDriverSource(solution, 'solve', [{}], { tracing }),
+      opsBatch: rewriter.buildOpsClassBatchDriverSource(ops, 'Ledger', [valueOps], { tracing }),
+      opsPrepared: rewriter.buildPreparedOpsClassDriverSource(ops, 'Ledger', { tracing }),
+    };
+    for (const [name, driver] of Object.entries(adapterDrivers)) {
+      const label = `${name} driver (default constructor ${withDefault}, tracing ${tracing})`;
+      assertCondition(
+        driver.includes('struct JsonObjectAdapter<Value>') &&
+          driver.includes('return __tc_self(static_cast<int>(__tc_number));') &&
+          driver.includes('return __tc_self(std::string(__tc_value.string_value));'),
+        `${label} should decode a JSON integer through Value(int) and a JSON string through Value(const std::string&)`
+      );
+      assertCondition(
+        !/\bValue out\{\}/.test(driver) &&
+          /if constexpr \(std::is_default_constructible_v<__tc_self>\) \{\s*__tc_self __tc_out\{\};/.test(driver),
+        `${label} should default-construct Value only under a default-constructibility check`
+      );
+    }
+    // The single-case ops-class driver decodes its literals through the same
+    // adapter (review finding 2 and 4), not with its own constructor calls.
+    const opsSingle = rewriter.buildOpsClassDriverSource(ops, 'Ledger', valueOps, { tracing });
+    assertCondition(
+      opsSingle.includes('struct JsonObjectAdapter<Value>') &&
+        /tracecode::json_to<Value>\(\(\[\]\(\) -> const tracecode::JsonValue& \{ static const tracecode::JsonValue __tc_literal = tracecode::parse_json\("7"\)/.test(opsSingle) &&
+        opsSingle.includes('tracecode::parse_json("\\"rent\\"")') &&
+        !opsSingle.includes('Value(static_cast<int>(7))') && !/Value\{ /.test(opsSingle),
+      `single-case ops-class driver (default constructor ${withDefault}, tracing ${tracing}) should decode Value literals through the adapter:\n${opsSingle.split('\n').filter((line) => line.includes('Value')).join('\n')}`
+    );
+  }
+}
+// Ambiguous constructors fail with a message naming the type, only when that
+// JSON kind is decoded (review finding 5: the object arm still compiles); a
+// type that no JSON value can build is refused at compile time.
+const ambiguousDriver = rewriter.buildBatchDriverSource(
+  'struct Wide { long n; Wide(long x) : n(x) {} Wide(short x) : n(x) {} };\nclass Solution {\npublic:\n  int solve(Wide wide) { return (int)wide.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  ambiguousDriver.includes("tracecode::json_error(\"TraceCode cannot build C++ type 'Wide' from an integer argument: its constructors taking long and short are equally good matches.\")") &&
+    !/static_assert\(sizeof\(/.test(ambiguousDriver),
+  'ambiguous one-argument constructors should fail at decode time for that kind only, naming the type'
+);
+// Review finding 3: generated names cannot hide a learner type (Json, Self).
+const jsonNamedDriver = rewriter.buildBatchDriverSource(
+  'struct Json { int n; Json() = default; Json(int x) : n(x) {} };\nstruct Self { int n = 0; };\nclass Solution {\npublic:\n  int solve(Json value, Self self) { return value.n + self.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  jsonNamedDriver.includes('template <typename __tc_json = JsonValue>') &&
+    jsonNamedDriver.includes('static Json from(const __tc_json& __tc_value)') &&
+    !/typename Json\b|using Self\b|\bSelf out\b/.test(jsonNamedDriver),
+  'the adapter template parameter and locals should use the reserved __tc_ prefix'
+);
+const unusableDriver = rewriter.buildBatchDriverSource(
+  '#include <vector>\nstruct Bag { int n; Bag(std::vector<int> v) : n(v.size()) {} };\nclass Solution {\npublic:\n  int solve(Bag bag) { return bag.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  unusableDriver.includes("static_assert(std::is_default_constructible_v<__tc_self>, \"TraceCode cannot build C++ type 'Bag' from test input"),
+  'a type with neither a default nor a scalar constructor should be refused at compile time, naming the type'
+);
+
+// Operation names defined with #define (owner ruling A', 2026-11-24). An
+// ops-class program whose #define defines or redefines one of its operation
+// names (a public method, the reserved `delete`, or its alias deleteKey) is
+// refused before compilation on every handler, like C++ exceptions. Unrelated
+// macros (types, constants, function-like helpers, include guards), dead
+// macros and solution-method programs are not.
+const OPERATION_MACRO_MESSAGE = 'C++ operation names defined with #define are not supported yet. Write the method name directly.';
+const operationMacroSource = [
+  '#include <string>',
+  '#include <unordered_map>',
+  '#define delete removeKey',
+  'class KeyValueStore {',
+  '  std::unordered_map<std::string, int> store;',
+  'public:',
+  '  void set(std::string key, int value) { store[key] = value; }',
+  '  bool removeKey(std::string key) { return store.erase(key) > 0; }',
+  '  bool deleteKey(std::string key) { store.clear(); return false; }',
+  '};',
+].join('\n');
+const operationMacroCall = { functionName: 'KeyValueStore', executionStyle: 'ops-class' };
+const operationMacroOps = { operations: ['KeyValueStore', 'set', 'delete'], arguments: [[], ['a', 1], ['a']] };
+for (const [handler, payload] of [
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'code' }],
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'trace' }],
+  [rewriter.handleCompileRun, { inputs: operationMacroOps }],
+  [rewriter.handleExecuteWithTracing, { inputs: operationMacroOps }],
+  [rewriter.handleCompileRunBatch, { inputBatch: [operationMacroOps, operationMacroOps] }],
+  [rewriter.handleExecuteTraceBatch, { inputBatch: [operationMacroOps, operationMacroOps] }],
+] as const) {
+  const result = await handler({ ...payload, ...operationMacroCall, code: operationMacroSource });
+  const diagnostic = result.diagnostic as { code?: string; file?: string; line?: number; column?: number } | undefined;
+  assertCondition(result.success === false && result.diagnosticStage === 'compile' && result.errorLine === 3 &&
+    result.error === OPERATION_MACRO_MESSAGE &&
+    diagnostic?.code === 'cpp-macro-operation-unsupported' && diagnostic.file === 'solution.cpp' &&
+    diagnostic.line === 3 && diagnostic.column === 1 &&
+    (!('results' in result) || JSON.stringify(result.results) === '[]'),
+  `C++ operation macro refusal: ${JSON.stringify(result)}`);
+}
+const classOf = (body: string[]) => ['class Store {', 'public:', '  int get() { return 1; }', '  int getValue() { return 2; }', '  bool deleteKey(int k) { return k > 0; }', ...body, '};'];
+const opsCall = { functionName: 'Store', executionStyle: 'ops-class' };
+const refused = (code: string, call: { functionName: string; executionStyle: string } = opsCall) =>
+  (rewriter.cppOperationMacroRefusal(code, call.functionName, call.executionStyle, 0) as { diagnostic?: { line?: number } } | undefined);
+for (const [label, code, line] of [
+  ['an operation renamed to a method', ['#define getValue get', ...classOf([])].join('\n'), 1],
+  ['the reserved delete', ['#define delete getValue', ...classOf([])].join('\n'), 1],
+  ['the deleteKey alias', ['#define deleteKey getValue', ...classOf([])].join('\n'), 1],
+  ['a function-like macro named after an operation', ['#define get() getValue()', ...classOf([])].join('\n'), 1],
+  ['a macro after the class', [...classOf([]), '#define get getValue'].join('\n'), 7],
+  ['a redefinition after #undef', ['#define get getValue', '#undef get', '#define get getValue', ...classOf([])].join('\n'), 3],
+] as const) {
+  assertCondition(refused(code)?.diagnostic?.line === line, `C++ operation macro refusal should fire for ${label} at line ${line}`);
+}
+for (const [label, code, call] of [
+  ['a type macro', ['#define ll long long', ...classOf(['  ll total() { return 1; }'])].join('\n'), opsCall],
+  ['a constant', ['#define MAXN 100005', ...classOf(['  int cap() { return MAXN; }'])].join('\n'), opsCall],
+  ['a function-like helper', ['#define SQR(x) ((x) * (x))', ...classOf(['  int sq(int v) { return SQR(v); }'])].join('\n'), opsCall],
+  ['an include guard', ['#ifndef STORE_H', '#define STORE_H', ...classOf([]), '#endif'].join('\n'), opsCall],
+  ['a dead macro', ['#define get getValue', '#undef get', ...classOf([])].join('\n'), opsCall],
+  ['a macro in #if 0', ['#if 0', '#define get getValue', '#endif', ...classOf([])].join('\n'), opsCall],
+  ['a macro named like an operation inside a comment', ['// #define get getValue', '/* #define delete x */', ...classOf([])].join('\n'), opsCall],
+  ['a private method name', ['#define helper other', 'class Store {', '  int helper() { return 0; }', 'public:', '  int get() { return 1; }', '};'].join('\n'), opsCall],
+  ['a solution-method program', operationMacroSource.replace('class KeyValueStore {', 'class Solution {'), { functionName: 'set', executionStyle: 'solution-method' }],
+] as const) {
+  assertCondition(refused(code, call) === undefined, `C++ operation macro refusal should not fire for ${label}`);
+}
 
 console.log('PASS: C++ rewriter source snapshots');
 

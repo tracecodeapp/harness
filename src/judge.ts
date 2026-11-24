@@ -168,3 +168,5 @@ export type {
   JudgeObservation,
   JudgeProcessResult,
 } from '../packages/judge/src/index';
+/** The codes of the compile-stage refusals raised before compiling unsupported source. */
+export type { JudgeSourceRefusalCode } from '../packages/judge/src/index';
