@@ -52,10 +52,17 @@ export function liveCellScore(candidate, control, frozenControl) {
 
 export function liveCellScoreWithControls(candidate, controls) {
   assert.ok(controls.length > 0);
-  for (const row of [candidate, ...controls.flatMap(({ result, frozen }) => [result, frozen])]) {
+  for (const row of [candidate, ...controls.map(({ result }) => result)]) {
     assert.ok(row.n > 0 && Number.isFinite(row.median) && Number.isFinite(row.p90));
   }
   const controlRows = controls.map(({ version, result, frozen }) => {
+    const frozenAvailable = frozen?.n > 0 && Number.isFinite(frozen.median) &&
+      Number.isFinite(frozen.p90);
+    if (!frozenAvailable) return {
+      version, result, frozen,
+      valid: false,
+      invalidReason: 'Frozen host-check reference unavailable',
+    };
     const drift = {
       median: relative(result.median, frozen.median),
       p90: relative(result.p90, frozen.p90),

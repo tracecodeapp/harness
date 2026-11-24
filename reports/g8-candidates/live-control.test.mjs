@@ -71,6 +71,19 @@ test('invalidates a cell when the live control drifts over ten percent', () => {
   assert.equal(score.pass, false);
 });
 
+test('invalidates rather than crashing when a frozen host-check reference is unavailable', () => {
+  const score = liveCellScore(
+    { n: 20, median: 90, p90: 190 },
+    { n: 20, median: 100, p90: 200 },
+    { n: 0 },
+  );
+  assert.equal(score.controls[0].valid, false);
+  assert.equal(score.controls[0].invalidReason, 'Frozen host-check reference unavailable');
+  assert.deepEqual(score.comparator, { median: 100, p90: 200 });
+  assert.deepEqual(score.thresholds, { median: 105, p90: 220.00000000000003 });
+  assert.equal(score.pass, false);
+});
+
 test('uses the better live control on the two Python warm Submit cells', () => {
   const score = liveCellScoreWithControls(
     { n: 20, median: 100, p90: 200 },
