@@ -271,14 +271,15 @@ async function openPage(context, version, url, group) {
     const cdp = await context.newCDPSession(page);
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: group.cpu });
     await page.goto(url, { waitUntil: 'load' });
-    await page.evaluate(async ({ language, stopSubmit, candidate }) => {
+    await page.evaluate(async ({ language, stopSubmit, candidate, candidateRuntime }) => {
       const { createSession } = await import('/entry.mjs');
-      window.bench = createSession(language, stopSubmit, candidate);
+      window.bench = createSession(language, stopSubmit, candidate, candidateRuntime);
   }, {
     language: group.language,
     stopSubmit: version === '0.20.1' || version === 'candidate-main',
     candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
       liveControl && version === '0.17.1' && ['java', 'csharp', 'python'].includes(group.language),
+    candidateRuntime: version.startsWith('candidate-') && group.language === testedLanguage,
   });
     return page;
   } catch (error) {

@@ -12,6 +12,7 @@ import {
   TRACECC_RUNTIME_ASSET_RELATIVE_PATH,
 } from 'tracecode-harness-under-test/tracekernel';
 import { javaWorkerPhaseTimings } from './java-candidate-witness.mjs';
+import { selectTraceOptions } from './trace-options.mjs';
 
 type Case = {
   id: string;
@@ -211,13 +212,13 @@ function measureCandidateRequests(language: string) {
   };
 }
 
-export function createSession(language: string, stopSubmit: boolean, candidate = false) {
+export function createSession(language: string, stopSubmit: boolean, candidate = false,
+  candidateRuntime = candidate) {
   if (crossOriginIsolated) throw new Error('Practice requires a non-isolated document');
   const assetBaseUrl = '/workers';
   const measured = candidate && ['java', 'csharp', 'python'].includes(language)
     ? measureCandidateRequests(language)
     : undefined;
-  const java = language === 'java' ? measured : undefined;
   const { pythonWorker, javascriptWorker, javascriptAlgorithmWorker, javaWorker, csharpWorker, cppWorker } =
     resolveBrowserRuntimeAssets();
   const host: any = createBrowserJudgeHost({
@@ -240,9 +241,8 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
 
   function bundle(fixture: Fixture, trace: boolean) {
     const controls = (getLanguageRuntimeProfile as any)(language).capabilities.tracing.controls;
-    const traceOptions = Object.fromEntries(
-      Object.entries(fixture.traceBudget).filter(([key]) => java || controls[key]),
-    );
+    const traceOptions = selectTraceOptions(fixture.traceBudget, controls,
+      candidateRuntime && language === 'java');
     return (createAlgorithmJudgeBundle as any)({
       id: (trace ? 'interactive-algorithm-' : 'algorithm-') + sequence++,
       language,
