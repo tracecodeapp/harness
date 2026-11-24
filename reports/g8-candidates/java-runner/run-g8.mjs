@@ -48,6 +48,7 @@ import {
   warmMetricName,
 } from '../warm-repeat-policy.mjs';
 import {
+  pythonFreshAaFailFast,
   pythonFreshAaPlan,
   pythonFreshAaRoundOrder,
   pythonFreshAaVersions,
@@ -752,6 +753,10 @@ try {
           if (sample.invalid || sample.refusal) count.invalid++;
           else if (!sample.excluded) count.kept++;
           await appendFile(samplesPath, JSON.stringify(sample) + '\n');
+          if (pythonFreshAa && pythonFreshAaFailFast(groupIndex, group, sample)) {
+            throw new Error('A/A C# repeat preflight rejected its first complete attempt: ' +
+              (sample.invalid ?? sample.refusal));
+          }
           if (sample.refusal && (!candidate || /login|sign in|unauthoriz|access denied/i.test(sample.refusal))) {
             throw new Error(sample.refusal);
           }

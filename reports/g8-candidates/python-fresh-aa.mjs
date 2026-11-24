@@ -3,13 +3,25 @@ import { expandWarmRepeatGroups } from './warm-repeat-policy.mjs';
 
 export const pythonFreshAaVersions = Object.freeze(['0.17.1-a', '0.17.1-b']);
 
-export const pythonFreshAaPlan = Object.freeze(expandWarmRepeatGroups(
+const expandedPlan = expandWarmRepeatGroups(
   ['python', 'csharp'].flatMap((language) =>
     ['binary-search', 'permutations'].map((problem) => ({
       language, cpu: 1, problem, state: 'warm', journey: 'run', target: 20,
       versions: [...pythonFreshAaVersions], continuation: true,
     }))),
-));
+);
+
+export const pythonFreshAaPlan = Object.freeze([
+  ...expandedPlan.filter(({ language, problem, csharpWarmMode }) =>
+    language === 'csharp' && problem === 'binary-search' && csharpWarmMode === 'repeat-run'),
+  ...expandedPlan.filter(({ language, problem, csharpWarmMode }) =>
+    !(language === 'csharp' && problem === 'binary-search' && csharpWarmMode === 'repeat-run')),
+]);
+
+export function pythonFreshAaFailFast(groupIndex, group, sample) {
+  return groupIndex === 0 && group.language === 'csharp' &&
+    group.csharpWarmMode === 'repeat-run' && Boolean(sample.invalid || sample.refusal);
+}
 
 export function pythonFreshAaRoundOrder(versions, round) {
   assert.deepEqual(versions, pythonFreshAaVersions);

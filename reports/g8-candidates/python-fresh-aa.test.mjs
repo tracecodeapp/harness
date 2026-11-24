@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   pythonFreshAaPlan,
+  pythonFreshAaFailFast,
   pythonFreshAaRoundOrder,
   pythonFreshAaVersions,
   withinFivePercent,
@@ -13,6 +14,8 @@ test('A/A proof contains fresh and repeat Run cells for both languages and probl
   assert.deepEqual(pythonFreshAaPlan.map(({ language, problem, journey, pythonWarmMode,
     csharpWarmMode, target, versions }) =>
     ({ language, problem, journey, mode: pythonWarmMode ?? csharpWarmMode, target, versions })), [
+    { language: 'csharp', problem: 'binary-search', journey: 'run', mode: csharpWarmModes.repeatRun,
+      target: 20, versions: pythonFreshAaVersions },
     { language: 'python', problem: 'binary-search', journey: 'run', mode: pythonWarmModes.fresh,
       target: 20, versions: pythonFreshAaVersions },
     { language: 'python', problem: 'binary-search', journey: 'run', mode: pythonWarmModes.repeatRun,
@@ -23,13 +26,20 @@ test('A/A proof contains fresh and repeat Run cells for both languages and probl
       target: 20, versions: pythonFreshAaVersions },
     { language: 'csharp', problem: 'binary-search', journey: 'run', mode: csharpWarmModes.fresh,
       target: 20, versions: pythonFreshAaVersions },
-    { language: 'csharp', problem: 'binary-search', journey: 'run', mode: csharpWarmModes.repeatRun,
-      target: 20, versions: pythonFreshAaVersions },
     { language: 'csharp', problem: 'permutations', journey: 'run', mode: csharpWarmModes.fresh,
       target: 20, versions: pythonFreshAaVersions },
     { language: 'csharp', problem: 'permutations', journey: 'run', mode: csharpWarmModes.repeatRun,
       target: 20, versions: pythonFreshAaVersions },
   ]);
+});
+
+test('fails fast only when the first uncaptured C# repeat attempt is rejected', () => {
+  const first = pythonFreshAaPlan[0];
+  assert.equal(pythonFreshAaFailFast(0, first, { invalid: 'witness differs' }), true);
+  assert.equal(pythonFreshAaFailFast(0, first, { refusal: 'refused' }), true);
+  assert.equal(pythonFreshAaFailFast(0, first, { kept: true }), false);
+  assert.equal(pythonFreshAaFailFast(1, first, { invalid: 'witness differs' }), false);
+  assert.equal(pythonFreshAaFailFast(0, pythonFreshAaPlan[1], { invalid: 'witness differs' }), false);
 });
 
 test('A/A labels alternate first position every round', () => {
