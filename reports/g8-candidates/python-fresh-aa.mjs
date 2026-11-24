@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict';
-import { expandPythonWarmGroups } from './python-warm-policy.mjs';
+import { expandWarmRepeatGroups } from './warm-repeat-policy.mjs';
 
 export const pythonFreshAaVersions = Object.freeze(['0.17.1-a', '0.17.1-b']);
 
-export const pythonFreshAaPlan = Object.freeze(expandPythonWarmGroups(
-  ['binary-search', 'permutations'].map((problem) => ({
-    language: 'python', cpu: 1, problem, state: 'warm', journey: 'run', target: 20,
-    versions: [...pythonFreshAaVersions], continuation: true,
-  }))));
+export const pythonFreshAaPlan = Object.freeze(expandWarmRepeatGroups(
+  ['python', 'csharp'].flatMap((language) =>
+    ['binary-search', 'permutations'].map((problem) => ({
+      language, cpu: 1, problem, state: 'warm', journey: 'run', target: 20,
+      versions: [...pythonFreshAaVersions], continuation: true,
+    }))),
+));
 
 export function pythonFreshAaRoundOrder(versions, round) {
   assert.deepEqual(versions, pythonFreshAaVersions);

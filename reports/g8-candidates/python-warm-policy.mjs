@@ -54,6 +54,21 @@ export function pythonWarmMetricName(group, endpoint) {
   return endpoint;
 }
 
+export function pairPythonRepeatGroups(groups, candidateVersions) {
+  return groups.flatMap((group) => {
+    const repeat = [pythonWarmModes.repeatRun, pythonWarmModes.submitAfterRun]
+      .includes(group.pythonWarmMode);
+    if (!repeat || group.pairedControlFor !== undefined) return [group];
+    const candidates = group.versions.filter((version) => candidateVersions.includes(version));
+    if (candidates.length === 0) return [group];
+    return candidates.map((policy) => ({
+      ...group,
+      versions: ['0.17.1', policy],
+      pairedControlFor: policy,
+    }));
+  });
+}
+
 // This helper owns the isolation invariant so both runners exercise the same
 // code path. A warm attempt opens one page, warms it outside the measurement,
 // optionally performs exactly one Run primer, performs one measured action,

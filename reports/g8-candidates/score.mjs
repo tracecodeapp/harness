@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scoreThresholds } from './score-thresholds.mjs';
 import { liveCellScoreWithControls, liveObservationVersion } from './live-control.mjs';
-import { pythonWarmMetricName } from './python-warm-policy.mjs';
+import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 
 const [archive, raw, primary] = process.argv.slice(2);
 const languages = ['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'];
@@ -41,14 +41,14 @@ function collect(folder, prefix) {
     for (const pressure of [sample.beforeInitial, ...(group.continuation ? [sample.beforeSecond] : [])])
       assert.ok(pressure?.oneMinute >= 0 && pressure.oneMinute <= 2);
     for (const endpoint of endpoints(group)) {
-      const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+      const measuredEndpoint = warmMetricName(group, endpoint);
       const measured = sample.metrics[measuredEndpoint];
       assert.ok(Number.isFinite(measured) && measured > 0);
       const observationVersion = liveObservationVersion(sample.version, group.pairedControlFor);
       const name = key(group, measuredEndpoint) + '/' + observationVersion;
       if (!values.has(name)) values.set(name, []);
       values.get(name).push(measured);
-      if (sample.language === 'java') {
+      if (['java', 'csharp', 'python'].includes(sample.language)) {
         if (!cacheReceipts.has(name)) cacheReceipts.set(name, []);
         cacheReceipts.get(name).push(sample.cache);
       }
@@ -95,7 +95,7 @@ function required(scope) {
         .map(endpoint => key({language: primary, cpu, problem, state}, endpoint)))),
     ...(scope === 'desktop' ? [primary + '/1/binary-search/warm/lessonContinue'] : []),
   ];
-  if (primary !== 'python') return base;
+  if (!['python', 'csharp'].includes(primary)) return base;
   return [
     ...base,
     ...['binary-search', 'permutations'].flatMap((problem) => [
@@ -132,15 +132,24 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       : ['candidate-main', 'candidate-deploy'];
     if (scopeLiveControl) {
       pairedCandidateControls = observed.metadata.liveControl.pairedCandidateControls === true;
+      const pairedRepeatControls = observed.metadata.liveControl.pairedRepeatControls === true;
       assert.deepEqual(observed.metadata.liveControl, {
         control: '0.17.1', candidateVersions: expectedCandidateVersions,
         alternatingOrderPerRound: true,
         ...(pairedCandidateControls && { pairedCandidateControls: true }),
+        ...(pairedRepeatControls && { pairedRepeatControls: true }),
         ...(primary === 'python' && scope !== 'spot' && { pythonWarmSubmitControl: '0.20.1' }),
       });
       if (pairedCandidateControls) {
         assert.ok(scope === 'phone' || scope === 'spot');
         for (const group of observed.metadata.schedule) {
+          assert.ok(expectedCandidateVersions.includes(group.pairedControlFor));
+          assert.deepEqual(group.versions, ['0.17.1', group.pairedControlFor]);
+        }
+      }
+      if (pairedRepeatControls) {
+        assert.equal(scope, 'desktop');
+        for (const group of observed.metadata.schedule.filter(isRepeatWarmMode)) {
           assert.ok(expectedCandidateVersions.includes(group.pairedControlFor));
           assert.deepEqual(group.versions, ['0.17.1', group.pairedControlFor]);
         }
@@ -173,34 +182,34 @@ for (const scope of ['desktop', 'phone', 'spot']) {
     invalid: observed.samples.filter(row => row.invalid || row.refusal).length,
     excluded: observed.samples.filter(row => row.excluded).length }));
   for (const cell of required(scope)) {
-    const pythonRepeat = /^python\/(1|4)\/(binary-search|permutations)\/warm\/(repeat|submitAfterRun)/.test(cell);
+    const repeatCell = /^(python|csharp)\/(1|4)\/(binary-search|permutations)\/warm\/(repeat|submitAfterRun)/.test(cell);
     const warmCsharp = /^csharp\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
     const history = Object.fromEntries(versions.map(version => [version, stats(archived.get(cell + '/' + version))]));
-    const requiredHistory = pythonRepeat ? [] : warmCsharp || cell.endsWith('/lessonContinue')
+    const requiredHistory = repeatCell ? [] : warmCsharp || cell.endsWith('/lessonContinue')
       ? [history['0.20.1']] : Object.values(history);
-    assert.ok(pythonRepeat || requiredHistory.every(row =>
+    assert.ok(repeatCell || requiredHistory.every(row =>
       row.n >= (cell.startsWith('java/') || scope === 'phone' ? 12 : 20)), cell);
-    const thresholds = pythonRepeat ? undefined : scoreThresholds(scope, requiredHistory);
+    const thresholds = repeatCell ? undefined : scoreThresholds(scope, requiredHistory);
     for (const policy of policyFor(scope, cell)) {
       const result = stats(observed.values.get(cell + '/' + policy));
-      const cache = primary === 'java'
+      const cache = ['java', 'csharp', 'python'].includes(primary)
         ? cacheStats(observed.cacheReceipts.get(cell + '/' + policy),
             cell.endsWith('/submitVerdicts') ? ['ordinary'] : ['ordinary', 'observer'])
         : undefined;
       const complete = result.n === 20;
-      const pass = pythonRepeat ? undefined
+      const pass = repeatCell ? undefined
         : complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
       const pythonWarmSubmit = /^python\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
       const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] : ['0.17.1'];
       const controls = controlVersions.map((version) => ({
         version,
         result: stats(observed.values.get(cell + '/' +
-          liveObservationVersion(version, pairedCandidateControls ? policy : undefined))),
+          liveObservationVersion(version, pairedCandidateControls || repeatCell ? policy : undefined))),
         frozen: history[version],
       }));
       const sameWindowComplete = liveControl === true && controls.every(({ result: row }) => row.n === 20);
       const sameWindow = complete && sameWindowComplete
-        ? pythonRepeat
+        ? repeatCell
           ? (() => {
               const comparator = {
                 median: Math.min(...controls.map(({ result: row }) => row.median)),
@@ -218,15 +227,15 @@ for (const scope of ['desktop', 'phone', 'spot']) {
         : undefined;
       const id = cell + '/' + policy;
       if (!complete) summary.incomplete.push(id);
-      else if (!pythonRepeat && !pass && scope === 'spot') summary.frozenEscalations.push(id);
-      else if (!pythonRepeat && !pass && primary === 'python' && scope === 'phone') {
+      else if (!repeatCell && !pass && scope === 'spot') summary.frozenEscalations.push(id);
+      else if (!repeatCell && !pass && primary === 'python' && scope === 'phone') {
         (summary.pythonPhoneFrozen[policy] ??= []).push(id);
-      } else if (!pythonRepeat && !pass) summary.frozenFailed.push(id);
+      } else if (!repeatCell && !pass) summary.frozenFailed.push(id);
       if (!sameWindowComplete) summary.noComparator.push(id);
       else if (sameWindow && sameWindow.controls.some(({ valid }) => !valid)) summary.controlInvalid.push(id);
       else if (sameWindow && !sameWindow.pass) summary.sameWindowFailed.push(id);
       console.log(JSON.stringify({ scope, cell, policy, result, cache, history,
-        frozenTable: pythonRepeat ? { notApplicable: true, complete } : { thresholds, complete, pass },
+        frozenTable: repeatCell ? { notApplicable: true, complete } : { thresholds, complete, pass },
         sameWindow: sameWindow ?? { complete: false, controls },
         ...(warmCsharp && { advisory: '0.17.1' }) }));
     }

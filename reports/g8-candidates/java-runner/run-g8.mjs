@@ -32,12 +32,17 @@ import {
 import { referenceRerecordPlan, referenceRoundOrder } from '../reference-rerecord.mjs';
 import { releasePythonWarmPlan } from '../release-python-warm.mjs';
 import {
-  expandPythonWarmGroups,
-  openIsolatedPythonWarmAttempt,
-  pythonWarmAttemptPlan,
-  pythonWarmMetricName,
   pythonWarmModes,
 } from '../python-warm-policy.mjs';
+import { csharpWarmModes } from '../csharp-warm-policy.mjs';
+import {
+  expandWarmRepeatGroups,
+  openIsolatedWarmAttempt,
+  pairRepeatGroups,
+  repeatPenaltyLanguages,
+  warmAttemptPlan,
+  warmMetricName,
+} from '../warm-repeat-policy.mjs';
 import {
   pythonFreshAaPlan,
   pythonFreshAaRoundOrder,
@@ -313,7 +318,7 @@ async function openPage(context, version, url, group) {
     stopSubmit: version === '0.20.1' || version === 'candidate-main',
     candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
       liveControl && version === '0.17.1' && ['java', 'csharp', 'python'].includes(group.language) ||
-      (releasePythonWarm || pythonFreshAa) && group.language === 'python',
+      (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language),
     candidateRuntime: version.startsWith('candidate-') && group.language === testedLanguage,
   });
     return page;
@@ -324,7 +329,8 @@ async function openPage(context, version, url, group) {
 }
 
 function candidateOutcome(result, role, caseCount, caseId, version, language) {
-  if ((releasePythonWarm || pythonFreshAa) && language === 'python') {
+  if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
+    if (language === 'csharp') return csharpProductionControlOutcome(result);
     return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount);
   }
   if (liveControl && version === '0.17.1') {
@@ -340,9 +346,9 @@ function candidateOutcome(result, role, caseCount, caseId, version, language) {
     role === 'run' || version === 'candidate-main');
 }
 
-function candidateCacheReceipt(result) {
-  if (testedLanguage === 'java') return javaCandidateCacheReceipt(result);
-  if (testedLanguage === 'csharp') return csharpCandidateCacheReceipt(result);
+function candidateCacheReceipt(result, language = testedLanguage) {
+  if (language === 'java') return javaCandidateCacheReceipt(result);
+  if (language === 'csharp') return csharpCandidateCacheReceipt(result);
   return pythonCandidateCacheReceipt(result);
 }
 
@@ -402,13 +408,13 @@ function expectedGroupSeconds(group) {
 
 function plan() {
   if (pythonFreshAa) return structuredClone(pythonFreshAaPlan);
-  if (pythonLocalDiagnostic) return expandPythonWarmGroups([
+  if (pythonLocalDiagnostic) return expandWarmRepeatGroups([
     { language: 'python', cpu: 1, problem: 'binary-search', state: 'warm', journey: 'run',
       target: 5, versions: ['0.17.1', 'candidate-deploy'], continuation: false },
     { language: 'python', cpu: 1, problem: 'binary-search', state: 'warm', journey: 'submit',
       target: 5, versions: ['0.17.1', 'candidate-deploy'], continuation: false },
   ], { submitAfterRun: true });
-  if (releasePythonWarm) return expandPythonWarmGroups(
+  if (releasePythonWarm) return expandWarmRepeatGroups(
     structuredClone(releasePythonWarmPlan), { submitAfterRun: true });
   if (referenceRerecord) return structuredClone(referenceRerecordPlan);
   const groups = [];
@@ -445,7 +451,10 @@ function plan() {
         continuation: false }));
     const scheduled = liveControl ? liveControlPairGroups(spotGroups, candidateVersions) : spotGroups;
     return scheduled.map((group) => group.language === 'python' && group.state === 'warm'
-      ? { ...group, pythonWarmMode: pythonWarmModes.fresh } : group);
+      ? { ...group, pythonWarmMode: pythonWarmModes.fresh }
+      : group.language === 'csharp' && group.state === 'warm'
+      ? { ...group, csharpWarmMode: csharpWarmModes.fresh }
+      : group);
   }
   if (aaClosing) return aaClosingControlPlan(groups);
   if (aaControl) return aaControlPlan(groups);
@@ -455,8 +464,9 @@ function plan() {
       : groups;
     const decide = g => testedLanguage === 'java' && candidateScope === 'desktop' &&
       g.problem === 'binary-search' && g.state === 'warm' && g.journey === 'run';
-    const expandedGroups = testedLanguage === 'python'
-      ? expandPythonWarmGroups(scheduledGroups, { submitAfterRun: true })
+    const expandedGroups = repeatPenaltyLanguages.includes(testedLanguage)
+      ? pairRepeatGroups(
+          expandWarmRepeatGroups(scheduledGroups, { submitAfterRun: true }), candidateVersions)
       : scheduledGroups;
     return expandedGroups.sort((a, b) =>
       Number(decide(b)) - Number(decide(a)) || expectedGroupSeconds(a) - expectedGroupSeconds(b));
@@ -486,9 +496,9 @@ function addressedBySample(sample) {
     ['verdicts', sample.initial?.elapsedMs],
     ['firstTrace', sample.initial?.firstTraceMs],
     ...(sample.continuation ? [['secondTrace', sample.second?.elapsedMs]] : []),
-  ].map(([endpoint, value]) => [pythonWarmMetricName(sample, endpoint), value]));
+  ].map(([endpoint, value]) => [warmMetricName(sample, endpoint), value]));
   const endpoint = sample.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts';
-  return { [pythonWarmMetricName(sample, endpoint)]: sample.initial?.elapsedMs };
+  return { [warmMetricName(sample, endpoint)]: sample.initial?.elapsedMs };
 }
 
 const prepared = {};
@@ -514,7 +524,8 @@ const report = {
     date: '2026-11-24', target: 20, interleavedPerRound: true, alternatingOrderPerRound: true,
   } }),
   ...(releasePythonWarm && { releasePythonWarm: {
-    release: '0.17.3', target: 20, alternatingOrderPerRound: true,
+    release: '0.17.3', languages: ['python', 'csharp'], target: 20,
+    alternatingOrderPerRound: true,
     pythonWarmSubmitControl: '0.20.1',
   } }),
   ...(pythonLocalDiagnostic && { pythonLocalDiagnostic: {
@@ -522,11 +533,16 @@ const report = {
   } }),
   ...(pythonFreshAa && { pythonFreshAa: {
     sourceVersion: '0.17.1', labels: pythonFreshAaVersions, target: 20,
-    freshPagePerSample: true, repeatRun: true, alternatingOrderPerRound: true,
+    languages: ['python', 'csharp'], freshPagePerSample: true,
+    repeatRun: true, alternatingOrderPerRound: true,
   }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     ...(['phone', 'spot'].includes(candidateScope) && { pairedCandidateControls: true }),
+    ...(candidateScope === 'desktop' && repeatPenaltyLanguages.includes(testedLanguage) &&
+      { pairedRepeatControls: true }),
+    ...(testedLanguage === 'python' && candidateScope !== 'spot' &&
+      { pythonWarmSubmitControl: '0.20.1' }),
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,
@@ -588,9 +604,9 @@ try {
           let page = warmPages.get(version);
           let isolatedWarm;
           try {
-            const warmPlan = pythonWarmAttemptPlan(group);
+            const warmPlan = warmAttemptPlan(group);
             if (warmPlan.freshPage) {
-              isolatedWarm = await openIsolatedPythonWarmAttempt(group, {
+              isolatedWarm = await openIsolatedWarmAttempt(group, {
                 open: () => openPage(contexts[version], version, prepared[version].url, group),
                 warm: async (freshPage) => {
                   sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
@@ -607,12 +623,12 @@ try {
                   if (primeRefusal || primeError) throw new Error(primeRefusal ?? primeError);
                   if ((candidate || releasePythonWarm || pythonFreshAa) &&
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
-                        liveControl && version === '0.17.1' && group.language === 'python' ||
-                        (releasePythonWarm || pythonFreshAa) && group.language === 'python')) {
+                        liveControl && version === '0.17.1' && repeatPenaltyLanguages.includes(group.language) ||
+                        (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
                     sample.primeInvalid = candidateOutcome(prime, 'run', fixture.cases.length,
                       fixture.cases[0].id, version, group.language);
                     if (sample.primeInvalid) throw new Error('Prime witness: ' + sample.primeInvalid);
-                    sample.primeCache = candidateCacheReceipt(prime);
+                    sample.primeCache = candidateCacheReceipt(prime, group.language);
                   }
                   return prime;
                 },
@@ -656,7 +672,7 @@ try {
                   (version.startsWith('candidate-') && group.language === testedLanguage ||
                     liveControl && version === '0.17.1' &&
                       ['java', 'csharp', 'python'].includes(group.language) ||
-                    (releasePythonWarm || pythonFreshAa) && group.language === 'python') &&
+                    (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
                   !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
@@ -675,7 +691,7 @@ try {
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
                         liveControl && version === '0.17.1' &&
                           ['java', 'csharp', 'python'].includes(group.language) ||
-                        (releasePythonWarm || pythonFreshAa) && group.language === 'python') &&
+                        (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
                     sample.invalid = candidateOutcome(sample.second, 'click', 1,
                       fixture.cases[1].id, version, group.language);
@@ -699,10 +715,12 @@ try {
           }
 
           if ((group.language === testedLanguage && candidate && version.startsWith('candidate-')) ||
-              ((releasePythonWarm || pythonFreshAa) && group.language === 'python')) {
+              (liveControl && version === '0.17.1' &&
+                ['java', 'csharp', 'python'].includes(group.language)) ||
+              ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
             sample.cache = {
-              initial: candidateCacheReceipt(sample.initial),
-              ...(sample.second && { second: candidateCacheReceipt(sample.second) }),
+              initial: candidateCacheReceipt(sample.initial, group.language),
+              ...(sample.second && { second: candidateCacheReceipt(sample.second, group.language) }),
             };
           }
           sample.wallMs = Date.now() - attemptStarted;

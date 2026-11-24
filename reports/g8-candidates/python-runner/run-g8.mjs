@@ -55,6 +55,7 @@ edit("import { pythonProductionControlOutcome } from './python-production-contro
 import {
   expandPythonWarmGroups,
   openIsolatedPythonWarmAttempt,
+  pairPythonRepeatGroups,
   pythonWarmAttemptPlan,
   pythonWarmMetricName,
 } from './python-warm-policy.mjs';`);
@@ -80,7 +81,7 @@ edit("stopSubmit: version === '0.20.1'", "stopSubmit: version !== '0.17.1' && ve
 edit("const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;", "const target = 20;");
 edit("const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];", "const cheapFirst = ['python'];");
 edit("if (mode !== 'smoke') return groups.sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));",
-  "if (mode !== 'smoke') return expandPythonWarmGroups(groups, { submitAfterRun: true }).sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));");
+  "if (mode !== 'smoke') return pairPythonRepeatGroups(expandPythonWarmGroups(groups, { submitAfterRun: true }), candidateVersions).sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));");
 edit('              language, cpu, problem, state, journey, target, versions,', `
               language, cpu, problem, state, journey, target,
               versions: language === 'python' && cpu === 1 && state === 'warm' && journey === 'submit'
@@ -109,6 +110,7 @@ edit(`function addressedBySample(sample) {
 }`);
 edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-baseline.v1',
   liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
+    pairedRepeatControls: true,
     ...(windowName === 'desktop-b' && { pythonWarmSubmitControl: '0.20.1' }) },`);
 edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();

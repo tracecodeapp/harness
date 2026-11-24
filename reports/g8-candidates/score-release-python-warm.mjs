@@ -6,10 +6,14 @@ import { metricEndpoints, relative, stats } from './aa-score-lib.mjs';
 import { liveCellScoreWithControls, liveRoundOrder } from './live-control.mjs';
 import { releasePythonWarmPlan } from './release-python-warm.mjs';
 import {
-  expandPythonWarmGroups,
-  pythonWarmMetricName,
   pythonWarmModes,
 } from './python-warm-policy.mjs';
+import { csharpWarmModes } from './csharp-warm-policy.mjs';
+import {
+  expandWarmRepeatGroups,
+  isRepeatWarmMode,
+  warmMetricName,
+} from './warm-repeat-policy.mjs';
 
 const [archive, raw] = process.argv.slice(2);
 assert.ok(archive && raw);
@@ -36,7 +40,7 @@ function collect(folder, prefix) {
     if (!sample.kept) continue;
     assert.ok(!sample.invalid && !sample.refusal && !sample.excluded);
     for (const endpoint of metricEndpoints(group)) {
-      const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+      const measuredEndpoint = warmMetricName(group, endpoint);
       const name = key(group, measuredEndpoint) + '/' + sample.version;
       if (!values.has(name)) values.set(name, []);
       values.get(name).push(sample.metrics[measuredEndpoint]);
@@ -45,13 +49,17 @@ function collect(folder, prefix) {
   return { metadata, samples, values };
 }
 
-const frozen = collect(archive, 'speed-desktop-b');
+const frozenByLanguage = {
+  python: collect(archive, 'speed-desktop-b'),
+  csharp: collect(archive, 'speed-desktop-a-with-topup'),
+};
 const observed = collect(raw, 'release-python-warm');
 assert.deepEqual(observed.metadata.releasePythonWarm, {
-  release: '0.17.3', target: 20, alternatingOrderPerRound: true,
+  release: '0.17.3', languages: ['python', 'csharp'], target: 20,
+  alternatingOrderPerRound: true,
   pythonWarmSubmitControl: '0.20.1',
 });
-const expectedPlan = expandPythonWarmGroups(
+const expectedPlan = expandWarmRepeatGroups(
   releasePythonWarmPlan, { submitAfterRun: true });
 assert.deepEqual(observed.metadata.schedule, expectedPlan);
 assert.equal(observed.metadata.complete, true);
@@ -60,21 +68,23 @@ for (const sample of observed.samples) {
   assert.equal(sample.position, liveRoundOrder(group.versions, sample.round).indexOf(sample.version));
 }
 for (const field of ['host', 'browser', 'fixtures', 'appRefs']) {
-  assert.deepEqual(observed.metadata[field], frozen.metadata[field], field);
+  assert.deepEqual(observed.metadata[field], frozenByLanguage.python.metadata[field], field);
+  assert.deepEqual(observed.metadata[field], frozenByLanguage.csharp.metadata[field], field);
 }
 
 const otherWarm = [];
 for (const group of expectedPlan.filter(({ journey }) => journey === 'run')) {
   for (const endpoint of metricEndpoints(group)) {
-    const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+    const measuredEndpoint = warmMetricName(group, endpoint);
     const cell = key(group, measuredEndpoint);
     const liveControl = stats(observed.values.get(cell + '/0.17.1'));
     const release = stats(observed.values.get(cell + '/release-deploy'));
     assert.equal(liveControl.n, 20);
     assert.equal(release.n, 20);
-    const repeat = group.pythonWarmMode === pythonWarmModes.repeatRun;
+    const repeat = isRepeatWarmMode(group);
     const frozenCell = key(group, endpoint);
-    const frozenControl = repeat ? undefined : stats(frozen.values.get(frozenCell + '/0.17.1'));
+    const frozenControl = repeat ? undefined : stats(
+      frozenByLanguage[group.language].values.get(frozenCell + '/0.17.1'));
     const drift = repeat ? undefined : relative(liveControl, frozenControl);
     const valid = repeat || Math.abs(drift.medianPct) <= 10 && Math.abs(drift.p90Pct) <= 10;
     const thresholds = { median: liveControl.median * 1.05, p90: liveControl.p90 * 1.10 };
@@ -84,42 +94,52 @@ for (const group of expectedPlan.filter(({ journey }) => journey === 'run')) {
     console.log(JSON.stringify({ otherWarm: row }));
   }
 }
-const fallbackHealthy = otherWarm.filter(({ repeat }) => !repeat).every(({ valid }) => valid);
+const pythonFallbackHealthy = otherWarm.filter(({ cell, repeat }) =>
+  cell.startsWith('python/') && !repeat).every(({ valid }) => valid);
 
 const submitWarm = [];
-for (const group of expectedPlan.filter(({ journey, pythonWarmMode }) =>
-  journey === 'submit' && pythonWarmMode === pythonWarmModes.fresh)) {
+for (const group of expectedPlan.filter(({ journey, pythonWarmMode, csharpWarmMode }) =>
+  journey === 'submit' &&
+    (pythonWarmMode === pythonWarmModes.fresh || csharpWarmMode === csharpWarmModes.fresh))) {
   const cell = key(group, 'submitVerdicts');
   const release = stats(observed.values.get(cell + '/release-deploy'));
-  const controls = ['0.17.1', '0.20.1'].map((version) => {
+  const controlVersions = group.language === 'python' ? ['0.17.1', '0.20.1'] : ['0.17.1'];
+  const controls = controlVersions.map((version) => {
     const result = stats(observed.values.get(cell + '/' + version));
-    const reference = hostReference.get(cell + '/' + version);
-    assert.ok(reference);
+    const rerecorded = hostReference.get(cell + '/' + version);
+    const frozenReference = stats(frozenByLanguage[group.language].values.get(cell + '/' + version));
+    const reference = rerecorded?.newReference ?? frozenReference;
     return {
       version,
       result,
-      oldReference: reference.oldReference,
-      newReference: reference.newReference,
-      driftOld: relative(result, reference.oldReference),
-      driftNew: relative(result, reference.newReference),
+      reference,
+      ...(rerecorded && {
+        oldReference: rerecorded.oldReference,
+        newReference: rerecorded.newReference,
+        driftOld: relative(result, rerecorded.oldReference),
+      }),
+      drift: relative(result, reference),
     };
   });
   assert.equal(release.n, 20);
   assert.ok(controls.every(({ result }) => result.n === 20));
-  const scored = liveCellScoreWithControls(release, controls.map(({ version, result, newReference }) =>
-    ({ version, result, frozen: newReference })));
+  const scored = liveCellScoreWithControls(release, controls.map(({ version, result, reference }) =>
+    ({ version, result, frozen: reference })));
   const numericalPass = release.median <= scored.thresholds.median && release.p90 <= scored.thresholds.p90;
+  const controlsValid = scored.controls.every(({ valid }) => valid);
+  const hostHealthy = group.language === 'python' ? pythonFallbackHealthy : controlsValid;
   const row = {
     cell, release, controls, comparator: scored.comparator, thresholds: scored.thresholds,
-    numericalPass, fallbackHealthy, formalPass: fallbackHealthy && numericalPass,
+    numericalPass, controlsValid, hostHealthy, formalPass: hostHealthy && numericalPass,
   };
   submitWarm.push(row);
   console.log(JSON.stringify({ submitWarm: row }));
 }
 
 const submitAfterRun = [];
-for (const group of expectedPlan.filter(({ pythonWarmMode }) =>
-  pythonWarmMode === pythonWarmModes.submitAfterRun)) {
+for (const group of expectedPlan.filter(({ pythonWarmMode, csharpWarmMode }) =>
+  pythonWarmMode === pythonWarmModes.submitAfterRun ||
+  csharpWarmMode === csharpWarmModes.submitAfterRun)) {
   const cell = key(group, 'submitAfterRunVerdicts');
   const release = stats(observed.values.get(cell + '/release-deploy'));
   const control = stats(observed.values.get(cell + '/0.17.1'));
@@ -133,12 +153,12 @@ for (const group of expectedPlan.filter(({ pythonWarmMode }) =>
 }
 
 console.log(JSON.stringify({ summary: {
-  fallbackHealthy,
+  pythonFallbackHealthy,
   otherWarmInvalid: otherWarm.filter(({ valid }) => !valid).map(({ cell }) => cell),
   otherWarmFailed: otherWarm.filter(({ pass }) => !pass).map(({ cell }) => cell),
   submitFailed: submitWarm.filter(({ formalPass }) => !formalPass).map(({ cell }) => cell),
   submitAfterRunFailed: submitAfterRun.filter(({ pass }) => !pass).map(({ cell }) => cell),
 } }));
-if (!fallbackHealthy || otherWarm.some(({ pass }) => !pass) ||
+if (!pythonFallbackHealthy || otherWarm.some(({ valid, pass }) => !valid || !pass) ||
     submitWarm.some(({ formalPass }) => !formalPass) ||
     submitAfterRun.some(({ pass }) => !pass)) process.exitCode = 1;

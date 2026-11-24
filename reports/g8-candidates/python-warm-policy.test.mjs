@@ -6,6 +6,7 @@ import {
   pythonWarmMetricName,
   pythonWarmModes,
   openIsolatedPythonWarmAttempt,
+  pairPythonRepeatGroups,
 } from './python-warm-policy.mjs';
 
 const group = (journey) => ({
@@ -38,6 +39,17 @@ test('adds Submit-after-Run only when receipts have enabled that formal cell', (
   assert.deepEqual(expanded[1].versions, ['0.17.1', 'candidate']);
   assert.deepEqual(pythonWarmAttemptPlan(expanded[1]), { freshPage: true, primeJourney: 'run' });
   assert.equal(pythonWarmMetricName(expanded[1], 'submitVerdicts'), 'submitAfterRunVerdicts');
+});
+
+test('pairs each Python repeat policy with its own production control', () => {
+  const repeat = expandPythonWarmGroups([{
+    ...group('run'), versions: ['0.17.1', 'candidate-a', 'candidate-b'],
+  }])[1];
+  assert.deepEqual(pairPythonRepeatGroups([repeat], ['candidate-a', 'candidate-b'])
+    .map(({ versions, pairedControlFor }) => ({ versions, pairedControlFor })), [
+    { versions: ['0.17.1', 'candidate-a'], pairedControlFor: 'candidate-a' },
+    { versions: ['0.17.1', 'candidate-b'], pairedControlFor: 'candidate-b' },
+  ]);
 });
 
 test('never reuses a page between measured warm attempts', async () => {

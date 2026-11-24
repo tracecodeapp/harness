@@ -2,10 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { metricEndpoints, stats } from './aa-score-lib.mjs';
-import {
-  pythonWarmMetricName,
-  pythonWarmModes,
-} from './python-warm-policy.mjs';
+import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 import {
   pythonFreshAaPlan,
   pythonFreshAaRoundOrder,
@@ -22,7 +19,8 @@ const samples = readFileSync(join(raw, prefix + '-samples.jsonl'), 'utf8').trim(
 const labels = pythonFreshAaVersions;
 assert.deepEqual(metadata.pythonFreshAa, {
   sourceVersion: '0.17.1', labels, target: 20,
-  freshPagePerSample: true, repeatRun: true, alternatingOrderPerRound: true,
+  languages: ['python', 'csharp'], freshPagePerSample: true,
+  repeatRun: true, alternatingOrderPerRound: true,
 });
 assert.deepEqual(metadata.schedule, pythonFreshAaPlan);
 assert.equal(metadata.complete, true);
@@ -40,18 +38,22 @@ for (const sample of samples) {
   assert.ok(sample.kept && !sample.invalid && !sample.excluded && !sample.refusal);
   const expectedOrder = pythonFreshAaRoundOrder(group.versions, sample.round);
   assert.equal(sample.position, expectedOrder.indexOf(sample.version));
-  assert.ok(sample.initial?.python?.phases?.length > 0, 'Missing measured worker phases');
+  const phases = group.language === 'python'
+    ? sample.initial?.python?.phases : sample.initial?.csharp?.phases;
+  assert.ok(phases?.length > 0, 'Missing measured worker phases');
   assert.ok(sample.cache?.initial, 'Missing measured cache receipt');
-  if (group.pythonWarmMode === pythonWarmModes.repeatRun) {
-    assert.ok(sample.prime?.python?.phases?.length > 0, 'Missing primer worker phases');
+  if (isRepeatWarmMode(group)) {
+    const primePhases = group.language === 'python'
+      ? sample.prime?.python?.phases : sample.prime?.csharp?.phases;
+    assert.ok(primePhases?.length > 0, 'Missing primer worker phases');
     assert.ok(sample.primeCache, 'Missing primer cache receipt');
   } else {
     assert.equal(sample.prime, undefined, 'Fresh cell unexpectedly primed the page');
   }
   for (const endpoint of metricEndpoints(group)) {
-    const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+    const measuredEndpoint = warmMetricName(group, endpoint);
     const value = sample.metrics[measuredEndpoint];
-    const cell = [group.problem, measuredEndpoint].join('/');
+    const cell = [group.language, group.problem, measuredEndpoint].join('/');
     push(cell + '/label/' + sample.version, value);
     push(cell + '/position/' + sample.position, value);
     push(cell + '/label-position/' + sample.version + '/' + sample.position, value);
@@ -61,8 +63,8 @@ for (const sample of samples) {
 let pass = true;
 for (const group of metadata.schedule) {
   for (const endpoint of metricEndpoints(group)) {
-    const measuredEndpoint = pythonWarmMetricName(group, endpoint);
-    const cell = [group.problem, measuredEndpoint].join('/');
+    const measuredEndpoint = warmMetricName(group, endpoint);
+    const cell = [group.language, group.problem, measuredEndpoint].join('/');
     const labelStats = Object.fromEntries(labels.map((label) =>
       [label, stats(values.get(cell + '/label/' + label))]));
     const positionStats = Object.fromEntries([0, 1].map((position) =>
