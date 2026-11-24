@@ -56,6 +56,14 @@ import {
   pythonFreshAaRoundOrder,
   pythonFreshAaVersions,
 } from '../python-fresh-aa.mjs';
+import {
+  submitAaFailFast,
+  submitAaLabelPairs,
+  submitAaPlan,
+  submitAaRoundOrder,
+  submitAaSourceVersion,
+  submitAaVersions,
+} from '../submit-aa.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -78,6 +86,8 @@ const referenceRerecord = process.env.SPEED_G8_REFERENCE_RERECORD === '1';
 const releasePythonWarm = process.env.SPEED_G8_RELEASE_PYTHON_WARM === '1';
 const pythonLocalDiagnostic = process.env.SPEED_PYTHON_LOCAL_DIAGNOSTIC === '1';
 const pythonFreshAa = process.env.SPEED_PYTHON_FRESH_AA === '1';
+const submitAa = process.env.SPEED_SUBMIT_AA === '1';
+const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
 assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
@@ -85,10 +95,10 @@ assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the p
 assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
-  pythonLocalDiagnostic, pythonFreshAa].filter(Boolean).length <= 1,
+  pythonLocalDiagnostic, pythonFreshAa, submitAa].filter(Boolean).length <= 1,
   'Select only one special measurement mode');
 assert.ok(!liveControl || pythonLocalDiagnostic ||
-  ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa].some(Boolean),
+  ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa, submitAa].some(Boolean),
   'Live control cannot be combined with another special measurement mode');
 assert.ok(!releasePythonWarm || releaseVersion === '0.17.3',
   'The Python warm closing session requires the pinned 0.17.3 release');
@@ -121,14 +131,14 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const candidateVersions = ['candidate-main', 'candidate-deploy'];
-const versions = pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? liveControlVersions(candidateVersions) : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -315,6 +325,7 @@ async function bounded(operation, label) {
 async function openPage(context, version, url, group) {
   const page = await context.newPage();
   try {
+    const sourceVersion = submitAa ? submitAaSourceVersion(version) : version;
     const cdp = await context.newCDPSession(page);
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: group.cpu });
     await page.goto(url, { waitUntil: 'load' });
@@ -323,10 +334,10 @@ async function openPage(context, version, url, group) {
       window.bench = createSession(language, stopSubmit, candidate, candidateRuntime);
   }, {
     language: group.language,
-    stopSubmit: version === '0.20.1' || version === 'candidate-main',
+    stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main',
     candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
       liveControl && version === '0.17.1' && ['java', 'csharp', 'python'].includes(group.language) ||
-      (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language),
+      fixedWarmWitness && repeatPenaltyLanguages.includes(group.language),
     candidateRuntime: version.startsWith('candidate-') && group.language === testedLanguage,
   });
     return page;
@@ -338,7 +349,7 @@ async function openPage(context, version, url, group) {
 
 function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
   priorResult, context = {}) {
-  if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
+  if (fixedWarmWitness && repeatPenaltyLanguages.includes(language)) {
     if (language === 'csharp') {
       const replenishmentOptions = {
         ...(context.allowCsharpTrustedPromotion && { caseCount }),
@@ -427,6 +438,7 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (submitAa) return structuredClone(submitAaPlan);
   if (pythonFreshAa) return structuredClone(pythonFreshAaPlan);
   if (pythonLocalDiagnostic) return expandWarmRepeatGroups([
     { language: 'python', cpu: 1, problem: 'binary-search', state: 'warm', journey: 'run',
@@ -559,6 +571,12 @@ const report = {
     repeatRun: true, alternatingOrderPerRound: true,
     tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
   }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
+  ...(submitAa && { submitAa: {
+    sourceVersions: Object.keys(submitAaLabelPairs), labelPairs: submitAaLabelPairs,
+    target: 20, languages: ['python', 'csharp'], freshPagePerSample: true,
+    submitAfterRun: true, alternatingOrderPerRound: true,
+    tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
+  }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     ...(['phone', 'spot'].includes(candidateScope) && { pairedCandidateControls: true }),
@@ -584,7 +602,11 @@ try {
   report.fixtures = fixtures.provenance;
   for (const version of versions) {
     // The two app policies run on independent pages with the same installed bytes.
-    if (pythonFreshAa) {
+    if (submitAa) {
+      const sourceVersion = submitAaSourceVersion(version);
+      const sourceLabels = submitAaLabelPairs[sourceVersion];
+      prepared[version] = prepared[sourceLabels[0]] ?? await prepareVersion(sourceVersion);
+    } else if (pythonFreshAa) {
       prepared[version] = prepared[pythonFreshAaVersions[0]] ?? await prepareVersion('0.17.1');
     } else {
       prepared[version] = candidate && prepared['candidate-main']
@@ -595,7 +617,7 @@ try {
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   report.browser.version = browser.version();
-  if (staged || pythonFreshAa) assert.match(report.browser.version, /^145\./,
+  if (staged || pythonFreshAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
   await save();
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
@@ -612,7 +634,9 @@ try {
     const groupStarted = Date.now();
     try {
       for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
-        const roundVersions = pythonFreshAa
+        const roundVersions = submitAa
+          ? submitAaRoundOrder(group.versions, round)
+          : pythonFreshAa
           ? pythonFreshAaRoundOrder(group.versions, round)
           : aaClosing ? group.versions : releasePythonWarm
           ? liveRoundOrder(group.versions, round) : referenceRerecord
@@ -651,10 +675,10 @@ try {
                   const primeRefusal = refusal(prime);
                   const primeError = outcome(prime, fixture.cases.map((c) => c.id));
                   if (primeRefusal || primeError) throw new Error(primeRefusal ?? primeError);
-                  if ((candidate || releasePythonWarm || pythonFreshAa) &&
+                  if ((candidate || fixedWarmWitness) &&
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
                         liveControl && version === '0.17.1' && repeatPenaltyLanguages.includes(group.language) ||
-                        (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
+                        fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {
                     sample.primeInvalid = candidateOutcome(prime, 'run', fixture.cases.length,
                       fixture.cases[0].id, version, group.language, sample.trustedCsharpArtifactKey);
                     if (sample.primeInvalid) throw new Error('Prime witness: ' + sample.primeInvalid);
@@ -702,11 +726,11 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if ((candidate || releasePythonWarm || pythonFreshAa) &&
+              if ((candidate || fixedWarmWitness) &&
                   (version.startsWith('candidate-') && group.language === testedLanguage ||
                     liveControl && version === '0.17.1' &&
                       ['java', 'csharp', 'python'].includes(group.language) ||
-                    (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
+                    fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
                   !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
@@ -727,11 +751,11 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if ((candidate || releasePythonWarm || pythonFreshAa) &&
+                  if ((candidate || fixedWarmWitness) &&
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
                         liveControl && version === '0.17.1' &&
                           ['java', 'csharp', 'python'].includes(group.language) ||
-                        (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
+                        fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
                     sample.invalid = candidateOutcome(sample.second, 'click', 1,
                       fixture.cases[1].id, version, group.language, sample.trustedCsharpArtifactKey,
@@ -758,7 +782,7 @@ try {
           if ((group.language === testedLanguage && candidate && version.startsWith('candidate-')) ||
               (liveControl && version === '0.17.1' &&
                 ['java', 'csharp', 'python'].includes(group.language)) ||
-              ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
+              (fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {
             sample.cache = {
               initial: candidateCacheReceipt(
                 sample.initial, group.language, sample.trustedCsharpArtifactKey),
@@ -781,6 +805,10 @@ try {
           if (submitPreflight === 'capture') capturedSubmitAfterRun.add(group.language);
           if (pythonFreshAa && pythonFreshAaFailFast(groupIndex, group, sample)) {
             throw new Error('A/A C# repeat preflight rejected its first complete attempt: ' +
+              (sample.invalid ?? sample.refusal));
+          }
+          if (submitAa && submitAaFailFast(groupIndex, sample)) {
+            throw new Error('Submit A/A first-group preflight rejected its first complete attempt: ' +
               (sample.invalid ?? sample.refusal));
           }
           if (sample.refusal && (!candidate || /login|sign in|unauthoriz|access denied/i.test(sample.refusal))) {
