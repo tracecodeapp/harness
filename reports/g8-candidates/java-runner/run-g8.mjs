@@ -29,6 +29,7 @@ import {
   liveLessonVersions,
   liveRoundOrder,
 } from '../live-control.mjs';
+import { referenceRerecordPlan, referenceRoundOrder } from '../reference-rerecord.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -47,12 +48,15 @@ const releaseVersion = process.env.SPEED_G8_RELEASE;
 const aaControl = process.env.SPEED_G8_AA === '1';
 const aaClosing = process.env.SPEED_G8_AA_CLOSING === '1';
 const liveControl = process.env.SPEED_G8_LIVE_CONTROL === '1';
+const referenceRerecord = process.env.SPEED_G8_REFERENCE_RERECORD === '1';
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
 assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
 assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the pinned 0.17.3 release');
 assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
+assert.ok([aaControl, aaClosing, liveControl, referenceRerecord].filter(Boolean).length <= 1,
+  'Select only one special measurement mode');
 const staged = candidateScope ? await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
 assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
@@ -79,14 +83,14 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const candidateVersions = ['candidate-main', 'candidate-deploy'];
-const versions = aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? liveControlVersions(candidateVersions) : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -368,6 +372,7 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (referenceRerecord) return structuredClone(referenceRerecordPlan);
   const groups = [];
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
   const spotExcluded = releaseVersion ? new Set(['csharp', 'python']) : new Set([testedLanguage]);
@@ -461,6 +466,9 @@ const report = {
     languages: aaLanguages, versions: aaClosingAllVersions, fixedOrderPerRound: true,
     pythonWarmSubmitControl: '0.20.1',
   } }),
+  ...(referenceRerecord && { referenceRerecord: {
+    date: '2026-11-24', target: 20, interleavedPerRound: true, alternatingOrderPerRound: true,
+  } }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     ...(['phone', 'spot'].includes(candidateScope) && { pairedCandidateControls: true }),
@@ -504,7 +512,8 @@ try {
     const groupStarted = Date.now();
     try {
       for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
-        const roundVersions = aaClosing ? group.versions : liveControl
+        const roundVersions = aaClosing ? group.versions : referenceRerecord
+          ? referenceRoundOrder(group.versions, round) : liveControl
           ? liveRoundOrder(group.versions, round) : shuffled(group.versions);
         for (const [position, version] of roundVersions.entries()) {
           const count = counts[version];
