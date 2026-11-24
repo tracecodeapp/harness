@@ -46,6 +46,11 @@ const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
 const isRuntimeProcPath = isRuntimeKernelProcPath;
 ${workerSource}
 globalThis.__tracecodeCppRewriter = {
+  findCppExceptionToken: typeof findCppExceptionToken === 'function' ? findCppExceptionToken : undefined,
+  handleCompileRun,
+  handleCompileRunBatch,
+  handleExecuteTraceBatch,
+  handlePrepareRuntimeProgram,
   buildBatchDriverSource,
   finalizePreparedObservation,
   buildDriverSource,
@@ -59,6 +64,11 @@ globalThis.__tracecodeCppRewriter = {
 );
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
+  findCppExceptionToken: (source: string) => { token: string; line: number; column: number } | undefined;
+  handleCompileRun: (call: object) => Promise<Record<string, unknown>>;
+  handleCompileRunBatch: (call: object) => Promise<Record<string, unknown>>;
+  handleExecuteTraceBatch: (call: object) => Promise<Record<string, unknown>>;
+  handlePrepareRuntimeProgram: (call: object) => Promise<Record<string, unknown>>;
   finalizePreparedObservation: (
     parsed: Record<string, unknown>, prepared: Record<string, unknown>, attemptToken: string
   ) => { trace: { events: unknown[] }; observation: { cut?: string; attemptedEvents: number } };
@@ -88,6 +98,57 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
   parseCppFunctionSignatures: (source: string) => Array<{ name: string; line: number }>;
 };
+
+const mixedExceptionSource = [
+  '// try throw catch',
+  'const char* text = "throw; try catch";',
+  'const char* raw = u8R"mark("try" // catch /* throw */)mark";',
+  'void solve() { throw 7; } // catch',
+].join('\r\n');
+for (const [source, token, line, column] of [
+  ['  throw 7;', 'throw', 1, 3],
+  ['throw;', 'throw', 1, 1],
+  ['try {} catch (...) {}', 'try', 1, 1],
+  ['catch (...) {}', 'catch', 1, 1],
+  ['A::A() try : x(0) {} catch (...) {}', 'try', 1, 8],
+  ['int f() try { return 0; } catch (...) {}', 'try', 1, 9],
+  ['#define RAISE throw', 'throw', 1, 15],
+  ['// catch \\\nthrow\n  th\\\nrow 7;', 'throw', 3, 3],
+  [mixedExceptionSource, 'throw', 4, 16],
+] as const) {
+  const match = rewriter.findCppExceptionToken?.(source);
+  assertCondition(
+    match?.token === token && match.line === line && match.column === column,
+    `C++ exception token/location for ${JSON.stringify(source)}: ${JSON.stringify(match)}`,
+  );
+}
+for (const source of [
+  'int f() noexcept(noexcept(std::stoi("7"))) { return 0; }',
+  'v.at(10); std::stoi(s); map.at(k); auto p = new int;',
+  'auto thrower = retry + catchup + _throw + throw2 + πthrow + catchπ;',
+  '/* try */\n// throw \\\ncatch\nint n;',
+  `"try \\"throw" L"catch" u"try" U"throw" u8"catch" '\\'' L'try' u't' U'c' u8't'`,
+  'R"(throw)" u8R"x(try " // catch)x" LR"_(catch)_" uR"(throw)" UR"(try)"',
+  'auto n = 1\'000; auto x = 1.2e-3; // throw',
+  '#include <example/throw>',
+]) {
+  assertCondition(rewriter.findCppExceptionToken(source) === undefined, `False C++ exception refusal: ${source}`);
+}
+for (const [handler, payload] of [
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'code' }],
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'trace' }],
+  [rewriter.handleCompileRun, {}],
+  [rewriter.handleCompileRunBatch, { inputBatch: [{}, {}] }],
+  [rewriter.handleExecuteTraceBatch, { inputBatch: [{}, {}] }],
+] as const) {
+  const result = await handler({ ...payload, code: mixedExceptionSource, functionName: 'solve' });
+  const diagnostic = result.diagnostic as { code?: string; line?: number; column?: number } | undefined;
+  assertCondition(result.success === false && result.error === 'C++ exceptions are not supported yet' &&
+    result.diagnosticStage === 'compile' && result.errorLine === 4 &&
+    diagnostic?.code === 'cpp-exceptions-unsupported' && diagnostic.line === 4 && diagnostic.column === 16 &&
+    (!('results' in result) || JSON.stringify(result.results) === '[]'),
+  `C++ exception prepare result: ${JSON.stringify(result)}`);
+}
 
 const source = [
   'class Solution {',

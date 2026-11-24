@@ -4,7 +4,7 @@ import { createBrowserRuntimeHost } from '../../packages/runtime-browser/src/bro
 import { createBrowserRuntimeProviderRegistry } from '../../packages/runtime-browser/src/runtime-provider-registry';
 import { createAlgorithmJudgeBundle } from '../../packages/judge/src/algorithm-bundle';
 import { createBrowserJudgeHost, createBrowserJudgeHostFromRuntimeHost } from '../../src/internal/browser-judge';
-import type { JudgeCaseResult } from '../../packages/judge/src/model';
+import type { JudgeCaseResult, JudgeEvaluationResult } from '../../packages/judge/src/model';
 import { createCppOrdinaryExecutionProvider } from '../../packages/runtime-cpp/src/cpp-prepared-provider';
 import {
   createCppObservationRegistration,
@@ -79,6 +79,72 @@ public:
 
 function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
+}
+
+export async function probeCppExceptionPolicy(baseline: boolean) {
+  const host = createBrowserJudgeHost({
+    assetBaseUrl: '/workers',
+    providers: ['cpp'],
+    assets: { runtimeManifests: { cpp: createTraceCCRuntimeManifest('/tracecc') } },
+  });
+  const makeBundle = (id: string, code: string, trace: boolean) => createAlgorithmJudgeBundle({
+    id, code, trace, language: 'cpp', functionName: 'solve', executionStyle: 'solution-method',
+    cases: [{ id: 'A', input: { n: 1 }, expected: 1 }, { id: 'B', input: { n: 2 }, expected: 2 }],
+  });
+  try {
+    const trap = await makeBundle('cpp-library-trap', String.raw`#include <cstdio>
+#include <iostream>
+#include <vector>
+class Solution {
+public:
+  int solve(int n) {
+    std::printf("printf before ");
+    std::cout << "cout before trap";
+    const std::vector<int> v{n};
+    return v.at(10);
+  }
+};`, true);
+    const trapRun = await host.execute({ bundle: trap, interactive: true, tracing: { caseIds: ['A'] } });
+    const trapSubmit = await host.evaluateAlgorithm({ bundle: {
+      ...trap, execution: { ...trap.execution, trace: false },
+    } });
+    const trapConsole = [trapRun, trapSubmit].map(({ evaluation }) => {
+      check(evaluation.status === 'completed', 'library call failed to compile: ' + JSON.stringify(evaluation));
+      return evaluation.cases.map(({ caseId, status, failure, stdout }) => ({ caseId, status, failure, stdout }));
+    });
+    check(trapConsole.every((rows) => rows.length > 0 && rows.every(({ failure }) =>
+      failure?.origin === 'program' && failure.stage === 'runtime')),
+    'library call did not produce runtime failures: ' + JSON.stringify(trapConsole));
+    if (baseline) return { trapConsole };
+    check(trapConsole.every((rows) => rows.every(({ stdout }) => stdout.includes('printf before cout before trap'))),
+      'library trap lost console: ' + JSON.stringify(trapConsole));
+
+    const code = '// throw in a comment\nclass Solution { public: int solve(int n) {\n  throw n;\n} };';
+    const bundle = await makeBundle('cpp-exceptions-unsupported', code, true);
+    const run = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    const submit = await host.evaluateAlgorithm({
+      bundle: { ...bundle, execution: { ...bundle.execution, trace: false } },
+      stopAtFirstRunaway: false,
+    });
+    const traceOneShot = await host.evaluateAlgorithm({ bundle });
+    const prepared = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const judge = yield* host.createJudge({ language: 'cpp', binding: { ...bundle.execution, trace: true } });
+      return yield* judge.evaluate(bundle.plan);
+    })));
+    for (const evaluation of [run.evaluation, submit.evaluation, traceOneShot.evaluation, prepared] satisfies JudgeEvaluationResult[]) {
+      check(evaluation.status === 'compile-failed' && evaluation.cases.length === 0,
+        'expected C++ exception compile refusal: ' + JSON.stringify(evaluation));
+      check(evaluation.compile.failure.origin === 'program' && evaluation.compile.failure.stage === 'compile' &&
+        evaluation.compile.failure.message === 'C++ exceptions are not supported yet' &&
+        evaluation.compile.diagnostics.some(({ code, message, line, column }) =>
+          code === 'cpp-exceptions-unsupported' && message === 'C++ exceptions are not supported yet' &&
+          line === 3 && column === 3),
+      'wrong C++ exception diagnostic: ' + JSON.stringify(evaluation.compile));
+    }
+    return { run, submit, trapConsole };
+  } finally {
+    await host.dispose();
+  }
 }
 
 export async function assertCppOrdinaryReceiptPaths(options: CppWorkerClientOptions) {

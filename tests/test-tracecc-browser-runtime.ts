@@ -164,6 +164,17 @@ async function main(): Promise<void> {
     page.setDefaultTimeout(180_000);
     await page.goto(origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
+    const exceptionBaseline = process.env.TRACECC_EXCEPTION_BASELINE === '1';
+    const exceptionProbe = await page.evaluate(`(async () => {
+      const { probeCppExceptionPolicy } = await import('/cpp-ordinary-receipt.js');
+      return probeCppExceptionPolicy(${exceptionBaseline});
+    })()`);
+    console.log('C++ library trap results: ' + JSON.stringify(exceptionProbe.trapConsole));
+    if (exceptionBaseline) return;
+    if (process.env.TRACECC_EXCEPTION_SAMPLE) {
+      const { run, submit } = exceptionProbe;
+      await writeFile(process.env.TRACECC_EXCEPTION_SAMPLE, JSON.stringify({ run, submit }, null, 2) + '\n');
+    }
     const result = await page.evaluate(`(async () => {
       const NativeWorker = globalThis.Worker;
       const workerUrls = [];
