@@ -594,6 +594,25 @@ export async function probeCSharpJudgedOutputs(
         tree: { val: 1, value: 7, left: null, right: null },
         list: { val: 2, value: 8, next: null },
       }));
+    await check('a learner TreeNode and prelude ListNode keep distinct output shapes',
+      `public class TreeNode {
+        public int val;
+        public int value = 7;
+        public TreeNode left;
+        public TreeNode right;
+        public TreeNode(int val) { this.val = val; }
+      }
+      public class Solution {
+        public object solve() {
+          var list = new ListNode(1);
+          list.value = 8;
+          return new object[] { new TreeNode(2), list };
+        }
+      }`,
+      (result) => equals(result.kind === 'completed' ? result.output : result, [
+        { val: 2, value: 7, left: null, right: null },
+        { __type__: 'ListNode', val: 8, next: null },
+      ]));
     if (includePendingWriter) {
       await check('G6 TraceCLR collection ceiling',
         'public class Solution { public int[] solve(int n) { return new int[n]; } }',
