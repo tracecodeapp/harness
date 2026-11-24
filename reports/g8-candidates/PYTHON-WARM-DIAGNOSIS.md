@@ -5,6 +5,12 @@ Date: 2026-11-24
 No new host samples were taken for this diagnosis. It uses the existing A/A,
 closing-control, reference re-record and all-Python-warm session artifacts.
 
+> Follow-up local worker-phase receipts identified the residual more precisely:
+> it is the next preparation waiting for asynchronous replacement-standby
+> warm-up, not observer cleanup. See `PYTHON-SAME-PAGE-RERUN.md` in the root-cause
+> artifact directory. The schedule diagnosis and fresh-page correction below
+> are unchanged.
+
 ## Finding
 
 The Python warm distributions are controlled by whether the same version's

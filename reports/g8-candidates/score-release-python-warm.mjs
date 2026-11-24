@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { metricEndpoints, relative, stats } from './aa-score-lib.mjs';
 import { liveCellScoreWithControls, liveRoundOrder } from './live-control.mjs';
 import { releasePythonWarmPlan } from './release-python-warm.mjs';
+import {
+  expandPythonWarmGroups,
+  pythonWarmMetricName,
+  pythonWarmModes,
+} from './python-warm-policy.mjs';
 
 const [archive, raw] = process.argv.slice(2);
 assert.ok(archive && raw);
@@ -31,9 +36,10 @@ function collect(folder, prefix) {
     if (!sample.kept) continue;
     assert.ok(!sample.invalid && !sample.refusal && !sample.excluded);
     for (const endpoint of metricEndpoints(group)) {
-      const name = key(group, endpoint) + '/' + sample.version;
+      const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+      const name = key(group, measuredEndpoint) + '/' + sample.version;
       if (!values.has(name)) values.set(name, []);
-      values.get(name).push(sample.metrics[endpoint]);
+      values.get(name).push(sample.metrics[measuredEndpoint]);
     }
   }
   return { metadata, samples, values };
@@ -45,7 +51,9 @@ assert.deepEqual(observed.metadata.releasePythonWarm, {
   release: '0.17.3', target: 20, alternatingOrderPerRound: true,
   pythonWarmSubmitControl: '0.20.1',
 });
-assert.deepEqual(observed.metadata.schedule, releasePythonWarmPlan);
+const expectedPlan = expandPythonWarmGroups(
+  releasePythonWarmPlan, { submitAfterRun: true });
+assert.deepEqual(observed.metadata.schedule, expectedPlan);
 assert.equal(observed.metadata.complete, true);
 for (const sample of observed.samples) {
   const group = observed.metadata.schedule[sample.groupIndex];
@@ -56,27 +64,31 @@ for (const field of ['host', 'browser', 'fixtures', 'appRefs']) {
 }
 
 const otherWarm = [];
-for (const group of releasePythonWarmPlan.filter(({ journey }) => journey === 'run')) {
+for (const group of expectedPlan.filter(({ journey }) => journey === 'run')) {
   for (const endpoint of metricEndpoints(group)) {
-    const cell = key(group, endpoint);
-    const frozenControl = stats(frozen.values.get(cell + '/0.17.1'));
+    const measuredEndpoint = pythonWarmMetricName(group, endpoint);
+    const cell = key(group, measuredEndpoint);
     const liveControl = stats(observed.values.get(cell + '/0.17.1'));
     const release = stats(observed.values.get(cell + '/release-deploy'));
     assert.equal(liveControl.n, 20);
     assert.equal(release.n, 20);
-    const drift = relative(liveControl, frozenControl);
-    const valid = Math.abs(drift.medianPct) <= 10 && Math.abs(drift.p90Pct) <= 10;
+    const repeat = group.pythonWarmMode === pythonWarmModes.repeatRun;
+    const frozenCell = key(group, endpoint);
+    const frozenControl = repeat ? undefined : stats(frozen.values.get(frozenCell + '/0.17.1'));
+    const drift = repeat ? undefined : relative(liveControl, frozenControl);
+    const valid = repeat || Math.abs(drift.medianPct) <= 10 && Math.abs(drift.p90Pct) <= 10;
     const thresholds = { median: liveControl.median * 1.05, p90: liveControl.p90 * 1.10 };
     const pass = release.median <= thresholds.median && release.p90 <= thresholds.p90;
-    const row = { cell, frozenControl, liveControl, drift, valid, release, thresholds, pass };
+    const row = { cell, repeat, frozenControl, liveControl, drift, valid, release, thresholds, pass };
     otherWarm.push(row);
     console.log(JSON.stringify({ otherWarm: row }));
   }
 }
-const fallbackHealthy = otherWarm.every(({ valid }) => valid);
+const fallbackHealthy = otherWarm.filter(({ repeat }) => !repeat).every(({ valid }) => valid);
 
 const submitWarm = [];
-for (const group of releasePythonWarmPlan.filter(({ journey }) => journey === 'submit')) {
+for (const group of expectedPlan.filter(({ journey, pythonWarmMode }) =>
+  journey === 'submit' && pythonWarmMode === pythonWarmModes.fresh)) {
   const cell = key(group, 'submitVerdicts');
   const release = stats(observed.values.get(cell + '/release-deploy'));
   const controls = ['0.17.1', '0.20.1'].map((version) => {
@@ -105,11 +117,28 @@ for (const group of releasePythonWarmPlan.filter(({ journey }) => journey === 's
   console.log(JSON.stringify({ submitWarm: row }));
 }
 
+const submitAfterRun = [];
+for (const group of expectedPlan.filter(({ pythonWarmMode }) =>
+  pythonWarmMode === pythonWarmModes.submitAfterRun)) {
+  const cell = key(group, 'submitAfterRunVerdicts');
+  const release = stats(observed.values.get(cell + '/release-deploy'));
+  const control = stats(observed.values.get(cell + '/0.17.1'));
+  assert.equal(release.n, 20);
+  assert.equal(control.n, 20);
+  const thresholds = { median: control.median * 1.05, p90: control.p90 * 1.10 };
+  const pass = release.median <= thresholds.median && release.p90 <= thresholds.p90;
+  const row = { cell, release, control, thresholds, pass };
+  submitAfterRun.push(row);
+  console.log(JSON.stringify({ submitAfterRun: row }));
+}
+
 console.log(JSON.stringify({ summary: {
   fallbackHealthy,
   otherWarmInvalid: otherWarm.filter(({ valid }) => !valid).map(({ cell }) => cell),
   otherWarmFailed: otherWarm.filter(({ pass }) => !pass).map(({ cell }) => cell),
   submitFailed: submitWarm.filter(({ formalPass }) => !formalPass).map(({ cell }) => cell),
+  submitAfterRunFailed: submitAfterRun.filter(({ pass }) => !pass).map(({ cell }) => cell),
 } }));
 if (!fallbackHealthy || otherWarm.some(({ pass }) => !pass) ||
-    submitWarm.some(({ formalPass }) => !formalPass)) process.exitCode = 1;
+    submitWarm.some(({ formalPass }) => !formalPass) ||
+    submitAfterRun.some(({ pass }) => !pass)) process.exitCode = 1;

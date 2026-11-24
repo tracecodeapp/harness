@@ -51,6 +51,13 @@ edit("import { chromium } from 'playwright';", `import { chromium } from 'playwr
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';`);
 edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';
 import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';`);
+edit("import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';", `import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';
+import {
+  expandPythonWarmGroups,
+  openIsolatedPythonWarmAttempt,
+  pythonWarmAttemptPlan,
+  pythonWarmMetricName,
+} from './python-warm-policy.mjs';`);
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
@@ -72,6 +79,8 @@ edit('appRef: appRefs[version], tarball,', "appRef: appRefs[version] ?? appRefs[
 edit("stopSubmit: version === '0.20.1'", "stopSubmit: version !== '0.17.1' && version !== 'concurrent-deploy'");
 edit("const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;", "const target = 20;");
 edit("const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];", "const cheapFirst = ['python'];");
+edit("if (mode !== 'smoke') return groups.sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));",
+  "if (mode !== 'smoke') return expandPythonWarmGroups(groups, { submitAfterRun: true }).sort((a, b) => expectedGroupSeconds(a) - expectedGroupSeconds(b));");
 edit('              language, cpu, problem, state, journey, target, versions,', `
               language, cpu, problem, state, journey, target,
               versions: language === 'python' && cpu === 1 && state === 'warm' && journey === 'submit'
@@ -82,6 +91,22 @@ edit('        for (const [position, version] of shuffled(group.versions).entries
           for (const [position, version] of (round % 2 === 1
             ? group.versions : [...group.versions].reverse()).entries()) {
 `);
+edit(`function addressedBySample(sample) {
+  if (sample.journey === 'run') return {
+    verdicts: sample.initial?.elapsedMs,
+    firstTrace: sample.initial?.firstTraceMs,
+    ...(sample.continuation && { secondTrace: sample.second?.elapsedMs }),
+  };
+  return { [sample.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts']: sample.initial?.elapsedMs };
+}`, `function addressedBySample(sample) {
+  if (sample.journey === 'run') return Object.fromEntries([
+    ['verdicts', sample.initial?.elapsedMs],
+    ['firstTrace', sample.initial?.firstTraceMs],
+    ...(sample.continuation ? [['secondTrace', sample.second?.elapsedMs]] : []),
+  ].map(([endpoint, value]) => [pythonWarmMetricName(sample, endpoint), value]));
+  const endpoint = sample.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts';
+  return { [pythonWarmMetricName(sample, endpoint)]: sample.initial?.elapsedMs };
+}`);
 edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-baseline.v1',
   liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     ...(windowName === 'desktop-b' && { pythonWarmSubmitControl: '0.20.1' }) },`);
@@ -89,6 +114,69 @@ edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();
   assert.match(report.browser.version, /^145\\./u, 'Expected frozen Chromium major 145');
 `);
+edit(`          let page = warmPages.get(version);
+          try {
+            if (!page) page = await openPage(contexts[version], version, prepared[version].url, group);
+            await page.bringToFront();
+            if (group.state === 'warm' && !warmPages.has(version)) {`, `          let page = warmPages.get(version);
+          let isolatedWarm;
+          try {
+            const warmPlan = pythonWarmAttemptPlan(group);
+            if (warmPlan.freshPage) {
+              isolatedWarm = await openIsolatedPythonWarmAttempt(group, {
+                open: () => openPage(contexts[version], version, prepared[version].url, group),
+                warm: async (freshPage) => {
+                  sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
+                  sample.refusal = refusal({ warm: sample.setupWarm });
+                  if (sample.refusal || sample.setupWarm.success !== true) {
+                    throw new Error(sample.refusal ?? 'Warmup returned success=false');
+                  }
+                },
+                prime: async (freshPage, journey) => {
+                  if (measuredVersions.includes(version)) {
+                    await freshPage.evaluate(() => { window.pythonWorkerJournal.length = 0; });
+                  }
+                  const prime = await initial(freshPage, fixture, journey, false);
+                  sample.prime = prime;
+                  if (measuredVersions.includes(version)) {
+                    sample.primeWorkerJournal = await freshPage.evaluate(() => window.pythonWorkerJournal);
+                  }
+                  const primeRefusal = refusal(prime);
+                  const primeError = outcome(prime, fixture.cases.map((c) => c.id));
+                  if (primeRefusal || primeError) throw new Error(primeRefusal ?? primeError);
+                  if (sample.primeWorkerJournal) {
+                    sample.primeInvalid = version === '0.17.1' || version === '0.20.1'
+                      ? pythonProductionControlOutcome(
+                          { workerJournal: sample.primeWorkerJournal }, 'run', fixture.cases.length)
+                      : version === 'sequential' ? undefined
+                      : pythonCandidateOutcome(
+                          { workerJournal: sample.primeWorkerJournal }, 'run', fixture.cases.length, true);
+                    if (sample.primeInvalid) throw new Error('Prime witness: ' + sample.primeInvalid);
+                    sample.primeCache = pythonCandidateCacheReceipt({ workerJournal: sample.primeWorkerJournal });
+                  }
+                  return prime;
+                },
+                close: (freshPage) => freshPage.close().catch(() => {}),
+              });
+              page = isolatedWarm.page;
+            } else if (!page) {
+              page = await openPage(contexts[version], version, prepared[version].url, group);
+            }
+            await page.bringToFront();
+            if (!isolatedWarm && group.state === 'warm' && !warmPages.has(version)) {`);
+edit("            if (page === warmPages.get(version)) await bounded(page.evaluate(() => window.bench.release()), 'Release execution');",
+  `            if (isolatedWarm || page === warmPages.get(version)) {
+              await bounded(page.evaluate(() => window.bench.release()), 'Release execution');
+            }`);
+edit(`            if (page && (page !== warmPages.get(version) || sample.invalid || sample.refusal)) {
+              warmPages.delete(version);
+              await page.close().catch(() => {});
+            }`, `            if (isolatedWarm) {
+              await isolatedWarm.close();
+            } else if (page && (page !== warmPages.get(version) || sample.invalid || sample.refusal)) {
+              warmPages.delete(version);
+              await page.close().catch(() => {});
+            }`);
 
 // Measure at the existing public response. The worker journal verifies the
 // candidate labels from its actual command traffic and is read outside that
@@ -231,6 +319,8 @@ try {
     join(stage, 'python-candidate-witness.mjs'));
   await cp(new URL('./python-production-control-witness.mjs', import.meta.url),
     join(stage, 'python-production-control-witness.mjs'));
+  await cp(new URL('../python-warm-policy.mjs', import.meta.url),
+    join(stage, 'python-warm-policy.mjs'));
 
   const entry = join(stage, 'entry.ts');
   const entrySource = await readFile(entry, 'utf8');
