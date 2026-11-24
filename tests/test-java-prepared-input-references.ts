@@ -95,6 +95,9 @@ function runPrepared(
     dynamicInputs: entries,
     hasDynamicInputs: true,
   });
+  assert.match(exportsSource, /new tracecode\.browser\.PreparedInputs\(\)/u,
+    'Prepared drivers must instantiate the precompiled per-case materializer');
+  assert.doesNotMatch(exportsSource, /class __TracecodeJsonParser|void scanPreparedReferences/u);
   const setters = cases.map((args, caseIndex) => entries.map((entry, index) =>
     `      System.setProperty(${JSON.stringify(entry.property)}, ${JSON.stringify(JSON.stringify(args[index]))});`
   ).join('\n') + `\n      runCase(${caseIndex});`).join('\n');
