@@ -49,9 +49,12 @@ function edit(before, after) {
 }
 edit("import { chromium } from 'playwright';", `import { chromium } from 'playwright';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';`);
+edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';
+import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';`);
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
+const measuredVersions = ['0.17.1', ...candidateVersions];
 const versions = ['0.17.1', ...candidateVersions];
 `);
 edit('assert.equal(manifest.version, version);', 'assert.equal(manifest.version, candidateInstalls[version]?.packageVersion ?? version);');
@@ -84,7 +87,7 @@ edit('  report.browser.version = browser.version();', `
 // candidate labels from its actual command traffic and is read outside that
 // clock. It records metadata only, with no sources, inputs or results.
 edit('    await page.goto(url,', `
-    if (candidateVersions.includes(version)) await page.addInitScript(() => {
+    if (measuredVersions.includes(version)) await page.addInitScript(() => {
       const NativeWorker = window.Worker;
       const journal = window.pythonWorkerJournal = [];
       let id = 0;
@@ -142,16 +145,16 @@ edit('    await page.goto(url,', `
     });
     await page.goto(url,`);
 edit('              sample.initial = await initial(page, fixture, group.journey, group.state === \'cold\');', `
-              if (candidateVersions.includes(version)) await page.evaluate(() => { window.pythonWorkerJournal.length = 0; });
+              if (measuredVersions.includes(version)) await page.evaluate(() => { window.pythonWorkerJournal.length = 0; });
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
-              if (candidateVersions.includes(version)) {
+              if (measuredVersions.includes(version)) {
                 sample.workerJournal = await page.evaluate(() => window.pythonWorkerJournal);
               }
 `);
 edit('                  sample.second = await second(page, fixture.cases[1].id);', `
-                  if (candidateVersions.includes(version)) await page.evaluate(() => { window.pythonWorkerJournal.length = 0; });
+                  if (measuredVersions.includes(version)) await page.evaluate(() => { window.pythonWorkerJournal.length = 0; });
                   sample.second = await second(page, fixture.cases[1].id);
-                  if (candidateVersions.includes(version)) {
+                  if (measuredVersions.includes(version)) {
                     sample.secondWorkerJournal = await page.evaluate(() => window.pythonWorkerJournal);
                   }
 `);
@@ -176,7 +179,13 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                 const ordinary = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program-batch' && e.mode === 'code');
                 const observed = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program' && e.observation);
                 const role = group.journey === 'submit' ? 'submit' : 'run';
-                if (version !== 'sequential') {
+                if (version === '0.17.1') {
+                  sample.invalid = pythonProductionControlOutcome(
+                    { workerJournal: commands },
+                    role,
+                    fixture.cases.length,
+                  );
+                } else if (version !== 'sequential') {
                   sample.invalid = pythonCandidateOutcome(
                     { workerJournal: commands },
                     role,
@@ -213,6 +222,8 @@ try {
   }
   await cp(new URL('./python-candidate-witness.mjs', import.meta.url),
     join(stage, 'python-candidate-witness.mjs'));
+  await cp(new URL('./python-production-control-witness.mjs', import.meta.url),
+    join(stage, 'python-production-control-witness.mjs'));
 
   const entry = join(stage, 'entry.ts');
   const entrySource = await readFile(entry, 'utf8');

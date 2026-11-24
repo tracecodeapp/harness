@@ -142,7 +142,7 @@ function measureCandidateRequests(language: string) {
         const typePattern = language === 'java'
           ? /^(init|warmup|prepare-runtime-program|restore-prepared-runtime-program|execute-prepared-runtime-program|execute-prepared-runtime-program-batch)$/
           : language === 'csharp'
-            ? /^(init|warmup|prepare-program|execute-prepared-code|execute-prepared-trace|dispose-prepared-program)$/
+            ? /^(init|warmup|prepare-program|execute-code|execute-code-batch|execute-with-tracing|execute-prepared-code|execute-prepared-trace|dispose-prepared-program)$/
             : /^(prepare-program|execute-prepared-program|execute-prepared-program-batch)$/;
         if (message.id && typePattern.test(message.type)) {
           const payload = message.payload ?? {};
@@ -153,6 +153,8 @@ function measureCandidateRequests(language: string) {
             const artifactKey = payload.prepared?.compiledArtifactKey ?? payload.compiledArtifactKey;
             role = message.type === 'prepare-program'
               ? payload.mode === 'code' ? 'ordinary' : 'observer'
+              : ['execute-code', 'execute-code-batch', 'execute-with-tracing'].includes(message.type)
+                ? payload.mode === 'trace' || payload.trace === true ? 'observer' : 'ordinary'
               : message.type === 'execute-prepared-code'
                 ? 'ordinary'
                 : message.type === 'execute-prepared-trace' && payload.observation !== undefined
@@ -175,7 +177,7 @@ function measureCandidateRequests(language: string) {
               payload.artifact?.observationOnly === true,
             artifactKey: payload.prepared?.compiledArtifactKey ?? payload.artifact?.compiledArtifactKey ??
               payload.compiledArtifactKey,
-            cases: payload.inputBatch?.length,
+            cases: payload.inputBatch?.length ?? payload.rows?.length,
             tier: payload.prepared?.preparedRunnerTier ?? payload.artifact?.isolationProfile?.tier,
             stopAtFirstRunaway: payload.stopAtFirstRunaway,
           };

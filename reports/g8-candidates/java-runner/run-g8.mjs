@@ -17,6 +17,7 @@ import {
   aaVersions,
 } from './aa-control.mjs';
 import { csharpCandidateCacheReceipt, csharpCandidateOutcome } from './csharp-candidate-witness.mjs';
+import { csharpProductionControlOutcome } from './csharp-production-control-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
@@ -286,9 +287,9 @@ async function openPage(context, version, url, group) {
 
 function candidateOutcome(result, role, caseCount, caseId, version) {
   if (liveControl && version === '0.17.1') {
-    assert.equal(testedLanguage, 'java',
-      'Published live-control witnesses for C# and Python are not yet enabled');
-    return javaProductionControlOutcome(result, role, caseCount, caseId);
+    if (testedLanguage === 'java') return javaProductionControlOutcome(result, role, caseCount, caseId);
+    if (testedLanguage === 'csharp') return csharpProductionControlOutcome(result);
+    throw new Error('Published Python live control uses the dedicated Python runner');
   }
   if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
   if (testedLanguage === 'csharp') return csharpCandidateOutcome(result, role, caseCount, caseId);
