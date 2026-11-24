@@ -50,12 +50,12 @@ function edit(before, after) {
   source = source.replace(before, () => after);
 }
 edit("import { chromium } from 'playwright';", `import { chromium } from 'playwright';
-import {
+import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';`);
+edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import {
   pythonCandidateCacheReceipt,
   pythonCandidateOutcome,
   pythonCandidateRequiresStopping,
-} from './python-candidate-witness.mjs';`);
-edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';
+} from './python-candidate-witness.mjs';
 import {
   pythonProductionControlOutcome,
   pythonProductionControlWorker,
