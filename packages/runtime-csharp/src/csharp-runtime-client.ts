@@ -20,7 +20,7 @@ import type {
 } from '@tracecode/runtime-contracts';
 import type { RuntimeCommandResult } from '@tracecode/runtime-contracts';
 import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-contracts';
-import { RuntimeProviderError } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError, TRACE_UNAVAILABLE_CODE } from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import type { JudgedPreparationCall } from '../../runtime-contracts/src/judged-output-policy';
@@ -30,6 +30,11 @@ import type {
   CSharpPreparedRunnerTier,
   CSharpProjectCommandRequest,
   CSharpWorkerClient,
+} from './csharp-worker-client';
+import {
+  CSHARP_TRACE_CONDITIONAL_COMPILATION_MESSAGE,
+  CSHARP_TRACE_CONDITIONAL_COMPILATION_UNSUPPORTED,
+  isCSharpTraceRefusal,
 } from './csharp-worker-client';
 import {
   batchCodeResultToExecuteResult,
@@ -55,6 +60,18 @@ function completedPreparedCase(result: unknown): boolean {
       typeof result === 'object' &&
       (result as { kind?: unknown }).kind === 'completed'
   );
+}
+
+/**
+ * A traced build the compiler declined. It is trace-unavailable to Judge (the
+ * program runs untraced) and a typed drawing refusal to an observer.
+ */
+class CSharpTraceRefusalError extends RuntimeProviderError {
+  readonly refusal = CSHARP_TRACE_CONDITIONAL_COMPILATION_UNSUPPORTED;
+
+  constructor() {
+    super(CSHARP_TRACE_CONDITIONAL_COMPILATION_MESSAGE, { code: TRACE_UNAVAILABLE_CODE });
+  }
 }
 
 const CSHARP_PREPARATION_PROVIDER_ERRORS = new Set([
@@ -318,11 +335,14 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       signal.throwIfAborted();
       try {
         artifact = await (companion ??= prepareCompanion());
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
         prestarted?.cancel();
         prestarted = undefined;
-        return { status: 'refused', reason: 'observer-prepare' };
+        return {
+          status: 'refused',
+          reason: error instanceof CSharpTraceRefusalError ? error.refusal : 'observer-prepare',
+        };
       }
       signal.throwIfAborted();
       if (!artifact) {
@@ -394,6 +414,9 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         throw new RuntimeProviderError(
           `C# compilation stopped by its deadline (${result.timeoutReason}): ${result.error ?? 'no detail'}`
         );
+      }
+      if (call.mode === 'trace' && isCSharpTraceRefusal(result)) {
+        throw new CSharpTraceRefusalError();
       }
 
       const diagnostic = result.diagnostics?.find((candidate) =>

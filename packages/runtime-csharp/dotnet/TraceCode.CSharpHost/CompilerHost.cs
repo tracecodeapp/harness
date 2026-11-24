@@ -270,6 +270,16 @@ public static partial class CompilerHost
                 TraceClrWireContract = compilationPlan.WireContract,
             });
         }
+        catch (Exception error) when (error.GetBaseException() is TraceRefusalException refusal)
+        {
+            return SerializeError(
+                refusal.Message,
+                stopwatch,
+                capturedOut,
+                timings: timings,
+                refusalCode: refusal.Code
+            );
+        }
         catch (Exception error)
         {
             return SerializeError(error.GetBaseException().Message, stopwatch, capturedOut, timings: timings);
@@ -546,6 +556,18 @@ public static partial class CompilerHost
 
             request.Inputs ??= new Dictionary<string, JsonElement>(StringComparer.Ordinal);
             ValidateExecutionInputs(request.Inputs);
+            if (request.Trace)
+            {
+                // A cached traced artifact is reused without compiling, so the
+                // traced source is checked here as well as in the build itself.
+                RefuseUntraceableDirectives(
+                    CSharpSyntaxTree.ParseText(
+                        request.Source,
+                        CompilerAuthorityState.ParseOptions,
+                        path: UserCodePath
+                    )
+                );
+            }
 
             string artifactKey = CompiledArtifactKey(request);
             byte[]? peBytes = TryGetCompiledArtifact(artifactKey);
@@ -713,6 +735,16 @@ public static partial class CompilerHost
                 capturedOut,
                 timeoutReason: "serialization-limit",
                 timings: timings
+            );
+        }
+        catch (Exception error) when (error.GetBaseException() is TraceRefusalException refusal)
+        {
+            return SerializeError(
+                refusal.Message,
+                stopwatch,
+                capturedOut,
+                timings: timings,
+                refusalCode: refusal.Code
             );
         }
         catch (Exception error)
@@ -1195,6 +1227,10 @@ public static partial class CompilerHost
 
         phaseStopwatch.Restart();
         ValidateUserSourcePolicy(originalUserTree);
+        if (request.Trace)
+        {
+            RefuseUntraceableDirectives(originalUserTree);
+        }
         RecordCompilePhase(timings, "compilePolicyValidationMs", phaseStopwatch);
 
         phaseStopwatch.Restart();
@@ -2036,6 +2072,47 @@ public static partial class CompilerHost
         );
         ValidateUserSemanticPolicy(compilation, userSyntaxTrees);
         return compilation;
+    }
+
+    private const string TraceConditionalCompilationRefusalCode =
+        "csharp-trace-conditional-compilation-unsupported";
+
+    /// <summary>
+    /// Traced builds decline source that uses conditional compilation:
+    /// #if, #elif, #else, #endif, #define and #undef. Ordinary builds never
+    /// call this. Directives that cannot select code stay allowed: #region and
+    /// #endregion, #pragma, #nullable, #line, #warning and #error.
+    /// </summary>
+    private static void RefuseUntraceableDirectives(SyntaxTree tree)
+    {
+        foreach (SyntaxTrivia trivia in tree.GetRoot().DescendantTrivia(descendIntoTrivia: true))
+        {
+            if (trivia.Kind() is SyntaxKind.IfDirectiveTrivia
+                or SyntaxKind.ElifDirectiveTrivia
+                or SyntaxKind.ElseDirectiveTrivia
+                or SyntaxKind.EndIfDirectiveTrivia
+                or SyntaxKind.DefineDirectiveTrivia
+                or SyntaxKind.UndefDirectiveTrivia)
+            {
+                throw new TraceRefusalException(TraceConditionalCompilationRefusalCode);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A traced build the compiler declines; the ordinary build is unaffected.
+    /// The reply carries only the code: the learner-facing wording belongs to
+    /// the client that maps it.
+    /// </summary>
+    private sealed class TraceRefusalException : Exception
+    {
+        public TraceRefusalException(string code)
+            : base(code)
+        {
+            Code = code;
+        }
+
+        public string Code { get; }
     }
 
     private static void ValidateUserSourcePolicy(SyntaxTree tree)
@@ -8067,13 +8144,15 @@ public class TreeNode
         StringWriter capturedOut,
         bool traceLimitExceeded = false,
         string? timeoutReason = null,
-        IDictionary<string, object>? timings = null
+        IDictionary<string, object>? timings = null,
+        string? refusalCode = null
     )
     {
         return Serialize(new CSharpExecuteResponse
         {
             Success = false,
             Error = error,
+            RefusalCode = refusalCode,
             ConsoleOutput = SplitConsoleOutput(capturedOut),
             Events = SnapshotTraceEvents(capturedOut),
             TraceLimitExceeded = traceLimitExceeded,
@@ -8108,6 +8187,10 @@ public class TreeNode
             TraceResponseJson.WriteNormalizedValue(writer, response.Output, JsonOptions);
             if (response.Error is null) writer.WriteNull("error");
             else writer.WriteString("error", response.Error);
+            if (response.RefusalCode is not null)
+            {
+                writer.WriteString("refusalCode", response.RefusalCode);
+            }
             writer.WritePropertyName("diagnostics");
             JsonSerializer.Serialize(writer, response.Diagnostics, JsonOptions);
             writer.WriteStartArray("consoleOutput");

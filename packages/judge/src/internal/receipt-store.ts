@@ -52,6 +52,7 @@ const refusals = {
   'observer-timeout': true,
   'uncertified-drawing': true,
   'case-not-run': true,
+  'csharp-trace-conditional-compilation-unsupported': true,
 } satisfies Record<Refusal, true>;
 
 function matches(binding: Binding, reply: Binding): boolean {

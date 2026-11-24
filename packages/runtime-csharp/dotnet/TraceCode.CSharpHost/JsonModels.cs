@@ -204,6 +204,10 @@ public sealed class CSharpExecuteResponse
     [JsonPropertyName("error")]
     public string? Error { get; set; }
 
+    [JsonPropertyName("refusalCode")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RefusalCode { get; set; }
+
     [JsonPropertyName("diagnostics")]
     public List<CSharpDiagnostic> Diagnostics { get; set; } = new();
 

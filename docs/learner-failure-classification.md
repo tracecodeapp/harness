@@ -177,6 +177,11 @@ not need to rebuild a host after a learner failure; they may rebuild after a
   encoding the result also arrives through `Run`, so it is reported as the
   program's; the driver is produced by the compiler role, which this
   classification cannot change without rebuilding it.
+  A traced build of source that uses conditional compilation (`#if`,
+  `#elif`, `#else`, `#endif`, `#define`, `#undef`) is declined: Run keeps its
+  ordinary verdict and the drawing is refused with
+  `csharp-trace-conditional-compilation-unsupported`. `#region`, `#pragma`,
+  `#nullable`, `#line`, `#warning` and `#error` are not declined.
 - C++: preparation refuses learner-written `throw`, `try`, and `catch`
   tokens with `cpp-exceptions-unsupported` at the first token's line and
   column. The failure stage is `compile`. Library calls that trap at runtime
