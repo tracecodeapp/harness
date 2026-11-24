@@ -24,6 +24,9 @@ const desktop = read(raw, 's-java-desktop');
 const frozenDesktop = read(archive, 'speed-desktop-a-with-topup');
 const frozenDesktopB = read(archive, 'speed-desktop-b');
 const frozenPhone = read(archive, 'speed-phone');
+const pythonFreshAa = read(join(raw, '..', 'python-fresh-aa'), 'python-fresh-aa');
+const csharpFreshAa = read(join(raw, '..',
+  'python-csharp-fresh-aa-incomplete-csharp-perm-replenishment-20261124'), 'python-fresh-aa');
 assert.deepEqual(closing.metadata.schedule, javaClosingPlan);
 assert.deepEqual(closing.metadata.javaClosing, {
   target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
@@ -50,6 +53,16 @@ function measured(corpus, match, version, endpoint) {
   }).map((sample) => sample.metrics[endpoint]);
   assert.ok(values.every((value) => Number.isFinite(value) && value > 0));
   return stats(values);
+}
+function pooledMeasured(corpus, match, endpoint) {
+  const values = corpus.samples.filter((sample) => {
+    const group = corpus.metadata.schedule[sample.groupIndex];
+    return sample.kept && Object.entries(match).every(([key, value]) => group[key] === value);
+  }).map((sample) => sample.metrics[endpoint]);
+  assert.ok(values.every((value) => Number.isFinite(value) && value > 0));
+  const result = stats(values);
+  assert.equal(result.n, 40, 'Pooled A/A host reference must contain both n=20 labels');
+  return result;
 }
 const drift = (live, reference) => ({
   medianPct: 100 * (live.median / reference.median - 1),
@@ -94,9 +107,17 @@ for (const { language, cpu, policy, frozen } of reruns) {
   const frozenMatch = { language, cpu, problem: 'binary-search', state: 'warm', journey: 'run' };
   for (const endpoint of language === 'java' ? ['verdicts', 'firstTrace'] : ['verdicts']) {
     const corpus = language === 'java' ? closing : closingSpot;
-    rows.push(verdict(`${language}/${cpu}/binary-search/warm/${endpoint}/${policy}`,
+    const frozenReference = measured(frozen, frozenMatch, '0.17.1', endpoint);
+    const reference = language === 'python'
+      ? pooledMeasured(pythonFreshAa, { ...frozenMatch, pythonWarmMode: 'fresh-page' }, endpoint)
+      : language === 'csharp'
+      ? pooledMeasured(csharpFreshAa, { ...frozenMatch, csharpWarmMode: 'fresh-page' }, endpoint)
+      : frozenReference;
+    const row = verdict(`${language}/${cpu}/binary-search/warm/${endpoint}/${policy}`,
       measured(corpus, match, policy, endpoint), measured(corpus, match, '0.17.1', endpoint),
-      measured(frozen, frozenMatch, '0.17.1', endpoint)));
+      reference);
+    if (reference !== frozenReference) row.frozenCrossCheck = frozenReference;
+    rows.push(row);
   }
 }
 
