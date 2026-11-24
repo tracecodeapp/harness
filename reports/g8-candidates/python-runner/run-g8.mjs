@@ -52,8 +52,11 @@ function edit(before, after) {
 edit("import { chromium } from 'playwright';", `import { chromium } from 'playwright';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';`);
 edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';
-import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';`);
-edit("import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';", `import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';
+import {
+  pythonProductionControlOutcome,
+  pythonProductionControlWorker,
+} from './python-production-control-witness.mjs';`);
+edit("} from './python-production-control-witness.mjs';", `} from './python-production-control-witness.mjs';
 import {
   expandPythonWarmGroups,
   openIsolatedPythonWarmAttempt,
@@ -61,8 +64,12 @@ import {
   pythonWarmAttemptPlan,
   pythonWarmMetricName,
 } from './python-warm-policy.mjs';`);
-edit("import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';", `import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';
-import { createUncapturedShapeGuard, measurementShapeKey } from './measurement-shapes.mjs';
+edit("} from './python-production-control-witness.mjs';", `} from './python-production-control-witness.mjs';
+import {
+  createUncapturedShapeGuard,
+  measurementShapeKey,
+  selectShapeProbeSchedule,
+} from './measurement-shapes.mjs';
 import { capturedShapeKeys } from './shape-captures.mjs';`);
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
@@ -117,6 +124,17 @@ edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-bas
   liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     pairedRepeatControls: true,
     ...(windowName === 'desktop-b' && { pythonWarmSubmitControl: '0.20.1' }) },`);
+edit("const filePrefix = mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';", `const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
+const filePrefix = shapeProbeFile ? 'shape-probe-' + windowName + '-' :
+  mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';`);
+edit(`const schedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
+  group.language === 'java' && group.state === 'switched' && group.journey === 'run');`, `const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
+  group.language === 'java' && group.state === 'switched' && group.journey === 'run');
+const shapeProbeScope = windowName === 'desktop-b' ? 'desktop' : windowName;
+const schedule = shapeProbeFile
+  ? selectShapeProbeSchedule(shapeProbeScope, baseSchedule,
+      JSON.parse(await readFile(shapeProbeFile, 'utf8')))
+  : baseSchedule;`);
 edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();
   assert.match(report.browser.version, /^145\\./u, 'Expected frozen Chromium major 145');
@@ -263,12 +281,20 @@ edit('                  sample.second = await second(page, fixture.cases[1].id);
 edit("                  if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';", `
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
                   if (sample.secondWorkerJournal && !sample.invalid) {
-                    sample.invalid = pythonCandidateOutcome(
-                      { workerJournal: sample.secondWorkerJournal },
-                      'click',
-                      1,
-                      false,
-                    );
+                    const productionControl = version === '0.17.1' || version === '0.20.1';
+                    sample.invalid = productionControl
+                      ? pythonProductionControlOutcome(
+                          { workerJournal: sample.secondWorkerJournal },
+                          'click',
+                          1,
+                          pythonProductionControlWorker({ workerJournal: sample.workerJournal }),
+                        )
+                      : pythonCandidateOutcome(
+                          { workerJournal: sample.secondWorkerJournal },
+                          'click',
+                          1,
+                          false,
+                        );
                   }
                   if (sample.secondWorkerJournal) {
                     sample.cache ??= {};

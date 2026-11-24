@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   createUncapturedShapeGuard,
   measurementShapeKey,
+  selectShapeProbeSchedule,
 } from './measurement-shapes.mjs';
 
 const scopes = ['desktop', 'phone', 'spot'];
@@ -52,4 +53,14 @@ test('pre-recorded captures suppress fail-fast without crossing pair or scope bo
     .observe(group, '0.17.1', { invalid: 'wrong scope' }).action, 'fail-fast');
   assert.equal(guard.observe({ ...group, pairedControlFor: 'candidate-deploy' }, '0.17.1',
     { invalid: 'wrong pair' }).action, 'fail-fast');
+});
+
+test('probe selection runs exactly one attempt for each requested combination', () => {
+  const group = { ...groups[1], versions: ['0.17.1', 'candidate-main'], target: 20 };
+  const key = measurementShapeKey('phone', group, 'candidate-main');
+  assert.deepEqual(selectShapeProbeSchedule('phone', [group], [key]), [
+    { ...group, versions: ['candidate-main'], target: 1 },
+  ]);
+  assert.throws(() => selectShapeProbeSchedule('desktop', [group], [key]),
+    /absent from this schedule/);
 });

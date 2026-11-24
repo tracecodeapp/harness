@@ -68,6 +68,7 @@ import { javaClosingPlan } from '../java-closing.mjs';
 import {
   createUncapturedShapeGuard,
   measurementShapeKey,
+  selectShapeProbeSchedule,
 } from '../measurement-shapes.mjs';
 import { capturedShapeKeys } from '../shape-captures.mjs';
 
@@ -95,6 +96,7 @@ const pythonFreshAa = process.env.SPEED_PYTHON_FRESH_AA === '1';
 const submitAa = process.env.SPEED_SUBMIT_AA === '1';
 const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
 const javaClosingPhase = process.env.SPEED_JAVA_CLOSING_PHASE;
+const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -150,7 +152,8 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = javaClosing ? `java-closing${javaClosingPhase ? '-' + javaClosingPhase : ''}-` : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = shapeProbeFile ? `shape-probe-${testedLanguage}-${candidateScope}-` :
+  javaClosing ? `java-closing${javaClosingPhase ? '-' + javaClosingPhase : ''}-` : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -552,8 +555,12 @@ function addressedBySample(sample) {
 const prepared = {};
 let browser;
 const fullSchedule = plan();
-const schedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
+const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');
+const schedule = shapeProbeFile
+  ? selectShapeProbeSchedule(candidateScope ?? windowName, baseSchedule,
+      JSON.parse(await readFile(shapeProbeFile, 'utf8')))
+  : baseSchedule;
 if (groupSelector !== undefined) {
   assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
 }
@@ -618,6 +625,7 @@ const report = {
     groupSelector,
     runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
   }),
+  ...(shapeProbeFile && { shapeProbe: { keys: JSON.parse(await readFile(shapeProbeFile, 'utf8')) } }),
   host: { hostname: hostname(), logicalCpus: availableParallelism(), kernel: release() },
   browser: { channel: 'chromium', crossOriginIsolated: false },
   packages: {},

@@ -34,3 +34,22 @@ export function createUncapturedShapeGuard(scope, capturedShapeKeys = []) {
     },
   };
 }
+
+export function selectShapeProbeSchedule(scope, schedule, probeKeys) {
+  const selected = new Set(probeKeys);
+  const matched = new Set();
+  const groups = schedule.flatMap((group) => {
+    const versions = group.versions.filter((version) => {
+      const key = measurementShapeKey(scope, group, version);
+      if (!selected.has(key)) return false;
+      matched.add(key);
+      return true;
+    });
+    return versions.length === 0 ? [] : [{ ...group, versions, target: 1 }];
+  });
+  const missing = [...selected].filter((key) => !matched.has(key));
+  if (missing.length > 0) {
+    throw new Error('Shape probe keys are absent from this schedule: ' + missing.join(', '));
+  }
+  return groups;
+}
