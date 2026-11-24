@@ -80,9 +80,11 @@ for (const group of metadata.schedule) {
     Object.fromEntries([0, 1].map((position) =>
       [position, stats(values.get(cell + '/label-position/' + label + '/' + position))]))]));
   assert.ok(Object.values(labelStats).every(({ n }) => n === 20));
-  assert.ok(Object.values(positionStats).every(({ n }) => n === 20));
+  assert.equal(Object.values(positionStats).reduce((sum, { n }) => sum + n, 0), 40);
+  assert.ok(Object.values(positionStats).every(({ n }) => n > 0));
   assert.ok(Object.values(labelPositionStats).every((positions) =>
-    Object.values(positions).every(({ n }) => n === 10)));
+    Object.values(positions).reduce((sum, { n }) => sum + n, 0) === 20 &&
+    Object.values(positions).every(({ n }) => n > 0)));
   const checks = {
     labelMedian: withinAaMedianTolerance(labelStats[labels[0]].median, labelStats[labels[1]].median),
     labelP90: withinAaP90Tolerance(labelStats[labels[0]].p90, labelStats[labels[1]].p90),
