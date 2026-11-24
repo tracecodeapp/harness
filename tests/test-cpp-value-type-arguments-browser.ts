@@ -210,8 +210,125 @@ const SCENARIOS: Scenario[] = [
     cases: [{ boxes: [null, 1] }],
     expected: [{ error: "TraceCode cannot build C++ type 'Box' from null" }],
   },
+  // Review fixes (Grok, scope 1 at 06bcc509). The browser runs TraceCC's
+  // wasm32 target, where long is 32 bits: an integer literal past int's range
+  // has type long long there (long on LP64).
   {
-    name: 'ambiguous constructors are a compile-stage diagnostic naming the type',
+    // Finding 1: rank by the literal's type; INT_MIN fits int.
+    name: 'integer literal typing: int, long, long long by range',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('ranks',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(long) : kind("long") {} Kind(long long) : kind("long long") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [3000000000, -2147483648, 2147483647, -2147483649] }],
+    expected: ['long long,int,int,long long,'],
+  },
+  {
+    // Finding 1: with int and a 32-bit long, nothing holds 3000000000; refuse
+    // rather than wrap.
+    name: 'an integer no integer constructor can hold names the type',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('nofit',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(long) : kind("long") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [3000000000] }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Kind' from an integer argument: none of its integer constructors can hold the value." }],
+  },
+  {
+    name: 'int and long constructors keep INT_MIN and INT_MAX on int',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('intlimits',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(long) : kind("long") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [-2147483648, 2147483647] }],
+    expected: ['int,int,'],
+  },
+  {
+    // Finding 2: a templated constructor sees the literal's type on every
+    // driver, past INT_MAX too.
+    name: 'templated constructor: Run and Submit pass the same type',
+    functionName: 'Ledger',
+    executionStyle: 'ops-class',
+    code: `#include <string>
+#include <type_traits>
+struct Value {
+  std::string kind;
+  template <class T>
+  Value(T) : kind(std::is_same_v<T, int> ? "int" : std::is_same_v<T, long> ? "long" : std::is_same_v<T, long long> ? "long long" : "other") {}
+};
+class Ledger {
+public:
+  Ledger() = default;
+  std::string add(Value value) {
+    return value.kind;
+  }
+};`,
+    cases: [{ operations: ['Ledger', 'add', 'add'], arguments: [[], [7], [3000000000]] }],
+    expected: [[null, 'int', 'long long']],
+  },
+  {
+    // Finding 3: a learner type named Json (compiled and returned 7 on 571139f0).
+    name: 'a learner type named Json decodes from an object',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('json', 'struct Json { int n; Json() = default; Json(int x) : n(x) {} };', 'int solve(Json value)', 'return value.n;'),
+    cases: [{ value: { n: 7 } }],
+    expected: [7],
+  },
+  {
+    name: 'a learner type named Json decodes from a scalar',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('json', 'struct Json { int n; Json() = default; Json(int x) : n(x) {} };', 'int solve(Json value)', 'return value.n;'),
+    cases: [{ value: 7 }],
+    expected: [7],
+  },
+  {
+    // Finding 4: ops-class Run decodes objects by field name, not key order.
+    name: 'ops-class objects decode by field name on every driver',
+    functionName: 'Ledger',
+    executionStyle: 'ops-class',
+    code: `struct Point { int x; int y; };
+class Ledger {
+public:
+  Ledger() = default;
+  int sum(Point p) {
+    return p.x * 10 + p.y;
+  }
+};`,
+    cases: [{ operations: ['Ledger', 'sum'], arguments: [[], [{ y: 1, x: 2 }]] }],
+    expected: [[null, 21]],
+  },
+  {
+    name: 'ops-class arrays for a value type fail alike on every driver',
+    functionName: 'Ledger',
+    executionStyle: 'ops-class',
+    code: `struct Point { int x; int y; };
+class Ledger {
+public:
+  Ledger() = default;
+  int sum(Point p) {
+    return p.x * 10 + p.y;
+  }
+};`,
+    cases: [{ operations: ['Ledger', 'sum'], arguments: [[], [[1, 2]]] }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Point' from a JSON array argument." }],
+  },
+  {
+    // Finding 5: an ambiguous scalar overload leaves the object arm alone
+    // (returned 4 on 571139f0).
+    name: 'ambiguous scalar constructors still decode an object',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('ambigobj', 'struct Value { int n = -1; Value() = default; Value(long) : n(1) {} Value(short) : n(2) {} };', 'int solve(Value value)', 'return value.n;'),
+    cases: [{ value: { n: 4 } }],
+    expected: [4],
+  },
+  {
+    name: 'ambiguous constructors name the type when that kind arrives',
     functionName: 'solve',
     executionStyle: 'solution-method',
     code: method('ambiguous', 'struct Wide { long n; Wide(long x) : n(x) {} Wide(short x) : n(x) {} };', 'int solve(Wide wide)', 'return static_cast<int>(wide.n);'),

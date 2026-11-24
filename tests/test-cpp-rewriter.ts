@@ -822,40 +822,57 @@ for (const withDefault of [false, true]) {
       const label = `${name} driver (default constructor ${withDefault}, tracing ${tracing})`;
       assertCondition(
         driver.includes('struct JsonObjectAdapter<Value>') &&
-          driver.includes('return Self(tracecode::json_to<int>(value));') &&
-          driver.includes('return Self(std::string(value.string_value));'),
+          driver.includes('return __tc_self(static_cast<int>(__tc_number));') &&
+          driver.includes('return __tc_self(std::string(__tc_value.string_value));'),
         `${label} should decode a JSON integer through Value(int) and a JSON string through Value(const std::string&)`
       );
       assertCondition(
         !/\bValue out\{\}/.test(driver) &&
-          /if constexpr \(std::is_default_constructible_v<Self>\) \{\s*Self out\{\};/.test(driver),
+          /if constexpr \(std::is_default_constructible_v<__tc_self>\) \{\s*__tc_self __tc_out\{\};/.test(driver),
         `${label} should default-construct Value only under a default-constructibility check`
       );
     }
+    // The single-case ops-class driver decodes its literals through the same
+    // adapter (review finding 2 and 4), not with its own constructor calls.
     const opsSingle = rewriter.buildOpsClassDriverSource(ops, 'Ledger', valueOps, { tracing });
     assertCondition(
-      opsSingle.includes('Value(static_cast<int>(7))') && opsSingle.includes('Value(std::string("rent"))'),
-      `single-case ops-class driver (default constructor ${withDefault}, tracing ${tracing}) should build Value literals through the same constructors:\n${opsSingle.split('\n').filter((line) => line.includes('Value')).join('\n')}`
+      opsSingle.includes('struct JsonObjectAdapter<Value>') &&
+        /tracecode::json_to<Value>\(\(\[\]\(\) -> const tracecode::JsonValue& \{ static const tracecode::JsonValue __tc_literal = tracecode::parse_json\("7"\)/.test(opsSingle) &&
+        opsSingle.includes('tracecode::parse_json("\\"rent\\"")') &&
+        !opsSingle.includes('Value(static_cast<int>(7))') && !/Value\{ /.test(opsSingle),
+      `single-case ops-class driver (default constructor ${withDefault}, tracing ${tracing}) should decode Value literals through the adapter:\n${opsSingle.split('\n').filter((line) => line.includes('Value')).join('\n')}`
     );
   }
 }
-// Ambiguous constructors are a compile-stage diagnostic naming the type, and
-// a type that no JSON value can build is refused at compile time too.
+// Ambiguous constructors fail with a message naming the type, only when that
+// JSON kind is decoded (review finding 5: the object arm still compiles); a
+// type that no JSON value can build is refused at compile time.
 const ambiguousDriver = rewriter.buildBatchDriverSource(
   'struct Wide { long n; Wide(long x) : n(x) {} Wide(short x) : n(x) {} };\nclass Solution {\npublic:\n  int solve(Wide wide) { return (int)wide.n; }\n};',
   'solve', [{}], {}
 );
 assertCondition(
-  ambiguousDriver.includes("TraceCode cannot build C++ type 'Wide' from an integer argument: its constructors taking long and short are equally good matches.") &&
-    /static_assert\(sizeof\(Json\) == 0,/.test(ambiguousDriver),
-  'ambiguous one-argument constructors should be a static_assert naming the type'
+  ambiguousDriver.includes("tracecode::json_error(\"TraceCode cannot build C++ type 'Wide' from an integer argument: its constructors taking long and short are equally good matches.\")") &&
+    !/static_assert\(sizeof\(/.test(ambiguousDriver),
+  'ambiguous one-argument constructors should fail at decode time for that kind only, naming the type'
+);
+// Review finding 3: generated names cannot hide a learner type (Json, Self).
+const jsonNamedDriver = rewriter.buildBatchDriverSource(
+  'struct Json { int n; Json() = default; Json(int x) : n(x) {} };\nstruct Self { int n = 0; };\nclass Solution {\npublic:\n  int solve(Json value, Self self) { return value.n + self.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  jsonNamedDriver.includes('template <typename __tc_json = JsonValue>') &&
+    jsonNamedDriver.includes('static Json from(const __tc_json& __tc_value)') &&
+    !/typename Json\b|using Self\b|\bSelf out\b/.test(jsonNamedDriver),
+  'the adapter template parameter and locals should use the reserved __tc_ prefix'
 );
 const unusableDriver = rewriter.buildBatchDriverSource(
   '#include <vector>\nstruct Bag { int n; Bag(std::vector<int> v) : n(v.size()) {} };\nclass Solution {\npublic:\n  int solve(Bag bag) { return bag.n; }\n};',
   'solve', [{}], {}
 );
 assertCondition(
-  unusableDriver.includes("static_assert(std::is_default_constructible_v<Self>, \"TraceCode cannot build C++ type 'Bag' from test input"),
+  unusableDriver.includes("static_assert(std::is_default_constructible_v<__tc_self>, \"TraceCode cannot build C++ type 'Bag' from test input"),
   'a type with neither a default nor a scalar constructor should be refused at compile time, naming the type'
 );
 
