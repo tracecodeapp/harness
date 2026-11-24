@@ -371,7 +371,10 @@ async function main(): Promise<void> {
         }
         try {
           const batch = await client.executeCodeBatch({ ...base, inputBatch: scenario.cases });
-          paths.batch = scenario.cases.map((_inputs, index) => summarize(batch.results[index]));
+          // A program refused before compilation has no per-case results; the
+          // batch's own failure is every case's.
+          paths.batch = scenario.cases.map((_inputs, index) =>
+            summarize(batch.results.length === 0 ? batch : batch.results[index]));
         } catch (error) {
           paths.batch = scenario.cases.map(() => failure(error));
         }
