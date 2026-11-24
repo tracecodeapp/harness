@@ -27,6 +27,7 @@ import {
   WORKER_REQUEST_MESSAGES,
   type BrowserWorkerProtocolLanguage,
 } from '../packages/runtime-browser/src/worker-protocol-messages';
+import type { JudgeTestBridge } from '../src/internal/judge-test-bridge';
 import { createJavaRuntimeClient } from '../packages/runtime-java/src/java-runtime-client';
 import type { JavaWorkerClient } from '../packages/runtime-java/src/java-worker-client';
 import { createJavaPreparedExecutionProvider } from '../packages/runtime-java/src/java-prepared-provider';
@@ -1480,7 +1481,7 @@ function assertWorkerProtocolDeclarations(): void {
     const sent = new Set<string>();
     for (const pattern of [
       /sendMessage(?:Effect)?[^(\n]*\(\s*'([a-z-]+)'/g,
-      /dispatchExecution[^(\n]*\(\s*worker,\s*'([a-z-]+)'/gs,
+      /dispatch(?:Prepared)?Execution[^(\n]*\(\s*worker,\s*'([a-z-]+)'/g,
     ]) {
       for (const match of clientSource.matchAll(pattern)) {
         sent.add(match[1]!);
@@ -1499,6 +1500,50 @@ function assertWorkerProtocolDeclarations(): void {
         `${language} worker script has no handler evidence for declared request "${type}"`
       );
     }
+  }
+}
+
+function assertJavaScriptObservationProtocol(): void {
+  const worker = readFileSync('workers/javascript/javascript-worker.js', 'utf8');
+  const ses = readFileSync('packages/runtime-javascript/src/ses-algorithm-worker.ts', 'utf8');
+  const client = readFileSync('packages/runtime-javascript/src/javascript-worker-client.ts', 'utf8');
+  const prepared = readFileSync('src/internal/judge-prepared-program.ts', 'utf8');
+  const judge = readFileSync('src/internal/browser-judge.ts', 'utf8');
+
+  // Replies and progress events travel worker-to-page. The fault flag and
+  // acknowledgement ride on an existing observation request and reply.
+  for (const [source, names] of [
+    [worker, ['observation-started', 'prepare-result', 'execute-result', 'runtime-progress',
+      'ordinary-case-started', 'disableRecorderForTest', 'recorderDisabled']],
+    [ses, ['runtime-progress', 'ordinary-case-started']],
+    [client, ['runtime-progress', 'disableRecorderForTest', 'recorderDisabled']],
+  ] as const) {
+    for (const name of names) {
+      assertCondition(source.includes(name), `Missing JavaScript observation wire evidence for "${name}"`);
+    }
+  }
+
+  // The trusted Judge journal is a page callback, not a Worker request.
+  type BridgeEvent = Parameters<JudgeTestBridge['onEvent']>[0];
+  const journal = {
+    'ordinary-write-attempt': prepared,
+    'ordinary-commit': prepared,
+    'observer-start': prepared,
+    'observer-end': prepared,
+    'attachment-bind': prepared,
+    'observation-cache-hit': prepared,
+    'public-resolve': judge,
+    'injection-ack': prepared,
+  } satisfies Record<BridgeEvent['phase'], string>;
+  for (const [phase, source] of Object.entries(journal)) {
+    assertCondition(source.includes(`'${phase}'`), `Missing Judge bridge journal evidence for "${phase}"`);
+  }
+  type Fault = NonNullable<ReturnType<NonNullable<JudgeTestBridge['faultAt']>>>;
+  const faults = {
+    prepare: true, runtime: true, deadline: true, encode: true, 'no-recorder': true,
+  } satisfies Record<Fault, true>;
+  for (const fault of Object.keys(faults)) {
+    assertCondition(prepared.includes(`'${fault}'`), `Missing Judge bridge fault evidence for "${fault}"`);
   }
 }
 
@@ -1824,6 +1869,7 @@ async function main(): Promise<void> {
   console.log('PASS: execution limits dispatch contract');
 
   assertWorkerProtocolDeclarations();
+  assertJavaScriptObservationProtocol();
   console.log('PASS: worker protocol declarations match client sends and worker handlers');
 
   const profiles = getSupportedLanguageProfiles();
