@@ -33,7 +33,7 @@ public static partial class CompilerHost
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
     private const int CompiledArtifactCacheMaxEntries = 24;
     private const long CompiledArtifactCacheMaxBytes = 8L * 1024 * 1024;
-    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v2";
+    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v3";
     private const string PreparedArtifactMetadataSchema =
         "tracecode-csharp-prepared-artifact-v1";
     private static readonly string[] DeniedUserApiText =
@@ -1293,6 +1293,10 @@ public static partial class CompilerHost
             .WithAssemblyName("TraceCode.UserCode." + Guid.NewGuid().ToString("N"));
         RecordCompilePhase(timings, "compileCreateCompilationMs", phaseStopwatch);
         phaseStopwatch.Restart();
+        if (compilation.Assembly.GetTypeByMetadataName(BuiltinNodeOutput.MarkerTypeName) is not null)
+        {
+            throw new InvalidOperationException("C# user code declares a reserved built-in node marker.");
+        }
         ValidateUserSemanticPolicy(compilation, new[] { userTree });
         RecordCompilePhase(
             timings,
@@ -2055,6 +2059,10 @@ public static partial class CompilerHost
                 IEnumerable<ISymbol> symbols = symbolInfo.Symbol is null
                     ? symbolInfo.CandidateSymbols
                     : new[] { symbolInfo.Symbol };
+                if (symbols.Any(IsBuiltinNodeMarkerSymbol))
+                {
+                    throw new InvalidOperationException("C# user code references a reserved built-in node marker.");
+                }
                 if (symbols.Any(IsTrustedCompilerHostSymbol))
                 {
                     throw new InvalidOperationException(
@@ -2069,6 +2077,14 @@ public static partial class CompilerHost
                 }
             }
         }
+    }
+
+    private static bool IsBuiltinNodeMarkerSymbol(ISymbol symbol)
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        INamedTypeSymbol? type = target as INamedTypeSymbol ?? target.ContainingType;
+        return type?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            == "global::" + BuiltinNodeOutput.MarkerTypeName;
     }
 
     private static bool IsTrustedCompilerHostSymbol(ISymbol symbol)
@@ -5455,16 +5471,20 @@ namespace TraceCode.Internal
         if (!classNames.Contains("ListNode"))
         {
             builder.AppendLine("""
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class ListNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public ListNode? next;
 
     public ListNode(int val = 0, ListNode? next = null)
     {
         this.val = val;
-        this.value = val;
         this.next = next;
     }
 }
@@ -5474,17 +5494,21 @@ public class ListNode
         if (!classNames.Contains("TreeNode"))
         {
             builder.AppendLine("""
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class TreeNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public TreeNode? left;
     public TreeNode? right;
 
     public TreeNode(int val = 0, TreeNode? left = null, TreeNode? right = null)
     {
         this.val = val;
-        this.value = val;
         this.left = left;
         this.right = right;
     }
@@ -7897,6 +7921,7 @@ public class TreeNode
 
         var result = new Dictionary<string, object?>();
         references.Track(value, type.Name, result);
+        if (BuiltinNodeOutput.IsBuiltin(type)) result["__type__"] = type.Name;
         AddOutputFieldMembers(result, value, type, depth, references);
         AddOutputPropertyMembers(result, value, type, depth, references);
         return result.Count > 0 ? result : value;
@@ -7929,6 +7954,7 @@ public class TreeNode
         {
             RuntimeTraceSink.CheckTimeout();
             if (result.ContainsKey(property.Name)
+                || BuiltinNodeOutput.IsAlias(property)
                 || !property.CanRead
                 || property.GetIndexParameters().Length > 0
                 || property.PropertyType.IsByRef

@@ -28,7 +28,7 @@ public static partial class PreparedExecutionHost
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
     private const long MaxArtifactBytes = 8L * 1024 * 1024;
-    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v2";
+    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v3";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -591,6 +591,7 @@ public static partial class PreparedExecutionHost
 
         Dictionary<string, object?> result = new();
         references.Track(value, type.Name, result);
+        if (BuiltinNodeOutput.IsBuiltin(type)) result["__type__"] = type.Name;
         foreach (
             FieldInfo field in OrderOutputMembers(
                 type.GetFields(BindingFlags.Public | BindingFlags.Instance)
@@ -613,6 +614,7 @@ public static partial class PreparedExecutionHost
             RuntimeTraceSink.CheckTimeout();
             if (
                 result.ContainsKey(property.Name) ||
+                BuiltinNodeOutput.IsAlias(property) ||
                 !property.CanRead ||
                 property.GetIndexParameters().Length > 0 ||
                 property.PropertyType.IsByRef ||

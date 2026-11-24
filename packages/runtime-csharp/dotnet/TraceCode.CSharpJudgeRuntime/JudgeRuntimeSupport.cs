@@ -9,31 +9,39 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class ListNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public ListNode? next;
 
     public ListNode(int val = 0, ListNode? next = null)
     {
         this.val = val;
-        this.value = val;
         this.next = next;
     }
 }
 
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class TreeNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public TreeNode? left;
     public TreeNode? right;
 
     public TreeNode(int val = 0, TreeNode? left = null, TreeNode? right = null)
     {
         this.val = val;
-        this.value = val;
         this.left = left;
         this.right = right;
     }
