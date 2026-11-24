@@ -73,6 +73,7 @@ import type { WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
 import {
   decodeTraceClrWireResult,
+  TraceClrCollectionLimitError,
   encodeTraceClrWireInputs,
   type TraceClrWireContractDescriptor,
 } from './traceclr-wire';
@@ -721,14 +722,32 @@ export class CSharpWorkerClient {
       }
       if (prepared.preparedRunnerTier === 'algorithm-fast' && result.success) {
         if (!(result.outputBytes instanceof Uint8Array)) {
-          throw new TypeError(
-            'The algorithm-fast C# runner returned no binary output payload.'
+          throw new RuntimeProviderError(
+            'The algorithm-fast C# runner returned no binary output payload.',
+            { reason: 'protocol' }
           );
         }
-        result.output = decodeTraceClrWireResult(
-          prepared.traceClrWireContract!,
-          result.outputBytes
-        );
+        try {
+          result.output = decodeTraceClrWireResult(
+            prepared.traceClrWireContract!,
+            result.outputBytes,
+            { judged: prepared.mode === 'code' }
+          );
+        } catch (error) {
+          if (error instanceof TraceClrCollectionLimitError) {
+            return {
+              kind: 'limit',
+              reason: 'serialization-limit',
+              error: error.message,
+              consoleOutput: result.consoleOutput ?? [],
+              timings: result.timings,
+            };
+          }
+          throw new RuntimeProviderError('Invalid TraceCLR result payload.', {
+            reason: 'protocol',
+            cause: error,
+          });
+        }
       }
       return this.toCodeExecutionResult(result);
     });

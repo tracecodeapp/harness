@@ -70,11 +70,19 @@ class WireWriter {
   }
 }
 
+export class TraceClrCollectionLimitError extends RangeError {
+  constructor(length: number) {
+    super(`TraceCLR collection length ${length} exceeds ${TRACECLR_WIRE_LIMITS.maxCollectionItems}.`);
+  }
+}
+
 class WireReader {
   private readonly view: DataView;
   private offset = 0;
 
-  constructor(bytes: Uint8Array) {
+  oversizedCollectionLength: number | undefined;
+
+  constructor(bytes: Uint8Array, readonly validateOversizedCollections = false) {
     if (bytes.byteLength > TRACECLR_WIRE_LIMITS.maxBytes) {
       throw new RangeError(`TraceCLR wire payload exceeds ${TRACECLR_WIRE_LIMITS.maxBytes} bytes.`);
     }
@@ -103,6 +111,14 @@ class WireReader {
 
   bytes(length: number): Uint8Array {
     return new Uint8Array(this.view.buffer, this.view.byteOffset + this.take(length), length);
+  }
+
+  ensureCollectionFits(length: number): void {
+    // Every element in a supported collection occupies at least one byte.
+    // Reject impossible lengths before iterating, even in validation-only mode.
+    if (length > this.view.byteLength - this.offset) {
+      throw new RangeError(`Invalid TraceCLR collection length: ${length}.`);
+    }
   }
 
   done(): void {
@@ -304,8 +320,13 @@ function normalizePortableResult(type: WireType, value: unknown): unknown {
 function readLength(reader: WireReader): number | null {
   const length = reader.int32();
   if (length === -1) return null;
-  if (length < 0 || length > TRACECLR_WIRE_LIMITS.maxCollectionItems) {
+  if (length < 0 || (!reader.validateOversizedCollections &&
+    length > TRACECLR_WIRE_LIMITS.maxCollectionItems)) {
     throw new RangeError(`Invalid TraceCLR collection length: ${length}.`);
+  }
+  if (reader.validateOversizedCollections) reader.ensureCollectionFits(length);
+  if (length > TRACECLR_WIRE_LIMITS.maxCollectionItems) {
+    reader.oversizedCollectionLength ??= length;
   }
   return length;
 }
@@ -324,17 +345,34 @@ function readValue(reader: WireReader, type: WireType, depth: number): unknown {
   if (type.kind === 'container') {
     const length = readLength(reader);
     if (length === null) return null;
-    const values = Array.from({ length }, () => readValue(reader, type.element, depth + 1));
+    const values: unknown[] = [];
+    for (let index = 0; index < length; index++) {
+      const item = readValue(reader, type.element, depth + 1);
+      if (reader.oversizedCollectionLength === undefined) values.push(item);
+    }
     return type.name === 'set' ? new Set(values) : values;
   }
   if (type.kind === 'list-node') {
     const length = readLength(reader);
-    return length === null ? null : Array.from({ length }, () => reader.int32());
+    if (length === null) return null;
+    if (reader.oversizedCollectionLength !== undefined) {
+      reader.bytes(length * 4);
+      return undefined;
+    }
+    return Array.from({ length }, () => reader.int32());
   }
   if (type.kind === 'tree-node') {
     const length = readLength(reader);
     if (length === null) return null;
-    const values = Array.from({ length }, () => reader.uint8() === 0 ? null : reader.int32());
+    const values: Array<number | null> = [];
+    for (let index = 0; index < length; index++) {
+      const marker = reader.uint8();
+      if (reader.validateOversizedCollections && marker > 1) {
+        throw new RangeError('Invalid TraceCLR tree node marker.');
+      }
+      const value = marker === 0 ? null : reader.int32();
+      if (reader.oversizedCollectionLength === undefined) values.push(value);
+    }
     while (values.at(-1) === null) values.pop();
     return values;
   }
@@ -418,11 +456,17 @@ export function encodeTraceClrWireResult(
 export function decodeTraceClrWireResult(
   contract: TraceClrWireContractDescriptor,
   bytes: Uint8Array,
+  options?: { readonly judged?: boolean },
 ): unknown {
-  const reader = new WireReader(bytes);
+  const reader = new WireReader(bytes, options?.judged);
   verify(reader);
   const type = parseWireType(contract.returnType.wireType);
   const value = readValue(reader, type, 0);
   reader.done();
+  // Length alone is insufficient. Truncated or trailing data remains a
+  // protocol error even when the declared item count also exceeds the cap.
+  if (reader.oversizedCollectionLength !== undefined) {
+    throw new TraceClrCollectionLimitError(reader.oversizedCollectionLength);
+  }
   return normalizePortableResult(type, value);
 }
