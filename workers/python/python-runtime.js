@@ -8811,9 +8811,11 @@ async function executePreparedProgram(
   try {
     userCodeObject = deserializePythonCodeArtifact(deps, artifact.userCode);
     executorCode = deserializePythonCodeArtifact(deps, artifact.executorCode);
+    // An observer's drawing gets the scope its classification gives any
+    // execution: a retained observer relies on the classifier exactly as the
+    // fast batch's retained worker does.
     const isolationTier =
       artifact.isolationProfile.tier === 'algorithm-fast' &&
-      artifact.observationOnly !== true &&
       !pythonInputsRequireCustomMaterialization(inputs)
         ? 'algorithm-fast'
         : 'compatibility';
