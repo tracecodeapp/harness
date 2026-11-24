@@ -45,6 +45,25 @@ export interface StoppingClockSample {
   readonly status: string;
   readonly cases: readonly Record<string, any>[];
   readonly error?: string;
+  /** Run only: the selected case's attachment and the trusted Judge journal. */
+  readonly selected?: {
+    readonly caseId: string;
+    readonly attachment: Record<string, any> | undefined;
+    readonly phases: readonly string[];
+    readonly attemptTokens: readonly string[];
+    readonly expiredToken?: string;
+    /** Redraw of the selected case on the same execution. */
+    readonly redraw: { readonly same: boolean; readonly phases: readonly string[]; readonly cacheHitToken?: string };
+    /** Click draw on case 1 when it is not the selected case. */
+    readonly click?: { readonly attachment: Record<string, any> | undefined; readonly phases: readonly string[]; readonly token?: string };
+  };
+}
+
+interface JournalEvent {
+  readonly phase: string;
+  readonly evaluationId: string;
+  readonly caseId?: string;
+  readonly attemptToken?: string;
 }
 
 let sequence = 0;
@@ -127,6 +146,14 @@ export async function runStoppingClock(options: {
       super.terminate();
     }
   };
+  const journal: JournalEvent[] = [];
+  const bridgeKey = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+  Object.defineProperty(globalThis, bridgeKey, {
+    configurable: true,
+    value: { onEvent: (event: JournalEvent) => { journal.push(event); } },
+  });
+  const since = (evaluationId: string | undefined, from: number) =>
+    journal.slice(from).filter((event) => event.evaluationId === evaluationId);
   const host = createBrowserJudgeHost({ assetBaseUrl: options.assetBaseUrl, providers: ['python'] });
   const samples: StoppingClockSample[] = [];
   try {
@@ -137,15 +164,57 @@ export async function runStoppingClock(options: {
       const startedAt = performance.now();
       let evaluation: any;
       let error: string | undefined;
+      let selected: StoppingClockSample['selected'];
+      let settledAt = 0;
       try {
         if (scenario.action === 'run') {
+          const caseId = `case-${Math.max(1, scenario.runawayCase)}`;
+          const from = journal.length;
           const executed = await host.execute({
             bundle: await bundle(true, options.caseCount, scenario.runawayCase, options.wallClockMs),
             interactive: true,
-            tracing: { caseIds: [`case-${Math.max(1, scenario.runawayCase)}`] },
+            tracing: { caseIds: [caseId] },
           });
+          settledAt = performance.now();
           evaluation = executed.evaluation;
-          if (executed.executionId) await host.disposeExecution(executed.executionId);
+          const row = (evaluation.cases as any[]).find((testCase) => testCase.caseId === caseId);
+          const attachment = row?.attachment && JSON.parse(JSON.stringify({ ...row.attachment, trace: undefined }));
+          const evaluationId: string | undefined = row?.attachment?.evaluationId;
+          const events = since(evaluationId, from);
+          try {
+            // Same page, same execution: redraw, then click draw on case 1.
+            const redrawFrom = journal.length;
+            const redrawn = executed.executionId
+              ? (await host.execute({ executionId: executed.executionId, tracing: { caseIds: [caseId] } })).evaluation.cases[0]
+              : undefined;
+            const redrawEvents = since(evaluationId, redrawFrom);
+            let click: NonNullable<StoppingClockSample['selected']>['click'];
+            if (executed.executionId && caseId !== 'case-1') {
+              const clickFrom = journal.length;
+              const clicked = (await host.execute({ executionId: executed.executionId, tracing: { caseIds: ['case-1'] } })).evaluation.cases[0] as any;
+              const clickEvents = since(evaluationId, clickFrom);
+              click = {
+                attachment: clicked?.attachment && { status: clicked.attachment.status, reason: clicked.attachment.reason },
+                phases: clickEvents.map(({ phase }) => phase),
+                token: clickEvents.find(({ phase }) => phase === 'observer-start')?.attemptToken,
+              };
+            }
+            selected = {
+              caseId,
+              attachment,
+              phases: events.map(({ phase }) => phase),
+              attemptTokens: events.filter(({ phase }) => phase === 'observer-start').map(({ attemptToken }) => attemptToken!),
+              expiredToken: events.find(({ phase }) => phase === 'observer-expire')?.attemptToken,
+              redraw: {
+                same: JSON.stringify(redrawn?.attachment) === JSON.stringify(row?.attachment),
+                phases: redrawEvents.map(({ phase }) => phase),
+                cacheHitToken: redrawEvents.find(({ phase }) => phase === 'observation-cache-hit')?.attemptToken,
+              },
+              ...(click ? { click } : {}),
+            };
+          } finally {
+            if (executed.executionId) await host.disposeExecution(executed.executionId);
+          }
         } else {
           const receipt = await host.evaluateAlgorithm({
             bundle: await bundle(false, options.caseCount, scenario.runawayCase, options.wallClockMs),
@@ -156,7 +225,7 @@ export async function runStoppingClock(options: {
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
       }
-      const settledAt = performance.now();
+      settledAt ||= performance.now();
       samples.push({
         action: scenario.action,
         runawayCase: scenario.runawayCase,
@@ -173,11 +242,13 @@ export async function runStoppingClock(options: {
         status: error ? 'error' : evaluation?.status,
         cases: summarize(evaluation),
         ...(error ? { error } : {}),
+        ...(selected ? { selected } : {}),
       });
     }
   } finally {
     host.dispose();
     globalThis.Worker = NativeWorker;
+    delete (globalThis as Record<symbol, unknown>)[bridgeKey];
   }
   return samples;
 }

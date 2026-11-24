@@ -356,39 +356,140 @@ export async function runUntracedRouteChecks(
     // A traced case that hit a limit already has its answer: no second run,
     // even with a console at the pool's budget.
     const once = named('runaway: no traced case a limit stopped is asked of the pool, and each is timed once');
+    // Which deadline released Run, read from the receipt and the trusted Judge
+    // journal rather than the clock.
+    const released = named('runaway: the ordinary deadline releases Run; a step cut keeps its prefix');
+    const neighbours = named('runaway: after an expired observer, redraw, click draw, the next Run and Submit on the same host stay correct');
+    type JournalEvent = { phase: string; evaluationId: string; caseId?: string; attemptToken?: string };
+    const journal: JournalEvent[] = [];
+    const bridgeKey = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+    Object.defineProperty(globalThis, bridgeKey, {
+      configurable: true,
+      value: { onEvent: (event: JournalEvent) => { journal.push(event); } },
+    });
+    const phasesOf = (evaluationId: string | undefined, from: number) =>
+      journal.slice(from).filter((event) => event.evaluationId === evaluationId);
     const limitMs = 1500;
     const runaways = [
       // No line events inside the regex, so only the clock stops it.
       ['time limit', 'timed-out', 'for (let i = 0; i < 200; i++) console.log(i);\n  return /^(a+)+$/.test("a".repeat(40 + n) + "b") ? 1 : n;'],
-      // The app's single-line budget stops these first: never asked of the pool.
+      // The untraced ordinary run has no line budget, so its 1,500 ms clock
+      // gives the verdict. The observer's single-line budget cuts the drawing,
+      // and that prefix is kept.
       ['step limit', undefined, 'for (let i = 0; i < 200; i++) console.log(i);\n  while (n > -1) { n += 1; }\n  return n;'],
       ['printing loop', undefined, 'while (true) console.log(n);'],
     ] as const;
-    for (const language of LANGUAGES) {
-      for (const [kind, status, body] of runaways) {
-        const program = {
-          code: language === 'typescript' ? `function solve(n: number): number {\n  ${body}\n}` : `function solve(n) {\n  ${body}\n}`,
-          functionName: 'solve',
-          executionStyle: 'function',
-          limits: { wallClockMs: limitMs },
-          cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 0 }, expected: 0 }],
-          policy: allCasesPassPolicy(),
-        };
-        await onHost(async (host) => {
-          await submit(host, language, warmUpFor(language));
-          const startedAt = performance.now();
-          const started = await host.execute({ bundle: await bundle(language, program, budgets), interactive: true, tracing: { caseIds: ['1'] } });
-          const elapsed = performance.now() - startedAt;
-          if (started.executionId) await host.disposeExecution(started.executionId);
-          const traced = (started.evaluation as any).cases.find((result: any) => result.caseId === '1');
-          once.compared += 1;
-          if (status && traced?.status !== status) once.violations.push(`${language}/${kind}: the traced case should be ${status}, got ${traced?.status}`);
-          if (!status && traced?.status === 'completed') once.violations.push(`${language}/${kind}: the traced case should stop at a limit`);
-          if (elapsed > limitMs * 1.8) once.violations.push(`${language}/${kind}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
-          // Stopped by a trace budget, not the clock: no clock at all.
-          if (!status && elapsed > limitMs * 0.9) once.violations.push(`${language}/${kind}: the Run took ${Math.round(elapsed)} ms; a probe ran to the clock`);
-        });
+    try {
+      for (const language of LANGUAGES) {
+        for (const [kind, status, body] of runaways) {
+          const program = {
+            code: language === 'typescript' ? `function solve(n: number): number {\n  ${body}\n}` : `function solve(n) {\n  ${body}\n}`,
+            functionName: 'solve',
+            executionStyle: 'function',
+            limits: { wallClockMs: limitMs },
+            cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 0 }, expected: 0 }],
+            policy: allCasesPassPolicy(),
+          };
+          const label = `${language}/${kind}`;
+          await onHost(async (host) => {
+            await submit(host, language, warmUpFor(language));
+            const from = journal.length;
+            const startedAt = performance.now();
+            const started = await host.execute({ bundle: await bundle(language, program, budgets), interactive: true, tracing: { caseIds: ['1'] } });
+            const elapsed = performance.now() - startedAt;
+            const traced = (started.evaluation as any).cases.find((result: any) => result.caseId === '1');
+            once.compared += 1;
+            if (status && traced?.status !== status) once.violations.push(`${label}: the traced case should be ${status}, got ${traced?.status}`);
+            if (!status && traced?.status === 'completed') once.violations.push(`${label}: the traced case should stop at a limit`);
+            if (elapsed > limitMs * 1.8) once.violations.push(`${label}: the Run took ${Math.round(elapsed)} ms for one ${limitMs} ms limit`);
+            // 0.21 grades from the untraced ordinary run, which no line budget
+            // stops: a loop's verdict exists only at its 1,500 ms clock. The
+            // drawing's step cut is the receipt's attachment, checked below.
+
+            released.compared += 1;
+            const attachment = traced?.attachment;
+            const events = phasesOf(attachment?.evaluationId, from);
+            const phases = events.map(({ phase }) => phase);
+            const expired = events.filter(({ phase, caseId }) => phase === 'observer-expire' && caseId === '1');
+            const clockStopped = traced?.failure?.origin === 'limit' && traced.failure.reason === 'client-timeout';
+            if (!clockStopped) released.violations.push(`${label}: the ordinary row should be limit/client-timeout, got ${JSON.stringify(traced?.failure)}`);
+            if (status) {
+              if (attachment?.status !== 'refused' || attachment.reason !== 'observer-timeout') {
+                released.violations.push(`${label}: expected refused/observer-timeout, got ${JSON.stringify(attachment).slice(0, 120)}`);
+              }
+              const order = ['ordinary-commit', 'observer-expire', 'attachment-bind', 'public-resolve'].map((phase) => phases.indexOf(phase));
+              if (expired.length !== 1 || order.some((at, index) => at < 0 || (index > 0 && at < order[index - 1]!))) {
+                released.violations.push(`${label}: the ordinary deadline did not release Run: ${phases.join(' > ')}`);
+              }
+            } else {
+              if (attachment?.status !== 'truncated') {
+                released.violations.push(`${label}: the step cut's prefix should be kept, got ${JSON.stringify(attachment).slice(0, 120)}`);
+              }
+              if (expired.length) released.violations.push(`${label}: a delivered prefix was expired: ${phases.join(' > ')}`);
+            }
+
+            if (!status || !started.executionId) {
+              if (started.executionId) await host.disposeExecution(started.executionId);
+              return;
+            }
+            neighbours.compared += 1;
+            const fail = (message: string) => neighbours.violations.push(`${label}: ${message}`);
+            const expiredToken = expired[0]?.attemptToken;
+            try {
+              // Redraw of the timed-out case returns the settled refusal.
+              let mark = journal.length;
+              const redraw = (await host.execute({ executionId: started.executionId, tracing: { caseIds: ['1'] } })).evaluation as any;
+              const redrawn = redraw.cases[0];
+              if (JSON.stringify(redrawn?.attachment) !== JSON.stringify(attachment)) fail(`redraw changed the attachment: ${JSON.stringify(redrawn?.attachment)}`);
+              if (JSON.stringify(answer(redrawn)) !== JSON.stringify(answer(traced))) fail('redraw changed the ordinary row');
+              let after = phasesOf(attachment?.evaluationId, mark);
+              if (after.some(({ phase }) => phase === 'observer-start')) fail('redraw re-observed the timed-out case');
+              if (!after.some(({ phase, attemptToken }) => phase === 'observation-cache-hit' && attemptToken === expiredToken)) {
+                fail(`redraw was not a cache hit of the expired attempt: ${after.map(({ phase }) => phase).join(' > ')}`);
+              }
+              // Click draw on the stopped suffix: refused as not run, no observer.
+              mark = journal.length;
+              const suffix = ((await host.execute({ executionId: started.executionId, tracing: { caseIds: ['2'] } })).evaluation as any).cases[0];
+              if (suffix?.status !== 'not-run' || suffix.attachment?.reason !== 'case-not-run') fail(`stopped suffix: ${JSON.stringify(suffix?.attachment)}`);
+              after = phasesOf(attachment?.evaluationId, mark);
+              if (after.some(({ phase }) => phase === 'observer-start')) fail('click draw observed the stopped suffix');
+            } finally {
+              await host.disposeExecution(started.executionId);
+            }
+            // The next Run on the same host prepares its own observer and draws.
+            const healthy = warmUpFor(language);
+            let mark = journal.length;
+            const next = await host.execute({ bundle: await bundle(language, healthy, budgets), interactive: true, tracing: { caseIds: [healthy.cases[0].id] } });
+            try {
+              const row = (next.evaluation as any).cases[0];
+              const nextEvents = phasesOf(row?.attachment?.evaluationId, mark);
+              const starts = nextEvents.filter(({ phase }) => phase === 'observer-start');
+              if (row?.attachment?.status !== 'drawn') fail(`next Run: expected a drawing, got ${JSON.stringify(row?.attachment).slice(0, 120)}`);
+              if (!passes(row)) fail(`next Run: the healthy case should pass, got ${JSON.stringify(answer(row)).slice(0, 160)}`);
+              if (starts.length !== 1 || starts[0]?.attemptToken === expiredToken) fail('next Run reused the expired attempt');
+              if (row?.attachment?.evaluationId === attachment?.evaluationId) fail('next Run reused the expired evaluation');
+              // Its redraw is a cache hit of its own attempt.
+              mark = journal.length;
+              const redraw = ((await host.execute({ executionId: next.executionId!, tracing: { caseIds: [row.caseId] } })).evaluation as any).cases[0];
+              if (JSON.stringify(redraw?.attachment) !== JSON.stringify(row?.attachment)) fail('next Run redraw changed the drawing');
+              if (phasesOf(row?.attachment?.evaluationId, mark).some(({ phase }) => phase === 'observer-start')) fail('next Run redraw re-observed');
+            } finally {
+              if (next.executionId) await host.disposeExecution(next.executionId);
+            }
+            // Submit on the same host grades the runaway exactly as the Run did.
+            const graded = await submit(host, language, program);
+            const gradedFirst = graded.cases.find((result: any) => result.caseId === '1');
+            if (gradedFirst?.status !== traced?.status || JSON.stringify(gradedFirst?.failure) !== JSON.stringify(traced?.failure)) {
+              fail(`Submit graded case 1 ${JSON.stringify([gradedFirst?.status, gradedFirst?.failure])}, Run ${JSON.stringify([traced?.status, traced?.failure])}`);
+            }
+            if (graded.cases.some((result: any) => result.attachment !== undefined)) fail('Submit carried an attachment');
+            const fresh = await submit(host, language, healthy);
+            if (!fresh.cases.every(passes)) fail('a healthy Submit after the runaway did not pass');
+          });
+        }
       }
+    } finally {
+      delete (globalThis as Record<symbol, unknown>)[bridgeKey];
     }
   }
   return checks;

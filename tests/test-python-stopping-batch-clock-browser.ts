@@ -83,6 +83,46 @@ async function startServer(root: string) {
   };
 }
 
+/**
+ * Which deadline released Run, from the receipt and the trusted Judge journal:
+ * a selected clock runaway's pending drawing expires at the ordinary deadline
+ * (`observer-expire` before `attachment-bind`), never at the observer's
+ * backstop. Redraw and click draw on the same page, and the later Runs on the
+ * same host, stay correct and use fresh attempts.
+ */
+function assertReleasedByOrdinaryDeadline(label: string, sample: StoppingClockSample, seenTokens: Set<string>): void {
+  const selected = sample.selected;
+  assert.ok(selected, `${label}: selected-case evidence`);
+  const { phases, attachment, redraw } = selected;
+  for (const token of selected.attemptTokens) {
+    assert.equal(seenTokens.has(token), false, `${label}: a fresh observation attempt`);
+    seenTokens.add(token);
+  }
+  if (sample.runawayCase === 0) {
+    assert.equal(attachment?.status, 'drawn', `${label}: the healthy case is drawn`);
+    assert.equal(phases.includes('observer-expire'), false, `${label}: no expiry`);
+  } else {
+    assert.equal(attachment?.status, 'refused', `${label}: ${JSON.stringify(attachment)}`);
+    assert.equal(attachment?.reason, 'observer-timeout', label);
+    const order = ['ordinary-commit', 'observer-expire', 'attachment-bind', 'public-resolve'].map((phase) => phases.indexOf(phase));
+    assert.ok(
+      order.every((at, index) => at >= 0 && (index === 0 || at > order[index - 1]!)),
+      `${label}: the ordinary deadline releases Run: ${phases.join(' > ')}`
+    );
+    assert.equal(selected.expiredToken, selected.attemptTokens[0], `${label}: the selected attempt expired`);
+  }
+  assert.equal(redraw.same, true, `${label}: redraw returns the settled attachment`);
+  assert.equal(redraw.phases.includes('observer-start'), false, `${label}: redraw does not re-observe`);
+  assert.equal(redraw.cacheHitToken, selected.attemptTokens[0], `${label}: redraw is a cache hit`);
+  if (selected.click) {
+    assert.equal(selected.click.attachment?.status, 'drawn', `${label}: click draw on case 1`);
+    assert.ok(selected.click.token, `${label}: click draw observes case 1`);
+    assert.equal(seenTokens.has(selected.click.token!), false, `${label}: click draw uses a fresh attempt`);
+    seenTokens.add(selected.click.token!);
+    assert.equal(selected.click.phases.includes('observer-expire'), false, `${label}: a completed case is not expired`);
+  }
+}
+
 async function main(): Promise<void> {
   const root = resolve('.');
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-stopping-clock-'));
@@ -134,6 +174,7 @@ async function main(): Promise<void> {
         ],
       })) as StoppingClockSample[];
       assert.equal(samples.length, 6);
+      const seenTokens = new Set<string>();
       for (const sample of samples) {
         const label = sample.runawayCase === 0
           ? `${sample.action} of a correct program`
@@ -153,6 +194,7 @@ async function main(): Promise<void> {
             assert.equal(testCase.status, 'not-run', `${label}: case ${caseNumber}`);
           }
         });
+        if (sample.action === 'run') assertReleasedByOrdinaryDeadline(label, sample, seenTokens);
         assert.equal(sample.ordinaryBatches.length, 1, `${label}: one ordinary batch`);
         const [batch] = sample.ordinaryBatches;
         const expectedStarts = Array.from({ length: sample.runawayCase || CASES }, (_, index) => index);
