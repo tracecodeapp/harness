@@ -149,6 +149,16 @@ export interface JudgeDiagnostic {
   readonly column?: number;
 }
 
+/**
+ * Diagnostic codes of the compile-stage refusals a runtime raises before
+ * compiling source that uses a construct it does not support yet. The
+ * diagnostic carries the code with `path`, `line` and `column`; the program's
+ * failure is `compile`, never a wrong answer, a limit or a runtime error.
+ */
+export type JudgeSourceRefusalCode =
+  | 'cpp-exceptions-unsupported'
+  | 'cpp-macro-operation-unsupported';
+
 export interface JudgeRuntimeTimings {
   readonly [name: string]: number | boolean | undefined;
 }

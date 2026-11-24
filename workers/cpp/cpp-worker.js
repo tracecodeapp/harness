@@ -5833,6 +5833,81 @@ function cppExceptionRefusal(source, start) {
   };
 }
 
+// Operation names defined with #define (owner ruling A', 2026-11-24). The
+// drivers dispatch an ops-class operation by its name and cannot see what the
+// preprocessor makes of that name: `#define delete removeKey` sent `delete` to
+// the decoy deleteKey on Run and Submit. An ops-class program whose #define
+// defines or redefines one of its operation names (a public method of the
+// class, the reserved `delete`, or deleteKey, the method `delete` dispatches
+// to) is refused before compilation, like C++ exceptions. The scan reads the
+// learner's text: comments and literals are blanked, #undef ends a macro and
+// #if 0 blocks are skipped. Macros with other names (types, constants,
+// function-like helpers, include guards) are never refused.
+const CPP_MACRO_OPERATION_MESSAGE = 'C++ operation names defined with #define are not supported yet. Write the method name directly.';
+const CPP_RESERVED_OPERATION_NAMES = Object.freeze(['delete', 'deleteKey']);
+
+function cppOperationMacroRefusal(source, className, executionStyle, start) {
+  if (executionStyle !== 'ops-class' || typeof className !== 'string' || !className.trim()) return undefined;
+  const lines = cppCodeOnlySource(String(source || '')).split('\n');
+  const active = new Map();
+  const conditionals = [];
+  lines.forEach((text, index) => {
+    const directive = text.match(/^\s*#\s*(\w+)\b(.*)$/);
+    if (!directive) return;
+    const [, name, rest] = directive;
+    if (name === 'if' || name === 'ifdef' || name === 'ifndef') {
+      const zero = name === 'if' && /^\s*(?:0|false)\s*$/.test(rest);
+      conditionals.push({ zero, skip: zero });
+      return;
+    }
+    if (name === 'else' || name === 'elif') {
+      const top = conditionals[conditionals.length - 1];
+      if (top?.zero && name === 'else') top.skip = !top.skip;
+      return;
+    }
+    if (name === 'endif') {
+      conditionals.pop();
+      return;
+    }
+    if (conditionals.some((entry) => entry.skip)) return;
+    const macro = rest.match(/^\s+([A-Za-z_]\w*)/)?.[1];
+    if (!macro) return;
+    if (name === 'undef') active.delete(macro);
+    if (name === 'define') active.set(macro, { macro, line: index + 1, column: text.indexOf('#') + 1 });
+  });
+  if (active.size === 0) return undefined;
+  const operations = new Set([
+    ...CPP_RESERVED_OPERATION_NAMES,
+    ...collectPreparedOpsClassSignatures(source, className)
+      .filter((signature) => signature.name !== className && signature.access !== 'private' && signature.access !== 'protected')
+      .map((signature) => signature.name),
+  ]);
+  const definition = [...active.values()]
+    .filter(({ macro }) => operations.has(macro))
+    .sort((left, right) => left.line - right.line)[0];
+  if (!definition) return undefined;
+  return {
+    success: false,
+    error: CPP_MACRO_OPERATION_MESSAGE,
+    diagnosticStage: 'compile',
+    errorLine: definition.line,
+    diagnostic: {
+      code: 'cpp-macro-operation-unsupported',
+      file: CPP_USER_SOURCE_FILE,
+      line: definition.line,
+      column: definition.column,
+    },
+    consoleOutput: [],
+    timings: { totalMs: elapsedMs(start) },
+  };
+}
+
+// Source-level refusals every handler applies before building a driver.
+function cppSourceRefusal(source, payload, start) {
+  return cppExceptionRefusal(source, start) ??
+    cppOperationMacroRefusal(source, payload?.functionName, payload?.executionStyle, start);
+}
+
 function normalizeCppUserSource(source) {
   return String(source || '')
     .split(/\r?\n/)
@@ -16013,7 +16088,7 @@ async function handlePrepareRuntimeProgram(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return refusal;
 
   const driverStartedAt = now();
@@ -16497,7 +16572,7 @@ async function handleCompileRun(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, now());
+  const refusal = cppSourceRefusal(source, payload, now());
   if (refusal) return { ...refusal, output: null };
 
   try {
@@ -16618,7 +16693,7 @@ async function handleCompileRunBatch(payload) {
     return failedBatchResult('C++ named execution requires a function name.');
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return { ...refusal, results: [] };
 
   if (!functionName.trim() && executionStyle === 'function') {
@@ -16787,7 +16862,7 @@ async function handleExecuteTraceBatch(payload) {
     return failedBatchResult('C++ named tracing requires a function name.');
   }
 
-  const refusal = cppExceptionRefusal(source, startedAt);
+  const refusal = cppSourceRefusal(source, payload, startedAt);
   if (refusal) return { ...refusal, results: [] };
 
   const fallbackPerCase = async (reason) => {
@@ -16928,7 +17003,7 @@ async function handleExecuteWithTracing(payload) {
     };
   }
 
-  const refusal = cppExceptionRefusal(source, now());
+  const refusal = cppSourceRefusal(source, payload, now());
   if (refusal) return { ...refusal, output: null };
 
   try {
