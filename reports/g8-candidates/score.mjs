@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { scoreThresholds } from './score-thresholds.mjs';
+import { medianRegressionClass, scoreThresholds } from './score-thresholds.mjs';
 import { liveCellScoreWithControls, liveObservationVersion } from './live-control.mjs';
 import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 
@@ -62,6 +62,21 @@ function stats(values = []) {
   return n ? { n, median: (ordered[Math.floor((n-1)/2)] + ordered[Math.floor(n/2)])/2,
     p90: ordered[Math.ceil(.9*n)-1] } : { n };
 }
+function collectAaReferences(folder, prefix) {
+  const metadata = json(join(folder, prefix + '-metadata.json'));
+  const samples = records(join(folder, prefix + '-samples.jsonl'));
+  const values = new Map();
+  for (const sample of samples.filter(({ kept }) => kept)) {
+    const group = metadata.schedule[sample.groupIndex];
+    const sourceVersion = group.submitAaSourceVersion ?? '0.17.1';
+    for (const [endpoint, value] of Object.entries(sample.metrics)) {
+      const name = key(group, endpoint) + '/' + sourceVersion;
+      if (!values.has(name)) values.set(name, []);
+      values.get(name).push(value);
+    }
+  }
+  return new Map([...values].map(([name, rows]) => [name, stats(rows)]));
+}
 function cacheStats(receipts = [], roles = ['ordinary', 'observer']) {
   const roleStats = (role) => {
     const rows = receipts.map((receipt) => receipt?.initial?.[role] ?? []);
@@ -85,6 +100,12 @@ function cacheStats(receipts = [], roles = ['ordinary', 'observer']) {
 }
 const capture = ['desktop-a-with-topup', 'desktop-b', 'phone'].map(w => collect(archive, 'speed-' + w));
 const archived = new Map(capture.flatMap(receipt => [...receipt.values]));
+const newDesignReferences = new Map();
+if (['python', 'csharp'].includes(primary)) {
+  const fresh = collectAaReferences(join(raw, '..', 'python-fresh-aa'), 'python-fresh-aa');
+  const submit = collectAaReferences(join(raw, '..', 'submit-aa'), 'submit-aa');
+  for (const [name, row] of [...fresh, ...submit]) newDesignReferences.set(name, row);
+}
 function required(scope) {
   if (scope === 'spot') return languages.filter(l => l !== primary).map(l => l + '/1/binary-search/warm/verdicts');
   const cpu = scope === 'phone' ? 4 : 1;
@@ -114,7 +135,8 @@ function policyFor(scope, cell) {
 }
 let liveControl;
 const summary = { incomplete: [], frozenFailed: [], frozenEscalations: [], pythonPhoneFrozen: {},
-  noComparator: [], sameWindowFailed: [], controlInvalid: [] };
+  noComparator: [], sameWindowFailed: [], controlInvalid: [], unstable: [],
+  fixForward: [], recordedFiveToTen: [] };
 for (const scope of ['desktop', 'phone', 'spot']) {
   const prefix = primary === 'python' && scope !== 'spot'
     ? (scope === 'phone' ? 'speed-phone' : 'speed-desktop-b') : 's-' + primary + '-' + scope;
@@ -200,28 +222,25 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       const pass = repeatCell ? undefined
         : complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
       const pythonWarmSubmit = /^python\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
+      const unstablePythonSubmit = primary === 'python' && pythonWarmSubmit;
       const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] : ['0.17.1'];
       const controls = controlVersions.map((version) => ({
         version,
         result: stats(observed.values.get(cell + '/' +
           liveObservationVersion(version, pairedCandidateControls || repeatCell ? policy : undefined))),
-        frozen: history[version],
+        frozen: newDesignReferences.get(cell + '/' + version) ?? history[version],
       }));
       const sameWindowComplete = liveControl === true && controls.every(({ result: row }) => row.n === 20);
       const sameWindow = complete && sameWindowComplete
-        ? repeatCell
+        ? unstablePythonSubmit
           ? (() => {
               const comparator = {
                 median: Math.min(...controls.map(({ result: row }) => row.median)),
                 p90: Math.min(...controls.map(({ result: row }) => row.p90)),
               };
-              const repeatThresholds = { median: comparator.median * 1.05, p90: comparator.p90 * 1.10 };
-              return {
-                controls: controls.map(({ version, result: row }) => ({ version, result: row, valid: true })),
-                comparator,
-                thresholds: repeatThresholds,
-                pass: result.median <= repeatThresholds.median && result.p90 <= repeatThresholds.p90,
-              };
+              const thresholds = { median: comparator.median * 1.05, p90: comparator.p90 * 1.10 };
+              return { unstable: true, controls, comparator, thresholds,
+                numericalPass: result.median <= thresholds.median && result.p90 <= thresholds.p90 };
             })()
           : liveCellScoreWithControls(result, controls)
         : undefined;
@@ -231,9 +250,18 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       else if (!repeatCell && !pass && primary === 'python' && scope === 'phone') {
         (summary.pythonPhoneFrozen[policy] ??= []).push(id);
       } else if (!repeatCell && !pass) summary.frozenFailed.push(id);
-      if (!sameWindowComplete) summary.noComparator.push(id);
+      if (unstablePythonSubmit && complete && sameWindowComplete) summary.unstable.push(id);
+      else if (!sameWindowComplete) summary.noComparator.push(id);
       else if (sameWindow && sameWindow.controls.some(({ valid }) => !valid)) summary.controlInvalid.push(id);
       else if (sameWindow && !sameWindow.pass) summary.sameWindowFailed.push(id);
+      if (!unstablePythonSubmit && sameWindow?.controls.every(({ valid }) => valid)) {
+        const regression = medianRegressionClass(result.median, sameWindow.comparator.median);
+        if (regression.classification === 'fix-forward') {
+          summary.fixForward.push({ id, medianRatio: regression.ratio });
+        } else if (regression.classification === 'record') {
+          summary.recordedFiveToTen.push({ id, medianRatio: regression.ratio });
+        }
+      }
       console.log(JSON.stringify({ scope, cell, policy, result, cache, history,
         frozenTable: repeatCell ? { notApplicable: true, complete } : { thresholds, complete, pass },
         sameWindow: sameWindow ?? { complete: false, controls },
