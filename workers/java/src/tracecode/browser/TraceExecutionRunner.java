@@ -1,6 +1,7 @@
 package tracecode.browser;
 
 import java.io.PrintWriter;
+import java.io.PrintStream;
 import java.io.Writer;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -97,7 +98,14 @@ public final class TraceExecutionRunner {
     String learnerFrame = args.length >= 3 ? args[2] : "";
     boolean profile = args.length >= 4 && "profile".equals(args[3]);
     boolean enableTracing = !(args.length >= 5 && "notrace".equals(args[4]));
-    int token = TraceHooks.beginRun(maxStoredEvents, profile, true, enableTracing);
+    String observationNonce = args.length >= 11 ? args[6] : "";
+    boolean observationOnly = !observationNonce.isEmpty();
+    PrintStream runnerStdout = System.out;
+    int token = observationOnly
+        ? TraceHooks.beginObservation(
+            maxStoredEvents, profile, args[7], Integer.parseInt(args[8]),
+            Integer.parseInt(args[9]), Integer.parseInt(args[10]))
+        : TraceHooks.beginRun(maxStoredEvents, profile, true, enableTracing);
     Object output = null;
     Throwable failure = null;
     boolean fallbackRequired = false;
@@ -117,7 +125,7 @@ public final class TraceExecutionRunner {
           failure = cause;
         }
       }
-      if (budgetAborted) {
+      if (budgetAborted && !observationOnly) {
         // The traced attempt may have mutated learner globals or emitted
         // output. Ask the host to run the clean companion through a fresh
         // process boundary, then merge this attempt's truncated trace with
@@ -129,6 +137,13 @@ public final class TraceExecutionRunner {
     } catch (Throwable error) {
       failure = error;
     } finally {
+      if (observationOnly) {
+        try {
+          exportObservation(runnerStdout, observationNonce);
+        } finally {
+          TraceHooks.endRun(token);
+        }
+      } else {
       // Snapshot before event export so TraceHooks totals exclude transport.
       String profileJson = profile ? TraceHooks.profileReportJson() : null;
       if (output != null) {
@@ -163,6 +178,18 @@ public final class TraceExecutionRunner {
             ERROR_MARKER + encode(learnerFailure(failure, learnerFrame)));
       }
       TraceHooks.endRun(token);
+      }
     }
+  }
+
+  private static void exportObservation(PrintStream stdout, String nonce) {
+    TraceHooks.DrainedEvents drained = TraceHooks.drainEventsUtf8();
+    String cut = TraceHooks.observationCut();
+    stdout.println();
+    stdout.println("__TRACECODE_OBSERVATION_BEGIN__:" + nonce + ":" + drained.count);
+    stdout.write(drained.utf8, 0, drained.utf8.length);
+    stdout.println("__TRACECODE_OBSERVATION_END__:" + nonce + ":"
+        + (cut == null ? "" : cut) + ":" + TraceHooks.droppedEventCount());
+    stdout.flush();
   }
 }

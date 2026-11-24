@@ -1,0 +1,18 @@
+{
+  "binary-search": {
+    "python": "d2616cc8d576a22206fe3739bd61956fdfbdda4d91b2a818dd574ce0f98085b7",
+    "javascript": "0f858a8a7690940187057f6102ccaf3cc7ba11a08592b80e2161703192059ac5",
+    "typescript": "ddcd30755af63b57e7df94ecae55cafa010624559124cd9a2092bca0628d31d8",
+    "java": "d859dd5e4a99c968fc9bf00a68715811c1254fddb5e7e1d3e83e74206b63f66f",
+    "cpp": "16dc8ee4ac2111c6833ff8e2061735268b1f050a58a02a8314b368ba1b6868e0",
+    "csharp": "56008a17b1dbc858260fc0ade9c215b458e09c36700786776c78b8bcb3865db0"
+  },
+  "permutations": {
+    "python": "1587563957fd90ebb0a81f6b282885c200e88f6d9e0c8ffdd486d5f428567812",
+    "javascript": "a8aa0f1f51b7a81ad0fc2fe4920fe973ae46a1affca79cc8903c3cf66dfec5a4",
+    "typescript": "2c1c5ffce4240232963213cba394bea655af1b21e95fe6cd9c1f74c25d0873be",
+    "java": "5febcbe2525ec229b42ad9b87f3808785edafd8f62298421f3d2b1eb46009b44",
+    "cpp": "5e2f17722fc203af49bddbe0cd9de030462b3f17e1baee86a6e4bcbdf5433ea1",
+    "csharp": "f0221de747be4693e1e69e523fbfd1d514be0740782e30f7706fe9ab449303e9"
+  }
+}

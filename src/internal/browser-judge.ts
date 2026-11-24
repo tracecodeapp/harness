@@ -1,6 +1,7 @@
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
+import * as Fiber from 'effect/Fiber';
 import * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
@@ -214,6 +215,7 @@ export type RuntimeJudgeBinding =
 interface OwnedRuntimeDispatch {
   readonly binding: RuntimeJudgeCodeBinding;
   readonly acknowledgeBatchStarts: boolean;
+  readonly overlapObservationWithInitialization?: true;
   recordPrepare(call: RuntimeProgramPreparationCall): void;
   admit(caseId: string): void;
 }
@@ -935,7 +937,8 @@ function prepareProviderProgram(
   options: RuntimeJudgeProviderOptions,
   programs: RuntimePreparedProgramRegistry,
   context: TraceKernelRuntimeProcessContext,
-  invocation: JudgeRuntimeInvocationInput
+  invocation: JudgeRuntimeInvocationInput,
+  concurrentInitialization?: Effect.Effect<void, Error>
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
     const binding = options.binding;
@@ -951,10 +954,17 @@ function prepareProviderProgram(
         ? { traceOptions: binding.traceOptions }
         : {}),
     };
+    if (concurrentInitialization) {
+      const ordinaryReady = yield* Effect.fork(concurrentInitialization);
+      // Let the ordinary readiness request start before opening the observer.
+      yield* Effect.yieldNow();
+      options.owned?.recordPrepare(prepareCall);
+      yield* Fiber.join(ordinaryReady);
+    }
     const outcome = yield* Effect.tryPromise({
       try: (signal) => {
         const prepared = programs.prepare(evaluationId(invocation), { ...prepareCall, signal });
-        options.owned?.recordPrepare(prepareCall);
+        if (!concurrentInitialization) options.owned?.recordPrepare(prepareCall);
         return prepared;
       },
       catch: errorFromUnknown,
@@ -1092,7 +1102,8 @@ function executePreparedProviderBatch(
               inputBatch: cases.map((testCase) => testCase.inputs),
               signal,
               limits: options.binding.limits,
-            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId))),
+            }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
+              options.owned?.acknowledgeBatchStarts),
       catch: errorFromUnknown,
     });
     if (outcomes.length !== cases.length) {
@@ -1375,14 +1386,16 @@ function executeProviderProcess(
     Effect.flatMap((invocation) => {
       const owned = invocation.evaluationId ? ownedDispatches.get(invocation.evaluationId) : undefined;
       const dispatch = owned ? { ...options, owned, binding: owned.binding } : options;
+      const overlap = invocation.phase === 'compile' && owned?.overlapObservationWithInitialization;
       // Initialization and preparation errors belong to the provider that
       // needed the runtime. They use the same publication path as case errors.
       const execute = invocation.phase === 'compile'
-        ? prepareProviderProgram(dispatch, programs, context, invocation)
+        ? prepareProviderProgram(dispatch, programs, context, invocation, overlap ? initialize : undefined)
         : invocation.phase === 'batch'
           ? executePreparedProviderBatch(dispatch, programs, invocation)
           : executePreparedProviderCase(dispatch, programs, invocation);
-      return initialize.pipe(
+      const readiness = overlap ? Effect.void : initialize;
+      return readiness.pipe(
         Effect.andThen(execute),
         Effect.catchAll((error) => Effect.succeed(providerFailure(
           dispatch.runtime,
@@ -1941,6 +1954,7 @@ class RuntimeJudgeComposition
         this.bridge.beginEvaluation(evaluationId, {
           binding: codeBinding,
           acknowledgeBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          overlapObservationWithInitialization: this.receiptProvider?.capabilities.overlapObservationWithInitialization,
           recordPrepare: (call) => schedule.recordPrepare(call),
           admit: (caseId) => schedule.admit(caseId),
         });

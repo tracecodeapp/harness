@@ -259,6 +259,8 @@ function testJavaHelperJarDoesNotExposeDeprecatedSpikePackages(): void {
 function testTraceExecutionRunnerDefersBudgetFallbackToHost(): void {
   const tmpRoot = mkdtempSync(join(tmpdir(), 'tracecode-java-budget-fallback-'));
   try {
+    const ascii = 'trace:{"kind":"stdout","text":"a"}';
+    const unicode = 'trace:{"kind":"stdout","text":"é🙂"}';
     const sourcePath = join(tmpRoot, 'BudgetFallbackEntries.java');
     const classesPath = join(tmpRoot, 'classes');
     const helperJar = join(
@@ -284,13 +286,20 @@ final class CleanAttempt {
     return "clean-result";
   }
 }
+final class ObservationAttempt {
+  public static Object run() {
+    TraceHooks.emit(${JSON.stringify(ascii)});
+    TraceHooks.emit(${JSON.stringify(unicode)});
+    return "observer-value";
+  }
+}
 `,
       'utf8'
     );
     execFileSync('mkdir', ['-p', classesPath]);
     execFileSync(
       'javac',
-      ['-cp', helperJar, '-d', classesPath, sourcePath],
+      ['-encoding', 'UTF-8', '-cp', helperJar, '-d', classesPath, sourcePath],
       { cwd: process.cwd(), stdio: 'pipe' }
     );
     const stdout = execFileSync(
@@ -318,7 +327,24 @@ final class CleanAttempt {
         !stdout.includes('__TRACECODE_TRACE_OUTPUT__:'),
       `the traced JVM must not re-enter learner code before the host creates a fresh boundary: ${stdout}`
     );
-    console.log('PASS: Java trace budget fallback is deferred to a fresh host execution');
+    const observation = execFileSync('java', [
+      '-cp', [classesPath, helperJar].join(':'),
+      'tracecode.browser.TraceExecutionRunner', 'ObservationAttempt',
+      '100', '', '', '', '', 'trusted-frame', 'step-budget', '0', '0',
+      // Both events fit in UTF-16 code units and exceed this many UTF-8 bytes.
+      String(ascii.length + unicode.length + 2),
+    ], { encoding: 'utf8' });
+    assertCondition(
+      observation.includes(`__TRACECODE_OBSERVATION_BEGIN__:trusted-frame:1\n${ascii}\n`),
+      `the UTF-8 byte limit must keep the first event: ${observation}`
+    );
+    assertCondition(
+      observation.includes('__TRACECODE_OBSERVATION_END__:trusted-frame:byte-budget:1') &&
+        !observation.includes(unicode) &&
+        !observation.includes('__TRACECODE_TRACE_FALLBACK_REQUIRED__'),
+      `the over-budget event must stay out of the observer frame: ${observation}`
+    );
+    console.log('PASS: Java legacy trace fallback and observer UTF-8 cutoff');
   } finally {
     rmSync(tmpRoot, { recursive: true, force: true });
   }
@@ -7065,22 +7091,23 @@ class Solution {
     console.log('PASS: java worker respects ops-class constructor signatures');
 
     const resultParameterCode = `class Solution {
-  boolean canTransform(String start, String result) {
-    return start.length() == result.length();
+  boolean canTransform(String __tracecode_inputs, String result) {
+    return __tracecode_inputs.length() == result.length();
   }
 }`;
     await harness.sendMessage<{ success: boolean }>('execute-with-tracing', {
       code: resultParameterCode,
       functionName: 'canTransform',
-      inputs: { start: 'RX', result: 'XR' },
+      inputs: { __tracecode_inputs: 'RX', result: 'XR' },
       executionStyle: 'function',
     });
     const resultParameterRewrite = harness.rewriteCalls.at(-1);
     assertCondition(
-        resultParameterRewrite?.exportsSource.includes('String result = ((String) readJsonInput(') &&
-        resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(start, result);') &&
+        resultParameterRewrite?.exportsSource.includes('var __tracecode_inputs1 = new tracecode.browser.PreparedInputs();') &&
+        resultParameterRewrite.exportsSource.includes('String result = ((String) __tracecode_inputs1.readJsonInput(') &&
+        resultParameterRewrite.exportsSource.includes('boolean __tracecode_result = solution.canTransform(__tracecode_inputs, result);') &&
         resultParameterRewrite.exportsSource.includes('return TraceHooks.serializeOutputResult(__tracecode_result);'),
-      'Java worker should avoid colliding with user parameter names when storing return values'
+      'Java worker should avoid collisions between generated locals and user parameter names'
     );
     console.log('PASS: java worker avoids wrapper local name collisions');
 

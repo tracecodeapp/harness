@@ -54,6 +54,7 @@ let traceJVMClient;
 let traceJVMHelperJarPromise;
 let traceJVMRewriteProgramPromise;
 const traceJVMCompileCache = new Map();
+const traceJVMClassifiedArtifacts = new WeakMap();
 const TRACEJVM_COMPILE_CACHE_LIMIT = 64;
 const traceJVMPreparedPrograms = new Map();
 let traceJVMPreparedCompileCount = 0;
@@ -355,18 +356,25 @@ function traceJVMProcessHost(programId) {
     };
   }
   if (localAuthority) {
+    // A retained observer JVM must bind syscalls to the current case's
+    // authority, which is allocated and closed independently per request.
+    const activeLocalAuthority = () => {
+      const authority = traceJVMLocalKernelAuthorities.get(String(programId));
+      if (!authority) throw Object.assign(new Error('Java case authority is closed.'), { code: 'EPIPE' });
+      return authority;
+    };
     return {
       kernelBound: true,
       dispatchSync(request) {
         return unwrapTraceKernelResult(
           request.operation,
-          localAuthority.dispatchSync(request)
+          activeLocalAuthority().dispatchSync(request)
         );
       },
       async dispatch(request) {
         return unwrapTraceKernelResult(
           request.operation,
-          await localAuthority.dispatch(request)
+          await activeLocalAuthority().dispatch(request)
         );
       },
       close() {},
@@ -1047,13 +1055,17 @@ async function runInLeasedTraceJVMBatchProcess(
     fallbackArgs,
     reuseProcess,
     stopAtFirstRunaway,
+    onCaseAdmitted,
     reportRun,
+    retainLocalObserverProcess,
   }
 ) {
   const results = [];
   let processCount = 0;
-  let process;
-  let host;
+  const retained = retainLocalObserverProcess ? traceJVMPreparedProcessLeases.get(programId) : undefined;
+  if (retained) traceJVMPreparedProcessLeases.delete(programId);
+  let process = retained?.process;
+  let host = retained?.host;
 
   const releaseProcess = () => {
     process?.dispose();
@@ -1129,12 +1141,13 @@ async function runInLeasedTraceJVMBatchProcess(
   try {
     for (let index = 0; index < systemPropertiesBatch.length; index += 1) {
       if (!process) await createProcess();
+      onCaseAdmitted?.(index);
       const deadline = perCaseWallClockMs > 0
         ? performance.now() + perCaseWallClockMs
         : Infinity;
       const run = await runAttempt(index, argsBatch?.[index] ?? request.args, deadline);
       let report = reportRun(run);
-      if (report.fallbackRequired) {
+      if (fallbackArgs && report.fallbackRequired) {
         releaseProcess();
         await resetTraceKernelExecutionScope(programId);
         if (performance.now() < deadline) await createProcess();
@@ -1157,7 +1170,12 @@ async function runInLeasedTraceJVMBatchProcess(
         await resetTraceKernelExecutionScope(programId);
       }
     }
-    return { results, processCount };
+    if (retainLocalObserverProcess && process) {
+      traceJVMPreparedProcessLeases.set(programId, { process, host });
+      process = undefined;
+      host = undefined;
+    }
+    return { results, processCount, runnerReused: retained !== undefined };
   } finally {
     releaseProcess();
   }
@@ -1437,6 +1455,35 @@ function executionReport(
     retirementRecommended: false,
     ...(run.timeoutReason ? { timeoutReason: run.timeoutReason } : {}),
     fallbackRequired,
+  };
+}
+
+function traceJVMObservationReport(run, nonce) {
+  const runTimeMs = run.timings?.compileAndRunMs ?? run.timings?.totalMs ?? 0;
+  const refuse = (reason) => ({ success: false, runTimeMs, observation: { reason } });
+  if (run.timeoutReason === 'client-timeout') return refuse('observer-timeout');
+  if (run.status !== 'completed' || run.exitCode !== 0) return refuse('observer-runtime');
+  const lines = run.stdout.trimEnd().split(/\r?\n/u);
+  const marker = `__TRACECODE_OBSERVATION_END__:${nonce}:`;
+  const end = lines.at(-1);
+  if (!end?.startsWith(marker)) return refuse('recorder-unavailable');
+  const [cut, droppedText, extra] = end.slice(marker.length).split(':');
+  const dropped = Number(droppedText);
+  const beginMarker = `__TRACECODE_OBSERVATION_BEGIN__:${nonce}:`;
+  const beginIndex = lines.findLastIndex((line) => line.startsWith(beginMarker));
+  const count = lines.length - beginIndex - 2;
+  if (beginIndex < 0 || lines[beginIndex] !== beginMarker + count ||
+      !/^\d+$/u.test(droppedText ?? '') || !Number.isSafeInteger(count + dropped) ||
+      extra !== undefined || Boolean(cut) !== (dropped > 0)) {
+    return refuse('observer-protocol');
+  }
+  return {
+    success: true,
+    runTimeMs,
+    observation: {
+      events: lines.slice(beginIndex + 1, -1),
+      ...(cut ? { cut, attemptedEvents: count + dropped } : {}),
+    },
   };
 }
 
@@ -1743,12 +1790,19 @@ async function traceJVMPrepareRuntimeProgram(
     });
   }
 
+  const artifactKey = JSON.stringify([entryClass, cleanEntryClass]);
+  const cachedArtifact = traceJVMClassifiedArtifacts.get(context.compile);
+  const artifactCacheHit = context.compileCacheHit && cachedArtifact?.key === artifactKey;
+  const artifact = artifactCacheHit ? cachedArtifact : {
+    key: artifactKey,
+    algorithmIsolationProfile: classifyTraceJVMAlgorithmProgram(context.compile.program, [entryClass, cleanEntryClass]),
+    preparedArtifact: serializeTraceJVMPreparedProgram(context.compile.program),
+  };
+  if (!artifactCacheHit) traceJVMClassifiedArtifacts.set(context.compile, artifact);
+
   traceJVMPreparedPrograms.set(normalizedProgramId, {
     program: context.compile.program,
-    algorithmIsolationProfile: classifyTraceJVMAlgorithmProgram(
-      context.compile.program,
-      [entryClass, cleanEntryClass]
-    ),
+    algorithmIsolationProfile: artifact.algorithmIsolationProfile,
     compilerDebugProfile: String(compilerDebugProfile),
     compilerStdout: context.compile.stdout,
     compilerStderr: context.compile.stderr,
@@ -1769,12 +1823,10 @@ async function traceJVMPrepareRuntimeProgram(
       ? 0
       : (context.compile.timings?.totalMs ?? 0),
     compileCacheHit: context.compileCacheHit,
+    artifactCacheHit,
     preparedCompileCount: traceJVMPreparedCompileCount,
-    algorithmIsolationProfile:
-      traceJVMPreparedPrograms.get(normalizedProgramId).algorithmIsolationProfile,
-    preparedArtifact: serializeTraceJVMPreparedProgram(
-      context.compile.program
-    ),
+    algorithmIsolationProfile: artifact.algorithmIsolationProfile,
+    preparedArtifact: artifact.preparedArtifact,
   });
 }
 
@@ -1896,7 +1948,9 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
   traceProfile = '',
   traceEnabledBatch = '[]',
   cleanEntryClass = '',
-  stopAtFirstRunaway = 'false'
+  stopAtFirstRunaway = 'false',
+  batchRole = '',
+  observationOptions = '{}'
 ) {
   const normalizedProgramId = String(programId);
   const prepared = traceJVMPreparedPrograms.get(normalizedProgramId);
@@ -1946,9 +2000,15 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       'TraceJVM prepared trace selection must be empty or contain one boolean per batch case.'
     );
   }
-  disposeTraceJVMPreparedProcessLease(normalizedProgramId);
+  const observerOnly = batchRole === 'observer';
+  const observation = observerOnly ? JSON.parse(observationOptions) : undefined;
+  const freshLocalAuthority = !traceJVMProcessHost(normalizedProgramId).kernelBound;
+  const reuseProcess = prepared.algorithmIsolationProfile?.tier === 'algorithm-fast';
+  const retainLocalObserverProcess = Boolean(observation?.nonce) &&
+    freshLocalAuthority && systemPropertiesBatch.length === 1 && reuseProcess;
+  if (!retainLocalObserverProcess) disposeTraceJVMPreparedProcessLease(normalizedProgramId);
   let localAuthority;
-  if (!traceJVMProcessHost(normalizedProgramId).kernelBound) {
+  if (freshLocalAuthority) {
     localAuthority = await createLocalTraceKernelAuthority();
     traceJVMLocalKernelAuthorities.set(normalizedProgramId, localAuthority);
   }
@@ -1960,6 +2020,15 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       profile: String(traceProfile) === 'true',
       fallbackEntryClass: cleanEntry,
     });
+    if (observation?.nonce) {
+      traceArgs.push(
+        observation.nonce,
+        String(observation.eventCut),
+        String(observation.maxLineEvents),
+        String(observation.maxSingleLineHits),
+        String(observation.maxTraceBytes)
+      );
+    }
     const cleanArgs = traceJVMRunnerArgs(cleanEntry, maxStoredEvents, {
       learnerFrame,
       profile: String(traceProfile) === 'true',
@@ -1989,10 +2058,16 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
       {
         perCaseWallClockMs: Number.parseInt(String(perCaseWallClockMs), 10) || 0,
         argsBatch,
-        fallbackArgs: cleanArgs,
-        reuseProcess: prepared.algorithmIsolationProfile?.tier === 'algorithm-fast',
+        fallbackArgs: observerOnly ? undefined : cleanArgs,
+        onCaseAdmitted: batchRole === 'ordinary'
+          ? (index) => self.TraceCodeJavaPreparedCaseAdmitted?.(index, Number(observationOptions))
+          : undefined,
+        reuseProcess,
+        retainLocalObserverProcess,
         stopAtFirstRunaway: String(stopAtFirstRunaway) === 'true',
-        reportRun: (run) => executionReport(run, compile, prepared.compilerDebugProfile, true),
+        reportRun: (run) => observation?.nonce
+          ? traceJVMObservationReport(run, observation.nonce)
+          : executionReport(run, compile, prepared.compilerDebugProfile, true),
       }
     );
   } finally {
@@ -2007,6 +2082,7 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
     results: batch.results,
     algorithmIsolationProfile: prepared.algorithmIsolationProfile,
     runnerProcessCount: batch.processCount,
+    ...(batch.runnerReused ? { runnerReused: true } : {}),
     preparedExecutionCount: prepared.executions,
     preparedCompileCount: traceJVMPreparedCompileCount,
   });
@@ -2102,6 +2178,8 @@ self.cheerpjInit = async () => {
   await client.initialize();
 };
 
+self.TraceCodePreloadPreparedJavaAssets = loadTraceJVMHelperJar;
+
 self.cheerpOSAddStringFile = async (path, source) => {
   traceJVMStringFiles.set(String(path), String(source));
 };
@@ -2128,6 +2206,7 @@ self.cheerpjRunLibrary = async () => ({
         disposeRuntimeProgram: traceJVMDisposeRuntimeProgram,
         resetPersistentRuntimeStorage() {
           traceJVMStringFiles.clear();
+          traceJVMCompileCache.clear();
         },
         deleteRuntimeRequestTree() {},
         restoreCompileCache() {

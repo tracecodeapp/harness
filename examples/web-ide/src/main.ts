@@ -7,6 +7,7 @@ import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 
 import * as Effect from 'effect/Effect';
 import {
+  getLanguageRuntimeProfile,
   SUPPORTED_LANGUAGES,
   type Language,
 } from '@tracecode/harness/tracekernel';
@@ -422,6 +423,7 @@ async function evaluateCode(
   const functionName = functionNameInput.value.trim();
   const sourcePath = `/workspace/solution${getExtension(language)}`;
   const executionStyle = EXAMPLES[language].executionStyle ?? 'function';
+  const controls = getLanguageRuntimeProfile(language).capabilities.tracing.controls;
   const binding: RuntimeJudgeBinding = trace
     ? {
         sourcePath,
@@ -429,9 +431,9 @@ async function evaluateCode(
         ...(functionName ? { functionName } : {}),
         executionStyle,
         traceOptions: {
-          maxTraceSteps: 200,
-          maxLineEvents: 200,
-          maxSingleLineHits: 50,
+          ...(controls.maxTraceSteps ? { maxTraceSteps: 200 } : {}),
+          ...(controls.maxLineEvents ? { maxLineEvents: 200 } : {}),
+          ...(controls.maxSingleLineHits ? { maxSingleLineHits: 50 } : {}),
         },
       }
     : {

@@ -60,6 +60,8 @@ export interface JudgeReceiptProvider {
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
+    /** Observation can initialize concurrently with ordinary provider readiness. */
+    readonly overlapObservationWithInitialization?: true;
     /** Native stopping batches can acknowledge admission before delivering rows. */
     readonly stoppingBatchAdmission?: 'worker-start';
   };

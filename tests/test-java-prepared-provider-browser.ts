@@ -487,7 +487,7 @@ function assertPreparedResult(
   assert.equal(
     result.generatedIdentityDistinct,
     true,
-    `${engine}: identical preparations must receive unpredictable generated-shell identities`
+    `${engine}: distinct sources must receive distinct generated-shell identities`
   );
   assert.ok(
     result.generatedLookalikeProfile?.tier === 'compatibility' &&
@@ -794,7 +794,8 @@ try {
       const browserType = browserTypes[engine];
       if (!browserType) throw new Error(`Unknown browser engine: ${engine}`);
       const stoppingOnly = process.env.TRACECODE_JAVA_STOPPING_ONLY === '1';
-      const isolationModes = stoppingOnly ? [false] : engine === 'chromium' ? [true, false] : [true];
+      const journalOnly = process.env.TRACECODE_JAVA_JOURNAL_ONLY === '1';
+      const isolationModes = stoppingOnly || journalOnly ? [false] : engine === 'chromium' ? [true, false] : [true];
       for (const isolated of isolationModes) {
         const browser = await browserType.launch({ headless: true });
         try {
@@ -816,6 +817,84 @@ try {
           );
           if (!isolated) {
             await page.goto(`${origin}?isolated=false&stopping`);
+            const proof = await page.evaluate(() => globalThis.javaJournalProbe());
+            const first = proof.journal.slice(0, proof.beforeRedraw.journal);
+            const redraw = proof.journal.slice(proof.beforeRedraw.journal);
+            const commit = first.find((event) => event.phase === 'ordinary-commit');
+            assert.ok(commit, 'Java must use the shared Judge journal');
+            assert.ok(proof.journal.every(({ evaluationId, workspaceDigest, generation }) =>
+              evaluationId === commit.evaluationId && workspaceDigest === proof.digest && generation === commit.generation));
+            const writes = first.filter(({ phase }) => phase === 'ordinary-write-attempt');
+            assert.deepEqual(writes.map(({ caseId }) => caseId), ['A', 'B', 'C']);
+            const binding = first.find(({ phase }) => phase === 'attachment-bind');
+            const resolve = first.find(({ phase }) => phase === 'public-resolve');
+            const observer = first.find(({ phase }) => phase === 'observer-end');
+            assert.ok(binding && resolve && observer && binding.caseId === 'A');
+            assert.ok(writes.every((write) => first.indexOf(write) < first.indexOf(commit)));
+            assert.ok(first.indexOf(commit) < first.indexOf(binding) && first.indexOf(binding) < first.indexOf(resolve));
+            assert.equal(proof.attachment?.status, 'drawn');
+            assert.deepEqual(proof.redraw, proof.attachment);
+            assert.deepEqual(redraw.map(({ phase }) => phase), ['observation-cache-hit', 'public-resolve']);
+            assert.ok(observer.attemptToken);
+            assert.equal(binding.attemptToken, observer.attemptToken);
+            assert.equal(redraw[0]?.attemptToken, observer.attemptToken);
+            assert.deepEqual(proof.replies, [observer.attemptToken]);
+            assert.deepEqual(proof.starts, [0, 1]);
+            assert.deepEqual(proof.statuses, ['completed', 'timed-out', 'not-run']);
+            assert.equal(proof.beforeRedraw.commands, 2);
+            assert.equal(proof.batchCommands, proof.beforeRedraw.commands);
+            assert.deepEqual(proof.nonstoppingStatuses, ['completed', 'timed-out', 'completed']);
+            assert.deepEqual(proof.tracedStatuses, [['completed', 'drawn'], ['completed', 'drawn']]);
+            const expectedStarts = [[0, 1], [0, 1, 2], [0, 1]];
+            assert.deepEqual(proof.ordinaryBatches.map(({ starts }) => starts), expectedStarts,
+              'Java stopping Run, non-stopping Submit and traced Submit must ACK every admitted case');
+            assert.ok(proof.ordinaryBatches.every(({ requested }) => requested));
+            assert.deepEqual(proof.ordinaryBatches.map(({ terminal }) => terminal), expectedStarts,
+              'Java terminal sets must exactly match the authenticated starts');
+            console.log('PASS: Java receipt journal binds the authenticated drawing and redraw to one attempt');
+            if (journalOnly) continue;
+            const companion = await page.evaluate(() => globalThis.javaCompanionProbe());
+            assert.deepEqual(companion.admission, [0, 1, 2]);
+            assert.deepEqual(companion.outcomes[0]?.slice(0, 2), ['failed', ['ordinary 0']]);
+            assert.deepEqual(companion.outcomes[1], ['completed', ['ordinary 1'], 2]);
+            assert.equal(companion.outcomes[2]?.[2], 'client-timeout');
+            assert.equal(companion.positive.status, 'drawn');
+            assert.equal(companion.nextPositive.status, 'drawn');
+            if (companion.positive.status === 'drawn' && companion.nextPositive.status === 'drawn') {
+              for (const [trace, expected] of [[companion.positive.trace, 2], [companion.nextPositive.trace, 3]] as const) {
+                assert.ok(trace.events.some((event) => event.kind === 'return' && event.value === expected));
+              }
+            }
+            assert.equal(companion.failed?.status, 'drawn');
+            assert.equal(companion.step.status, 'truncated');
+            assert.equal(companion.byte.status, 'truncated');
+            assert.equal(companion.line.status, 'truncated');
+            assert.equal(companion.singleLine.status, 'truncated', JSON.stringify(companion.singleLine));
+            if (companion.step.status === 'truncated' && companion.byte.status === 'truncated' &&
+              companion.line.status === 'truncated' && companion.singleLine.status === 'truncated') {
+              assert.equal(companion.step.reason, 'step-budget');
+              assert.ok(companion.step.trace.events.length > 0);
+              assert.equal(companion.byte.reason, 'byte-budget');
+              assert.equal(companion.byte.trace.events.length, 0);
+              assert.equal(companion.byte.attemptedEvents, 1);
+              assert.equal(companion.line.reason, 'line-budget');
+              assert.equal(companion.singleLine.reason, 'single-line-budget');
+            }
+            assert.equal(companion.workers, 2);
+            assert.deepEqual(companion.cache, [[false, false], [true, true]]);
+            assert.deepEqual(companion.submit, [3]);
+            assert.deepEqual(companion.observerRunners[0], { count: 1, reused: undefined });
+            assert.ok(companion.observerRunners.some(({ count, reused }) => count === 0 && reused));
+            const prepares = companion.requests.filter(({ type }) => type === 'prepare-runtime-program');
+            assert.deepEqual(prepares.map(({ worker, observer }) => [worker, Boolean(observer)])
+              .sort(([a], [b]) => Number(a) - Number(b)),
+              [[1, false], [1, false], [2, true]]);
+            assert.deepEqual(companion.requests.filter(({ type }) =>
+              type === 'execute-prepared-runtime-program-batch')
+              .map(({ worker, count }) => [worker, count]).sort(([a], [b]) => a! - b!),
+              [[1, 4], [1, 1], ...Array.from({ length: 7 }, () => [2, 1])]);
+            assert.ok(!companion.requests.some(({ type }) => type === 'restore-prepared-runtime-program'));
+            console.log('PASS: separate Java observer preserves the ordinary batch and reuses its artifact');
             let deadline: ReturnType<typeof setTimeout> | undefined;
             const probe = await Promise.race([
               page.evaluate(() => globalThis.javaStoppingBatchProbe()),
