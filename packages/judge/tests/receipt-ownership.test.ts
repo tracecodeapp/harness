@@ -224,6 +224,33 @@ test('a transferred graph that is already frozen elsewhere is copied, not shared
   assertDeepFrozen(owned);
 });
 
+test('a sealed or non-extensible node that is not frozen is copied and keeps its pre-mutation values', () => {
+  // Sealing and preventExtensions leave properties writable, so neither node
+  // is exclusively the receipt's. A store that only checked Object.isFrozen
+  // would adopt the node and share it with the producer.
+  const restrict = { sealed: Object.seal, 'non-extensible': Object.preventExtensions } as const;
+  for (const [label, lock] of Object.entries(restrict)) {
+    const child = { n: 1 };
+    const node = lock({ child, m: 'kept' }) as { child: { n: number } | string; m?: string };
+    assert.equal(Object.isFrozen(node), false, label);
+    const trace = freshTrace();
+    const callStack = trace.events[0]!.callStack as Record<string, unknown>[];
+    callStack[0]!.args = { held: node, sibling: child };
+    const owned = drawnTrace(publish(sealedStore(), { status: 'drawn', trace }, 'transferred'));
+    const args = (owned.events[0]!.callStack as { args: { held: typeof node; sibling: { n: number } } }[])[0]!.args;
+    assert.notEqual(args.held, node, `${label}: the node was shared, not copied`);
+    assert.equal(Object.isFrozen(node), false, `${label}: the producer's node was frozen in place`);
+
+    node.child = 'replaced';
+    if (label === 'non-extensible') delete node.m;
+    try { child.n = 2; } catch { /* the child may already be frozen; either way the receipt is unchanged */ }
+    assert.deepEqual(args.held, { child: { n: 1 }, m: 'kept' }, label);
+    assert.equal(args.sibling.n, 1, label);
+    assert.equal(args.held.child, args.sibling, `${label}: sharing inside the copy is kept`);
+    assertDeepFrozen(owned);
+  }
+});
+
 test('shared and cyclic graph values keep their shape and are frozen throughout', () => {
   for (const ownership of ['borrowed', 'transferred'] as const) {
     const trace = freshTrace(4);
