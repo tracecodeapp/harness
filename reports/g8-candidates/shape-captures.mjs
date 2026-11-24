@@ -1,5 +1,7 @@
+import { csharpCapturedShapeKeys } from './csharp-shape-captures.mjs';
+
 // Real host samples that pass the current witness. Evidence is in SPEED-SHAPE-INVENTORY.md.
-export const capturedShapeKeys = Object.freeze([
+const priorCapturedShapeKeys = Object.freeze([
   "python|phone|4|binary-search|warm|run|single|repeat-run|concurrent|0.17.1",
   "python|phone|4|binary-search|warm|run|single|repeat-run|concurrent|concurrent",
   "python|phone|4|binary-search|warm|run|single|repeat-run|sequential|0.17.1",
@@ -96,4 +98,8 @@ export const capturedShapeKeys = Object.freeze([
   "java|spot|1|binary-search|warm|run|single|standard|candidate-main|candidate-main",
   "java|spot|1|binary-search|warm|run|single|standard|candidate-deploy|0.17.1",
   "java|spot|1|binary-search|warm|run|single|standard|candidate-deploy|candidate-deploy"
+]);
+
+export const capturedShapeKeys = Object.freeze([
+  ...new Set([...priorCapturedShapeKeys, ...csharpCapturedShapeKeys]),
 ]);

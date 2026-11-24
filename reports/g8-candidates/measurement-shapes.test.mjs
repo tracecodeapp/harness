@@ -5,6 +5,8 @@ import {
   measurementShapeKey,
   selectShapeProbeSchedule,
 } from './measurement-shapes.mjs';
+import { csharpMeasurementPlan } from './csharp-measurement-plan.mjs';
+import { csharpCapturedShapeKeys } from './csharp-shape-captures.mjs';
 import { capturedShapeKeys } from './shape-captures.mjs';
 
 const scopes = ['desktop', 'phone', 'spot'];
@@ -66,8 +68,19 @@ test('probe selection runs exactly one attempt for each requested combination', 
     /absent from this schedule/);
 });
 
-test('S(Python) inventory freezes 96 unique real-capture keys', () => {
-  assert.equal(capturedShapeKeys.length, 96);
-  assert.equal(new Set(capturedShapeKeys).size, 96);
+test('S(C#) inventory exactly covers the current 100-shape plan', () => {
+  const planned = scopes.flatMap((scope) => csharpMeasurementPlan(scope)
+    .flatMap((group) => group.versions.map((version) =>
+      measurementShapeKey(scope, group, version))));
+  assert.equal(planned.length, 100);
+  assert.equal(new Set(planned).size, 100);
+  assert.equal(csharpCapturedShapeKeys.length, 100);
+  assert.equal(new Set(csharpCapturedShapeKeys).size, 100);
+  assert.deepEqual([...csharpCapturedShapeKeys].sort(), [...planned].sort());
+});
+
+test('combined inventory freezes 180 unique real-capture keys', () => {
+  assert.equal(capturedShapeKeys.length, 180);
+  assert.equal(new Set(capturedShapeKeys).size, 180);
   assert.ok(capturedShapeKeys.every((key) => key.split('|').length === 10));
 });
