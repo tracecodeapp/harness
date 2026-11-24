@@ -21,10 +21,27 @@ const SEARCH = [
   '        return -1',
 ].join('\n');
 
+interface OrdinaryBatchWitness {
+  readonly startedCaseIndexes: number[];
+  activeCase?: { readonly index: number; readonly startedAt: number };
+  stoppedCase?: { readonly index: number; readonly startedAt: number; readonly terminatedAt: number };
+}
+
+interface WorkerEnvelope {
+  readonly id?: string;
+  readonly protocolToken?: string;
+  readonly type?: string;
+  readonly payload?: { readonly mode?: string; readonly phase?: string; readonly index?: number };
+}
+
 export interface StoppingClockSample {
   readonly action: string;
   readonly runawayCase: number;
   readonly ms: number;
+  readonly ordinaryBatches: readonly {
+    readonly startedCaseIndexes: number[];
+    readonly timeout?: { readonly caseIndex: number; readonly beforeMs: number; readonly activeMs: number; readonly afterMs: number };
+  }[];
   readonly status: string;
   readonly cases: readonly Record<string, any>[];
   readonly error?: string;
@@ -65,12 +82,58 @@ export async function runStoppingClock(options: {
   readonly wallClockMs?: number;
   readonly scenarios: readonly { action: 'run' | 'submit-stop'; runawayCase: number }[];
 }): Promise<StoppingClockSample[]> {
+  const NativeWorker = globalThis.Worker;
+  let batches: OrdinaryBatchWitness[] | undefined;
+  globalThis.Worker = class extends NativeWorker {
+    private request?: { readonly id: string; readonly token: string; readonly witness: OrdinaryBatchWitness };
+
+    constructor(url: string | URL, options?: WorkerOptions) {
+      super(url, options);
+      this.addEventListener('message', (event: MessageEvent<WorkerEnvelope>) => {
+        const request = this.request;
+        const { id, protocolToken, type, payload } = event.data;
+        if (!event.isTrusted || !request || id !== request.id || protocolToken !== request.token) return;
+        if (type === 'execute-result') {
+          this.request = undefined;
+          return;
+        }
+        const { witness } = request;
+        if (type !== 'batch-case-progress' || payload?.index === undefined) return;
+        if (payload.phase === 'started') {
+          witness.startedCaseIndexes.push(payload.index);
+          witness.activeCase = { index: payload.index, startedAt: performance.now() };
+        } else if (payload.phase === 'finished' && witness.activeCase?.index === payload.index) {
+          witness.activeCase = undefined;
+        }
+      });
+    }
+
+    override postMessage(message: unknown, transferOrOptions?: Transferable[] | StructuredSerializeOptions) {
+      const { id, protocolToken, type, payload } = message as WorkerEnvelope;
+      if (batches && type === 'execute-prepared-program-batch' && payload?.mode === 'code' &&
+          id !== undefined && protocolToken !== undefined) {
+        const witness: OrdinaryBatchWitness = { startedCaseIndexes: [] };
+        batches.push(witness);
+        this.request = { id, token: protocolToken, witness };
+      }
+      super.postMessage(message, transferOrOptions as StructuredSerializeOptions | undefined);
+    }
+
+    override terminate() {
+      const witness = this.request?.witness;
+      if (witness?.activeCase && !witness.stoppedCase) {
+        witness.stoppedCase = { ...witness.activeCase, terminatedAt: performance.now() };
+      }
+      super.terminate();
+    }
+  };
   const host = createBrowserJudgeHost({ assetBaseUrl: options.assetBaseUrl, providers: ['python'] });
   const samples: StoppingClockSample[] = [];
   try {
     // Warm the runtime so the clock measures the run, not Pyodide's load.
     await host.evaluateAlgorithm({ bundle: await bundle(false, 1, 0, undefined) } as never);
     for (const scenario of options.scenarios) {
+      batches = [];
       const startedAt = performance.now();
       let evaluation: any;
       let error: string | undefined;
@@ -93,10 +156,20 @@ export async function runStoppingClock(options: {
       } catch (caught) {
         error = caught instanceof Error ? caught.message : String(caught);
       }
+      const settledAt = performance.now();
       samples.push({
         action: scenario.action,
         runawayCase: scenario.runawayCase,
-        ms: performance.now() - startedAt,
+        ms: settledAt - startedAt,
+        ordinaryBatches: batches.map(({ startedCaseIndexes, stoppedCase }) => ({
+          startedCaseIndexes,
+          ...(stoppedCase ? { timeout: {
+            caseIndex: stoppedCase.index,
+            beforeMs: stoppedCase.startedAt - startedAt,
+            activeMs: stoppedCase.terminatedAt - stoppedCase.startedAt,
+            afterMs: settledAt - stoppedCase.terminatedAt,
+          } } : {}),
+        })),
         status: error ? 'error' : evaluation?.status,
         cases: summarize(evaluation),
         ...(error ? { error } : {}),
@@ -104,6 +177,7 @@ export async function runStoppingClock(options: {
     }
   } finally {
     host.dispose();
+    globalThis.Worker = NativeWorker;
   }
   return samples;
 }

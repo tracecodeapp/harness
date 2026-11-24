@@ -24,9 +24,11 @@ import type { StoppingClockSample } from './fixtures/python-stopping-batch-clock
 
 const WALL_CLOCK_MS = Number(process.env.TRACECODE_STOPPING_CLOCK_WALL_MS ?? 2_000);
 const CASES = 10;
-// The per-case clock's headroom over the limit, plus preparing the program
-// and replacing the terminated worker on a loaded machine.
-const VERDICT_BOUND_MS = WALL_CLOCK_MS + 1_000 + 4_000;
+// The production client arms the clock at the start ACK with 1 s of headroom.
+// Allow separate browser scheduling slack when observing its real timer.
+// The worker-double suite also checks the deadline with controlled progress.
+const CASE_CLOCK_HEADROOM_MS = 1_000;
+const BROWSER_TIMER_SLACK_MS = 1_000;
 
 function contentType(pathname: string): string {
   switch (extname(pathname)) {
@@ -151,9 +153,23 @@ async function main(): Promise<void> {
             assert.equal(testCase.status, 'not-run', `${label}: case ${caseNumber}`);
           }
         });
+        assert.equal(sample.ordinaryBatches.length, 1, `${label}: one ordinary batch`);
+        const [batch] = sample.ordinaryBatches;
+        const expectedStarts = Array.from({ length: sample.runawayCase || CASES }, (_, index) => index);
+        assert.deepEqual(batch.startedCaseIndexes, expectedStarts, `${label}: ordinary worker starts`);
+        if (sample.runawayCase === 0) {
+          assert.equal(batch.timeout, undefined, `${label}: no ordinary case was terminated`);
+          continue;
+        }
+        const { timeout } = batch;
+        assert.ok(timeout, `${label}: ordinary worker was terminated during the looping case`);
+        assert.equal(timeout.caseIndex, sample.runawayCase - 1);
+        const { beforeMs, activeMs, afterMs } = timeout;
+        console.log(`${label}: before start ${Math.round(beforeMs)} ms, active ${Math.round(activeMs)} ms, after termination ${Math.round(afterMs)} ms`);
+        assert.ok(beforeMs >= 0 && afterMs >= 0, `${label}: worker timeout falls within the public request`);
         assert.ok(
-          sample.ms < VERDICT_BOUND_MS,
-          `${label}: verdict in ${Math.round(sample.ms)} ms, over one per-case clock (${VERDICT_BOUND_MS} ms)`
+          activeMs >= WALL_CLOCK_MS && activeMs < WALL_CLOCK_MS + CASE_CLOCK_HEADROOM_MS + BROWSER_TIMER_SLACK_MS,
+          `${label}: active case lasted ${Math.round(activeMs)} ms for a ${WALL_CLOCK_MS} ms limit`
         );
       }
     } finally {

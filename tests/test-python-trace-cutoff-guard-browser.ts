@@ -131,7 +131,16 @@ async function main(): Promise<void> {
         assert.equal(sample.cases.length, 3, sample.program);
       }
 
-      // The loop that never ends: the worker's guard reports a runaway limit.
+      // The ordinary worker owns the runaway decision. The observer has a
+      // separate byte budget and returns only its genuine retained prefix.
+      const assertByteCutoff = (row: TraceCutoffSample['cases'][number]) => {
+        assert.deepEqual(row.attachment, { status: 'truncated', reason: 'byte-budget' });
+        assert.ok(row.traceEvents > 0, 'the recorded trace prefix is kept');
+        assert.ok(
+          (row.diagnostics ?? []).every(({ code }: { code: string }) => code !== 'trace-byte-limit' && code !== 'trace-limit'),
+          'observer budgets do not add diagnostics to the ordinary row'
+        );
+      };
       const [looping, ...rest] = runaway.cases;
       assert.equal(looping.failure?.origin, 'limit', 'the looping case stopped at a limit');
       assert.ok(
@@ -139,38 +148,23 @@ async function main(): Promise<void> {
         `the worker's line guard stopped the loop, not the clock: ${looping.failure?.reason}`
       );
       assert.equal(looping.verdict?.reason, 'case-did-not-complete');
-      assert.match(looping.failure?.message ?? '', /infinite loop/);
-      assert.doesNotMatch(looping.failure?.message ?? '', /[Tt]race/, 'a runaway is not described as a trace budget');
-      assert.ok(looping.traceEvents > 0, 'the recorded trace prefix is kept');
+      assert.ok(looping.diagnostics.some(({ code }: { code: string }) => code === looping.failure.reason));
+      assertByteCutoff(looping);
       for (const testCase of rest) assert.equal(testCase.status, 'not-run');
       assert.ok(
         runaway.ms < RUNAWAY_BOUND_MS,
         `runaway verdict in ${Math.round(runaway.ms)} ms, over ${RUNAWAY_BOUND_MS} ms`
       );
 
-      // The program that ends: it completes, its trace truncated at the byte budget.
-      const [traced, ...others] = finishes.cases;
-      assert.equal(traced.status, 'completed');
-      assert.equal(traced.verdict?.kind, 'passed');
-      assert.ok(
-        traced.diagnostics?.some((diagnostic: any) =>
-          diagnostic.severity === 'warning' && diagnostic.code === 'trace-byte-limit'),
-        `the trace reports its byte budget: ${JSON.stringify(traced.diagnostics)}`
-      );
-      assert.ok(traced.traceEvents > 0, 'the recorded trace prefix is kept');
-      for (const testCase of others) assert.equal(testCase.status, 'completed');
-
-      // The long program: it completes, its trace truncated.
-      const [long, ...afterLong] = runsLong.cases;
-      assert.equal(long.status, 'completed', JSON.stringify(long.failure));
-      assert.equal(long.verdict?.kind, 'passed');
-      assert.ok(
-        long.diagnostics?.some((diagnostic: any) =>
-          diagnostic.severity === 'warning' &&
-          ['trace-byte-limit', 'trace-limit', 'single-line-limit', 'line-limit'].includes(diagnostic.code)),
-        `the trace reports its budget: ${JSON.stringify(long.diagnostics)}`
-      );
-      for (const testCase of afterLong) assert.equal(testCase.status, 'completed');
+      // Both finite programs keep their passing ordinary results after the
+      // observer fills its budget, including the one with 120k learner lines.
+      for (const sample of [finishes, runsLong]) {
+        const [first, ...others] = sample.cases;
+        assert.equal(first.status, 'completed', JSON.stringify(first.failure));
+        assert.equal(first.verdict?.kind, 'passed');
+        assertByteCutoff(first);
+        for (const testCase of others) assert.equal(testCase.status, 'completed');
+      }
     } finally {
       await browser.close();
     }
