@@ -22,6 +22,7 @@ const closing = read(raw, 'java-closing');
 const closingSpot = read(raw, 'java-closing-spot');
 const desktop = read(raw, 's-java-desktop');
 const frozenDesktop = read(archive, 'speed-desktop-a-with-topup');
+const frozenDesktopB = read(archive, 'speed-desktop-b');
 const frozenPhone = read(archive, 'speed-phone');
 assert.deepEqual(closing.metadata.schedule, javaClosingPlan);
 assert.deepEqual(closing.metadata.javaClosing, {
@@ -83,9 +84,9 @@ const reruns = [
   { language: 'java', cpu: 4, policy: 'candidate-main', frozen: frozenPhone },
   { language: 'csharp', cpu: 1, policy: 'candidate-main', frozen: frozenDesktop },
   { language: 'csharp', cpu: 1, policy: 'candidate-deploy', frozen: frozenDesktop },
-  { language: 'python', cpu: 1, policy: 'candidate-main', frozen: frozenDesktop },
-  { language: 'python', cpu: 1, policy: 'candidate-deploy', frozen: frozenDesktop },
-  { language: 'cpp', cpu: 1, policy: 'candidate-deploy', frozen: frozenDesktop },
+  { language: 'python', cpu: 1, policy: 'candidate-main', frozen: frozenDesktopB },
+  { language: 'python', cpu: 1, policy: 'candidate-deploy', frozen: frozenDesktopB },
+  { language: 'cpp', cpu: 1, policy: 'candidate-deploy', frozen: frozenDesktopB },
 ];
 for (const { language, cpu, policy, frozen } of reruns) {
   const match = { language, cpu, problem: 'binary-search', state: 'warm', journey: 'run',
