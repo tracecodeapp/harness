@@ -96,6 +96,9 @@ export function createJavaScriptBrowserRuntimeProvider(
           // executor worker created for this attempt and terminated after it.
           // Nothing keeps or reuses that reply.
           observationReplyOwnership: 'transferred',
+          // The trace is the executor's message as received: a structured
+          // clone, or JSON.parse of transferred events.
+          observationReplyProvenance: 'structured-clone',
         },
         prepareObservation: (program, signal, options) =>
           worker.prepareObservation(getJudgeOrdinaryPreparationKey(program), options, signal),

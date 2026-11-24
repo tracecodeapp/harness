@@ -28,6 +28,8 @@ export interface CppDrawingProducer {
   readonly certification?: 'ends-same';
   /** The producer's replies meet JudgeReceiptProvider's transferred contract. */
   readonly replyOwnership?: 'transferred';
+  /** The producer's replies meet JudgeReceiptProvider's structured-clone provenance. */
+  readonly replyProvenance?: 'structured-clone';
   prepare(call: Preparation): Promise<JudgeObservationLease>;
 }
 
@@ -61,6 +63,7 @@ export function createCppObservationRegistration(
       // This wrapper builds a fresh envelope and passes the producer's trace
       // and final state through, so it keeps the producer's ownership.
       ...(producer.replyOwnership && { observationReplyOwnership: producer.replyOwnership }),
+      ...(producer.replyProvenance && { observationReplyProvenance: producer.replyProvenance }),
     },
     async prepareObservation(
       program: JudgeObservationProgram,
@@ -183,6 +186,9 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
     // Each reply wraps the trace and output of one worker execution, decoded
     // from that worker's message, on a client this attempt then retires.
     replyOwnership: 'transferred',
+    // That trace and output are the worker message's structured clone (or
+    // JSON.parse of transferred events), passed through by liftTraceOutcome.
+    replyProvenance: 'structured-clone',
     async prepare({ program, traceOptions, signal }) {
       type ObserverClient = ReturnType<LegacyCppDrawingOptions['createObserverWorkerClient']>;
       const clients = new Set<ObserverClient>();

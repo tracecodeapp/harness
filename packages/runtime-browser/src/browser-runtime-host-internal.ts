@@ -97,6 +97,18 @@ export interface JudgeReceiptProvider {
      */
     readonly observationReplyOwnership?: 'transferred';
     /**
+     * With a transferred reply: every object in it is a structured clone of a
+     * worker message, a JSON.parse result, or plain data the adapter built
+     * from those with literals, spreads, array methods and null-prototype
+     * records. It then has only enumerable, string-keyed data properties and
+     * no proxies, so the receipt checks one prototype per object and one type
+     * per value and skips the descriptor walk. The adapter must never add an
+     * accessor, a symbol or non-enumerable key, a proxy or a class instance.
+     * Ignored without `observationReplyOwnership`. Declare it only for an
+     * audited adapter.
+     */
+    readonly observationReplyProvenance?: 'structured-clone';
+    /**
      * When a selected case's ordinary row commits `limit/client-timeout`.
      * `ordinary-budget` (the default): its pending observer gets the ordinary
      * per-case budget, then settles as `observer-timeout`, so Run is released

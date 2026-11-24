@@ -197,11 +197,25 @@ const notOwned = Symbol('not exclusively owned');
  * or a producer cache, so this receipt cannot own it exclusively. The value
  * that reaches such a node is copied instead.
  *
+ * With `cloned`, the adapter also vouches that every object is a structured
+ * clone of a worker message, a JSON.parse result, or plain data it built from
+ * those with literals, spreads and array methods (see DrawingOwnership). Such
+ * an object has only enumerable, string-keyed data properties and is never a
+ * proxy, so the descriptor walk can't find anything there: the clone check
+ * reads Object.keys and the values instead. The prototype test still refuses
+ * every non-plain object a clone can carry, and the extensibility test still
+ * copies a node someone else froze, sealed or locked.
+ *
  * One adoption serves one reply, so a node shared by the trace and the final
  * state is adopted once.
  */
 class Adoption {
   readonly #owned = new Set<object>();
+  readonly #cloned: boolean;
+
+  constructor(cloned: boolean) {
+    this.#cloned = cloned;
+  }
 
   readonly own: Own = <T>(value: T): Frozen<T> => {
     try {
@@ -231,15 +245,25 @@ class Adoption {
     };
     try {
       visit(value);
-      for (let index = 0; index < adopted.length; index += 1) {
-        const node = adopted[index]!;
-        const array = Array.isArray(node);
-        for (const key of Reflect.ownKeys(node)) {
-          const descriptor = Reflect.getOwnPropertyDescriptor(node, key)!;
-          if (typeof key !== 'string' || !('value' in descriptor)) {
-            throw new TypeError('Judge receipt payload must contain only data properties.');
+      if (this.#cloned) {
+        // An array's keys are its present indices (holes are not keys) and
+        // any named properties a clone kept; `length` is not enumerable.
+        for (let index = 0; index < adopted.length; index += 1) {
+          const node = adopted[index] as Record<string, unknown>;
+          const keys = Object.keys(node);
+          for (let key = 0; key < keys.length; key += 1) visit(node[keys[key]!]);
+        }
+      } else {
+        for (let index = 0; index < adopted.length; index += 1) {
+          const node = adopted[index]!;
+          const array = Array.isArray(node);
+          for (const key of Reflect.ownKeys(node)) {
+            const descriptor = Reflect.getOwnPropertyDescriptor(node, key)!;
+            if (typeof key !== 'string' || !('value' in descriptor)) {
+              throw new TypeError('Judge receipt payload must contain only data properties.');
+            }
+            if (!array || key !== 'length') visit(descriptor.value);
           }
-          if (!array || key !== 'length') visit(descriptor.value);
         }
       }
     } catch (error) {
@@ -256,8 +280,16 @@ class Adoption {
  * Who owns the reply passed to publishDrawing. 'borrowed' replies are copied.
  * A 'transferred' reply is one the adapter built for this call and will never
  * retain, reuse or mutate; the store adopts it in place (see Adoption).
+ *
+ * 'transferred-clone' is a transferred reply whose every object is a
+ * structured clone of a worker message, a JSON.parse result, or plain data the
+ * adapter built from those with literals, spreads, array methods and
+ * null-prototype records. It gets the clone check, which reads no property
+ * descriptors. Accessors, symbol keys, non-enumerable properties and proxies
+ * are then the adapter's to exclude: none can survive a structured clone or
+ * JSON.parse, and the adapter must not add one.
  */
-export type DrawingOwnership = 'borrowed' | 'transferred';
+export type DrawingOwnership = 'borrowed' | 'transferred' | 'transferred-clone';
 
 const observationFields = new Set(['trace', 'attachment']);
 
@@ -412,7 +444,9 @@ export class VerdictReceiptStore {
       return false;
     }
 
-    const own: Own = ownership === 'transferred' ? new Adoption().own : snapshot;
+    const own: Own = ownership === 'transferred' || ownership === 'transferred-clone'
+      ? new Adoption(ownership === 'transferred-clone').own
+      : snapshot;
     let drawing: Frozen<Drawing>;
     try {
       drawing = readDrawing(message, own);

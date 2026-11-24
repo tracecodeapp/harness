@@ -65,6 +65,7 @@ test('sparse observation requires all three digests and independently verified c
     const registration = createCppObservationRegistration(producer, options);
     // A sparse observer's reply provenance is not audited, so it stays borrowed.
     assert.equal('observationReplyOwnership' in registration.capabilities, false);
+    assert.equal('observationReplyProvenance' in registration.capabilities, false);
     const lease = await registration.prepareObservation(program, signal);
     const drawing = await lease.observe(request);
     assert.deepEqual(drawing, {
@@ -147,6 +148,8 @@ test('the selected legacy producer draws its recorded events and refuses an empt
     const registration = createCppObservationRegistration(producer, options);
     assert.equal(registration.capabilities.certification, 'ends-same');
     assert.equal(registration.capabilities.observationReplyOwnership, 'transferred');
+    // The trace and output are the worker message's structured clone.
+    assert.equal(registration.capabilities.observationReplyProvenance, 'structured-clone');
     const lease = await registration.prepareObservation(program, signal);
     const console = 'one\ntwo\n\n';
     const finalState = variant === 'trapped' || variant === 'timed-out' ? { status: variant, console } : {
