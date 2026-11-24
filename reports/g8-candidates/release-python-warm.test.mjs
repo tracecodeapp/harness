@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { liveRoundOrder } from './live-control.mjs';
 import { releasePythonWarmPlan } from './release-python-warm.mjs';
-import { expandWarmRepeatGroups, isRepeatWarmMode } from './warm-repeat-policy.mjs';
+import {
+  expandWarmRepeatGroups,
+  isRepeatWarmMode,
+  prioritizeSubmitAfterRunPreflights,
+} from './warm-repeat-policy.mjs';
 
 test('selects every Python and C# desktop warm endpoint and scopes 0.20.1 to Python Submit', () => {
   assert.equal(releasePythonWarmPlan.length, 8);
@@ -39,4 +43,14 @@ test('fixed-design release plan gives both languages fresh and explicit repeat c
     assert.ok(languageGroups.filter(isRepeatWarmMode).every(({ versions }) =>
       !versions.includes('0.20.1')));
   }
+});
+
+test('fixed-design release plan probes Python and C# Submit-after-Run first', () => {
+  const expanded = expandWarmRepeatGroups(releasePythonWarmPlan, { submitAfterRun: true });
+  const ordered = prioritizeSubmitAfterRunPreflights(expanded, ['python', 'csharp']);
+  assert.deepEqual(ordered.slice(0, 2).map(({ language, problem, journey, pythonWarmMode,
+    csharpWarmMode }) => ({ language, problem, journey, mode: pythonWarmMode ?? csharpWarmMode })), [
+    { language: 'python', problem: 'binary-search', journey: 'submit', mode: 'submit-after-run' },
+    { language: 'csharp', problem: 'binary-search', journey: 'submit', mode: 'submit-after-run' },
+  ]);
 });

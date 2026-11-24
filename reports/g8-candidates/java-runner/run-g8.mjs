@@ -41,9 +41,12 @@ import {
 import { csharpWarmModes } from '../csharp-warm-policy.mjs';
 import {
   expandWarmRepeatGroups,
+  isSubmitAfterRunWarmMode,
   openIsolatedWarmAttempt,
   pairRepeatGroups,
+  prioritizeSubmitAfterRunPreflights,
   repeatPenaltyLanguages,
+  submitAfterRunPreflightAction,
   warmAttemptPlan,
   warmMetricName,
 } from '../warm-repeat-policy.mjs';
@@ -424,8 +427,8 @@ function plan() {
     { language: 'python', cpu: 1, problem: 'binary-search', state: 'warm', journey: 'submit',
       target: 5, versions: ['0.17.1', 'candidate-deploy'], continuation: false },
   ], { submitAfterRun: true });
-  if (releasePythonWarm) return expandWarmRepeatGroups(
-    structuredClone(releasePythonWarmPlan), { submitAfterRun: true });
+  if (releasePythonWarm) return prioritizeSubmitAfterRunPreflights(expandWarmRepeatGroups(
+    structuredClone(releasePythonWarmPlan), { submitAfterRun: true }), ['python', 'csharp']);
   if (referenceRerecord) return structuredClone(referenceRerecordPlan);
   const groups = [];
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
@@ -479,6 +482,8 @@ function plan() {
           expandWarmRepeatGroups(scheduledGroups, { submitAfterRun: true }), candidateVersions)
       : scheduledGroups;
     return expandedGroups.sort((a, b) =>
+      Number(isSubmitAfterRunWarmMode(b) && b.problem === 'binary-search') -
+        Number(isSubmitAfterRunWarmMode(a) && a.problem === 'binary-search') ||
       Number(decide(b)) - Number(decide(a)) || expectedGroupSeconds(a) - expectedGroupSeconds(b));
   }
   return groups.filter(({ cpu, problem, journey, state, language }) =>
@@ -588,6 +593,7 @@ try {
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
     [version, await browser.newContext()])));
   let complete = true;
+  const capturedSubmitAfterRun = new Set();
   for (const [groupIndex, group] of schedule.entries()) {
     const { target } = group;
     const fixture = fixtures.data[group.problem][group.language];
@@ -753,6 +759,13 @@ try {
           if (sample.invalid || sample.refusal) count.invalid++;
           else if (!sample.excluded) count.kept++;
           await appendFile(samplesPath, JSON.stringify(sample) + '\n');
+          const submitPreflight = submitAfterRunPreflightAction(
+            capturedSubmitAfterRun, group, sample);
+          if (submitPreflight === 'reject') {
+              throw new Error(`${group.language} Submit-after-Run preflight rejected its first ` +
+                `complete attempt: ${sample.invalid ?? sample.refusal}`);
+          }
+          if (submitPreflight === 'capture') capturedSubmitAfterRun.add(group.language);
           if (pythonFreshAa && pythonFreshAaFailFast(groupIndex, group, sample)) {
             throw new Error('A/A C# repeat preflight rejected its first complete attempt: ' +
               (sample.invalid ?? sample.refusal));

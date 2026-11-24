@@ -47,6 +47,24 @@ export function isRepeatWarmMode(group) {
     mode === csharpWarmModes.repeatRun || mode === csharpWarmModes.submitAfterRun;
 }
 
+export function isSubmitAfterRunWarmMode(group) {
+  const mode = warmMode(group);
+  return mode === pythonWarmModes.submitAfterRun || mode === csharpWarmModes.submitAfterRun;
+}
+
+export function prioritizeSubmitAfterRunPreflights(groups, languages) {
+  const preflights = languages.flatMap((language) => groups.filter((group) =>
+    group.language === language && group.problem === 'binary-search' &&
+    isSubmitAfterRunWarmMode(group)));
+  return [...preflights, ...groups.filter((group) => !preflights.includes(group))];
+}
+
+export function submitAfterRunPreflightAction(capturedLanguages, group, sample) {
+  if (!isSubmitAfterRunWarmMode(group) || capturedLanguages.has(group.language)) return 'none';
+  if (sample.invalid || sample.refusal) return 'reject';
+  return sample.kept ? 'capture' : 'wait';
+}
+
 export async function openIsolatedWarmAttempt(group, operations) {
   if (group.language === 'python') return openIsolatedPythonWarmAttempt(group, operations);
   if (group.language === 'csharp') return openIsolatedCsharpWarmAttempt(group, operations);

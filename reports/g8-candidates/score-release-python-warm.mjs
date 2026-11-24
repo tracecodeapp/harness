@@ -12,6 +12,7 @@ import { csharpWarmModes } from './csharp-warm-policy.mjs';
 import {
   expandWarmRepeatGroups,
   isRepeatWarmMode,
+  prioritizeSubmitAfterRunPreflights,
   warmMetricName,
 } from './warm-repeat-policy.mjs';
 
@@ -59,8 +60,8 @@ assert.deepEqual(observed.metadata.releasePythonWarm, {
   alternatingOrderPerRound: true,
   pythonWarmSubmitControl: '0.20.1',
 });
-const expectedPlan = expandWarmRepeatGroups(
-  releasePythonWarmPlan, { submitAfterRun: true });
+const expectedPlan = prioritizeSubmitAfterRunPreflights(expandWarmRepeatGroups(
+  releasePythonWarmPlan, { submitAfterRun: true }), ['python', 'csharp']);
 assert.deepEqual(observed.metadata.schedule, expectedPlan);
 assert.equal(observed.metadata.complete, true);
 for (const sample of observed.samples) {
