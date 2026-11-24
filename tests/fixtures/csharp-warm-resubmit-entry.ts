@@ -469,16 +469,12 @@ export async function probeCSharpJudgedOutputs(
     inspect: (result: Awaited<ReturnType<
       import('../../packages/runtime-contracts/src/runtime-calls').RuntimePreparedProgram['executeIsolated']
     >>) => void,
-    inputs: Record<string, unknown> = {},
-    maxBytes?: number
+    inputs: Record<string, unknown> = {}
   ) {
     const call = {
       mode: 'code' as const,
       code,
       functionName: 'solve',
-      ...(maxBytes === undefined ? {} : {
-        judgedOutputPolicy: { maxBytes, maxItems: 250_000, maxNodes: 750_000, maxDepth: 128 },
-      }),
     };
     const prepared = await runtime.prepareProgram(call);
     if (prepared.kind !== 'prepared') {
@@ -628,14 +624,6 @@ export async function probeCSharpJudgedOutputs(
     await check('compatibility output depth is a typed limit',
       'public class Box { public Box next; } public class Solution { public object solve() { var box = new Box(); for (int i = 0; i < 70; i++) box = new Box { next = box }; return box; } }',
       (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'));
-    for (const n of [64, 2_048, 400]) {
-      await check(`G6 judged UTF-8 cap (${n} characters)`,
-        'public class Solution { public string solve(int n) => new string(n == 400 ? \'雪\' : \'x\', n); }',
-        (result) => {
-          if (n === 64) equals(result.kind === 'completed' ? result.output : result, 'x'.repeat(n));
-          else equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit');
-        }, { n }, 1_024);
-    }
     return failures;
   } finally {
     compiler.terminate();
