@@ -9,6 +9,30 @@ function phases(result) {
 
 export function pythonProductionControlOutcome(result, role, caseCount) {
   const journal = phases(result);
+  const legacy = journal.filter(({ role: phaseRole }) => phaseRole === 'legacy-trace');
+  if (legacy.length > 0) {
+    const prepares = legacy.filter(({ type }) => type === 'prepare-program');
+    const batches = legacy.filter(({ type }) => type === 'execute-prepared-program-batch');
+    const singles = legacy.filter(({ type }) => type === 'execute-prepared-program');
+    const used = [...prepares, ...batches, ...singles];
+    const workers = new Set(used.map(({ worker }) => worker));
+    const expected = role === 'run'
+      ? prepares.length === 1 && batches.length === 1 && singles.length === 0 &&
+        batches[0].cases === caseCount && batches[0].tier === 'algorithm-fast'
+      : role === 'click'
+        ? prepares.length === 0 && batches.length === 0 && singles.length === 1 &&
+          singles[0].tier === 'algorithm-fast'
+        : false;
+    const complete = used.every(({ received }) => Number.isFinite(received));
+    const onlyLegacyCommands = journal.filter(({ type }) =>
+      ['prepare-program', 'execute-prepared-program-batch', 'execute-prepared-program'].includes(type))
+      .every(({ role: phaseRole }) => phaseRole === 'legacy-trace');
+    if (!expected || !complete || !onlyLegacyCommands || workers.size !== 1 ||
+        ![...workers].every((worker) => Number.isSafeInteger(worker) && worker > 0)) {
+      return WITNESS_ERROR;
+    }
+    return;
+  }
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'prepare-program');
   const ordinaryBatches = journal.filter(({ role: phaseRole, type }) =>

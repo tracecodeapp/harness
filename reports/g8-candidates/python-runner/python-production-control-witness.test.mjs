@@ -42,3 +42,25 @@ test('rejects per-case restart, split observer and missing stopping batch', () =
   assert.equal(pythonProductionControlOutcome({ workerJournal: noCases }, 'run', 10),
     'Published Python single-worker witness differs');
 });
+
+test('accepts the published legacy trace batch and rejects legacy per-case restart', () => {
+  const prepared = { worker: 7, role: 'legacy-trace', type: 'prepare-program',
+    mode: 'trace', tier: 'algorithm-fast', received: 10 };
+  const batch = { worker: 7, role: 'legacy-trace', type: 'execute-prepared-program-batch',
+    mode: 'trace', tier: 'algorithm-fast', cases: 10, received: 20 };
+  assert.equal(pythonProductionControlOutcome([prepared, batch], 'run', 10), undefined);
+
+  const restarted = [prepared,
+    { ...batch, worker: 8, type: 'execute-prepared-program', cases: undefined },
+    { ...batch, worker: 9, type: 'execute-prepared-program', cases: undefined }];
+  assert.equal(pythonProductionControlOutcome(restarted, 'run', 10),
+    'Published Python single-worker witness differs');
+});
+
+test('accepts one published legacy continuation and rejects a second worker', () => {
+  const click = { worker: 7, role: 'legacy-trace', type: 'execute-prepared-program',
+    mode: 'trace', tier: 'algorithm-fast', received: 20 };
+  assert.equal(pythonProductionControlOutcome([click], 'click', 1), undefined);
+  assert.equal(pythonProductionControlOutcome([click, { ...click, worker: 8 }], 'click', 1),
+    'Published Python single-worker witness differs');
+});

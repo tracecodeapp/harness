@@ -213,3 +213,52 @@ test('observer reply may omit timings but must keep its prepared artifact identi
   assert.equal(csharpCandidateOutcome(capturedShape, 'run', 10, 'selected'),
     'C# assembly, reset or observer witness differs');
 });
+
+function addTrustedReplenishment(result, worker = 90, artifactKey = 'trusted-warmup') {
+  result.csharp.phases.push(
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'init', received: 1 },
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'warmup', received: 2 },
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'execute-prepared-code',
+      tier: 'compatibility', artifactKey, received: 3,
+      timings: { compileCacheHit: true, artifactCacheHit: true } },
+  );
+  return result;
+}
+
+test('accepts a positively identified trusted replenishment without folding it into learner reuse', () => {
+  const result = addTrustedReplenishment(runResult(2, 3, 10));
+  assert.equal(csharpCandidateOutcome(result, 'run', 10, 'selected', 'trusted-warmup'), undefined);
+  const receipt = csharpCandidateCacheReceipt(result, 'trusted-warmup');
+  assert.equal(receipt.ordinary.some(({ worker }) => worker === 90), false);
+  assert.deepEqual(receipt.replenishment, [{
+    type: 'execute-prepared-code', worker: 90,
+    compileCacheHit: true, artifactCacheHit: true,
+  }]);
+});
+
+test('rejects a compatibility-labeled learner artifact on a second worker', () => {
+  const result = addTrustedReplenishment(runResult(2, 3, 10), 90,
+    'learner-compatibility-artifact');
+  assert.equal(csharpCandidateOutcome(result, 'run', 10, 'selected', 'trusted-warmup'),
+    'C# assembly, reset or observer witness differs');
+});
+
+test('rejects a learner command sent to the trusted replenishment worker', () => {
+  const result = addTrustedReplenishment(runResult(2, 3, 10));
+  result.csharp.phases.push({
+    worker: 90,
+    workerKind: 'runner',
+    role: 'ordinary',
+    type: 'execute-prepared-code',
+    tier: 'algorithm-fast',
+    artifactKey: 'ordinary-2',
+    received: 4,
+    timings: {
+      executionRealm: 'retained-worker-collectible-context',
+      compileCacheHit: true,
+      artifactCacheHit: true,
+    },
+  });
+  assert.match(csharpCandidateOutcome(result, 'run', 10, 'selected', 'trusted-warmup'),
+    /trusted standby|assembly, reset/);
+});

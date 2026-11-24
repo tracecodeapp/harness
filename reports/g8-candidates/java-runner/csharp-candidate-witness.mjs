@@ -1,3 +1,8 @@
+import {
+  csharpReplenishmentOutcome,
+  isTrustedCsharpPrime,
+} from './csharp-replenishment-witness.mjs';
+
 const WITNESS_ERROR = 'C# assembly, reset or observer witness differs';
 
 function phases(result) {
@@ -28,22 +33,28 @@ function cacheEntry({ type, worker, timings }) {
   };
 }
 
-export function csharpCandidateCacheReceipt(result) {
+export function csharpCandidateCacheReceipt(result, trustedArtifactKey) {
   const reported = phases(result).filter(({ role, type, timings }) =>
     ['ordinary', 'observer'].includes(role) &&
     ['prepare-program', 'execute-prepared-code', 'execute-prepared-trace'].includes(type) &&
     (type === 'prepare-program' || hasCacheFlag({ timings })));
-  return Object.fromEntries(['ordinary', 'observer'].map((role) => [
+  const receipt = Object.fromEntries(['ordinary', 'observer'].map((role) => [
     role,
-    reported.filter((phase) => phase.role === role).map(cacheEntry),
+    reported.filter((phase) => phase.role === role &&
+      !isTrustedCsharpPrime(phase, trustedArtifactKey)).map(cacheEntry),
   ]));
+  const replenishment = reported.filter((phase) =>
+    isTrustedCsharpPrime(phase, trustedArtifactKey)).map(cacheEntry);
+  return { ...receipt, ...(replenishment.length > 0 && { replenishment }) };
 }
 
-export function csharpCandidateOutcome(result, role, caseCount, caseId) {
+export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey) {
   const journal = phases(result);
+  const replenishment = csharpReplenishmentOutcome(journal, trustedArtifactKey);
+  if (replenishment.error) return replenishment.error;
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'prepare-program');
-  const ordinaryExecutions = journal.filter(({ role: phaseRole, type }) =>
+  const allOrdinaryExecutions = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'execute-prepared-code');
   const observerPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'observer' && type === 'prepare-program');
@@ -57,10 +68,14 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId) {
   const expectedObserver = role === 'submit' ? 0 : 1;
   const expectedObserverPrepares = role === 'run' ? 1 : 0;
   const ordinaryKey = ordinaryPrepares[0]?.artifactKey;
+  const ordinaryExecutions = allOrdinaryExecutions.filter(({ worker, artifactKey, tier }) =>
+    !replenishment.trustedWorkers.has(worker) && artifactKey === ordinaryKey && tier === 'algorithm-fast');
+  const partitionedOrdinary = allOrdinaryExecutions.every(({ worker, artifactKey, tier }) =>
+    replenishment.trustedWorkers.has(worker) || artifactKey === ordinaryKey && tier === 'algorithm-fast');
 
   const ordinaryValid = expectedOrdinary === 0
     ? ordinaryPrepares.length === 0 && ordinaryExecutions.length === 0
-    : ordinaryPrepares.length === 1 && ordinaryPrepares[0].mode === 'code' &&
+    : ordinaryPrepares.length === 1 && ordinaryPrepares[0].mode === 'code' && partitionedOrdinary &&
       typeof ordinaryKey === 'string' && ordinaryKey.length > 0 &&
       ordinaryExecutions.length === expectedOrdinary && isSingleWorker(ordinaryExecutions) &&
       ordinaryExecutions.every((phase) =>
@@ -95,8 +110,9 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId) {
     'execute-prepared-trace',
     'dispose-prepared-program',
   ]);
-  const unknownRolePhase = journal.some(({ role: phaseRole, type }) =>
-    ['ordinary', 'observer'].includes(phaseRole) && !expectedTypes.has(type));
+  const unknownRolePhase = journal.some(({ worker, role: phaseRole, type }) =>
+    ['ordinary', 'observer'].includes(phaseRole) && !expectedTypes.has(type) &&
+    !(replenishment.trustedWorkers.has(worker) && ['init', 'warmup'].includes(type)));
 
   if (!ordinaryValid || !observerValid || !distinct || unknownRolePhase) {
     return WITNESS_ERROR;

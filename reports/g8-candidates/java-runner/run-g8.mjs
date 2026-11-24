@@ -19,6 +19,7 @@ import {
 } from './aa-control.mjs';
 import { csharpCandidateCacheReceipt, csharpCandidateOutcome } from './csharp-candidate-witness.mjs';
 import { csharpProductionControlOutcome } from './csharp-production-control-witness.mjs';
+import { csharpTrustedArtifactKey } from './csharp-replenishment-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
@@ -328,27 +329,29 @@ async function openPage(context, version, url, group) {
   }
 }
 
-function candidateOutcome(result, role, caseCount, caseId, version, language) {
+function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey) {
   if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
-    if (language === 'csharp') return csharpProductionControlOutcome(result);
+    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
     return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount);
   }
   if (liveControl && version === '0.17.1') {
     if (language === 'java') return javaProductionControlOutcome(result, role, caseCount);
-    if (language === 'csharp') return csharpProductionControlOutcome(result);
+    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
     if (language === 'python') return pythonProductionControlOutcome(
       result.python?.phases ?? [], role, caseCount);
     return;
   }
   if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
-  if (testedLanguage === 'csharp') return csharpCandidateOutcome(result, role, caseCount, caseId);
+  if (testedLanguage === 'csharp') {
+    return csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey);
+  }
   return pythonCandidateOutcome(result, role, caseCount,
     role === 'run' || version === 'candidate-main');
 }
 
-function candidateCacheReceipt(result, language = testedLanguage) {
+function candidateCacheReceipt(result, language = testedLanguage, trustedArtifactKey) {
   if (language === 'java') return javaCandidateCacheReceipt(result);
-  if (language === 'csharp') return csharpCandidateCacheReceipt(result);
+  if (language === 'csharp') return csharpCandidateCacheReceipt(result, trustedArtifactKey);
   return pythonCandidateCacheReceipt(result);
 }
 
@@ -610,6 +613,12 @@ try {
                 open: () => openPage(contexts[version], version, prepared[version].url, group),
                 warm: async (freshPage) => {
                   sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
+                  if (group.language === 'csharp') {
+                    sample.trustedCsharpArtifactKey = csharpTrustedArtifactKey(sample.setupWarm);
+                    if (!sample.trustedCsharpArtifactKey) {
+                      throw new Error('C# warmup did not identify one trusted standby artifact');
+                    }
+                  }
                   sample.refusal = refusal({ warm: sample.setupWarm });
                   if (sample.refusal || sample.setupWarm.success !== true) {
                     throw new Error(sample.refusal ?? 'Warmup returned success=false');
@@ -626,9 +635,10 @@ try {
                         liveControl && version === '0.17.1' && repeatPenaltyLanguages.includes(group.language) ||
                         (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
                     sample.primeInvalid = candidateOutcome(prime, 'run', fixture.cases.length,
-                      fixture.cases[0].id, version, group.language);
+                      fixture.cases[0].id, version, group.language, sample.trustedCsharpArtifactKey);
                     if (sample.primeInvalid) throw new Error('Prime witness: ' + sample.primeInvalid);
-                    sample.primeCache = candidateCacheReceipt(prime, group.language);
+                    sample.primeCache = candidateCacheReceipt(
+                      prime, group.language, sample.trustedCsharpArtifactKey);
                   }
                   return prime;
                 },
@@ -641,6 +651,9 @@ try {
             await page.bringToFront();
             if (!isolatedWarm && group.state === 'warm' && !warmPages.has(version)) {
               sample.setupWarm = await bounded(page.evaluate(() => window.bench.warm()), 'Warmup');
+              if (group.language === 'csharp') {
+                sample.trustedCsharpArtifactKey = csharpTrustedArtifactKey(sample.setupWarm);
+              }
               sample.refusal = refusal({ warm: sample.setupWarm });
               if (sample.refusal || sample.setupWarm.success !== true) throw new Error(sample.refusal ?? 'Warmup returned success=false');
               warmPages.set(version, page);
@@ -676,7 +689,8 @@ try {
                   !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
-                  role === 'run' ? fixture.cases[0].id : undefined, version, group.language);
+                  role === 'run' ? fixture.cases[0].id : undefined, version, group.language,
+                  sample.trustedCsharpArtifactKey);
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
@@ -694,7 +708,7 @@ try {
                         (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
                     sample.invalid = candidateOutcome(sample.second, 'click', 1,
-                      fixture.cases[1].id, version, group.language);
+                      fixture.cases[1].id, version, group.language, sample.trustedCsharpArtifactKey);
                   }
                 }
               }
@@ -719,8 +733,10 @@ try {
                 ['java', 'csharp', 'python'].includes(group.language)) ||
               ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language))) {
             sample.cache = {
-              initial: candidateCacheReceipt(sample.initial, group.language),
-              ...(sample.second && { second: candidateCacheReceipt(sample.second, group.language) }),
+              initial: candidateCacheReceipt(
+                sample.initial, group.language, sample.trustedCsharpArtifactKey),
+              ...(sample.second && { second: candidateCacheReceipt(
+                sample.second, group.language, sample.trustedCsharpArtifactKey) }),
             };
           }
           sample.wallMs = Date.now() - attemptStarted;
