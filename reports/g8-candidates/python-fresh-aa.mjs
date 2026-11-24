@@ -29,7 +29,18 @@ export function pythonFreshAaRoundOrder(versions, round) {
   return round % 2 === 1 ? versions : [...versions].reverse();
 }
 
-export function withinFivePercent(left, right) {
+function withinRatio(left, right, ratio) {
   assert.ok(Number.isFinite(left) && left > 0 && Number.isFinite(right) && right > 0);
-  return Math.max(left, right) / Math.min(left, right) <= 1.05;
+  return Math.max(left, right) / Math.min(left, right) <= ratio;
+}
+
+// The A/A proof must be capable of resolving the production G8 gate. Medians
+// therefore use the gate's 5% tolerance and p90s use its 10% tolerance. These
+// checks apply to labels, pooled positions and each label's two positions.
+export function withinAaMedianTolerance(left, right) {
+  return withinRatio(left, right, 1.05);
+}
+
+export function withinAaP90Tolerance(left, right) {
+  return withinRatio(left, right, 1.10);
 }

@@ -5,7 +5,8 @@ import {
   pythonFreshAaFailFast,
   pythonFreshAaRoundOrder,
   pythonFreshAaVersions,
-  withinFivePercent,
+  withinAaMedianTolerance,
+  withinAaP90Tolerance,
 } from './python-fresh-aa.mjs';
 import { pythonWarmModes } from './python-warm-policy.mjs';
 import { csharpWarmModes } from './csharp-warm-policy.mjs';
@@ -48,8 +49,11 @@ test('A/A labels alternate first position every round', () => {
   assert.deepEqual(pythonFreshAaRoundOrder(pythonFreshAaVersions, 3), ['0.17.1-a', '0.17.1-b']);
 });
 
-test('A/A tolerance accepts exactly five percent and rejects more', () => {
-  assert.equal(withinFivePercent(100, 105), true);
-  assert.equal(withinFivePercent(105, 100), true);
-  assert.equal(withinFivePercent(100, 105.01), false);
+test('A/A criterion pre-registers five percent median and ten percent p90 tolerances', () => {
+  assert.equal(withinAaMedianTolerance(100, 105), true);
+  assert.equal(withinAaMedianTolerance(105, 100), true);
+  assert.equal(withinAaMedianTolerance(100, 105.01), false);
+  assert.equal(withinAaP90Tolerance(100, 110), true);
+  assert.equal(withinAaP90Tolerance(110, 100), true);
+  assert.equal(withinAaP90Tolerance(100, 110.01), false);
 });

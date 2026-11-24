@@ -550,6 +550,7 @@ const report = {
     sourceVersion: '0.17.1', labels: pythonFreshAaVersions, target: 20,
     languages: ['python', 'csharp'], freshPagePerSample: true,
     repeatRun: true, alternatingOrderPerRound: true,
+    tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
   }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,

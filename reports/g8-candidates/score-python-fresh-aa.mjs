@@ -7,7 +7,8 @@ import {
   pythonFreshAaPlan,
   pythonFreshAaRoundOrder,
   pythonFreshAaVersions,
-  withinFivePercent,
+  withinAaMedianTolerance,
+  withinAaP90Tolerance,
 } from './python-fresh-aa.mjs';
 
 const [raw] = process.argv.slice(2);
@@ -22,6 +23,7 @@ assert.deepEqual(metadata.pythonFreshAa, {
   sourceVersion: '0.17.1', labels, target: 20,
   languages: ['python', 'csharp'], freshPagePerSample: true,
   repeatRun: true, alternatingOrderPerRound: true,
+  tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
 });
 assert.deepEqual(metadata.schedule, pythonFreshAaPlan);
 assert.equal(metadata.complete, !partial);
@@ -94,13 +96,15 @@ for (const [groupIndex, group] of metadata.schedule.entries()) {
       Object.values(positions).reduce((sum, { n }) => sum + n, 0) === 20 &&
       Object.values(positions).every(({ n }) => n > 0)));
     const checks = {
-      labelMedian: withinFivePercent(labelStats[labels[0]].median, labelStats[labels[1]].median),
-      labelP90: withinFivePercent(labelStats[labels[0]].p90, labelStats[labels[1]].p90),
-      positionMedian: withinFivePercent(positionStats[0].median, positionStats[1].median),
-      positionP90: withinFivePercent(positionStats[0].p90, positionStats[1].p90),
+      labelMedian: withinAaMedianTolerance(labelStats[labels[0]].median, labelStats[labels[1]].median),
+      labelP90: withinAaP90Tolerance(labelStats[labels[0]].p90, labelStats[labels[1]].p90),
+      positionMedian: withinAaMedianTolerance(positionStats[0].median, positionStats[1].median),
+      positionP90: withinAaP90Tolerance(positionStats[0].p90, positionStats[1].p90),
       perLabelPosition: labels.every((label) =>
-        withinFivePercent(labelPositionStats[label][0].median, labelPositionStats[label][1].median) &&
-        withinFivePercent(labelPositionStats[label][0].p90, labelPositionStats[label][1].p90)),
+        withinAaMedianTolerance(labelPositionStats[label][0].median,
+          labelPositionStats[label][1].median) &&
+        withinAaP90Tolerance(labelPositionStats[label][0].p90,
+          labelPositionStats[label][1].p90)),
     };
     const cellPass = Object.values(checks).every(Boolean);
     pass &&= cellPass;
