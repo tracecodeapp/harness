@@ -164,30 +164,38 @@ async function assertOrdinaryExitDoesNotFinish(page: import('playwright').Page):
     const ready = new Promise<void>((resolve) => worker.addEventListener('message', ({ data }) => {
       if (data.type === 'worker-ready') resolve();
     }));
-    const request = (type: string, payload: object) => new Promise<Reply>((resolve, reject) => {
-      const id = String(++nextId);
-      const protocolToken = crypto.randomUUID();
-      const onMessage = ({ data }: MessageEvent) => {
-        if (data.id !== id || data.protocolToken !== protocolToken) return;
-        if (data.type === 'runtime-progress') {
-          const { stage, detail } = data.payload;
-          if (stage === 'ordinary-case-started' || stage === 'ordinary-case-finished') {
-            progress.push([stage, detail.admissionId, detail.caseIndex, detail.result?.output]);
-          }
-          return;
-        }
-        worker.removeEventListener('message', onMessage);
-        if (data.type === 'error') reject(new Error(data.payload.error));
-        else resolve(data.payload);
-      };
-      worker.addEventListener('message', onMessage);
-      worker.addEventListener('error', reject, { once: true });
-      worker.postMessage({ id, protocolToken, type, payload });
-    });
+    // Method shorthand keeps tsx's function-name helper out of page.evaluate.
+    const protocol = {
+      request(type: string, payload: object): Promise<Reply> {
+        const id = String(++nextId);
+        const protocolToken = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+          const listeners = {
+            message({ data }: MessageEvent) {
+              if (data.id !== id || data.protocolToken !== protocolToken) return;
+              if (data.type === 'runtime-progress') {
+                const { stage, detail } = data.payload;
+                if (stage === 'ordinary-case-started' || stage === 'ordinary-case-finished') {
+                  progress.push([stage, detail.admissionId, detail.caseIndex, detail.result?.output]);
+                }
+                return;
+              }
+              worker.removeEventListener('message', listeners.message);
+              worker.removeEventListener('error', reject);
+              if (data.type === 'error') reject(new Error(data.payload.error));
+              else resolve(data.payload);
+            },
+          };
+          worker.addEventListener('message', listeners.message);
+          worker.addEventListener('error', reject, { once: true });
+          worker.postMessage({ id, protocolToken, type, payload });
+        });
+      },
+    };
     try {
       await ready;
-      await request('init', {});
-      const prepared = await request('prepare-runtime-program', {
+      await protocol.request('init', {});
+      const prepared = await protocol.request('prepare-runtime-program', {
         mode: 'code', functionName: 'solve', executionStyle: 'solution-method',
         code: `class Solution {
           public int solve(int n) {
@@ -200,7 +208,7 @@ async function assertOrdinaryExitDoesNotFinish(page: import('playwright').Page):
         }`,
       });
       if (!prepared.success || !prepared.programId) throw new Error(prepared.error);
-      const terminal = await request('execute-prepared-runtime-program-batch', {
+      const terminal = await protocol.request('execute-prepared-runtime-program-batch', {
         programId: prepared.programId,
         admissionId: 73,
         inputBatch: [{ n: 1 }, { n: 2 }, { n: 3 }],
