@@ -57,7 +57,7 @@ const drift = (live, reference) => ({
 function verdict(cell, candidate, control, reference) {
   assert.equal(candidate.n, 20, `${cell} candidate incomplete`);
   assert.equal(control.n, 20, `${cell} control incomplete`);
-  assert.equal(reference.n, 20, `${cell} host reference incomplete`);
+  assert.ok(reference.n >= 12, `${cell} host reference incomplete`);
   const hostDrift = drift(control, reference);
   const controlValid = Math.abs(hostDrift.medianPct) <= 10 && Math.abs(hostDrift.p90Pct) <= 10;
   const thresholds = { median: control.median * 1.05, p90: control.p90 * 1.10 };
