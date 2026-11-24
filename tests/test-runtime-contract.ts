@@ -1529,6 +1529,7 @@ function assertJavaScriptObservationProtocol(): void {
     'ordinary-write-attempt': prepared,
     'ordinary-commit': prepared,
     'observer-start': prepared,
+    'observer-expire': prepared,
     'observer-end': prepared,
     'attachment-bind': prepared,
     'observation-cache-hit': prepared,
