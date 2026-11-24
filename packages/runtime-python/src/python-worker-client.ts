@@ -749,6 +749,12 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
       readonly stopAtFirstRunaway?: boolean;
       readonly onCaseStarted?: (index: number) => void;
+      /**
+       * A stopping batch's every case has finished and only its reply is
+       * left. Work posted to this client now runs after the batch, because
+       * the worker answers commands in order.
+       */
+      readonly onCasesFinished?: (results: readonly unknown[]) => void;
     }
   ): Promise<CodeExecutionBatchResult> {
     const perCaseWallClockMs =
@@ -775,7 +781,8 @@ export class PythonWorkerClient {
         perCaseWallClockMs,
         wallClockMs,
         call.signal,
-        call.onCaseStarted
+        call.onCaseStarted,
+        call.onCasesFinished
       );
       if (outcome.kind === 'case-timeout') {
         return liftCodeBatchOutcome(
@@ -1041,7 +1048,8 @@ export class PythonWorkerClient {
     perCaseWallClockMs: number,
     startupDeadlineMs: number,
     signal: AbortSignal | undefined,
-    onCaseStarted?: (index: number) => void
+    onCaseStarted?: (index: number) => void,
+    onCasesFinished?: (results: readonly unknown[]) => void
   ): Promise<StoppingBatchOutcome<R>> {
     const progress = new BatchCaseProgress(caseCount);
     const caseClockMs = Math.min(
@@ -1078,6 +1086,7 @@ export class PythonWorkerClient {
             if (!progress.accept(message)) return;
             restartClock();
             if (progress.running !== undefined) onCaseStarted?.(progress.running);
+            else if (progress.finished.length === caseCount) onCasesFinished?.(progress.finished);
           });
         },
       }

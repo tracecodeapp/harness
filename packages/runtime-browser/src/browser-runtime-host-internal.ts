@@ -22,6 +22,14 @@ export function bindJudgeOrdinaryPreparation(program: JudgeObservationProgram, k
   ordinaryPreparationKeys.set(program, key);
 }
 
+/**
+ * The ordinary preparation a Judge observation program belongs to, or
+ * undefined for a program no Judge evaluation bound (a direct observe call).
+ */
+export function findJudgeOrdinaryPreparationKey(program: object): object | undefined {
+  return ordinaryPreparationKeys.get(program as JudgeObservationProgram);
+}
+
 export function getJudgeOrdinaryPreparationKey(program: JudgeObservationProgram): object {
   const key = ordinaryPreparationKeys.get(program);
   if (!key) throw new Error('Missing ordinary preparation for Judge observation.');
