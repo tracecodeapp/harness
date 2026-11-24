@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.e933fb3e4d6b6ef3fb80d7b5f73f8c2e2f67c3d80eaca29cca7be0792730f77a"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.63298ddd8d1cf5b70347ad571ce6145874ab27fe248746c47019070daab47bfc"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "e933fb3e4d6b6ef3fb80d7b5f73f8c2e2f67c3d80eaca29cca7be0792730f77a",
-  "totalPackagedRuntimeBytes": 152594121,
+  "packageTreeSha256": "63298ddd8d1cf5b70347ad571ce6145874ab27fe248746c47019070daab47bfc",
+  "totalPackagedRuntimeBytes": 152601921,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.f6803c9f03a159191328bca57c53c94e19f1fbd1054180605508d9a235189811",
@@ -1886,15 +1886,15 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.ca42f443e9a4221d2e6fcf5d2154e21c79aca22dd717e0fd5791793990022253",
-      "treeSha256": "ca42f443e9a4221d2e6fcf5d2154e21c79aca22dd717e0fd5791793990022253",
-      "totalBytes": 76056390,
+      "releaseId": "python+sha256.282ccfcb3f1aabbc02d234455bbe4d47a0b9dc393cb70847c7ec31ecba01e6ee",
+      "treeSha256": "282ccfcb3f1aabbc02d234455bbe4d47a0b9dc393cb70847c7ec31ecba01e6ee",
+      "totalBytes": 76064190,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
-          "size": 41726,
-          "sha256": "0bf6094811a5d76e9949f40e475cd940379d8205447c2f7b558ac386cdb92f2d",
-          "integrity": "sha256-C/YJSBGl126ZSfQOR1zZQDedggVEfC97VYrDhs25Ly0=",
+          "size": 45780,
+          "sha256": "63ee9a9f64695e44f1c72209b756406dc63bb041adeb9f6adccafdb0a52d8a4a",
+          "integrity": "sha256-Y+6an2RpXkTxxyIJt1ZAbcY7sEGt659q3Mr9sKUtiko=",
           "mediaType": "text/javascript"
         },
         {
@@ -1976,16 +1976,16 @@
         },
         {
           "path": "workers/python/python-runtime.js",
-          "size": 387161,
-          "sha256": "14fe1081da0b16f749a33bddd045938e37d053c30d9ee8b1dbec20b324bc122b",
-          "integrity": "sha256-FP4QgdoLFvdJozvd0EWTjjfQU8MNnuix2+wgsyS8Eis=",
+          "size": 387090,
+          "sha256": "67d541d971cc77d848e7312c93004a15f28b309ae0a38b5cfe93d8d5b9291d70",
+          "integrity": "sha256-Z9VB2XHMd9hI5zEskwBKFfKLMJrgo4tc/pPY1bkpHXA=",
           "mediaType": "text/javascript"
         },
         {
           "path": "workers/python/python-worker.js",
-          "size": 389567,
-          "sha256": "419380d9ee016fd92b91e6cf3c63879a36b804fb39573ca47805519393618b0a",
-          "integrity": "sha256-QZOA2e4Bb9krkebPPGOHmja4BPs5VzykeAVRk5Nhiwo=",
+          "size": 393384,
+          "sha256": "d46c21717d46c601b77b19cdf3d503b4694f4adb475b5a44b693aa41aabacc37",
+          "integrity": "sha256-1GwhcX1GxgG3exnN89UDtGlPSttHW1pEtpOqQaq6zDc=",
           "mediaType": "text/javascript"
         },
         {
@@ -2262,11 +2262,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 608,
-    "bytes": 428430422,
+    "bytes": 428438222,
     "byClass": {
       "locked": {
         "files": 349,
-        "bytes": 425715886
+        "bytes": 425723686
       },
       "alias": {
         "files": 1,
@@ -2320,7 +2320,7 @@
       {
         "path": "generated-python-harness-snippets.js",
         "files": 1,
-        "bytes": 41726
+        "bytes": 45780
       },
       {
         "path": "java-runtime-worker.js",
@@ -2365,12 +2365,12 @@
       {
         "path": "python",
         "files": 12,
-        "bytes": 75619556
+        "bytes": 75619485
       },
       {
         "path": "python-worker.js",
         "files": 1,
-        "bytes": 389567
+        "bytes": 393384
       },
       {
         "path": "shared",
