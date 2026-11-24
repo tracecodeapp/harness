@@ -1386,6 +1386,8 @@ export interface MatrixObservation {
   readonly origin?: string;
   /** What `judgeCaseExecutionOutcome` produced: completed, failed:<stage>, limit:<reason>, provider-rejected. */
   readonly conversion?: string;
+  /** The traced conversion when the row's drawing was refused. */
+  readonly drawingConversion?: string;
   /** abort-runaway: ms from the abort to the call settling, and the next run's duration. */
   readonly settledAfterAbortMs?: number;
   readonly nextRunMs?: number;

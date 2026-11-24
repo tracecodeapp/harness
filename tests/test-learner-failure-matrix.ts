@@ -364,6 +364,9 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
           );
         }
       }
+      if (observation.drawingConversion !== undefined && observation.drawingConversion !== 'trace-refused') {
+        failures.set('judge', `A refused drawing converted to ${observation.drawingConversion}`);
+      }
     }
   }
   if (result.healthyAfter === false) {

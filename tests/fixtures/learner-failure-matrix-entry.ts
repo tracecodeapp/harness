@@ -146,20 +146,24 @@ function observeEvaluation(
       ),
     }];
   }
-  return evaluation.cases.map((testCase) => ({
-    ...observe(testCase.diagnostics, {
-      status: testCase.status,
-      timedOut: testCase.timedOut,
-      stderr: testCase.stderr,
-      value: testCase.value,
-    }),
-    origin: originText(testCase.failure) ?? 'none',
-    conversion: conversionText(() =>
-      trace
-        ? judgeCaseExecutionOutcome(testCase, { language, trace: true })
-        : judgeCaseExecutionOutcome(testCase, { language })
-    ),
-  }));
+  return evaluation.cases.map((testCase) => {
+    const tracedConversion = trace
+      ? conversionText(() => judgeCaseExecutionOutcome(testCase, { language, trace: true }))
+      : undefined;
+    const refusedDrawing = trace && testCase.attachment?.status === 'refused';
+    return {
+      ...observe(testCase.diagnostics, {
+        status: testCase.status,
+        timedOut: testCase.timedOut,
+        stderr: testCase.stderr,
+        value: testCase.value,
+      }),
+      origin: originText(testCase.failure) ?? 'none',
+      conversion: (refusedDrawing ? undefined : tracedConversion) ??
+        conversionText(() => judgeCaseExecutionOutcome(testCase, { language })),
+      ...(refusedDrawing ? { drawingConversion: tracedConversion } : {}),
+    };
+  });
 }
 
 function thrown(error: unknown): MatrixObservation {
