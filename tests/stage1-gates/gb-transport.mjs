@@ -22,6 +22,11 @@ function recorderEvents(payload) {
   }
 }
 
+function javaCaseProgress(type, payload) {
+  return type === 'runtime-progress' &&
+    (payload?.stage === 'ordinary-case-started' || payload?.stage === 'ordinary-case-finished');
+}
+
 // The browser page owns this transport. The installed Judge and worker files
 // remain untouched. A real worker runs each released row. The transport holds
 // the terminal batch response, leaving the production client to handle loss.
@@ -34,6 +39,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   let request;
   let fault;
   let injected = false;
+  let javaTimeoutWire;
   const scheduled = new Map();
   let virtualTime = 0;
   const linger = new Set();
@@ -69,11 +75,19 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
     if (typeof handler !== 'function' || !deadlineMatches(ms)) {
       return nativeSetTimeout(handler, ms, ...args);
     }
+    const timerRequest = request;
+    const run = () => {
+      if (javaTimeoutWire && javaTimeoutWire.request === timerRequest) {
+        javaTimeoutWire.closed = true;
+        javaTimeoutWire = undefined;
+      }
+      handler(...args);
+    };
     const token = nativeSetTimeout(() => {
       scheduled.delete(token);
-      handler(...args);
+      run();
     }, ms);
-    scheduled.set(token, { ms, due: virtualTime + ms, run: () => handler(...args) });
+    scheduled.set(token, { ms, due: virtualTime + ms, run });
     return token;
   };
   globalThis.clearTimeout = function (token) {
@@ -85,6 +99,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
     #generation = ++generation;
     #wire = new Map();
     #judgeWire = new Map();
+    #javaFault;
     #forwardingProgress = false;
 
     constructor(url, options) {
@@ -116,12 +131,19 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
         });
         const pythonBatch = fixture.language === 'python' && message.type === 'execute-prepared-program-batch' &&
           mode === 'code' && payload.artifact?.isolationProfile?.tier === 'algorithm-fast';
-        const javaBatch = fixture.language === 'java' && message.type === 'execute-prepared-runtime-program-batch';
-        const javaSupported = fault?.startsWith('cut-') || fault === 'timeout-fanout';
-        if (fault && !injected && rows.length === 3 && (pythonBatch || (javaBatch && javaSupported))) {
+        const javaBatch = fixture.language === 'java' && !javaObserver &&
+          message.type === 'execute-prepared-runtime-program-batch';
+        const javaSupported = javaBatch && (fault?.startsWith('cut-') ||
+          fault?.startsWith('during-') || fault === 'timeout-fanout');
+        if (fault && !injected && rows.length === 3 && (pythonBatch || javaSupported)) {
           wire.fault = fault;
           injected = true;
           wire.transfer = transfer;
+          if (javaSupported) {
+            wire.java = { next: 0, sliced: fault !== 'timeout-fanout' };
+            this.#javaFault = wire;
+            if (!wire.java.sliced) javaTimeoutWire = wire;
+          }
           this.#release(wire);
           return;
         }
@@ -149,7 +171,8 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       if (java) {
         if (!/^execute/u.test(message.type)) return;
         const prepared = message.type === 'execute-prepared-runtime-program-batch';
-        const admissionId = Number.isSafeInteger(payload.admissionId) ? payload.admissionId : undefined;
+        const admissionId = Number.isSafeInteger(payload.admissionId) && payload.admissionId > 0
+          ? payload.admissionId : undefined;
         track({
           ordinary: !javaObserver, attemptToken: javaObserver ? payload.attemptToken : undefined,
           terminal: prepared ? message.type : undefined, admissionId,
@@ -189,6 +212,9 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       for (const wire of this.#judgeWire.values()) {
         if (wire.ordinary && wire.ses) record('ordinary-terminal', { ...wire.correlated, retired: true });
       }
+      for (const wire of this.#wire.values()) {
+        if (wire.java) wire.closed = true;
+      }
       this.#judgeWire.clear();
       super.terminate();
     }
@@ -207,7 +233,8 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       }
       if (wire.ordinary && type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
         const { caseIndex: index, admissionId } = payload.detail ?? {};
-        if (wire.java && (wire.admissionId === undefined || wire.admissionId !== admissionId)) return;
+        if (wire.java && (wire.admissionId === undefined || wire.admissionId !== admissionId ||
+            !Number.isSafeInteger(index) || !wire.rows[index])) return;
         record('ordinary-start', { ...wire.correlated, caseId: wire.rows[index], index });
         if (wire.cpp && fixture.gate === 'G4') record('worker-started', {
           ...wire.correlated, caseId: wire.rows[index], index, mode: 'code',
@@ -257,6 +284,17 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
 
     #release(wire) {
       const { message, index } = wire;
+      if (wire.java) {
+        const rows = wire.java.sliced ? [wire.rows[index]] : wire.rows;
+        record('java-release', {
+          request: wire.request, generation: this.#generation, commandId: message.id, rows,
+          admissionId: message.payload.admissionId,
+        });
+        if (!wire.java.sliced) {
+          super.postMessage(message, ...wire.transfer);
+          return;
+        }
+      }
       record('release-row', { request: wire.request, generation: this.#generation, caseId: wire.rows[index] });
       // Python's stopping transport already has a worker-side progress
       // reporter. Ask it for an ACK, and forward only to a client that asked.
@@ -271,16 +309,91 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
 
     #lose(wire) {
       fault = undefined;
-      record('injection', { request: wire.request, generation: this.#generation, fault: wire.fault });
+      if (javaTimeoutWire === wire) javaTimeoutWire = undefined;
+      record('injection', {
+        request: wire.request, generation: this.#generation, fault: wire.fault,
+        ...(wire.java ? { commandId: wire.message.id, admissionId: wire.message.payload.admissionId } : {}),
+      });
       this.terminate();
       this.dispatchEvent(new ErrorEvent('error', { message: 'G4 test transport ended the worker after its progress witness' }));
     }
 
+    #readJavaFault(event, wire) {
+      const { id, type, payload, protocolToken } = event.data;
+      const progress = javaCaseProgress(type, payload);
+      const terminal = type === wire.message.type || type === 'error';
+      if (!progress && !terminal) return;
+      event.stopImmediatePropagation();
+      const command = this.#judgeWire.get(id);
+      if (wire.closed || !event.isTrusted || !command || command.token !== protocolToken) return;
+      const { java } = wire;
+      const correlated = { ...command.correlated, admissionId: command.admissionId };
+      if (progress) {
+        const { admissionId, caseIndex, result } = payload.detail ?? {};
+        if (command.admissionId === undefined || command.admissionId !== admissionId ||
+            !Number.isSafeInteger(caseIndex) || caseIndex < 0 ||
+            (java.sliced && caseIndex !== 0)) return;
+        const index = java.sliced ? wire.index : caseIndex;
+        if (index !== java.next || !wire.rows[index]) return;
+        const started = payload.stage === 'ordinary-case-started';
+        if (started ? java.running !== undefined : java.running !== index || typeof result?.success !== 'boolean') return;
+        const witness = { ...correlated, caseId: wire.rows[index], index };
+        if (started) {
+          java.running = index;
+        } else {
+          java.running = undefined;
+          java.next++;
+        }
+        record(started ? 'ordinary-start' : 'ordinary-finish', started ? witness : { ...witness, result });
+        this.#forwardingProgress = true;
+        try {
+          // Only the slice-local index changes. Preserve the real message and result.
+          this.dispatchEvent(new MessageEvent('message', {
+            data: index === caseIndex ? event.data : {
+              ...event.data, payload: { ...payload, detail: { ...payload.detail, caseIndex: index } },
+            },
+          }));
+        } finally {
+          this.#forwardingProgress = false;
+        }
+        record('forwarded-progress', { ...witness, phase: started ? 'started' : 'finished' });
+        if ((!started && wire.fault.startsWith('cut-')) ||
+            (started && index === 1 && wire.fault.startsWith('during-'))) this.#lose(wire);
+        return;
+      }
+
+      record('worker-reply', { ...correlated, rows: wire.rows, type, payload });
+      if (type === 'error' || payload?.success !== true) {
+        record('test-transport-failure', { ...correlated, payload });
+        this.#lose(wire);
+      } else if (!java.sliced) {
+        record('injection', { ...correlated, fault: wire.fault });
+        fault = undefined;
+        expire(Infinity);
+      } else if (wire.fault.startsWith('during-') &&
+          java.next === 1 && java.running === undefined && payload.resultsStreamed === 1) {
+        wire.index++;
+        this.#release(wire);
+      } else {
+        // Historic workers have a terminal witness but no stream to forward.
+        record('subbatch-reply', { ...correlated, caseId: wire.rows[wire.index], payload });
+        this.#lose(wire);
+      }
+    }
+
     #read(event) {
       if (this.#forwardingProgress) return;
-      this.#readJudgeWorker(event);
       const { id, type, payload } = event.data ?? {};
       const wire = this.#wire.get(id);
+      if (wire?.java) {
+        this.#readJavaFault(event, wire);
+        return;
+      }
+      if (this.#javaFault && !wire && javaCaseProgress(type, payload)) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      this.#readJudgeWorker(event);
       if (!wire) return;
       if (type === 'batch-case-progress') {
         const index = wire.fault ? wire.index : payload.index;

@@ -651,6 +651,178 @@ test('Java starts require the command token and admission ID, and nested observa
   }
 });
 
+function javaFaultWorker() {
+  return class FixtureWorker {
+    sent = [];
+    delivered = [];
+    addEventListener(_, listener) { this.read = listener; }
+    postMessage(message) { this.sent.push(message); }
+    terminate() { this.terminated = true; }
+    dispatchEvent(event) {
+      if (event.type === 'message') {
+        this.read(event);
+        this.delivered.push(event.data);
+      }
+    }
+    reply(data, isTrusted = true) {
+      let suppressed = false;
+      this.read({ data, isTrusted, stopImmediatePropagation() { suppressed = true; } });
+      if (!suppressed) this.delivered.push(data);
+    }
+  };
+}
+
+function javaFaultRequest(spec) {
+  return {
+    id: 'batch', protocolToken: 'token', type: 'execute-prepared-runtime-program-batch',
+    payload: { inputBatch: spec.cases.map(({ input }) => input), admissionId: 7 },
+  };
+}
+
+function javaFaultProgress(command, phase, caseIndex, result, admissionId = command.payload.admissionId) {
+  return {
+    id: command.id, protocolToken: command.protocolToken, type: 'runtime-progress',
+    payload: { stage: `ordinary-case-${phase}`, detail: { admissionId, caseIndex, ...(result ? { result } : {}) } },
+  };
+}
+
+test('Java loss transport forwards only bound starts and finishes and translates the next slice', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const { Worker: originalWorker, ErrorEvent: originalErrorEvent } = globalThis;
+  globalThis.Worker = javaFaultWorker();
+  globalThis.ErrorEvent ??= Event;
+  const spec = fixture('java', 'transport');
+  const journal = installJournal(spec);
+  try {
+    journal.track('during-stop', 'during-stop');
+    const worker = new Worker('java-worker.js');
+    const command = javaFaultRequest(spec);
+    const result = { success: true, output: 11, consoleOutput: [] };
+    const start = javaFaultProgress(command, 'started', 0);
+    const finish = javaFaultProgress(command, 'finished', 0, result);
+    worker.postMessage(command);
+    assert.deepEqual(worker.sent.map(({ payload }) => payload.inputBatch), [[{ n: 11 }]]);
+    worker.reply(finish);
+    worker.reply(start);
+    worker.reply(finish, false);
+    worker.reply({ ...finish, id: 'foreign' });
+    worker.reply({ ...finish, protocolToken: 'foreign' });
+    worker.reply(javaFaultProgress(command, 'finished', 0, result, 8));
+    worker.reply(javaFaultProgress(command, 'finished', 1, result));
+    worker.reply(javaFaultProgress(command, 'finished', 0, { output: 11 }));
+    worker.reply(finish);
+    worker.reply(finish);
+    worker.reply({ ...command, payload: { success: true, resultsStreamed: 1 } });
+    assert.deepEqual(worker.sent.map(({ payload }) => payload.inputBatch), [[{ n: 11 }], [{ n: 22 }]]);
+    worker.reply(start);
+    worker.reply(javaFaultProgress(command, 'finished', 0, { success: true, output: 22 }));
+    assert.equal(worker.terminated, true);
+    assert.deepEqual(worker.delivered, [start, finish, javaFaultProgress(command, 'started', 1)]);
+    assert.equal(worker.delivered[1].payload.detail.result, result);
+    assert.deepEqual(journal.since(0).filter(({ kind }) => kind === 'forwarded-progress')
+      .map(({ caseId, phase, index, admissionId }) => [caseId, phase, index, admissionId]),
+    [['A', 'started', 0, 7], ['A', 'finished', 0, 7], ['B', 'started', 1, 7]]);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+    globalThis.ErrorEvent = originalErrorEvent;
+  }
+});
+
+test('Java timeout transport discards finishes arriving after the production watchdog', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const { Worker: originalWorker, setTimeout: originalSetTimeout, clearTimeout: originalClearTimeout } = globalThis;
+  let fire;
+  globalThis.Worker = javaFaultWorker();
+  globalThis.setTimeout = (callback) => { fire = callback; return 1; };
+  globalThis.clearTimeout = () => {};
+  const spec = fixture('java', 'transport');
+  const journal = installJournal(spec);
+  try {
+    journal.track('timeout-fanout', 'timeout-fanout');
+    const worker = new Worker('java-worker.js');
+    const command = javaFaultRequest(spec);
+    worker.postMessage(command);
+    assert.deepEqual(worker.sent, [command]);
+    let expired = 0;
+    setTimeout(() => { expired++; }, 132000);
+    const start = javaFaultProgress(command, 'started', 0);
+    const finish = javaFaultProgress(command, 'finished', 0, { success: true, output: 11 });
+    worker.reply(start);
+    fire();
+    worker.reply(finish);
+    worker.reply({ ...command, payload: { success: true, resultsStreamed: 1 } });
+    assert.equal(expired, 1);
+    assert.deepEqual(worker.delivered, [start]);
+    assert.equal(journal.since(0).some(({ kind }) => kind === 'ordinary-finish' || kind === 'worker-reply'), false);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('Java G4 requires forwarded finish evidence, the sealed suffix and no replay', () => {
+  const spec = fixture('java', 'transport');
+  const route = 'during-keep';
+  const sample = referenceReceipt(spec);
+  const { cases } = sample.result.evaluation;
+  sample.result.workspaceDigest = 'workspace';
+  sample.conversions = { cases: [{ kind: 'completed', output: 11 }] };
+  for (const row of cases.slice(1)) {
+    row.status = 'runtime-error';
+    row.failure = { origin: 'provider', reason: 'runtime-failure' };
+    row.verdict = { kind: 'not-evaluated' };
+    delete row.value;
+    sample.conversions.cases.push({ rejected: { name: 'RuntimeProviderError' } });
+  }
+  const push = (kind, fields) => sample.transcript.push({
+    kind, request: route, sequence: sample.transcript.length + 1,
+    commandId: 'batch', admissionId: 7, generation: 1, ...fields,
+  });
+  const progress = (phase, caseId, index, result) => {
+    push(phase === 'started' ? 'ordinary-start' : 'ordinary-finish', { caseId, index, result });
+    push('forwarded-progress', { caseId, index, phase });
+  };
+  push('ordinary-dispatch', { rows: ['A', 'B', 'C'], reportsStarts: true });
+  push('java-release', { rows: ['A'] });
+  progress('started', 'A', 0);
+  progress('finished', 'A', 0, { success: true, output: 11 });
+  push('java-release', { rows: ['B'] });
+  progress('started', 'B', 1);
+  push('injection', { fault: route });
+  const mark = (phase, caseId) => push('schedule', {
+    phase, caseId, language: 'java', evaluationId: 'evaluation', workspaceDigest: 'workspace',
+  });
+  cases.forEach(({ caseId }) => mark('ordinary-write-attempt', caseId));
+  mark('ordinary-commit');
+  mark('public-resolve');
+
+  const status = (value, check) => ledgerFor(spec, route, value).receipts
+    .find(({ id }) => id.endsWith('/' + check))?.status;
+  for (const check of ['A/start-proof', 'B/start-proof', 'C/start-proof', 'A/worker-finish',
+    'A/coordinator-commit', 'injection-ack', 'generation-fence', 'suffix/storage']) {
+    assert.equal(status(sample, check), 'passed', check);
+  }
+  const unforwarded = structuredClone(sample);
+  unforwarded.transcript = unforwarded.transcript.filter(({ kind, phase }) =>
+    kind !== 'forwarded-progress' || phase !== 'finished');
+  assert.equal(status(unforwarded, 'injection-ack'), 'failed');
+  assert.equal(status(unforwarded, 'A/coordinator-commit'), 'failed');
+  const replayed = structuredClone(sample);
+  replayed.transcript.push({ kind: 'ordinary-dispatch', request: route, generation: 2, rows: ['A'] });
+  assert.equal(status(replayed, 'generation-fence'), 'failed');
+  assert.equal(status(replayed, 'A/ordinary-start-count'), 'failed');
+  const badSuffix = structuredClone(sample);
+  badSuffix.result.evaluation.cases[1].failure.origin = 'limit';
+  assert.equal(status(badSuffix, 'suffix/storage'), 'failed');
+  const noStorage = structuredClone(sample);
+  noStorage.transcript = noStorage.transcript.filter(({ kind }) => kind !== 'schedule');
+  assert.equal(status(noStorage, 'A/coordinator-commit'), undefined);
+  assert.equal(status(noStorage, 'suffix/storage'), undefined);
+});
+
 test('Java step-cap proof uses the bound recorder reply and the raw worker prefix', () => {
   const spec = fixture('java', 'step-cap');
   const frames = [

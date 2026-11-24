@@ -125,8 +125,6 @@ export async function runFixture(fixture, options, onReceipt) {
           record = { unavailable: 'The staged pinned mux adapter was unavailable' };
         } else if (faultFixture && route.startsWith('deadline-')) {
           record = { unavailable: 'Requires an ordinary commit barrier and a coordinator service-deadline ACK' };
-        } else if (fixture.language === 'java' && (route.endsWith('-stop') || route.startsWith('during-')) && faultFixture) {
-          record = { unavailable: 'No Java worker case-start ACK for the required transport barrier' };
         } else if (continuation && !executionId) {
           record = { unavailable: 'The first Run returned no continuation handle', retainedCompile };
         } else {

@@ -385,6 +385,113 @@ export function ledgerFor(fixture, route, sample) {
   };
 }
 
+function checkJavaTransport(fixture, route, sample, published, wire, assert) {
+  const releases = wire.filter(({ kind }) => kind === 'java-release');
+  const command = releases[0];
+  const sameCommand = (event) => command.commandId === event.commandId &&
+    command.generation === event.generation && command.admissionId === event.admissionId;
+  const starts = wire.filter(({ kind }) => kind === 'ordinary-start');
+  const finishes = wire.filter(({ kind }) => kind === 'ordinary-finish');
+  const forwarded = wire.filter(({ kind }) => kind === 'forwarded-progress');
+  const hits = wire.filter(({ kind, fault }) => kind === 'injection' && fault === route);
+  const hit = hits[0];
+  const ids = fixture.cases.map(({ id }) => id);
+  const timeout = route === 'timeout-fanout';
+  const expectedStarts = timeout ? ids : route.startsWith('during-') ? ids.slice(0, 2) : ids.slice(0, 1);
+  const expectedFinishes = timeout ? ids : ids.slice(0, 1);
+  const idsOf = (events) => events.map(({ caseId }) => caseId);
+  const beforeFault = (event) => hit && sameCommand(event) && event.sequence < hit.sequence;
+  const validRelease = Number.isSafeInteger(command.admissionId) && command.admissionId > 0 &&
+    releases.every(beforeFault) && isDeepStrictEqual(
+    releases.map(({ rows }) => rows), timeout ? [ids] : expectedStarts.map((id) => [id]),
+  );
+  const validProgress = (event, phase) => beforeFault(event) &&
+    ids[event.index] === event.caseId && releases.some((release) =>
+      release.rows.includes(event.caseId) && release.sequence < event.sequence) &&
+    forwarded.filter((delivery) => beforeFault(delivery) && delivery.phase === phase &&
+      delivery.caseId === event.caseId && delivery.index === event.index &&
+      delivery.sequence > event.sequence).length === 1;
+  const orderedFinishes = finishes.every((finish, index) =>
+    starts[index]?.caseId === finish.caseId && starts[index].sequence < finish.sequence &&
+    (!starts[index + 1] || forwarded.some((delivery) => delivery.caseId === finish.caseId &&
+      delivery.phase === 'finished' && delivery.sequence < starts[index + 1].sequence)));
+  const witnessedProgress = validRelease && isDeepStrictEqual(idsOf(starts), expectedStarts) &&
+    starts.every((event) => validProgress(event, 'started')) &&
+    isDeepStrictEqual(idsOf(finishes), expectedFinishes) &&
+    finishes.every((event) => validProgress(event, 'finished')) && orderedFinishes &&
+    forwarded.length === starts.length + finishes.length;
+  if (hit || wire.some(({ kind }) => kind === 'test-transport-failure')) {
+    const triggeredDeadline = !timeout || wire.some(({ kind, delays, sequence }) =>
+      kind === 'production-timers-fired' && sequence > hit?.sequence && isDeepStrictEqual(delays, [132000]));
+    const terminal = wire.find(({ kind }) => kind === 'worker-reply');
+    const wholeBatch = !timeout || (terminal && beforeFault(terminal) &&
+      (terminal.payload?.resultsStreamed === finishes.length || isDeepStrictEqual(
+        terminal.payload?.results, finishes.map(({ result }) => result),
+      )));
+    assert('injection-ack', hits.length === 1 && sameCommand(hit) && witnessedProgress &&
+      wholeBatch && triggeredDeadline && !wire.some(({ kind }) => kind === 'test-transport-failure'),
+    { releases, starts, finishes, forwarded, hits, terminal, triggeredDeadline });
+  }
+  if (validRelease) {
+    for (const id of ids) {
+      const entries = starts.filter(({ caseId }) => caseId === id);
+      assert(`${id}/start-proof`, entries.length === Number(expectedStarts.includes(id)) &&
+        entries.every((event) => validProgress(event, 'started')), { releases, entries });
+    }
+  }
+  const dispatch = wire.filter(({ kind }) => kind === 'ordinary-dispatch');
+  const oneCommand = dispatch.length === 1 && dispatch[0].commandId === command.commandId &&
+    dispatch[0].generation === command.generation && dispatch[0].reportsStarts === true &&
+    isDeepStrictEqual(dispatch[0].rows, ids);
+  const aStarts = starts.filter(({ caseId }) => caseId === 'A');
+  if (aStarts.length) {
+    assert('A/ordinary-start-count', oneCommand && aStarts.length === 1 &&
+      validProgress(aStarts[0], 'started'), { dispatch, starts: aStarts });
+  }
+  const aFinishes = finishes.filter(({ caseId }) => caseId === 'A');
+  const aFinish = aFinishes[0];
+  if (aFinish) {
+    assert('A/worker-finish', aFinishes.length === 1 && validProgress(aFinish, 'finished') &&
+      aFinish.result.success === true && isDeepStrictEqual(aFinish.result.output, fixture.cases[0].actual) &&
+      aStarts[0]?.sequence < aFinish.sequence, aFinishes);
+  }
+
+  if (hit && validRelease && serviceCut(fixture, route)) {
+    assert('generation-fence', oneCommand && witnessedProgress &&
+      forwarded.every(beforeFault), { dispatch, starts, finishes, forwarded });
+  }
+  const marks = wire.filter(({ kind, language }) => kind === 'schedule' && language === 'java');
+  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
+  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
+  const resolves = marks.filter(({ phase }) => phase === 'public-resolve');
+  if (!marks.length || !aFinish || !hit) return;
+  // Delivery happened before loss; the Judge journal witnesses the later seal.
+  const commit = commits[0];
+  const stored = commits.length === 1 && hit.sequence < commit.sequence &&
+    resolves.length === 1 && commit.sequence < resolves[0].sequence &&
+    commit.workspaceDigest === sample.result?.workspaceDigest &&
+    marks.every((event) => scopeMatches(event, commit)) &&
+    isDeepStrictEqual(idsOf(writes), ids) &&
+    writes.every(({ sequence, origin }) => hit.sequence < sequence &&
+      sequence < commit.sequence && origin !== 'observer');
+  const a = published.find(({ caseId }) => caseId === 'A');
+  const retained = a?.status === 'completed' && isDeepStrictEqual(a.value, aFinish.result.output) &&
+    a.verdict?.kind === fixture.cases[0].grade && a.stdout === fixture.cases[0].stdout &&
+    a.stderr === '' && a.termination?.kind === 'exit' && a.termination.exitCode === 0 &&
+    validProgress(aFinish, 'finished');
+  assert('A/coordinator-commit', stored && retained, { commit, writes, resolves, a, aFinish });
+  if (serviceCut(fixture, route)) {
+    const suffix = ids.slice(1).map((id) => published.find(({ caseId }) => caseId === id));
+    const conversions = sample.conversions?.cases;
+    if (conversions) {
+      assert('suffix/storage', stored && suffix.every((row) => row?.failure?.origin === 'provider' &&
+        row.verdict?.kind === 'not-evaluated' && row.timedOut === false &&
+        row.notRun === undefined && !Object.hasOwn(row, 'value') &&
+        conversions[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError'), { suffix, commits, writes });
+    }
+  }
+}
+
 function check(fixture, route, sample, assert) {
   const rows = selectedRows(fixture, route);
   const receipt = sample.result;
@@ -436,7 +543,9 @@ function check(fixture, route, sample, assert) {
     assert('interrupt-unavailable', sample.crossOriginIsolated === false, sample.crossOriginIsolated);
   }
 
-  const ordinary = fixture.gate === 'G4' && !continuation(route)
+  const javaTransport = fixture.language === 'java' && fixture.name === 'transport' &&
+    wire.some(({ kind, request }) => kind === 'java-release' && request === route);
+  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport
     ? completeOrdinaryStarts(wire.filter(({ request }) => request === route)) : undefined;
   for (const expected of rows) {
     const row = published.find(({ caseId }) => caseId === expected.id);
@@ -478,7 +587,9 @@ function check(fixture, route, sample, assert) {
     }
   }
 
-  if (fixture.name === 'transport' && route !== 'submit-stop') {
+  if (javaTransport) {
+    checkJavaTransport(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
+  } else if (fixture.name === 'transport' && route !== 'submit-stop') {
     const hit = wire.filter((event) => event.kind === 'injection' && event.fault === route);
     const starts = wire.filter((event) => event.caseId === 'A' && event.kind === 'worker-started');
     const replay = wire.filter((event) => event.kind === 'dispatch' && event.rows.includes('A') && event.generation > (starts[0]?.generation ?? -1));
