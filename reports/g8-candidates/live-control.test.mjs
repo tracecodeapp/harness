@@ -3,8 +3,10 @@ import test from 'node:test';
 import {
   liveCellScore,
   liveCellScoreWithControls,
+  liveControlPairGroups,
   liveLessonVersions,
   liveControlVersions,
+  liveObservationVersion,
   liveRoundOrder,
 } from './live-control.mjs';
 
@@ -20,6 +22,32 @@ test('alternates the production control from first to last every round', () => {
 test('lesson keeps the live control and preview candidate only', () => {
   assert.deepEqual(liveLessonVersions(['candidate-main', 'candidate-deploy']),
     ['0.17.1', 'candidate-main']);
+});
+
+test('pairs each candidate with an independent production control group', () => {
+  const groups = liveControlPairGroups([
+    { language: 'java', problem: 'binary-search', versions: ['ignored'] },
+  ], ['candidate-main', 'candidate-deploy']);
+  assert.deepEqual(groups, [
+    { language: 'java', problem: 'binary-search',
+      versions: ['0.17.1', 'candidate-main'], pairedControlFor: 'candidate-main' },
+    { language: 'java', problem: 'binary-search',
+      versions: ['0.17.1', 'candidate-deploy'], pairedControlFor: 'candidate-deploy' },
+  ]);
+  assert.deepEqual(liveRoundOrder(groups[0].versions, 1), ['0.17.1', 'candidate-main']);
+  assert.deepEqual(liveRoundOrder(groups[0].versions, 2), ['candidate-main', '0.17.1']);
+  assert.deepEqual(liveRoundOrder(groups[1].versions, 1), ['0.17.1', 'candidate-deploy']);
+  assert.deepEqual(liveRoundOrder(groups[1].versions, 2), ['candidate-deploy', '0.17.1']);
+});
+
+test('keeps paired production observations separate for scoring', () => {
+  assert.equal(liveObservationVersion('0.17.1', 'candidate-main'),
+    '0.17.1:for:candidate-main');
+  assert.equal(liveObservationVersion('0.17.1', 'candidate-deploy'),
+    '0.17.1:for:candidate-deploy');
+  assert.equal(liveObservationVersion('candidate-main', 'candidate-main'),
+    'candidate-main');
+  assert.equal(liveObservationVersion('0.17.1'), '0.17.1');
 });
 
 test('scores candidate against same-window control at five and ten percent', () => {

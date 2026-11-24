@@ -2,7 +2,9 @@
 set -euo pipefail
 case "${1:?Expected java, csharp or python}" in java|csharp|python) language="$1" ;; *) exit 2 ;; esac
 max_minutes="${2:?Expected total window minutes}"
+scope_mode="${3:-all}"
 [[ "$max_minutes" =~ ^[1-9][0-9]*$ && "${SPEED_EXCLUSIVE_WINDOW:-}" == 1 ]] || exit 2
+case "$scope_mode" in all) ;; phone-spot) [[ "$language" == java ]] || exit 2 ;; *) exit 2 ;; esac
 stage="$(cd "$(dirname "$0")" && pwd)"
 cd "$stage"
 sha256sum -c runner.sha256
@@ -49,7 +51,7 @@ if [[ "$language" == python ]]; then
   run_scope phone node python-runner/run-g8.mjs baseline "$out" phone "$out/manifest.json" 212026
   run_scope desktop node python-runner/run-g8.mjs baseline "$out" desktop-b "$out/manifest.json" 212026
 else
-  java_style_scope desktop desktop-a
+  if [[ "$scope_mode" == all ]]; then java_style_scope desktop desktop-a; fi
   java_style_scope phone phone
 fi
 java_style_scope spot desktop-a

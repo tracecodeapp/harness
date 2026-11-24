@@ -23,7 +23,12 @@ import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidat
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
 import { pythonProductionControlOutcome } from '../python-runner/python-production-control-witness.mjs';
-import { liveControlVersions, liveLessonVersions, liveRoundOrder } from '../live-control.mjs';
+import {
+  liveControlPairGroups,
+  liveControlVersions,
+  liveLessonVersions,
+  liveRoundOrder,
+} from '../live-control.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -390,18 +395,23 @@ function plan() {
     }
   }
   if (candidateScope === 'spot') {
-    return groups.filter(({ problem, state, journey }) =>
+    const spotGroups = groups.filter(({ problem, state, journey }) =>
       problem === 'binary-search' && state === 'warm' && journey === 'run')
       .map((group) => ({ ...group,
         versions: liveControl ? versions : releaseVersion ? ['release-deploy'] : candidateVersions,
         continuation: false }));
+    return liveControl ? liveControlPairGroups(spotGroups, candidateVersions) : spotGroups;
   }
   if (aaClosing) return aaClosingControlPlan(groups);
   if (aaControl) return aaControlPlan(groups);
   if (mode !== 'smoke') {
+    const scheduledGroups = liveControl && candidateScope === 'phone'
+      ? liveControlPairGroups(groups, candidateVersions)
+      : groups;
     const decide = g => testedLanguage === 'java' && candidateScope === 'desktop' &&
       g.problem === 'binary-search' && g.state === 'warm' && g.journey === 'run';
-    return groups.sort((a, b) => Number(decide(b)) - Number(decide(a)) || expectedGroupSeconds(a) - expectedGroupSeconds(b));
+    return scheduledGroups.sort((a, b) =>
+      Number(decide(b)) - Number(decide(a)) || expectedGroupSeconds(a) - expectedGroupSeconds(b));
   }
   return groups.filter(({ cpu, problem, journey, state, language }) =>
     (cpu === 1 && problem === 'binary-search' && state === 'cold' && journey === 'run') ||
@@ -453,6 +463,7 @@ const report = {
   } }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
+    ...(['phone', 'spot'].includes(candidateScope) && { pairedCandidateControls: true }),
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scoreThresholds } from './score-thresholds.mjs';
-import { liveCellScoreWithControls } from './live-control.mjs';
+import { liveCellScoreWithControls, liveObservationVersion } from './live-control.mjs';
 
 const [archive, raw, primary] = process.argv.slice(2);
 const languages = ['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'];
@@ -42,7 +42,8 @@ function collect(folder, prefix) {
     for (const endpoint of endpoints(group)) {
       const measured = sample.metrics[endpoint];
       assert.ok(Number.isFinite(measured) && measured > 0);
-      const name = key(group, endpoint) + '/' + sample.version;
+      const observationVersion = liveObservationVersion(sample.version, group.pairedControlFor);
+      const name = key(group, endpoint) + '/' + observationVersion;
       if (!values.has(name)) values.set(name, []);
       values.get(name).push(measured);
       if (sample.language === 'java') {
@@ -106,6 +107,7 @@ for (const scope of ['desktop', 'phone', 'spot']) {
   const prefix = primary === 'python' && scope !== 'spot'
     ? (scope === 'phone' ? 'speed-phone' : 'speed-desktop-b') : 's-' + primary + '-' + scope;
   let observed;
+  let pairedCandidateControls = false;
   try {
     observed = collect(raw, prefix);
     const scopeLiveControl = observed.metadata.liveControl !== undefined;
@@ -116,11 +118,22 @@ for (const scope of ['desktop', 'phone', 'spot']) {
     const expectedCandidateVersions = primary === 'python' && scope !== 'spot'
       ? scope === 'phone' ? ['concurrent', 'sequential'] : ['concurrent', 'concurrent-deploy']
       : ['candidate-main', 'candidate-deploy'];
-    if (scopeLiveControl) assert.deepEqual(observed.metadata.liveControl, {
-      control: '0.17.1', candidateVersions: expectedCandidateVersions,
-      alternatingOrderPerRound: true,
-      ...(primary === 'python' && scope !== 'spot' && { pythonWarmSubmitControl: '0.20.1' }),
-    });
+    if (scopeLiveControl) {
+      pairedCandidateControls = observed.metadata.liveControl.pairedCandidateControls === true;
+      assert.deepEqual(observed.metadata.liveControl, {
+        control: '0.17.1', candidateVersions: expectedCandidateVersions,
+        alternatingOrderPerRound: true,
+        ...(pairedCandidateControls && { pairedCandidateControls: true }),
+        ...(primary === 'python' && scope !== 'spot' && { pythonWarmSubmitControl: '0.20.1' }),
+      });
+      if (pairedCandidateControls) {
+        assert.ok(scope === 'phone' || scope === 'spot');
+        for (const group of observed.metadata.schedule) {
+          assert.ok(expectedCandidateVersions.includes(group.pairedControlFor));
+          assert.deepEqual(group.versions, ['0.17.1', group.pairedControlFor]);
+        }
+      }
+    }
     const reference = capture[scope === 'phone' ? 2 : 0].metadata;
     for (const field of ['host', 'browser', 'fixtures', 'appRefs'])
       assert.deepEqual(observed.metadata[field], reference[field], field);
@@ -165,7 +178,8 @@ for (const scope of ['desktop', 'phone', 'spot']) {
       const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] : ['0.17.1'];
       const controls = controlVersions.map((version) => ({
         version,
-        result: stats(observed.values.get(cell + '/' + version)),
+        result: stats(observed.values.get(cell + '/' +
+          liveObservationVersion(version, pairedCandidateControls ? policy : undefined))),
         frozen: history[version],
       }));
       const sameWindowComplete = liveControl === true && controls.every(({ result: row }) => row.n === 20);

@@ -14,6 +14,23 @@ export function liveLessonVersions(candidateVersions) {
   return liveControlVersions([candidateVersions[0]]);
 }
 
+export function liveControlPairGroups(groups, candidateVersions) {
+  assert.ok(groups.length > 0);
+  liveControlVersions(candidateVersions);
+  return groups.flatMap((group) => candidateVersions.map((policy) => ({
+    ...group,
+    versions: [liveControlVersion, policy],
+    pairedControlFor: policy,
+  })));
+}
+
+export function liveObservationVersion(version, pairedControlFor) {
+  if (pairedControlFor === undefined) return version;
+  return version === liveControlVersion
+    ? `${liveControlVersion}:for:${pairedControlFor}`
+    : version;
+}
+
 export function liveRoundOrder(versions, round) {
   assert.equal(versions[0], liveControlVersion);
   assert.ok(Number.isSafeInteger(round) && round > 0);

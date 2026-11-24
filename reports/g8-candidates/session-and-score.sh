@@ -2,6 +2,7 @@
 set -uo pipefail
 case "${1:?Expected java, csharp or python}" in java|csharp|python) language="$1" ;; *) exit 2 ;; esac
 max_minutes="${2:?Expected total window minutes}"
+scope_mode="${3:-all}"
 [[ "$max_minutes" =~ ^[1-9][0-9]*$ ]] || exit 2
 stage="$(cd "$(dirname "$0")" && pwd)"
 baseline="$stage/frozen-baseline"
@@ -15,7 +16,7 @@ fi
 
 session_status=0
 /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 \
-  bash "$stage/session.sh" "$language" "$max_minutes" || session_status=$?
+  bash "$stage/session.sh" "$language" "$max_minutes" "$scope_mode" || session_status=$?
 
 score_status=0
 node "$stage/score.mjs" "$baseline" "$out" "$language" > "$out/score.log" 2>&1 || score_status=$?
