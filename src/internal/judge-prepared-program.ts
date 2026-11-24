@@ -232,7 +232,12 @@ export class JudgeObservationSchedule<Result, Expected> {
     attempt.done = this.draw(caseId, attempt).then((drawing) => {
       attempt.settled = true;
       if (this.attempts.get(caseId) === attempt && !attempt.controller.signal.aborted) {
-        this.receipt.publishDrawing(attempt.token, attempt.token.binding, drawing);
+        this.receipt.publishDrawing(
+          attempt.token,
+          attempt.token.binding,
+          drawing,
+          this.registration.capabilities.observationReplyOwnership ?? 'borrowed'
+        );
       }
     });
     return attempt;
