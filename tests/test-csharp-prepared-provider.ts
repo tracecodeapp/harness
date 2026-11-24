@@ -926,6 +926,7 @@ test('a valid oversized TraceCLR collection is a case limit, and malformed repli
   let outputBytes = payload(1_000_001, 1_000_001);
   const client = new CSharpWorkerClient({
     workerUrl: '/csharp.js',
+    assetBaseUrl: '/workers/vendor/csharp-runner',
     runtimeRole: 'runner',
     debug: false,
     workerFactory() {

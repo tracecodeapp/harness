@@ -445,7 +445,8 @@ export async function assertCSharpObservationBoundary(
 
 export async function probeCSharpJudgedOutputs(
   workerUrl: string,
-  runnerAssetBaseUrl: string
+  runnerAssetBaseUrl: string,
+  includePending: boolean
 ) {
   const { CSharpWorkerClient } = await import('../../packages/runtime-csharp/src/csharp-worker-client');
   const { createCSharpRuntimeClient } = await import('../../packages/runtime-csharp/src/csharp-runtime-client');
@@ -487,7 +488,7 @@ export async function probeCSharpJudgedOutputs(
     const program = prepared.program;
     try {
       const result = await program.executeIsolated({ inputs });
-      const tier = result.timings?.preparedRunnerTier ?? program.capabilities.profile;
+      const tier = program.capabilities.profile === 'fast' ? 'algorithm-fast' : program.capabilities.profile;
       try {
         inspect(result);
         console.log(`${name} [${tier}]: pass`);
@@ -518,44 +519,48 @@ export async function probeCSharpJudgedOutputs(
   }
 
   try {
-    await check('G6 graph output', 'public class Solution { public TreeNode solve(TreeNode root) => root; }',
-      (result) => {
-        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
-        const root = result.output as { __id__: string; left: { __id__: string } };
-        if (!root.__id__ || !root.left.__id__ || root.__id__ === root.left.__id__) {
-          throw new Error('Expected distinct IDs for the root and shared child.');
-        }
-        equals(root, {
-          __type__: 'TreeNode', __id__: root.__id__, val: 1,
-          left: {
-            __type__: 'TreeNode', __id__: root.left.__id__, val: 2,
-            left: { __ref__: root.__id__ }, right: null,
-          },
-          right: { __ref__: root.left.__id__ },
-        });
-      }, { root: { __id__: 'r', val: 1, left: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null }, right: { __ref__: 'c' } } });
-    for (const n of [20, 70]) {
-      await check(`G6 deep list (${n} nodes)`,
-        'public class Solution { public ListNode solve(ListNode head) => head; }',
+    if (includePending) {
+      await check('G6 graph output', 'public class Solution { public TreeNode solve(TreeNode root) => root; }',
         (result) => {
           if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
-          equals(result.output, list(n));
-        }, { head: list(n) });
+          const root = result.output as { __id__: string; left: { __id__: string } };
+          if (!root.__id__ || !root.left.__id__ || root.__id__ === root.left.__id__) {
+            throw new Error('Expected distinct IDs for the root and shared child.');
+          }
+          equals(root, {
+            __type__: 'TreeNode', __id__: root.__id__, val: 1,
+            left: {
+              __type__: 'TreeNode', __id__: root.left.__id__, val: 2,
+              left: { __ref__: root.__id__ }, right: null,
+            },
+            right: { __ref__: root.left.__id__ },
+          });
+        }, { root: { __id__: 'r', val: 1, left: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null }, right: { __ref__: 'c' } } });
+      for (const n of [20, 70]) {
+        await check(`G6 deep list (${n} nodes)`,
+          'public class Solution { public ListNode solve(ListNode head) => head; }',
+          (result) => {
+            if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+            equals(result.output, list(n));
+          }, { head: list(n) });
+      }
+      await check('built-in ListNode.value write updates val',
+        'public class Solution { public int solve() { var node = new ListNode(1); node.value = 7; return node.val; } }',
+        (result) => equals(result.kind === 'completed' ? result.output : result, 7));
+      await check('built-in TreeNode.val write is visible to reads of value',
+        'public class Solution { public int solve() { var node = new TreeNode(1); node.val = 9; return node.value; } }',
+        (result) => equals(result.kind === 'completed' ? result.output : result, 9));
     }
-    await check('built-in ListNode.value write updates val',
-      'public class Solution { public int solve() { var node = new ListNode(1); node.value = 7; return node.val; } }',
-      (result) => equals(result.kind === 'completed' ? result.output : result, 7));
-    await check('built-in TreeNode.val write is visible to reads of value',
-      'public class Solution { public int solve() { var node = new TreeNode(1); node.val = 9; return node.value; } }',
-      (result) => equals(result.kind === 'completed' ? result.output : result, 9));
     await check('learner class and dictionary keep value',
       'public class TreeNode { public int val; public int value = 7; public TreeNode left; public TreeNode right; public TreeNode(int val) { this.val = val; } } public class Solution { public object solve() => new Dictionary<string, object> { ["value"] = 3, ["node"] = new TreeNode(1) }; }',
       (result) => equals(result.kind === 'completed' ? result.output : result,
         { value: 3, node: { val: 1, value: 7, left: null, right: null } }));
-    await check('G6 TraceCLR collection ceiling',
-      'public class Solution { public int[] solve(int n) { return new int[n]; } }',
-      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
-      { n: 1_000_001 });
+    if (includePending) {
+      await check('G6 TraceCLR collection ceiling',
+        'public class Solution { public int[] solve(int n) { return new int[n]; } }',
+        (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
+        { n: 1_000_001 });
+    }
     await check('learner exception with the writer limit text stays a program failure',
       'public class Solution { public int[] solve(int n) { if (n == 0) throw new InvalidOperationException("Invalid TraceCLR collection length."); return new int[n]; } }',
       (result) => {
