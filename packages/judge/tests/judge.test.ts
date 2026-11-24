@@ -114,6 +114,7 @@ function executeFakeProcess(
         );
       }
       if (invocation.phase === 'batch') {
+        state.invocations.push(invocation);
         return executeFakeBatch(control, invocationId, context.command);
       }
       return executeFakeCase(control, state, invocationId, invocation);

@@ -89,7 +89,6 @@ export function createJavaScriptBrowserRuntimeProvider(
       const observation: JudgeReceiptProvider = {
         runtimeVersion: TRACECODE_HARNESS_VERSION,
         capabilities: {
-          algorithmBundlesOnly: true,
           observationLease: 'separate',
           observationDeadlineMs: 20_000,
           // certifyObservation returns the trace decoded from the reply of an

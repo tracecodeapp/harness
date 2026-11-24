@@ -1,14 +1,11 @@
 import type {
   CodeExecutionResult,
   Language,
-  ExecutionResult,
   TraceExecutionOptions,
   RuntimePreparedCodeCall,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimePreparedProgram,
-  RuntimePreparedTraceBatchCall,
-  RuntimePreparedTraceCall,
   RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '../../packages/runtime-contracts/src/index';
@@ -490,6 +487,11 @@ export class RuntimePreparedProgramRegistry {
     call: RuntimeProgramPreparationCall
   ): Promise<RuntimeProgramPreparationResult> {
     const state = this.requireState(evaluationId);
+    if (call.mode !== 'code') {
+      // Grades come only from ordinary programs; observers own their own
+      // instrumented artifacts and never reach this registry.
+      invalidPreparation('The Judge prepares only ordinary (code-mode) programs.');
+    }
     if (state.closed) {
       invalidPreparation('Prepared runtime evaluation is already closed.');
     }
@@ -616,61 +618,6 @@ export class RuntimePreparedProgramRegistry {
             limits: call.limits,
           });
         })
-      )
-    );
-  }
-
-  executeTrace(
-    evaluationId: string,
-    call: RuntimePreparedTraceCall
-  ): Promise<ExecutionResult> {
-    const { program, gate } = this.preparedState(evaluationId);
-    if (program.mode !== 'trace') {
-      return Promise.reject(
-        new Error('Code-only prepared program cannot execute a tracing case.')
-      );
-    }
-    return gate.run(call.signal, () => program.executeIsolated(call));
-  }
-
-  executeTraceBatch(
-    evaluationId: string,
-    call: RuntimePreparedTraceBatchCall
-  ): Promise<readonly ExecutionResult[]> {
-    const { program, gate } = this.preparedState(evaluationId);
-    if (program.mode !== 'trace') {
-      return Promise.reject(
-        new Error('Code-only prepared program cannot execute a tracing batch.')
-      );
-    }
-    if (
-      call.traceEnabledBatch !== undefined &&
-      (
-        call.traceEnabledBatch.length !== call.inputBatch.length ||
-        call.traceEnabledBatch.some((enabled) => typeof enabled !== 'boolean')
-      )
-    ) {
-      return Promise.reject(
-        new TypeError(
-          'Prepared trace selection must contain one boolean per batch case.'
-        )
-      );
-    }
-    if (program.executeBatchIsolated) {
-      return gate.run(call.signal, () => program.executeBatchIsolated!(call));
-    }
-    return Promise.all(
-      call.inputBatch.map((inputs, index) =>
-        gate.run(call.signal, () =>
-          program.executeIsolated({
-            inputs,
-            ...(call.traceEnabledBatch === undefined
-              ? {}
-              : { recordTrace: call.traceEnabledBatch[index] }),
-            signal: call.signal,
-            limits: call.limits,
-          })
-        )
       )
     );
   }

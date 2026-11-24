@@ -407,7 +407,7 @@ test('browser host enforces prepared-program isolation capabilities', async () =
   }
 });
 
-test('Judge gives every case a fresh TraceKernel session', async () => {
+test('Judge runs every case in one ordinary batch session, apart from preparation', async () => {
   const state = providerState();
   const result = await Effect.runPromise(Effect.scoped(
     Effect.gen(function* () {
@@ -431,10 +431,13 @@ test('Judge gives every case a fresh TraceKernel session', async () => {
     result.cases.map((caseResult) => caseResult.verdict.kind),
     ['passed', 'passed', 'passed']
   );
+  // Direct evaluation uses the prepared Submit executor: one ordinary batch
+  // session, with fresh learner state per case from the provider.
   assert.equal(
     new Set(result.cases.map((caseResult) => caseResult.sessionId)).size,
-    3
+    1
   );
+  assert.deepEqual([...state.started].sort(), ['first', 'second', 'third']);
   assert.ok(
     result.cases.every(
       (caseResult) => caseResult.sessionId !== result.compile?.sessionId

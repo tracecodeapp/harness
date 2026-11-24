@@ -322,6 +322,14 @@ function fakeProvider(
                   consoleOutput: consoleOutput(input),
                 };
               }
+              if (input.mode === 'runaway') {
+                return {
+                  kind: 'limit',
+                  reason: 'single-line-limit',
+                  error: 'one line ran too many times',
+                  consoleOutput: consoleOutput(input),
+                };
+              }
               return {
                 kind: 'completed',
                 output: completedOutput(input),
@@ -812,7 +820,7 @@ test('execute defaults to one clean ephemeral evaluation', async () => {
   assert.equal(state.disposals, 1);
 });
 
-test('interactive execute retains one trace-capable artifact and traces explicit case tranches', async () => {
+test('interactive execute grades once, retains the handle and draws explicit case tranches', async () => {
   const state = makePreparedState();
 
   await Effect.runPromise(Effect.scoped(
@@ -833,20 +841,21 @@ test('interactive execute retains one trace-capable artifact and traces explicit
 
       assert.ok(initial.executionId);
       assert.equal(initial.evaluation.status, 'completed');
+      // This host registers no observer: the selected drawing is refused,
+      // and every row is the ordinary one.
       assert.deepEqual(
-        initial.evaluation.status === 'completed'
-          ? initial.evaluation.cases.map((result) =>
-              (result.trace as RuntimeTrace | undefined)?.events.length ?? -1
-            )
-          : [],
-        [1, 0, 0]
+        initial.evaluation.cases.map((result) =>
+          result.attachment?.status === 'refused' ? result.attachment.reason : result.attachment?.status ?? 'none'
+        ),
+        ['recorder-unavailable', 'none', 'none']
       );
-      assert.equal(state.prepareCalls.length, 1);
-      assert.deepEqual(
-        state.traceCalls.map((call) => call.recordTrace),
-        [true, false, false]
-      );
-      assert.equal(state.disposals, 0);
+      assert.equal(initial.evaluation.cases.some((result) => 'trace' in result), false);
+      assert.deepEqual(state.prepareCalls.map(({ mode }) => mode), ['code']);
+      assert.deepEqual(state.codeCalls.map(({ inputs }) => inputs.label), ['selected', 'drain-a', 'drain-b']);
+      assert.equal(state.traceCalls.length, 0);
+      // The ordinary program is released at commit; the handle keeps only
+      // the receipt and the observation lifetime.
+      assert.equal(state.disposals, 1);
 
       const continuation = yield* judge.execute<FakeInput>({
         executionId: initial.executionId!,
@@ -861,16 +870,11 @@ test('interactive execute retains one trace-capable artifact and traces explicit
         ['drain-b']
       );
       assert.equal(state.prepareCalls.length, 1);
-      assert.equal(state.traceCalls.at(-1)?.recordTrace, true);
-      assert.equal(state.disposals, 0);
+      assert.equal(state.codeCalls.length, 3, 'a continuation never runs ordinary work');
 
       yield* judge.disposeExecution(initial.executionId!);
       yield* judge.disposeExecution(initial.executionId!);
-      assert.equal(
-        state.disposals,
-        1,
-        'explicit disposal releases the live prepared program exactly once'
-      );
+      assert.equal(state.disposals, 1);
 
       const exit = yield* Effect.exit(judge.execute<FakeInput>({
         executionId: initial.executionId!,
@@ -883,7 +887,7 @@ test('interactive execute retains one trace-capable artifact and traces explicit
   assert.equal(state.disposals, 1);
 });
 
-test('browser interactive execute prepares one trace-capable program and records only the selected case', async () => {
+test('browser interactive execute prepares one ordinary program; a host without an observer refuses the selected drawing', async () => {
   const state = makePreparedState();
   const runtimeHost = browserHostFor(preparedProvider(state));
   const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
@@ -910,36 +914,21 @@ test('browser interactive execute prepares one trace-capable program and records
     assert.ok(initial.executionId);
     assert.equal(initial.evaluation.status, 'completed');
     assert.deepEqual(
-      initial.evaluation.cases.map((result) => result.caseId),
-      ['selected', 'drain-a', 'drain-b']
-    );
-    assert.deepEqual(
       initial.evaluation.cases.map((result) => ({
         caseId: result.caseId,
-        traceEvents: (result.trace as RuntimeTrace).events.length,
+        verdict: result.verdict.kind,
+        attachment: result.attachment?.status === 'refused' ? result.attachment.reason : undefined,
+        trace: 'trace' in result,
       })),
       [
-        { caseId: 'selected', traceEvents: 1 },
-        { caseId: 'drain-a', traceEvents: 0 },
-        { caseId: 'drain-b', traceEvents: 0 },
+        { caseId: 'selected', verdict: 'passed', attachment: 'recorder-unavailable', trace: false },
+        { caseId: 'drain-a', verdict: 'passed', attachment: undefined, trace: false },
+        { caseId: 'drain-b', verdict: 'passed', attachment: undefined, trace: false },
       ]
     );
-    assert.deepEqual(
-      state.prepareCalls.map((call) => call.mode),
-      ['trace']
-    );
-    assert.equal(state.codeCalls.length, 0);
-    assert.deepEqual(
-      state.traceCalls.map((call) => ({
-        label: (call.inputs as FakeInput).label,
-        recordTrace: call.recordTrace,
-      })),
-      [
-        { label: 'selected', recordTrace: true },
-        { label: 'drain-a', recordTrace: false },
-        { label: 'drain-b', recordTrace: false },
-      ]
-    );
+    assert.deepEqual(state.prepareCalls.map((call) => call.mode), ['code']);
+    assert.deepEqual(state.codeCalls.map(({ inputs }) => inputs.label), ['selected', 'drain-a', 'drain-b']);
+    assert.equal(state.traceCalls.length, 0);
     assert.deepEqual(
       initial.timings?.phases.map((timing) => timing.phase),
       [
@@ -959,118 +948,12 @@ test('browser interactive execute prepares one trace-capable program and records
       continuation.evaluation.cases.map((result) => result.caseId),
       ['drain-b']
     );
-    assert.deepEqual(
-      state.traceCalls.map((call) => (call.inputs as FakeInput).label),
-      ['selected', 'drain-a', 'drain-b', 'drain-b']
-    );
+    assert.equal(state.codeCalls.length, 3);
     assert.deepEqual(
       continuation.timings?.phases.map((timing) => timing.phase),
       ['trace-continuation-execute']
     );
     await judgeHost.disposeExecution(initial.executionId!);
-  } finally {
-    judgeHost.dispose();
-  }
-});
-
-test('a traced case the runtime cannot trace is refused on its own; the other cases and later tranches are unaffected', async () => {
-  const state = makePreparedState({ traceRefusedLabels: new Set(['refused']) });
-  const runtimeHost = browserHostFor(preparedProvider(state));
-  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
-  const refusalMessage = 'TraceCode could not trace this case.';
-  const assertRefused = (result: JudgeCaseResult | undefined) => {
-    assert.ok(result);
-    assert.equal(result.caseId, 'refused');
-    assert.equal(result.status, 'runtime-error');
-    assert.deepEqual(result.verdict, { kind: 'not-evaluated', reason: 'case-did-not-complete' });
-    assert.equal(Object.prototype.hasOwnProperty.call(result, 'value'), false);
-    assert.deepEqual(result.failure, {
-      origin: 'provider',
-      reason: 'runtime-failure',
-      message: refusalMessage,
-    });
-    assert.deepEqual(
-      result.diagnostics.map(({ severity, code, source, message }) => ({ severity, code, source, message })),
-      [{ severity: 'error', code: 'trace-unavailable', source: 'javascript', message: refusalMessage }]
-    );
-    assert.throws(
-      () => judgeCaseExecutionOutcome(result, { language: 'javascript' }),
-      (error: unknown) =>
-        isRuntimeProviderError(error) &&
-        error.reason === 'runtime-failure' &&
-        (error as { code?: string }).code === TRACE_UNAVAILABLE_CODE
-    );
-  };
-  try {
-    const bundle = await createAlgorithmJudgeBundle({
-      id: 'trace-unavailable-per-case',
-      language: 'javascript',
-      code: SOURCE,
-      functionName: 'solve',
-      trace: true,
-      cases: [
-        { id: 'first', input: { label: 'first' }, expected: 'first' },
-        { id: 'refused', input: { label: 'refused' }, expected: 'refused' },
-        { id: 'drain-a', input: { label: 'drain-a' }, expected: 'drain-a' },
-        { id: 'drain-b', input: { label: 'drain-b' }, expected: 'drain-b' },
-      ],
-    });
-    const initial = await judgeHost.execute({
-      bundle,
-      interactive: true,
-      tracing: { caseIds: ['refused'] },
-    });
-    assert.ok(initial.executionId, 'the execution is retained');
-    assert.equal(initial.evaluation.status, 'completed');
-    const byId = new Map(initial.evaluation.cases.map((result) => [result.caseId, result]));
-    assertRefused(byId.get('refused'));
-    for (const caseId of ['first', 'drain-a', 'drain-b']) {
-      const result = byId.get(caseId);
-      assert.equal(result?.status, 'completed', caseId);
-      assert.equal(result?.verdict.kind, 'passed', caseId);
-    }
-
-    const other = await judgeHost.execute({
-      executionId: initial.executionId!,
-      tracing: { caseIds: ['drain-a'] },
-    });
-    assert.equal(other.evaluation.cases[0]?.status, 'completed');
-    assert.equal((other.evaluation.cases[0]?.trace as RuntimeTrace).events.length, 1);
-
-    const again = await judgeHost.execute({
-      executionId: initial.executionId!,
-      tracing: { caseIds: ['refused'] },
-    });
-    assertRefused(again.evaluation.cases[0]);
-    await judgeHost.disposeExecution(initial.executionId!);
-  } finally {
-    judgeHost.dispose();
-  }
-});
-
-test('the shared prepared registry leaves a provider\'s coded rejection a batch rejection', async () => {
-  // Only a provider converts its own cases; the registry never turns another
-  // provider's coded error into a per-case outcome.
-  const state = makePreparedState({ traceRefusedLabels: new Set(['refused']), refuseWithoutOwnBatch: true });
-  const judgeHost = createBrowserJudgeHostFromRuntimeHost(browserHostFor(preparedProvider(state)));
-  try {
-    const bundle = await createAlgorithmJudgeBundle({
-      id: 'registry-leaves-coded-rejections',
-      language: 'javascript',
-      code: SOURCE,
-      functionName: 'solve',
-      trace: true,
-      cases: [
-        { id: 'first', input: { label: 'first' }, expected: 'first' },
-        { id: 'refused', input: { label: 'refused' }, expected: 'refused' },
-      ],
-    });
-    const initial = await judgeHost.execute({ bundle, interactive: true, tracing: { caseIds: ['refused'] } });
-    assert.deepEqual(
-      initial.evaluation.cases.map((result) => [result.caseId, result.failure?.origin]),
-      [['first', 'provider'], ['refused', 'provider']]
-    );
-    if (initial.executionId) await judgeHost.disposeExecution(initial.executionId);
   } finally {
     judgeHost.dispose();
   }
@@ -1131,7 +1014,7 @@ test('browser interactive execute reports failure from its only prepared program
     assert.equal(result.executionId, undefined);
     assert.deepEqual(
       state.prepareCalls.map((call) => call.mode),
-      ['trace']
+      ['code']
     );
     assert.equal(state.codeCalls.length, 0);
     assert.equal(state.traceCalls.length, 0);
@@ -1160,55 +1043,6 @@ test('interactive execute rejects invalid trace selections before preparing', as
 
       assert.equal(Exit.isFailure(exit), true);
       assert.equal(state.prepareCalls.length, 0);
-    })
-  ));
-});
-
-test('interactive continuation timeout scales to only the selected tranche', async () => {
-  const state = makePreparedState();
-  const slowInput = { label: 'slow', delayMs: 0 };
-  // A small declared lifecycle allowance keeps the backstop short: one case's
-  // 25 ms plus 10 ms. Scaled to all three batched cases it would be over 30 s
-  // and would not fire while the slow case runs for 200 ms.
-  const provider = { ...preparedProvider(state), lifecycleAllowanceMs: 10 };
-
-  await Effect.runPromise(Effect.scoped(
-    Effect.gen(function* () {
-      const judge = yield* createTestRuntimeJudge(
-        provider,
-        codeBinding({ trace: true })
-      );
-      const initial = yield* judge.execute<FakeInput>({
-        plan: makePlan([
-          { id: 'slow', input: slowInput, expected: 'slow' },
-          { id: 'fast-a', input: { label: 'fast-a' }, expected: 'fast-a' },
-          { id: 'fast-b', input: { label: 'fast-b' }, expected: 'fast-b' },
-        ], {
-          run: {
-            command: 'runtime-provider-case',
-            timeoutMs: 25,
-          },
-        }),
-        interactive: true,
-      });
-      assert.ok(initial.executionId);
-
-      slowInput.delayMs = 200;
-      // The backstop fired: the runtime did not honour its own limit. That is
-      // the provider's failure on the case, never a fabricated time limit and
-      // never an infrastructure failure of the whole call.
-      const continuation = yield* judge.execute<FakeInput>({
-        executionId: initial.executionId!,
-        tracing: { caseIds: ['slow'] },
-      });
-      assert.equal(continuation.evaluation.status, 'completed');
-      const slow = continuation.evaluation.cases[0];
-      assert.equal(slow?.status, 'runtime-error');
-      assert.equal(slow?.timedOut, false);
-      assert.equal(slow?.diagnostics[0]?.code, 'runtime-provider-error');
-      assert.equal(slow?.failure?.origin, 'provider');
-      assert.equal(state.aborts, 1);
-      yield* judge.disposeExecution(initial.executionId!);
     })
   ));
 });
@@ -1343,7 +1177,8 @@ test('execute treats tracing and interactivity as independent explicit opt-ins',
         tracing: { caseIds: ['trace-now'] },
       });
       assert.equal(traced.executionId, undefined);
-      assert.equal(traceOnlyState.traceCalls[0]?.recordTrace, true);
+      assert.equal(traced.evaluation.cases[0]?.attachment?.status, 'refused');
+      assert.equal(traceOnlyState.codeCalls.length, 1);
 
       const interactiveOnlyJudge = yield* createTestRuntimeJudge(
         preparedProvider(interactiveOnlyState),
@@ -1357,16 +1192,19 @@ test('execute treats tracing and interactivity as independent explicit opt-ins',
         interactive: true,
       });
       assert.ok(retained.executionId);
-      assert.equal(interactiveOnlyState.traceCalls[0]?.recordTrace, false);
+      assert.equal(Object.hasOwn(retained.evaluation.cases[0]!, 'attachment'), false);
+      assert.equal(interactiveOnlyState.codeCalls.length, 1);
+      for (const state of [traceOnlyState, interactiveOnlyState]) {
+        assert.deepEqual(state.prepareCalls.map(({ mode }) => mode), ['code']);
+        assert.equal(state.traceCalls.length, 0);
+      }
       yield* interactiveOnlyJudge.disposeExecution(retained.executionId!);
     })
   ));
 });
 
-test('bundle trace options remain available for explicit on-demand tracing', async () => {
-  const state = makePreparedState();
-  const runtimeHost = browserHostFor(preparedProvider(state));
-  const judgeHost = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+test('bundle trace options reach only the observer for explicit on-demand tracing', async () => {
+  const f = receiptFixture();
   try {
     const bundle = await createAlgorithmJudgeBundle({
       id: 'on-demand-trace-options',
@@ -1380,23 +1218,19 @@ test('bundle trace options remain available for explicit on-demand tracing', asy
       ],
     });
 
-    const result = await judgeHost.execute({
+    const result = await f.host.execute({
       bundle,
       tracing: { caseIds: ['selected'] },
     });
 
     assert.equal(result.evaluation.status, 'completed');
-    assert.equal(state.prepareCalls.length, 1);
-    assert.equal(state.prepareCalls[0]?.mode, 'trace');
-    assert.deepEqual(state.prepareCalls[0]?.traceOptions, {
-      maxTraceSteps: 20,
-    });
-    assert.deepEqual(
-      state.traceCalls.map((call) => call.recordTrace),
-      [true, false]
-    );
+    assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.equal(f.state.prepareCalls[0]?.traceOptions, undefined);
+    assert.deepEqual(f.observerCalls.map(({ inputs }) => inputs.label), ['selected']);
+    assert.deepEqual(f.observerCalls[0]?.traceOptions, { maxTraceSteps: 20 });
+    assert.equal(f.state.traceCalls.length, 0);
   } finally {
-    judgeHost.dispose();
+    f.host.dispose();
   }
 });
 
@@ -1443,14 +1277,27 @@ test('rejects unsupported prepared controls before provider initialization or pr
         preparedProvider(traceState),
         codeBinding({
           trace: true,
-          traceOptions: { maxTraceBytes: 1024 },
+          traceOptions: { maxTraceDepth: 3 } as never,
         })
       )
     )),
-    /does not support the "maxTraceBytes" tracing option/
+    /does not recognize the "maxTraceDepth" tracing option/
   );
   assert.equal(traceState.initCalls, 0);
   assert.equal(traceState.prepareCalls.length, 0);
+
+  // An observation option the runtime's tracer lacks never reaches the
+  // ordinary capability check: grading proceeds, and the observer refuses.
+  const observedState = makePreparedState();
+  const evaluation = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const judge = yield* createTestRuntimeJudge(
+      preparedProvider(observedState),
+      codeBinding({ trace: true, traceOptions: { maxTraceBytes: 1024 } })
+    );
+    return yield* judge.evaluate<FakeInput>(makePlan([{ id: 'A', input: { label: 'A' }, expected: 'A' }]));
+  })));
+  assert.equal(evaluation.cases[0]?.verdict.kind, 'passed');
+  assert.equal(observedState.prepareCalls[0]?.traceOptions, undefined);
 });
 
 test('preserves 0.13 JSON comparison and distinguishes omitted from explicit undefined expected values', async () => {
@@ -1560,20 +1407,27 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
         },
         expected: 'unused',
       },
-      {
-        id: 'provider-failure',
-        input: {
-          label: 'provider-failure',
-          mode: 'throw',
-        },
-        expected: 'unused',
-      },
     ]),
     codeBinding({
       limits: {
         wallClockMs: 900,
       },
     })
+  );
+  // A provider rejection is its own evaluation: every case of a direct
+  // evaluation runs in one ordinary batch, and this provider has no native
+  // batch, so the rejection is the whole batch's provider failure.
+  const rejected = await evaluate(
+    state,
+    makePlan<unknown>([{
+      id: 'provider-failure',
+      input: {
+        label: 'provider-failure',
+        mode: 'throw',
+      },
+      expected: 'unused',
+    }]),
+    codeBinding({ limits: { wallClockMs: 900 } })
   );
 
   assert.equal(result.status, 'completed');
@@ -1606,15 +1460,15 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
     exitCode: 1,
   });
 
-  assert.equal(result.cases[3]?.status, 'runtime-error');
-  assert.equal(result.cases[3]?.stderr, 'provider transport exploded\n');
+  assert.equal(rejected.cases[0]?.status, 'runtime-error');
+  assert.equal(rejected.cases[0]?.stderr, 'provider transport exploded\n');
   assert.equal(
-    result.cases[3]?.diagnostics[0]?.code,
+    rejected.cases[0]?.diagnostics[0]?.code,
     'runtime-provider-error'
   );
   // The diagnostic code is the contract consumers read; the termination is
   // its consequence (only a provider rejection ends in a `failure`).
-  assert.deepEqual(result.cases[3]?.termination, {
+  assert.deepEqual(rejected.cases[0]?.termination, {
     kind: 'failure',
     exitCode: 1,
     message: 'provider transport exploded',
@@ -1626,8 +1480,8 @@ test('maps raw values, diagnostics, limits, stdout, stderr, and provider failure
 });
 
 test('publishes tracing as an observation without changing comparison', async () => {
-  const plainState = makeState();
-  const tracedState = makeState();
+  const plain = receiptFixture();
+  const traced = receiptFixture();
   const plan = makePlan([{
     id: 'same-value',
     input: {
@@ -1637,51 +1491,42 @@ test('publishes tracing as an observation without changing comparison', async ()
     },
     expected: 7,
   }]);
-
-  const [plain, traced] = await Promise.all([
-    evaluate(plainState, plan),
-    evaluate(
-      tracedState,
-      plan,
-      codeBinding({
-        trace: true,
-        traceOptions: {
-          maxTraceSteps: 10,
-        },
-      })
-    ),
-  ]);
-
-  assert.equal(plain.cases[0]?.verdict.kind, 'passed');
-  assert.equal(traced.cases[0]?.verdict.kind, 'passed');
-  assert.equal(plain.cases[0] && 'trace' in plain.cases[0], false);
-  assert.deepEqual(
-    traced.cases[0]?.trace,
-    tracedState.traceCalls.length === 1
-      ? {
-          schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
-          language: 'javascript',
-          runId: 'run:same-value',
-          events: [{
-            kind: 'line',
-            runId: 'run:same-value',
-            line: 2,
-          }],
-          lineEventCount: 1,
-          traceStepCount: 1,
-        }
-      : undefined
-  );
-  assert.equal(traced.cases[0]?.diagnostics[0]?.severity, 'warning');
-  assert.equal(traced.cases[0]?.diagnostics[0]?.code, 'trace-limit');
-  assert.equal(plainState.codeCalls.length, 1);
-  assert.equal(tracedState.traceCalls.length, 1);
+  try {
+    const [plainResult, tracedResult] = await Promise.all([
+      withDirectJudge(plain.host, codeBinding(), (judge) => judge.evaluate<FakeInput>(plan)),
+      withDirectJudge(
+        traced.host,
+        codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } }),
+        (judge) => judge.evaluate<FakeInput>(plan)
+      ),
+    ]);
+    const [plainRow, tracedRow] = [plainResult.cases[0]!, tracedResult.cases[0]!];
+    assert.equal(plainRow.verdict.kind, 'passed');
+    assert.equal(tracedRow.verdict.kind, 'passed');
+    assert.equal('trace' in plainRow, false);
+    assert.equal('attachment' in plainRow, false);
+    assert.equal(tracedRow.attachment?.status, 'drawn');
+    assert.equal(tracedRow.trace, tracedRow.attachment?.status === 'drawn' ? tracedRow.attachment.trace : undefined);
+    // No trace budget, warning or traced value is copied into the graded row.
+    assert.deepEqual(tracedRow.diagnostics, plainRow.diagnostics);
+    assert.equal(tracedRow.value, plainRow.value);
+    assert.deepEqual(traced.observerCalls[0]?.traceOptions, { maxTraceSteps: 10 });
+    for (const f of [plain, traced]) {
+      assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code']);
+      assert.equal(f.state.traceCalls.length, 0);
+    }
+    assert.equal(plain.observerCalls.length, 0);
+  } finally {
+    plain.host.dispose();
+    traced.host.dispose();
+  }
 });
 
 test('a provider that hangs past its own deadline is stopped by the backstop and reported as the provider failure', async () => {
   const state = makeState();
-  // The backstop waits for the case's own 25 ms plus the provider's declared
-  // lifecycle allowance (10 ms here; 30 s by default).
+  // The backstop waits for the case's own 25 ms, the provider's declared
+  // lifecycle allowance (10 ms here; 30 s by default) and, because every
+  // direct evaluation is one ordinary batch, the 10 s batch recovery allowance.
   const provider = { ...fakeProvider(state), lifecycleAllowanceMs: 10 };
   const startedAt = performance.now();
   const result = await Effect.runPromise(Effect.scoped(
@@ -1703,8 +1548,8 @@ test('a provider that hangs past its own deadline is stopped by the backstop and
     })
   ));
   const elapsedMs = performance.now() - startedAt;
-  assert.ok(elapsedMs >= 30, 'the backstop does not undercut the provider allowance');
-  assert.ok(elapsedMs < 5_000, `the declared allowance, not the 30 s default, sizes the backstop (${Math.round(elapsedMs)} ms)`);
+  assert.ok(elapsedMs >= 10_030, 'the backstop does not undercut the provider and batch allowances');
+  assert.ok(elapsedMs < 20_000, `the declared allowance, not the 30 s default, sizes the backstop (${Math.round(elapsedMs)} ms)`);
 
   assert.equal(result.status, 'completed');
   const hung = result.cases[0]!;
@@ -1762,7 +1607,7 @@ test('interrupting evaluation cancels the provider call and releases all session
   ));
 });
 
-test('preserves case order under concurrency and opens an isolated TraceKernel session per case', async () => {
+test('preserves case order under concurrency in one ordinary batch session', async () => {
   const state = makeState();
   const result = await evaluate(
     state,
@@ -1803,10 +1648,13 @@ test('preserves case order under concurrency and opens an isolated TraceKernel s
     ['slow', 'fast', 'middle']
   );
   assert.notDeepEqual(state.completions, ['slow', 'fast', 'middle']);
+  // One ordinary batch session, apart from the compile session; each case
+  // still gets fresh learner state and its own input from the provider.
   assert.equal(
     new Set(result.cases.map((caseResult) => caseResult.sessionId)).size,
-    3
+    1
   );
+  assert.notEqual(result.cases[0]?.sessionId, result.compile?.sessionId);
   assert.equal(
     new Set(state.codeCalls.map((call) => call.inputs)).size,
     3
@@ -2050,7 +1898,7 @@ test('prepares once, preserves timings, throttles provider concurrency, and disp
   assert.equal(state.disposals, 1);
   assert.equal(
     new Set(result.cases.map((caseResult) => caseResult.sessionId)).size,
-    3
+    1
   );
   assert.ok(
     result.cases.every((caseResult) =>
@@ -2098,7 +1946,7 @@ test('reports a prepared compilation error once and never starts a case', async 
   assert.equal(state.disposals, 0);
 });
 
-test('prepares tracing once and keeps tracing policy out of individual cases', async () => {
+test('a trace binding prepares one ordinary program and keeps tracing policy out of grading', async () => {
   const state = makePreparedState();
   const result = await evaluatePrepared(
     state,
@@ -2124,20 +1972,11 @@ test('prepares tracing once and keeps tracing policy out of individual cases', a
 
   assert.equal(result.status, 'completed');
   assert.equal(result.cases[0]?.verdict.kind, 'passed');
-  assert.equal(state.prepareCalls.length, 1);
-  assert.equal(state.prepareCalls[0]?.mode, 'trace');
-  assert.deepEqual(state.prepareCalls[0]?.traceOptions, {
-    maxTraceSteps: 20,
-    minimalTrace: true,
-  });
-  assert.equal(state.traceCalls.length, 1);
-  assert.ok(
-    !Object.prototype.hasOwnProperty.call(
-      state.traceCalls[0],
-      'traceOptions'
-    )
-  );
-  assert.deepEqual(state.traceCalls[0]?.limits, {
+  assert.deepEqual(state.prepareCalls.map(({ mode }) => mode), ['code']);
+  assert.equal(state.prepareCalls[0]?.traceOptions, undefined);
+  assert.equal(state.traceCalls.length, 0);
+  assert.equal(state.codeCalls.length, 1);
+  assert.deepEqual(state.codeCalls[0]?.limits, {
     wallClockMs: 700,
   });
   assert.equal(state.disposals, 1);
@@ -2385,25 +2224,33 @@ test('every Judge case states its origin and converts totally to the outcome a l
       { id: 'completed', input: { label: 'completed', output: 4 }, expected: 4 },
       { id: 'failed', input: { label: 'failed', mode: 'failed' }, expected: 'unused' },
       { id: 'limited', input: { label: 'limited', mode: 'limit' }, expected: 'unused' },
-      { id: 'provider-failure', input: { label: 'provider-failure', mode: 'throw' }, expected: 'unused' },
-      { id: 'unstaged', input: { label: 'unstaged', mode: 'unstaged' }, expected: 'unused' },
-      { id: 'bogus-limit', input: { label: 'bogus-limit', mode: 'bogus-limit' }, expected: 'unused' },
-      { id: 'unknown-stage', input: { label: 'unknown-stage', mode: 'unknown-stage' }, expected: 'unused' },
-      { id: 'malformed-reply', input: { label: 'malformed-reply', mode: 'malformed-reply' }, expected: 'unused' },
     ])
   );
   assert.deepEqual(result.cases.map(describeJudgeCase), [
     'completed',
     'program:runtime:runtime exploded',
     'limit:line-limit',
-    'provider:runtime-failure',
-    'provider:contract-violation',
-    'provider:protocol',
-    'provider:protocol',
-    'provider:protocol',
   ]);
+  // Every case of a direct evaluation runs in one ordinary batch. A provider
+  // rejection or a reply that breaks the contract fails that whole batch, as
+  // on Run and Submit, so each is judged in a batch of its own here.
+  const broken: JudgeCaseResult[] = [];
+  for (const [mode, expected] of [
+    ['throw', 'provider:runtime-failure'],
+    ['unstaged', 'provider:contract-violation'],
+    ['bogus-limit', 'provider:protocol'],
+    ['unknown-stage', 'provider:protocol'],
+    ['malformed-reply', 'provider:protocol'],
+  ] as const) {
+    const rejected = await evaluate(
+      state,
+      makePlan<unknown>([{ id: mode, input: { label: mode, mode }, expected: 'unused' }])
+    );
+    assert.deepEqual(rejected.cases.map(describeJudgeCase), [expected], mode);
+    broken.push(rejected.cases[0]!);
+  }
 
-  const [completed, failed, limited, provider, unstaged, bogusLimit, unknownStage, malformedReply] = result.cases;
+  const [completed, failed, limited] = result.cases;
   assert.deepEqual(
     judgeCaseExecutionOutcome(completed!, { language: 'javascript' }),
     { kind: 'completed', output: 4, consoleOutput: ['stdout:completed'] }
@@ -2422,7 +2269,7 @@ test('every Judge case states its origin and converts totally to the outcome a l
     judgeCaseExecutionOutcome(limited!, { language: 'javascript', trace: true }),
     { kind: 'trace-refused' },
   );
-  for (const providerCase of [provider!, unstaged!, bogusLimit!, unknownStage!, malformedReply!]) {
+  for (const providerCase of broken) {
     assert.throws(
       () => judgeCaseExecutionOutcome(providerCase, { language: 'javascript' }),
       (error: unknown) => isRuntimeProviderError(error)
@@ -2511,7 +2358,6 @@ test('a batch evaluation that opts in stops at the first runaway case like Run; 
     Effect.gen(function* () {
       const judge = yield* createTestRuntimeJudge(
         fakeProvider(executeState),
-        // The fake runs its runaway mode on the trace program.
         codeBinding({ trace: true })
       );
       return yield* judge.execute<FakeInput>({
@@ -2844,51 +2690,83 @@ test('a traced case stopped or failed after its trace stopped recording keeps th
     (error: unknown) => isRuntimeProviderError(error) && /unknown traceLimitReason/.test((error as Error).message)
   );
 
-  // Judge keeps the budget as a warning beside the case's failure, and the
-  // learner-facing outcome restores it.
+  // 0.21 never writes a trace budget into a graded row: the rows of a trace
+  // binding are the ordinary ones. A row a 0.20.x Judge stored with the budget
+  // beside its failure still restores it when the app reads it back.
   const state = makeState();
   const result = await evaluate(
     state,
     makePlan<unknown>([
-      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
-      { id: 'raised', input: { label: 'raised', mode: 'failed-trace-truncated' }, expected: 'unused' },
+      { id: 'runaway', input: { label: 'runaway', mode: 'limit' }, expected: 'unused' },
+      { id: 'raised', input: { label: 'raised', mode: 'failed' }, expected: 'unused' },
     ]),
     codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
   );
-  const [runaway, raised] = result.cases;
-  assert.equal(describeJudgeCase(runaway!), 'limit:line-limit');
-  assert.deepEqual(
-    runaway!.diagnostics.map(({ severity, code }) => ({ severity, code })),
-    [{ severity: 'error', code: 'line-limit' }, { severity: 'warning', code: 'trace-byte-limit' }]
-  );
-  assert.equal(describeJudgeCase(raised!), 'program:runtime:traced runtime exploded after recording stopped');
-  assert.deepEqual(
-    raised!.diagnostics.map(({ severity, code }) => ({ severity, code })),
-    [{ severity: 'error', code: 'runtime' }, { severity: 'warning', code: 'trace-limit' }]
-  );
-  const runawayOutcome = judgeCaseExecutionOutcome(runaway!, { language: 'javascript', trace: true });
+  for (const row of result.cases) {
+    assert.equal(row.diagnostics.some(({ severity }) => severity === 'warning'), false, `${row.caseId}: no budget warning`);
+    assert.equal(judgeCaseExecutionOutcome(row, { language: 'javascript', trace: true }).kind, 'trace-refused');
+  }
+  const runaway = stored020Row(result.cases[0]!, {
+    kind: 'trace-truncated',
+    code: 'trace-byte-limit',
+    message: 'Trace recording stopped at the trace-byte-limit budget before the program stopped; the trace ends there.',
+  });
+  const raised = stored020Row(result.cases[1]!, {
+    kind: 'trace-truncated',
+    code: 'trace-limit',
+    message: 'Trace recording stopped at the trace-limit budget before the program stopped; the trace ends there.',
+  });
+  assert.equal(describeJudgeCase(runaway), 'limit:line-limit');
+  assert.equal(describeJudgeCase(raised), 'program:runtime:runtime exploded');
+  const runawayOutcome = judgeCaseExecutionOutcome(runaway, { language: 'javascript', trace: true });
   assert.equal(runawayOutcome.kind, 'limit');
   assert.equal(runawayOutcome.kind === 'limit' ? runawayOutcome.reason : undefined, 'line-limit');
   assert.equal(runawayOutcome.kind === 'limit' ? runawayOutcome.traceTruncated : undefined, 'trace-byte-limit');
-  const raisedOutcome = judgeCaseExecutionOutcome(raised!, { language: 'javascript', trace: true });
+  const raisedOutcome = judgeCaseExecutionOutcome(raised, { language: 'javascript', trace: true });
   assert.equal(raisedOutcome.kind, 'failed');
   assert.equal(raisedOutcome.kind === 'failed' ? raisedOutcome.traceTruncated : undefined, 'trace-limit');
   // Untraced conversion is unchanged.
-  assert.equal('traceTruncated' in judgeCaseExecutionOutcome(runaway!, { language: 'javascript' }), false);
+  assert.equal('traceTruncated' in judgeCaseExecutionOutcome(runaway, { language: 'javascript' }), false);
 });
+
+/** A case row as a 0.20.x Judge stored it: the traced run's trace and any budget warning beside the row. */
+function stored020Row(
+  row: JudgeCaseResult,
+  warning?: { readonly code: string; readonly message: string; readonly kind?: 'trace-truncated' }
+): JudgeCaseResult {
+  // 0.20.x rows predate attachments.
+  const { attachment: _attachment, ...stored } = row;
+  return {
+    ...stored,
+    trace: createEmptyRuntimeTrace('javascript', { runId: `stored:${row.caseId}` }),
+    diagnostics: Object.freeze([
+      ...row.diagnostics,
+      ...(warning ? [Object.freeze({ severity: 'warning' as const, source: 'javascript', ...warning })] : []),
+    ]),
+  } as JudgeCaseResult;
+}
 
 test('only the Judge\'s own trace truncation warning restores traceTruncated', async () => {
   const state = makeState();
   const result = await evaluate(
     state,
     makePlan<unknown>([
-      { id: 'completed', input: { label: 'completed', output: 7, mode: 'trace-truncated' }, expected: 7 },
-      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
-    ]),
-    codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
+      { id: 'completed', input: { label: 'completed', output: 7 }, expected: 7 },
+      { id: 'runaway', input: { label: 'runaway', mode: 'limit' }, expected: 'unused' },
+    ])
   );
-  const [completed, runaway] = result.cases;
-  // The Judge marks its own warning.
+  // Rows as 0.20.4+ stored them, with the Judge's marked warning.
+  const completed = stored020Row(result.cases[0]!, {
+    kind: 'trace-truncated',
+    code: 'trace-limit',
+    message: 'Trace recording stopped at the trace-limit budget after execution completed.',
+  });
+  const runaway = stored020Row(result.cases[1]!, {
+    kind: 'trace-truncated',
+    code: 'trace-byte-limit',
+    message: 'Trace recording stopped at the trace-byte-limit budget before the program stopped; the trace ends there.',
+  });
+  // The Judge marked its own warning.
   assert.equal(completed!.diagnostics.find((d) => d.severity === 'warning')?.kind, 'trace-truncated');
   assert.equal(runaway!.diagnostics.find((d) => d.severity === 'warning')?.kind, 'trace-truncated');
   // A custom adapter's unrelated warning that happens to use a limit code is
@@ -2942,12 +2820,11 @@ test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only
   const result = await evaluate(
     state,
     makePlan<unknown>([
-      { id: 'completed', input: { label: 'completed', output: 7, mode: 'trace-truncated' }, expected: 7 },
-      { id: 'runaway', input: { label: 'runaway', mode: 'runaway-trace-truncated' }, expected: 'unused' },
-    ]),
-    codeBinding({ trace: true, traceOptions: { maxTraceSteps: 10 } })
+      { id: 'completed', input: { label: 'completed', output: 7 }, expected: 7 },
+      { id: 'runaway', input: { label: 'runaway', mode: 'limit' }, expected: 'unused' },
+    ])
   );
-  const [completed, runaway] = result.cases;
+  const [completed, runaway] = result.cases.map((row) => stored020Row(row));
   const withWarnings = (judged: JudgeCaseResult, warnings: readonly Record<string, unknown>[]) => ({
     ...judged,
     diagnostics: Object.freeze([
