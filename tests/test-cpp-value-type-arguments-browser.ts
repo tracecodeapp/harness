@@ -536,8 +536,15 @@ async function main(): Promise<void> {
         }
 
         const codeProvider = createCppPreparedExecutionProvider({ createWorkerClient: () => new CppWorkerClient(workerOptions) });
-        await codeProvider.init();
-        const prepared = await codeProvider.prepareProgram({ mode: 'code', ...base });
+        // A provider that cannot start fails this scenario's prepared paths,
+        // not every scenario after it.
+        let prepared;
+        try {
+          await codeProvider.init();
+          prepared = await codeProvider.prepareProgram({ mode: 'code', ...base });
+        } catch (error) {
+          prepared = { kind: 'threw', error: String(error && error.message ? error.message : error) };
+        }
         if (prepared.kind !== 'prepared') {
           paths.prepared = scenario.cases.map(() => failure(new Error('prepare failed: ' + JSON.stringify(prepared))));
           paths.preparedBatch = paths.prepared;
@@ -557,8 +564,13 @@ async function main(): Promise<void> {
         }
 
         const traceProvider = createCppPreparedExecutionProvider({ createWorkerClient: () => new CppWorkerClient(workerOptions) });
-        await traceProvider.init();
-        const preparedTrace = await traceProvider.prepareProgram({ mode: 'trace', ...base, traceOptions });
+        let preparedTrace;
+        try {
+          await traceProvider.init();
+          preparedTrace = await traceProvider.prepareProgram({ mode: 'trace', ...base, traceOptions });
+        } catch (error) {
+          preparedTrace = { kind: 'threw', error: String(error && error.message ? error.message : error) };
+        }
         if (preparedTrace.kind !== 'prepared') {
           const failed = scenario.cases.map(() => failure(new Error('trace prepare failed: ' + JSON.stringify(preparedTrace))));
           paths.preparedTraceRecording = failed;
