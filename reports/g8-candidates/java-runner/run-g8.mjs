@@ -64,6 +64,7 @@ import {
   submitAaSourceVersion,
   submitAaVersions,
 } from '../submit-aa.mjs';
+import { javaClosingPlan } from '../java-closing.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -87,6 +88,7 @@ const releasePythonWarm = process.env.SPEED_G8_RELEASE_PYTHON_WARM === '1';
 const pythonLocalDiagnostic = process.env.SPEED_PYTHON_LOCAL_DIAGNOSTIC === '1';
 const pythonFreshAa = process.env.SPEED_PYTHON_FRESH_AA === '1';
 const submitAa = process.env.SPEED_SUBMIT_AA === '1';
+const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -95,7 +97,7 @@ assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the p
 assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
-  pythonLocalDiagnostic, pythonFreshAa, submitAa].filter(Boolean).length <= 1,
+  pythonLocalDiagnostic, pythonFreshAa, submitAa, javaClosing].filter(Boolean).length <= 1,
   'Select only one special measurement mode');
 assert.ok(!liveControl || pythonLocalDiagnostic ||
   ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa, submitAa].some(Boolean),
@@ -105,6 +107,8 @@ assert.ok(!releasePythonWarm || releaseVersion === '0.17.3',
 const staged = candidateScope ? await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
 assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
+assert.ok(!javaClosing || liveControl && candidate && testedLanguage === 'java' &&
+  candidateScope === 'desktop', 'Java closing requires the staged Java candidate and live control');
 assert.ok(!pythonLocalDiagnostic || liveControl && candidate && testedLanguage === 'python',
   'The local Python diagnostic requires a staged Python candidate and live control');
 if (pythonLocalDiagnostic) assert.notEqual(hostname(), 'agentrunner', 'Run the phase diagnostic locally');
@@ -138,7 +142,7 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
+const filePrefix = javaClosing ? 'java-closing-' : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
@@ -438,6 +442,7 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (javaClosing) return structuredClone(javaClosingPlan);
   if (submitAa) return structuredClone(submitAaPlan);
   if (pythonFreshAa) return structuredClone(pythonFreshAaPlan);
   if (pythonLocalDiagnostic) return expandWarmRepeatGroups([
@@ -576,6 +581,10 @@ const report = {
     target: 20, languages: ['python', 'csharp'], freshPagePerSample: true,
     submitAfterRun: true, alternatingOrderPerRound: true,
     tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
+  }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
+  ...(javaClosing && { javaClosing: {
+    target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
+    freshPageSpotLanguages: ['python', 'csharp'], alternatingOrderPerRound: true,
   }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
