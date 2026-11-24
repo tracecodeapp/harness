@@ -17,7 +17,15 @@ assert.equal(process.env.SPEED_GROUP_SELECTOR, undefined);
 const baseline = resolve(baselineArg);
 const out = resolve(outArg);
 const config = JSON.parse(await readFile(configArg, 'utf8'));
-const candidates = window === 'phone' ? ['concurrent', 'sequential'] : ['concurrent', 'concurrent-deploy'];
+const experimentName = process.env.SPEED_G8_EXPERIMENT;
+const experimentModule = experimentName
+  ? await import(new URL('../python-experiment-plan.mjs', import.meta.url))
+  : undefined;
+const experiment = experimentModule?.pythonExperimentPlan(experimentName);
+const scope = window === 'desktop-b' ? 'desktop' : window;
+if (experiment) assert.equal(experiment.scope, scope, 'Experiment scope differs from runner window');
+const candidates = experiment?.candidates ??
+  (window === 'phone' ? ['concurrent', 'sequential'] : ['concurrent', 'concurrent-deploy']);
 for (const policy of candidates) {
   const candidate = config[policy];
   assert.match(candidate.commit, /^[a-f0-9]{40}$/u);
@@ -26,7 +34,7 @@ for (const policy of candidates) {
   assert.match(candidate.dependencyLockSha256, /^[a-f0-9]{64}$/u);
   assert.match(candidate.packageVersion, /^[\d.]+(?:-[\w.-]+)?$/u);
 }
-if (window === 'phone') {
+if (window === 'phone' && !experiment) {
   assert.equal(config.concurrent.commit, config.sequential.commit);
   assert.notEqual(config.concurrent.tarballSha256, config.sequential.tarballSha256,
     'Supply the separately built one-engine control; a second copy of the concurrent artifact invalidates the A/B');
@@ -75,9 +83,15 @@ import {
   selectShapeProbeSchedule,
 } from './measurement-shapes.mjs';
 import { capturedShapeKeys } from './shape-captures.mjs';`);
+edit("import { capturedShapeKeys } from './shape-captures.mjs';", `import { capturedShapeKeys } from './shape-captures.mjs';
+import {
+  pythonExperimentPlan,
+  pythonExperimentWitnessVersion,
+} from './python-experiment-plan.mjs';`);
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
+const experiment = pythonExperimentPlan(${JSON.stringify(experimentName)});
 const submitControlVersions = windowName === 'desktop-b' ? ['0.20.1'] : [];
 const measuredVersions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
 const versions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
@@ -120,25 +134,32 @@ edit(`function addressedBySample(sample) {
     ['verdicts', sample.initial?.elapsedMs],
     ['firstTrace', sample.initial?.firstTraceMs],
     ...(sample.continuation ? [['secondTrace', sample.second?.elapsedMs]] : []),
+    ...(Number.isFinite(sample.receiptSnapshotMs)
+      ? [['receiptSnapshot', sample.receiptSnapshotMs]] : []),
   ].map(([endpoint, value]) => [pythonWarmMetricName(sample, endpoint), value]));
   const endpoint = sample.journey === 'lesson' ? 'lessonContinue' : 'submitVerdicts';
-  return { [pythonWarmMetricName(sample, endpoint)]: sample.initial?.elapsedMs };
+  return { [pythonWarmMetricName(sample, endpoint)]: sample.initial?.elapsedMs,
+    ...(Number.isFinite(sample.receiptSnapshotMs)
+      ? { receiptSnapshot: sample.receiptSnapshotMs } : {}) };
 }`);
 edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-baseline.v1',
   liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     pairedRepeatControls: true,
     ...(windowName === 'desktop-b' && { pythonWarmSubmitControl: '0.20.1' }) },`);
 edit("const filePrefix = mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';", `const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
-const filePrefix = shapeProbeFile ? 'shape-probe-' + windowName + '-' :
+const filePrefix = experiment ? 'experiment-' + experiment.name + '-' :
+  shapeProbeFile ? 'shape-probe-' + windowName + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';`);
 edit(`const schedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');`, `const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');
 const shapeProbeScope = windowName === 'desktop-b' ? 'desktop' : windowName;
-const schedule = shapeProbeFile
+const schedule = experiment?.groups ?? (shapeProbeFile
   ? selectShapeProbeSchedule(shapeProbeScope, baseSchedule,
       JSON.parse(await readFile(shapeProbeFile, 'utf8')))
-  : baseSchedule;`);
+  : baseSchedule);`);
+edit('          const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };', `          const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };
+          const witnessVersion = pythonExperimentWitnessVersion(experiment, version);`);
 edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();
   assert.match(report.browser.version, /^145\\./u, 'Expected frozen Chromium major 145');
@@ -177,7 +198,7 @@ edit(`          let page = warmPages.get(version);
                     sample.primeInvalid = version === '0.17.1' || version === '0.20.1'
                       ? pythonProductionControlOutcome(
                           { workerJournal: sample.primeWorkerJournal }, 'run', fixture.cases.length)
-                      : version === 'sequential' ? undefined
+                      : witnessVersion === 'sequential' ? undefined
                       : pythonCandidateOutcome(
                           { workerJournal: sample.primeWorkerJournal }, 'run', fixture.cases.length, true);
                     if (sample.primeInvalid) throw new Error('Prime witness: ' + sample.primeInvalid);
@@ -270,7 +291,13 @@ edit('    await page.goto(url,', `
     await page.goto(url,`);
 edit('              sample.initial = await initial(page, fixture, group.journey, group.state === \'cold\');', `
               if (measuredVersions.includes(version)) await page.evaluate(() => { window.pythonWorkerJournal.length = 0; });
+              if (experiment?.collectReceiptSnapshotMs) {
+                await page.evaluate(() => { delete window.__receiptSnapshotMs; });
+              }
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
+              if (experiment?.collectReceiptSnapshotMs) {
+                sample.receiptSnapshotMs = await page.evaluate(() => window.__receiptSnapshotMs);
+              }
               if (measuredVersions.includes(version)) {
                 sample.workerJournal = await page.evaluate(() => window.pythonWorkerJournal);
               }
@@ -318,7 +345,7 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                     role,
                     fixture.cases.length,
                   );
-                } else if (version !== 'sequential') {
+                } else if (witnessVersion !== 'sequential') {
                   sample.invalid = pythonCandidateOutcome(
                     { workerJournal: commands },
                     role,
@@ -336,8 +363,8 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                   const observerPrep = commands.find(e => e.phase === 'send' && e.type === 'prepare-program' && e.observation);
                   const first = observed[0];
                   if (observed.length !== 1 || !ordinaryDone || !observerPrep) sample.invalid = 'Missing ordinary or observer acknowledgment';
-                  else if (version === 'sequential' && (first.worker !== ordinary[0].worker || observerPrep.at < ordinaryDone)) sample.invalid = 'Sequential control did not wait and reuse the ordinary worker';
-                  else if ((version === 'concurrent' || version === 'concurrent-deploy') && first.worker === ordinary[0].worker) sample.invalid = 'Concurrent candidate reused the ordinary worker';
+                  else if (witnessVersion === 'sequential' && (first.worker !== ordinary[0].worker || observerPrep.at < ordinaryDone)) sample.invalid = 'Sequential control did not wait and reuse the ordinary worker';
+                  else if (witnessVersion === 'concurrent' && first.worker === ordinary[0].worker) sample.invalid = 'Concurrent candidate reused the ordinary worker';
                   else sample.workerOverlap = observerPrep.at < ordinaryDone;
                 }
                 sample.cache = { initial: pythonCandidateCacheReceipt({ workerJournal: commands }) };
@@ -366,7 +393,7 @@ if (process.env.SPEED_G8_INVENTORY_ONLY === '1') {
   process.exit(0);
 }`);
 edit("          await appendFile(samplesPath, JSON.stringify(sample) + '\\n');", `          await appendFile(samplesPath, JSON.stringify(sample) + '\\n');
-          const shapeReceipt = uncapturedShapeGuard.observe(group, version, sample);
+          const shapeReceipt = uncapturedShapeGuard.observe(group, witnessVersion, sample);
           if (shapeReceipt.action === 'fail-fast') {
             throw new Error(\`Uncaptured shape rejected its first completed attempt: \${shapeReceipt.key}: \` +
               (sample.invalid ?? sample.refusal));
@@ -387,6 +414,8 @@ try {
     join(stage, 'measurement-shapes.mjs'));
   await cp(new URL('../shape-captures.mjs', import.meta.url),
     join(stage, 'shape-captures.mjs'));
+  await cp(new URL('../python-experiment-plan.mjs', import.meta.url),
+    join(stage, 'python-experiment-plan.mjs'));
 
   const entry = join(stage, 'entry.ts');
   const entrySource = await readFile(entry, 'utf8');
