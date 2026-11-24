@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
@@ -59,6 +60,26 @@ try {
   `);
   const runtimeUrl = dataModule(`
     self.__TRACECODE_PYODIDE_RUNTIME__ = Object.freeze({
+      async executePreparedProgramBatch(_deps, artifact, inputs, _limits, _trace, _force, stop, progress) {
+        if (artifact.isolationProfile.tier === 'hard-isolated') {
+          return { success: false, results: [], algorithmFastBatchUnavailable: true };
+        }
+        const results = [];
+        for (const [index, { value }] of inputs.entries()) {
+          progress.started(index);
+          const result = value === 2
+            ? { success: false, timeoutReason: 'single-line-limit', consoleOutput: [] }
+            : { success: true, output: value, consoleOutput: [] };
+          results.push(result);
+          progress.finished(index, result);
+          if (stop && !result.success) break;
+        }
+        return { results };
+      },
+      async executePreparedProgram(_deps, _artifact, inputs, _limits, _trace, beforeLearnerCode) {
+        beforeLearnerCode();
+        return { success: true, output: inputs.value, consoleOutput: [] };
+      },
       async executeCode(_deps, code) {
         let fetchResult;
         try { self.fetch('https://ambient.example/'); fetchResult = 'allowed'; }
@@ -198,6 +219,46 @@ try {
     `A prior command poisoned the next Python authority boundary: ${JSON.stringify(postPoisonResult)}`
   );
   assertCondition(nativeAuthorityCalls.length === 0, 'Post-poison Python execution reached native ambient fetch');
+  for (const tier of ['algorithm-fast', 'judge-compatible', 'hard-isolated']) {
+    const id = `batch-${tier}`;
+    const protocolToken = `token-${tier}`;
+    scope.onmessage({
+      data: {
+        id, protocolToken, type: 'execute-prepared-program-batch',
+        payload: {
+          mode: 'code', artifact: { isolationProfile: { tier } },
+          inputBatch: [{ value: 1 }, { value: 2 }, { value: 3 }],
+          stopAtFirstRunaway: true, reportCaseProgress: true,
+        },
+      },
+    } as unknown as MessageEvent<WorkerMessage>);
+    await waitFor(() => posted.some((message) => message.id === id && message.type !== 'batch-case-progress'));
+    const messages = posted.filter((message) => message.id === id);
+    assert.ok(messages.every((message) => message.protocolToken === protocolToken));
+    const acked = messages.filter(({ payload }) => payload?.phase === 'started').map(({ payload }) => payload?.index);
+    const terminal = messages.at(-1);
+    assert.equal(terminal?.type, 'execute-result', tier);
+    assert.deepEqual(acked, tier === 'hard-isolated' ? [] : [0, 1], tier);
+    assert.deepEqual(terminal?.payload?.startedCaseIndexes, acked, tier);
+    assert.equal(terminal?.payload?.resultsStreamed, tier === 'hard-isolated' ? undefined : 2, tier);
+  }
+
+  const id = 'hard-isolated-singleton';
+  const protocolToken = 'token-hard-isolated-singleton';
+  scope.onmessage({
+    data: {
+      id, protocolToken, type: 'execute-prepared-program',
+      payload: { mode: 'code', inputs: { value: 1 }, reportCaseProgress: true },
+    },
+  } as unknown as MessageEvent<WorkerMessage>);
+  await waitFor(() => posted.some((message) => message.id === id && message.type !== 'batch-case-progress'));
+  const singleton = posted.filter((message) => message.id === id);
+  assert.ok(singleton.every((message) => message.protocolToken === protocolToken));
+  assert.equal(singleton[0]?.payload?.phase, 'started');
+  assert.equal(singleton[0]?.payload?.index, 0);
+  assert.equal(singleton[1]?.type, 'execute-result');
+  assert.deepEqual(singleton[1]?.payload?.startedCaseIndexes, [0]);
+
   console.log('PASS: Python module worker imports assets, orders init, denies authority, and resists cross-command poisoning');
 } finally {
   if (originalSelf) Object.defineProperty(globalThis, 'self', originalSelf);

@@ -1,5 +1,6 @@
 import type {
   PythonPreparedProgramHandle,
+  PythonRawTraceResult,
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
@@ -8,6 +9,9 @@ import {
   PythonAlgorithmFastBatchUnavailableError,
 } from './python-worker-client';
 import type {
+  Cut,
+  Drawing,
+  Refusal,
   RuntimeClient,
   RuntimeCodeCall,
   RuntimeExecuteCodeRequest,
@@ -17,6 +21,8 @@ import type {
   RuntimeExecuteResult,
   RuntimeExecutionTimings,
   RuntimePreparedExecutionProvider,
+  RuntimeObservationCall,
+  RuntimeObservationProvider,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
@@ -531,14 +537,84 @@ function normalizePythonExecutionResult(value: unknown): ExecutionResult {
   );
 }
 
+const PYTHON_OBSERVATION_CUTS: ReadonlySet<string> = new Set<Cut>([
+  'step-budget',
+  'line-budget',
+  'single-line-budget',
+  'stored-event-budget',
+  'byte-budget',
+  'observer-deadline',
+]);
+
+function certifyPythonDrawing(result: PythonRawTraceResult, lineCount: number): Drawing {
+  const evidence = result.observation as Record<string, unknown> | undefined;
+  if (!evidence) {
+    return {
+      status: 'refused',
+      reason: result.timeoutReason === 'client-timeout'
+        ? 'observer-timeout'
+        : result.diagnosticStage === 'runtime'
+          ? 'observer-runtime'
+          : 'recorder-unavailable',
+    };
+  }
+  if (evidence.encodeFailed === true) return { status: 'refused', reason: 'observer-encode' };
+  const raw = result.trace as Record<string, unknown> | undefined;
+  const attemptedEvents = evidence.attemptedEvents;
+  const cut = evidence.cut;
+  if (
+    evidence.recorderCompleted !== true ||
+    typeof attemptedEvents !== 'number' ||
+    !Number.isSafeInteger(attemptedEvents) ||
+    !raw ||
+    raw.schemaVersion !== RUNTIME_TRACE_SCHEMA_VERSION ||
+    raw.language !== 'python' ||
+    !Array.isArray(raw.events) ||
+    attemptedEvents < raw.events.length ||
+    (cut !== undefined && (typeof cut !== 'string' || !PYTHON_OBSERVATION_CUTS.has(cut)))
+  ) {
+    return { status: 'refused', reason: 'observer-protocol' };
+  }
+  const trace = normalizePythonRuntimeTrace(raw);
+  if (trace.events.length !== raw.events.length) {
+    return { status: 'refused', reason: 'observer-protocol' };
+  }
+  const hasSourceEvent = trace.events.some(
+    (event) =>
+      event.kind !== 'timeout' &&
+      event.file === 'solution.py' &&
+      typeof event.line === 'number' &&
+      event.line > 0 &&
+      event.line <= lineCount
+  );
+  if (!hasSourceEvent && !(cut === 'byte-budget' && trace.events.length === 0 && attemptedEvents > 0)) {
+    return {
+      status: 'refused',
+      reason: cut === 'observer-deadline' ? 'observer-timeout' : 'uncertified-drawing',
+    };
+  }
+  return cut === undefined
+    ? { status: 'drawn', trace }
+    : { status: 'truncated', reason: cut as Cut, trace, attemptedEvents };
+}
+
 export interface PythonPreparedExecutionProviderOptions {
   readonly createWorkerClient: () => PythonWorkerClient;
   /** Replenish one clean preparation worker after the current lease retires. */
   readonly replenishStandbyAfterUse?: boolean;
 }
 
+interface PythonObservationLease extends RuntimeObservationProvider {
+  dispose(): Promise<void>;
+}
+
 export interface PythonPreparedExecutionProviderController
-  extends RuntimePreparedExecutionProvider {
+  extends RuntimePreparedExecutionProvider, RuntimeObservationProvider {
+  prepareObservation(
+    program: RuntimeObservationCall['program'],
+    signal?: AbortSignal,
+    traceOptions?: RuntimeObservationCall['traceOptions']
+  ): Promise<PythonObservationLease | Extract<Drawing, { status: 'refused' }>>;
   /** Release current programs and workers while keeping the provider reusable. */
   reset(): void;
   /**
@@ -741,6 +817,10 @@ class PythonBatchExecutionBudget {
   }
 }
 
+type PythonOrdinaryBatchCall = RuntimePreparedCodeBatchCall & {
+  readonly onCaseStarted?: (index: number) => void;
+};
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
@@ -798,8 +878,31 @@ class PreparedPythonProgramLifetime {
     );
   }
 
+  executeObservation(call: RuntimeObservationCall): Promise<Drawing> {
+    return this.executeSerial(
+      call.signal,
+      async (client, signal) => {
+        let result: PythonRawTraceResult;
+        try {
+          result = await client.executePreparedTrace(this.handle, {
+            inputs: call.inputs,
+            signal,
+            limits: { wallClockMs: 10_000 },
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+          return { status: 'refused', reason: 'observer-runtime' };
+        }
+        return certifyPythonDrawing(result, this.handle.artifact.code.split('\n').length);
+      },
+      (drawing) =>
+        this.handle.artifact.isolationProfile.tier === 'algorithm-fast' &&
+        drawing.status === 'drawn'
+    );
+  }
+
   async executeCodeBatch(
-    call: RuntimePreparedCodeBatchCall
+    call: PythonOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     const budget = new PythonBatchExecutionBudget(
       calculatePythonCodeBatchDeadlineMs(
@@ -822,10 +925,16 @@ class PreparedPythonProgramLifetime {
         return result.results ?? [];
       });
     }
+    let dispatched = false;
+    const onCaseStarted = call.onCaseStarted && ((index: number) => {
+      dispatched = true;
+      call.onCaseStarted?.(index);
+    });
     const runBatch = async (client: PythonWorkerClient, signal: AbortSignal) => {
       const result = await client.executePreparedCodeBatch(this.handle, {
         ...call,
         signal,
+        onCaseStarted,
       });
       if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
         throw new Error('Prepared Python batch returned an invalid result envelope.');
@@ -852,6 +961,7 @@ class PreparedPythonProgramLifetime {
           timings: { artifactCacheHit: true },
         }));
       }
+      if (dispatched) throw error;
       if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
         // The shared batch worker was lost. Re-run the cases each in a fresh
         // worker; a worker lost again rejects as the provider's failure.
@@ -920,11 +1030,11 @@ class PreparedPythonProgramLifetime {
   }
 
   private async executeCompatibilityCodeBatch(
-    call: RuntimePreparedCodeBatchCall,
+    call: PythonOrdinaryBatchCall,
     budget: PythonBatchExecutionBudget
   ): Promise<readonly CodeExecutionResult[]> {
     const results: CodeExecutionResult[] = [];
-    for (const inputs of call.inputBatch) {
+    for (const [index, inputs] of call.inputBatch.entries()) {
       if (call.stopAtFirstRunaway === true && isPythonRunawayOutcome(results[results.length - 1])) break;
       try {
         results.push(
@@ -935,6 +1045,7 @@ class PreparedPythonProgramLifetime {
                   inputs,
                   signal: budgetSignal,
                   limits: call.limits,
+                  onCaseStarted: call.onCaseStarted && (() => call.onCaseStarted?.(index)),
                 }),
               signal
             )
@@ -1254,6 +1365,74 @@ class PythonPreparedExecutionProvider
       }
     );
     return raceWithAbort(underlying, controller.signal);
+  }
+
+  async observe(call: RuntimeObservationCall): Promise<Drawing> {
+    const lease = await this.prepareObservation(call.program, call.signal, call.traceOptions);
+    if ('status' in lease) return lease;
+    try {
+      return await lease.observe(call);
+    } finally {
+      await lease.dispose();
+    }
+  }
+
+  async prepareObservation(
+    program: RuntimeObservationCall['program'],
+    callerSignal?: AbortSignal,
+    traceOptions?: RuntimeObservationCall['traceOptions']
+  ): Promise<PythonObservationLease | Extract<Drawing, { status: 'refused' }>> {
+    this.assertActive();
+    callerSignal?.throwIfAborted();
+    try {
+      assertRuntimeRequestSupported(getLanguageRuntimeProfile('python'), {
+        request: 'trace',
+        executionStyle: program.executionStyle ?? 'function',
+        functionName: program.functionName,
+        traceOptions,
+      });
+    } catch {
+      return { status: 'refused', reason: 'unsupported-option' };
+    }
+
+    // This factory belongs to the original browser host and uses its image
+    // factory and custom assets. A fresh worker keeps the ordinary command
+    // queue and interpreter outside the observer's lifetime.
+    const worker = this.options.createWorkerClient();
+    this.preparationWorkers.add(worker);
+    const controller = new AbortController();
+    const unlink = linkAbortSignal(callerSignal, controller);
+    this.preparationControllers.add(controller);
+    const { signal } = controller;
+    try {
+      const warmup = await raceWithAbort(worker.warmup(), signal);
+      const prepared = await raceWithAbort(
+        worker.prepareProgram({ ...program, mode: 'trace', traceOptions, signal }, true),
+        signal
+      );
+      signal.throwIfAborted();
+      if (!prepared.success) return { status: 'refused', reason: 'observer-prepare' };
+
+      this.preparationWorkers.delete(worker);
+      const lifetime = new PreparedPythonProgramLifetime(
+        prepared,
+        this.options.createWorkerClient,
+        (released) => { this.programs.delete(released); },
+        { client: worker, warmup }
+      );
+      this.programs.add(lifetime);
+      return {
+        observe: (call) => lifetime.executeObservation(call),
+        dispose: lifetime.dispose,
+      };
+    } catch (error) {
+      if (signal.aborted) throw abortReason(signal, 'Python observation preparation was aborted.');
+      return { status: 'refused', reason: 'observer-prepare' };
+    } finally {
+      unlink();
+      this.preparationControllers.delete(controller);
+      this.retirePreparationWorker(worker);
+    }
   }
 
   reset(): void {

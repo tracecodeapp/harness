@@ -70,8 +70,12 @@ let sequence = 0;
 
 function summarize(evaluation: any) {
   return (evaluation?.cases ?? []).map((testCase: any) => {
-    const { trace, ...rest } = testCase;
-    return JSON.parse(JSON.stringify({ ...rest, traceEvents: trace?.events?.length ?? 0 }));
+    const { trace, attachment, ...rest } = testCase;
+    return JSON.parse(JSON.stringify({
+      ...rest,
+      ...(attachment && { attachment: { status: attachment.status, reason: attachment.reason } }),
+      traceEvents: trace?.events?.length ?? 0,
+    }));
   });
 }
 

@@ -240,6 +240,19 @@ export async function runBrowserGraphOutput(
   return results;
 }
 
+interface PythonInteractiveCommand {
+  readonly type: string;
+  readonly mode?: string;
+  readonly observationOnly?: boolean;
+  readonly batchSize?: number;
+}
+
+export interface PythonInteractiveWorker {
+  readonly url: string;
+  readonly createdDuringRun: boolean;
+  readonly commands: PythonInteractiveCommand[];
+}
+
 export async function runBrowserAlgorithmBatch(
   assetBaseUrl: string,
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
@@ -254,6 +267,7 @@ export async function runBrowserAlgorithmBatch(
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
   let activeWorkers = 0;
+  let pythonInteractiveWorkers: Map<Worker, PythonInteractiveWorker> | undefined;
   let maximumActiveWorkers = 0;
   const workerCommands: Array<{
     id?: string;
@@ -272,6 +286,11 @@ export async function runBrowserAlgorithmBatch(
     constructor(url: string | URL, options?: WorkerOptions) {
       workerUrls.push(String(url));
       super(url, options);
+      const workerUrl = String(url);
+      const isPythonWorker = new URL(workerUrl, globalThis.location.href).pathname.endsWith('/python-worker.js');
+      if (isPythonWorker) {
+        pythonInteractiveWorkers?.set(this, { url: workerUrl, createdDuringRun: true, commands: [] });
+      }
       activeWorkers += 1;
       maximumActiveWorkers = Math.max(maximumActiveWorkers, activeWorkers);
       const observedCommands = new Map<
@@ -299,6 +318,10 @@ export async function runBrowserAlgorithmBatch(
             runtimeRole?: string;
             prepared?: { mode?: string; functionName?: string };
             inputs?: unknown;
+            mode?: string;
+            observationOnly?: boolean;
+            artifact?: { observationOnly?: boolean };
+            inputBatch?: unknown[];
           };
         },
         transferOrOptions?: StructuredSerializeOptions | Transferable[]
@@ -311,6 +334,19 @@ export async function runBrowserAlgorithmBatch(
           preparedFunctionName: message?.payload?.prepared?.functionName,
           inputs: message?.payload?.inputs,
         };
+        if (isPythonWorker && pythonInteractiveWorkers && message?.type) {
+          let witness = pythonInteractiveWorkers.get(this);
+          if (!witness) {
+            witness = { url: workerUrl, createdDuringRun: false, commands: [] };
+            pythonInteractiveWorkers.set(this, witness);
+          }
+          witness.commands.push({
+            type: message.type,
+            mode: message.payload?.mode,
+            observationOnly: message.payload?.artifact?.observationOnly ?? message.payload?.observationOnly,
+            batchSize: message.payload?.inputBatch?.length,
+          });
+        }
         workerCommands.push(command);
         if (message?.id) observedCommands.set(message.id, command);
         nativePostMessage(message, transferOrOptions as Transferable[]);
@@ -422,6 +458,7 @@ export async function runBrowserAlgorithmBatch(
         });
         const selectedCaseId = cases[0]!.id;
         maximumActiveWorkers = activeWorkers;
+        if (fixture.language === 'python') pythonInteractiveWorkers = new Map();
         const interactiveStartedAt = performance.now();
         const interactive = await host.execute({
           bundle: traceBundle,
@@ -467,6 +504,8 @@ export async function runBrowserAlgorithmBatch(
           performance.now() - backgroundStartedAt;
         const interactiveMaximumActiveWorkers = maximumActiveWorkers;
         const interactiveWorkerUrls = workerUrls.splice(0);
+        const interactivePythonWorkers = pythonInteractiveWorkers && [...pythonInteractiveWorkers.values()];
+        pythonInteractiveWorkers = undefined;
 
         const plainBundle = await createAlgorithmJudgeBundle({
           id: `browser-${fixture.language}-isolated-batch`,
@@ -618,6 +657,7 @@ export async function runBrowserAlgorithmBatch(
             backgroundTraceEventCounts,
             maximumActiveWorkers: interactiveMaximumActiveWorkers,
             workerUrls: interactiveWorkerUrls,
+            pythonWorkers: interactivePythonWorkers,
           },
           ...(compatibilityIsolation
             ? {

@@ -26,6 +26,7 @@ import {
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
 } from '../../packages/runtime-contracts/src/execution-outcome';
+import { InterruptedCodeBatchError } from '../../packages/runtime-browser/src/worker-errors';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -214,7 +215,8 @@ export type RuntimeJudgeBinding =
 
 interface OwnedRuntimeDispatch {
   readonly binding: RuntimeJudgeCodeBinding;
-  readonly acknowledgeBatchStarts: boolean;
+  readonly acknowledgeStoppingBatchStarts: boolean;
+  readonly acknowledgeNonStoppingBatchStarts: boolean;
   readonly overlapObservationWithInitialization?: true;
   recordPrepare(call: RuntimeProgramPreparationCall): void;
   admit(caseId: string): void;
@@ -1068,6 +1070,29 @@ function batchCaseOutput(
   });
 }
 
+function interruptedCodeBatchOutcome(
+  runtime: string,
+  cases: ReturnType<typeof runtimeBatchCases>,
+  error: InterruptedCodeBatchError
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  if (error.prefix.length > cases.length) {
+    return Effect.fail(new RuntimeProviderError('Prepared runtime returned too many batch outcomes.', {
+      reason: 'protocol',
+    }));
+  }
+  const unavailable = providerFailure(runtime, error.message);
+  const batch = Object.freeze(cases.map(({ caseId }, index) => {
+    const outcome = error.prefix[index];
+    if (outcome) return batchCaseOutput(caseId, mappedCodeOutcome(runtime, outcome));
+    // Transport diagnostics belong to the provider failure. Learner stderr is empty.
+    return Object.freeze({ ...batchCaseOutput(caseId, unavailable), stderr: '' });
+  }));
+  return Effect.succeed(Object.freeze({
+    output: Object.freeze({ batch }),
+    process: Object.freeze({ exitCode: 0, stdout: '', stderr: '' }),
+  }));
+}
+
 function executePreparedProviderBatch(
   options: RuntimeJudgeProviderOptions,
   programs: RuntimePreparedProgramRegistry,
@@ -1083,7 +1108,7 @@ function executePreparedProviderBatch(
         ? yield* executeProviderStoppingBatch(options, programs, invocation, cases)
         : yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
     }
-    const outcomes = yield* Effect.tryPromise({
+    const reply = yield* Effect.tryPromise({
       try: (signal) =>
         isTraceBinding(options.binding)
           ? programs.executeTraceBatch(evaluationId(invocation), {
@@ -1103,9 +1128,17 @@ function executePreparedProviderBatch(
               signal,
               limits: options.binding.limits,
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
-              options.owned?.acknowledgeBatchStarts),
+              options.owned?.acknowledgeNonStoppingBatchStarts),
       catch: errorFromUnknown,
-    });
+    }).pipe(Effect.catchAll((error) =>
+      !isTraceBinding(options.binding) && error instanceof InterruptedCodeBatchError
+        ? Effect.succeed(error)
+        : Effect.fail(error)
+    ));
+    if (reply instanceof InterruptedCodeBatchError) {
+      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    }
+    const outcomes = reply;
     if (outcomes.length !== cases.length) {
       return yield* Effect.fail(
         new Error(
@@ -1171,7 +1204,7 @@ function executeProviderStoppingBatch(
   cases: ReturnType<typeof runtimeBatchCases>
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
-    const outcomes: readonly (CodeExecutionResult | ExecutionResult)[] = yield* Effect.tryPromise({
+    const reply = yield* Effect.tryPromise({
       try: (signal) =>
         isTraceBinding(options.binding)
           ? programs.executeTraceBatch(evaluationId(invocation), {
@@ -1187,9 +1220,17 @@ function executeProviderStoppingBatch(
               limits: options.binding.limits,
               stopAtFirstRunaway: true,
             }, options.owned && ((index) => options.owned!.admit(cases[index]!.caseId)),
-              options.owned?.acknowledgeBatchStarts),
+              options.owned?.acknowledgeStoppingBatchStarts),
       catch: errorFromUnknown,
-    });
+    }).pipe(Effect.catchAll((error) =>
+      !isTraceBinding(options.binding) && error instanceof InterruptedCodeBatchError
+        ? Effect.succeed(error)
+        : Effect.fail(error)
+    ));
+    if (reply instanceof InterruptedCodeBatchError) {
+      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    }
+    const outcomes = reply;
     const runawayIndex = outcomes.findIndex((outcome) =>
       outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)
     );
@@ -1953,7 +1994,8 @@ class RuntimeJudgeComposition
       return yield* Effect.uninterruptibleMask((restore) => Effect.gen(this, function* () {
         this.bridge.beginEvaluation(evaluationId, {
           binding: codeBinding,
-          acknowledgeBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          acknowledgeStoppingBatchStarts: this.receiptProvider?.capabilities.stoppingBatchAdmission === 'worker-start',
+          acknowledgeNonStoppingBatchStarts: this.receiptProvider?.capabilities.nonStoppingBatchAdmission === 'worker-start',
           overlapObservationWithInitialization: this.receiptProvider?.capabilities.overlapObservationWithInitialization,
           recordPrepare: (call) => schedule.recordPrepare(call),
           admit: (caseId) => schedule.admit(caseId),

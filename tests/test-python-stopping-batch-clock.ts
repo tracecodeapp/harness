@@ -25,7 +25,7 @@ import {
   isRuntimeProviderError,
   judgeCaseExecutionOutcome,
 } from '../src/judge';
-import { createBrowserRuntimeJudge } from '../src/internal/browser-judge';
+import { createBrowserJudgeHostFromRuntimeHost, createBrowserRuntimeJudge } from '../src/internal/browser-judge';
 import {
   createBrowserRuntimeHost,
   createBrowserRuntimeProviderRegistry,
@@ -66,6 +66,8 @@ interface WorkerLog {
   batchWorkerTerminated: Array<() => boolean>;
   /** Batch requests that reached a worker which never received `init`. */
   unwarmedBatchRequests?: number;
+  singleCaseRequests?: number;
+  deliveringInvalidProgress?: boolean;
 }
 
 /**
@@ -76,7 +78,8 @@ interface WorkerLog {
 type Stall =
   | { readonly kind: 'before-first-case' }
   | { readonly kind: 'after-case'; readonly index: number }
-  | { readonly kind: 'withhold-reply' };
+  | { readonly kind: 'withhold-reply' }
+  | { readonly kind: 'crash-after-case'; readonly index: number };
 
 function newLog(): WorkerLog {
   return { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [], unwarmedBatchRequests: 0 };
@@ -122,6 +125,7 @@ class StuckCaseWorker {
       );
     }
     if (type === 'execute-prepared-program') {
+      this.log.singleCaseRequests = (this.log.singleCaseRequests ?? 0) + 1;
       // One case per request: the provider's per-case recovery path.
       const value = (payload?.inputs as { value: number }).value;
       if (value - 1 === this.crashCase) return queueMicrotask(() => this.crash());
@@ -134,9 +138,21 @@ class StuckCaseWorker {
       // In module format a worker that never received `init` has no runtime
       // asset configuration and cannot bootstrap.
       if (!this.initialized) this.log.unwarmedBatchRequests = (this.log.unwarmedBatchRequests ?? 0) + 1;
-      void this.runBatch(payload ?? {}, reply, (progress) =>
-        this.emit({ id, type: 'batch-case-progress', payload: progress, protocolToken })
-      );
+      void this.runBatch(payload ?? {}, reply, (progress) => {
+        const event = { id, type: 'batch-case-progress', payload: progress, protocolToken };
+        if (payload?.stopAtFirstRunaway !== true) {
+          const forgedStart = { index: progress.index, phase: 'started' };
+          this.log.deliveringInvalidProgress = true;
+          this.emit({ ...event, payload: forgedStart, protocolToken: 'wrong-token' });
+          this.emit({ ...event, payload: forgedStart, id: 'stale-command' });
+          this.emit({ ...event, payload: { index: Number(progress.index) + 1, phase: 'started' } });
+          this.log.deliveringInvalidProgress = false;
+          this.emit(event);
+          this.log.deliveringInvalidProgress = true;
+        }
+        this.emit(event);
+        this.log.deliveringInvalidProgress = false;
+      });
     }
   }
 
@@ -149,6 +165,7 @@ class StuckCaseWorker {
     const inputBatch = payload.inputBatch as Array<{ value: number }>;
     const trace = payload.mode === 'trace';
     const report = payload.reportCaseProgress === true;
+    const stream = report;
     const results: Record<string, unknown>[] = [];
     if (this.stall?.kind === 'before-first-case') return; // trusted setup never ends
     for (let index = 0; index < inputBatch.length; index += 1) {
@@ -156,12 +173,14 @@ class StuckCaseWorker {
       if (report) progress({ index, phase: 'started' });
       if (index === this.runawayCase) return; // learner code never returns
       if (index === this.crashCase) return this.crash();
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (payload.stopAtFirstRunaway === true) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
       if (this.terminated) return;
       const result = {
         success: true,
         output: inputBatch[index]!.value,
-        consoleOutput: [],
+        consoleOutput: [`case ${inputBatch[index]!.value} output`],
         ...(trace
           ? {
               trace: {
@@ -176,10 +195,11 @@ class StuckCaseWorker {
         timings: { runMs: 5, algorithmFastBatch: true },
       };
       results.push(result);
-      if (report) progress({ index, phase: 'finished', result });
+      if (stream) progress({ index, phase: 'finished', result });
+      if (this.stall?.kind === 'crash-after-case' && this.stall.index === index) return this.crash();
     }
     if (this.stall?.kind === 'withhold-reply') return;
-    reply('execute-result', report
+    reply('execute-result', stream
       ? { success: true, resultsStreamed: results.length, consoleOutput: [] }
       : { success: true, results, consoleOutput: [] });
   }
@@ -303,6 +323,29 @@ test('Python non-stopping batch keeps one request and its whole-batch results', 
   assert.equal(log.batchRequests[0]!.reportCaseProgress, undefined, 'Submit does not ask for case progress');
   await program.dispose();
   provider.terminate();
+});
+
+test('Python non-stopping code batch acknowledges each case once on the matching command', async () => {
+  const log = newLog();
+  const { provider, program } = await preparedProgram('code', -1, log);
+  const started: Array<{ index: number; invalid: boolean }> = [];
+  try {
+    assert.equal(program.mode, 'code');
+    const call = {
+      inputBatch: [{ value: 1 }, { value: 2 }],
+      onCaseStarted: (index: number) => started.push({ index, invalid: log.deliveringInvalidProgress === true }),
+    };
+    const results = await program.executeBatchIsolated!(call);
+    assert.deepEqual(started, [{ index: 0, invalid: false }, { index: 1, invalid: false }]);
+    assert.deepEqual(results.map((result) => result.kind === 'completed' && result.output), [1, 2]);
+    assert.equal(log.batchRequests.length, 1);
+    assert.equal(log.batchRequests[0]?.mode, 'code');
+    assert.equal(log.batchRequests[0]?.reportCaseProgress, true);
+    assert.notEqual(log.batchRequests[0]?.stopAtFirstRunaway, true);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
 });
 
 test('Python stopping batch whose cases all finish returns every streamed result', async () => {
@@ -525,3 +568,99 @@ test('Python stopping batch whose worker stalls between cases reaches the Judge 
     provider.terminate();
   }
 });
+
+
+for (const [cut, stopAtFirstRunaway] of [
+  ['between cases', false],
+  ['between cases', true],
+  ['during case B', false],
+  ['during case B', true],
+] as const) {
+  const mode = stopAtFirstRunaway ? 'stopping' : 'non-stopping';
+  test(`Python ${mode} Submit retains the delivered result when the worker is lost ${cut}`, async () => {
+    const log = newLog();
+    const provider = createPythonPreparedExecutionProvider({
+      createWorkerClient: () => new PythonWorkerClient({
+        workerUrl: 'python-worker.js',
+        debug: false,
+        workerFactory: () => new StuckCaseWorker(
+          -1,
+          log,
+          cut === 'during case B' ? 1 : -1,
+          cut === 'between cases' ? { kind: 'crash-after-case', index: 0 } : undefined
+        ) as never,
+      }),
+    });
+    const runtimeHost = createBrowserRuntimeHost({
+      providerRegistry: createBrowserRuntimeProviderRegistry([{
+        id: 'python-crashing-double',
+        languages: ['python'],
+        create() {
+          return {
+            preparedProviders: new Map([['python', provider]] as const),
+            judgeReceiptProviders: new Map([['python', {
+              runtimeVersion: 'test',
+              capabilities: {
+                observationLease: 'separate' as const,
+                observationDeadlineMs: 1_000,
+                nonStoppingBatchAdmission: 'worker-start' as const,
+                stoppingBatchAdmission: 'worker-start' as const,
+              },
+              async prepareObservation() {
+                throw new Error('Submit should not prepare an observer');
+              },
+            }]] as const),
+            disposeLanguage() {},
+            dispose() {},
+          };
+        },
+      }]),
+      providers: ['python'],
+      featureOverrides: {
+        worker: true,
+        webAssembly: true,
+        webCrypto: true,
+        sharedArrayBuffer: true,
+        crossOriginIsolated: true,
+      },
+    });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+    try {
+      const bundle = await createAlgorithmJudgeBundle({
+        id: 'python-submit-worker-loss',
+        language: 'python',
+        code: 'def solve(value):\n    return value',
+        functionName: 'solve',
+        cases: ['A', 'B', 'C'].map((id, index) => ({
+          id, input: { value: index + 1 }, expected: index + 1,
+        })),
+      });
+      const { evaluation, passedCount } = await host.evaluateAlgorithm({ bundle, stopAtFirstRunaway });
+      assert.equal(evaluation.status, 'completed');
+      const [a, b, c] = evaluation.cases;
+      assert.equal(a?.status, 'completed');
+      assert.equal(a.value, 1);
+      assert.equal(a.stdout, 'case 1 output\n');
+      assert.equal(a.stderr, '');
+      assert.equal(a.failure, undefined);
+      assert.equal(a.verdict.kind, 'passed');
+      assert.deepEqual(a.termination, { kind: 'exit', exitCode: 0 });
+      assert.equal(passedCount, 1);
+      assert.deepEqual([b?.caseId, c?.caseId], ['B', 'C']);
+      for (const row of [b!, c!]) {
+        assert.equal(row.failure?.origin, 'provider');
+        assert.equal(row.timedOut, false);
+        assert.equal(row.stdout, '');
+        assert.equal(row.stderr, '');
+        assert.throws(() => judgeCaseExecutionOutcome(row, { language: 'python' }), isRuntimeProviderError);
+      }
+      assert.equal(log.batchRequests.length, 1);
+      assert.equal(log.singleCaseRequests ?? 0, 0);
+      assert.equal(log.batchRequests[0]?.stopAtFirstRunaway === true, stopAtFirstRunaway);
+      assert.equal(log.batchWorkerTerminated[0]?.(), true);
+    } finally {
+      host.dispose();
+      provider.terminate();
+    }
+  });
+}

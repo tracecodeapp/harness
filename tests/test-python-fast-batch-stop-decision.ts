@@ -27,6 +27,8 @@ import {
 interface CaseResult {
   readonly success: boolean;
   readonly output?: unknown;
+  readonly error?: string;
+  readonly consoleOutput?: string[];
   readonly timeoutReason?: string;
 }
 
@@ -130,4 +132,15 @@ test('a case whose time-limit result was recorded as a serialization limit does 
     [null, 2, 3],
     'A recorded serialization limit must not stop the batch'
   );
+});
+
+test('the ordinary fast batch preserves console and diagnostics when a case raises', () => {
+  const results = runStoppingBatch(
+    'def solve(value):\n    print(value)\n    if value == 1:\n        raise ValueError("bad value")\n    return value',
+    [1, 2],
+    {}
+  );
+  assert.equal(results[0]?.error, 'ValueError on line 4: bad value');
+  assert.deepEqual(results.map((result) => result.consoleOutput), [['1'], ['2']]);
+  assert.equal(results[1]?.output, 2);
 });

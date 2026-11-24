@@ -148,6 +148,59 @@ def _dict_to_list(d, _refs=None):
         _refs[node_id] = node
     node.next = _dict_to_list(d.get('next'), _refs)
     return node
+def _tracecode_index_node_graph(values):
+    # The wire graph is acyclic as data: back-edges are reference records.
+    # Allocate nodes before attaching any links, with one table for all inputs.
+    nodes = {}
+    refs = {}
+    pending = [(value, None) for value in values]
+    while pending:
+        value, inherited = pending.pop()
+        if isinstance(value, (_builtins.list, _builtins.tuple)):
+            pending.extend((item, None) for item in value)
+            continue
+        if not isinstance(value, _builtins.dict) or '__ref__' in value:
+            continue
+        node_id = value.get('__id__')
+        type_name = value.get('__type__')
+        if not isinstance(node_id, _builtins.str):
+            node_id = ''
+        if type_name == 'TreeNode' or 'left' in value or 'right' in value or node_id.startswith(('tree-', 'TreeNode:')):
+            links = ('left', 'right')
+        elif type_name == 'ListNode' or 'next' in value or node_id.startswith(('list-', 'ListNode:')):
+            links = ('next',)
+        else:
+            links = inherited
+        if links and ('val' in value or 'value' in value):
+            key = _builtins.id(value)
+            if key in nodes:
+                continue
+            node_type = ListNode if links == ('next',) else TreeNode
+            node = node_type(value.get('val', value.get('value', 0)))
+            _ensure_node_value_aliases(node)
+            nodes[key] = (value, node, links)
+            if node_id:
+                if node_id in refs:
+                    raise ValueError('Duplicate input node id: ' + node_id)
+                refs[node_id] = node
+            pending.extend((value.get(link), links) for link in links)
+        else:
+            pending.extend((item, None) for item in value.values())
+
+    def resolve(value):
+        if isinstance(value, _builtins.dict):
+            if '__ref__' in value:
+                return refs.get(value['__ref__'])
+            definition = nodes.get(_builtins.id(value))
+            if definition is not None:
+                return definition[1]
+        return value
+
+    for source, node, links in nodes.values():
+        for link in links:
+            setattr(node, link, resolve(source.get(link)))
+    return resolve
+
 `;
 
 /**
@@ -547,6 +600,7 @@ def _tracecode_make_execute_serializer(
     builtin_float = builtins_module.float
     builtin_str = builtins_module.str
     builtin_type = builtins_module.type
+    builtin_id = builtins_module.id
     builtin_none_type = builtin_type(None)
     builtin_list = builtins_module.list
     builtin_tuple = builtins_module.tuple
@@ -615,6 +669,31 @@ def _tracecode_make_execute_serializer(
             return repr_str
         return {"__type__": class_name, "__class__": class_name}
 
+    def serialize_node(obj, depth, state, node_type):
+        references = state["node_references"]
+        identity = builtin_id(obj)
+        if identity in references:
+            _original, payload = references[identity]
+            if "__id__" not in payload:
+                payload["__id__"] = "ref-" + builtin_str(state["next_reference"])
+                state["next_reference"] += 1
+            return {"__ref__": payload["__id__"]}
+
+        # Register before descending so cycles and shared children are emitted
+        # once. Hold the object alive because a descriptor can return a temporary
+        # node. Add a label only if this definition is actually referenced.
+        result = {"__type__": node_type}
+        references[identity] = (obj, result)
+        result["val"] = serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)
+        if node_type == "ListNode":
+            result["next"] = serialize_value(obj.next, depth + 1, state)
+        else:
+            if builtin_hasattr(obj, 'left'):
+                result["left"] = serialize_value(obj.left, depth + 1, state)
+            if builtin_hasattr(obj, 'right'):
+                result["right"] = serialize_value(obj.right, depth + 1, state)
+        return result
+
     def serialize_value(obj, depth, state):
         serialize_checkpoint(state)
         if builtin_isinstance(
@@ -655,16 +734,9 @@ def _tracecode_make_execute_serializer(
                 pass
             return {"__type__": "set", "values": values}
         elif serialize_inherits_from(obj, state["tree_node_type"]):
-            result = {"__type__": "TreeNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
-            if builtin_hasattr(obj, 'left'):
-                result["left"] = serialize_value(obj.left, depth + 1, state)
-            if builtin_hasattr(obj, 'right'):
-                result["right"] = serialize_value(obj.right, depth + 1, state)
-            return result
+            return serialize_node(obj, depth, state, "TreeNode")
         elif serialize_inherits_from(obj, state["list_node_type"]):
-            result = {"__type__": "ListNode", "val": serialize_value(builtin_getattr(obj, 'val', builtin_getattr(obj, 'value', None)), depth + 1, state)}
-            result["next"] = serialize_value(obj.next, depth + 1, state)
-            return result
+            return serialize_node(obj, depth, state, "ListNode")
         elif builtin_callable(obj):
             return None
         elif builtin_hasattr(obj, '__dict__'):
@@ -700,6 +772,8 @@ def _tracecode_make_execute_serializer(
             state = {
                 "nodes": 0,
                 "checkpoint": checkpoint,
+                "node_references": {},
+                "next_reference": 0,
                 "tree_node_type": serialize_node_roots(tree_node_root, tree_node_type),
                 "list_node_type": serialize_node_roots(list_node_root, list_node_type),
             }

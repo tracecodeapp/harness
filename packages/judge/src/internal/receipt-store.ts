@@ -283,6 +283,11 @@ export class VerdictReceiptStore {
     });
   }
 
+  hasCachedNotRunAttachment(caseId: string): boolean {
+    const attachment = this.#attachments.get(this.#binding(caseId));
+    return attachment?.status === 'refused' && attachment.reason === 'case-not-run';
+  }
+
   beginObservation(caseId: string): ObservationAttempt {
     this.#requireLive();
     const binding = this.#binding(caseId);

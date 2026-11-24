@@ -11,7 +11,7 @@
  * so each class reproduces the historical message verbatim.
  */
 
-import { RuntimeProviderError } from '@tracecode/runtime-contracts';
+import { RuntimeProviderError, type CodeExecutionResult } from '@tracecode/runtime-contracts';
 import * as Data from 'effect/Data';
 
 /** A request/response round-trip to the worker exceeded its deadline. */
@@ -59,6 +59,19 @@ export class WorkerCrashedError extends Data.TaggedError('WorkerCrashedError')<{
   }) {
     super(args);
     this.message = args.workerMessage || 'Worker error';
+  }
+}
+
+/**
+ * A worker crash interrupted an ordinary batch after its authenticated prefix
+ * reached the client. Judge can publish the prefix and fail only the suffix.
+ */
+export class InterruptedCodeBatchError extends RuntimeProviderError {
+  constructor(
+    readonly prefix: readonly CodeExecutionResult[],
+    cause: WorkerCrashedError
+  ) {
+    super(cause.message, { cause });
   }
 }
 

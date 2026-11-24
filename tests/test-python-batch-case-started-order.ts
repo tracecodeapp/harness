@@ -38,12 +38,17 @@ function proxy(value: unknown) {
   return { toJs: () => value, destroy() {} };
 }
 
-async function runBatch(): Promise<{ events: string[]; batch: any }> {
+async function runBatch(
+  mode: 'code' | 'trace' = 'trace',
+  stopAtFirstRunaway = true
+): Promise<{ events: string[]; batch: any }> {
   const runtime = loadRuntime();
   const events: string[] = [];
   const guard = {
     begin() {},
     begin_algorithm() {},
+    set_compiled_limit() {},
+    run: () => JSON.stringify({ output: 1, console: [] }),
     restore() {},
     artifact_fingerprint: () => proxy(FINGERPRINT),
     classify_algorithm_source: () => proxy({ tier: 'algorithm-fast', reasons: [] }),
@@ -59,6 +64,7 @@ async function runBatch(): Promise<{ events: string[]; batch: any }> {
     },
   };
   const pyodide = {
+    FS: {},
     runPython: () => guard,
     toPy: () => ({ set() {}, destroy() {} }),
     globals: { delete() {} },
@@ -89,7 +95,7 @@ async function runBatch(): Promise<{ events: string[]; batch: any }> {
   const artifact = {
     schemaVersion: 'tracecode.python.prepared-program.v4',
     fingerprint: FINGERPRINT,
-    mode: 'trace',
+    mode,
     code: 'def solve(value):\n    return value',
     functionName: 'solve',
     executionStyle: 'function',
@@ -99,19 +105,18 @@ async function runBatch(): Promise<{ events: string[]; batch: any }> {
     userCode: 'user-artifact',
     executorCode: 'executor-artifact',
   };
-  // Every case traced: the batch runs on the JS per-case loop, not the fast
-  // driver.
+  // Force the JS per-case loop for the code artifact too.
   const batch = await runtime.executePreparedProgramBatch(
     deps,
     artifact,
     [{ value: 1 }, { value: 2 }],
     { guest: { wallClockMs: 1000 } },
     undefined,
-    false,
     true,
+    stopAtFirstRunaway,
     {
       started: (index: number) => events.push(`started:${index}`),
-      finished: (index: number) => events.push(`finished:${index}`),
+      ...(stopAtFirstRunaway ? { finished: (index: number) => events.push(`finished:${index}`) } : {}),
     }
   );
   return { events, batch };
@@ -129,5 +134,18 @@ test('the JS per-case loop posts started after input conversion and just before 
     'started:1',
     'learner-code',
     'finished:1',
+  ]);
+});
+
+test('a non-stopping code batch acknowledges each start before learner code and returns its whole results', async () => {
+  const { events, batch } = await runBatch('code', false);
+  assert.deepEqual(Array.from(batch.results, ({ output }: { output: unknown }) => output), [1, 1]);
+  assert.deepEqual(events, [
+    'convert-inputs:1',
+    'started:0',
+    'learner-code',
+    'convert-inputs:2',
+    'started:1',
+    'learner-code',
   ]);
 });

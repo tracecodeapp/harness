@@ -5,8 +5,12 @@ import type {
 import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
-  BrowserRuntimeProviderLease,
 } from '@tracecode/runtime-browser';
+import type {
+  BrowserRuntimeJudgeReceiptLease,
+  JudgeReceiptProvider,
+} from '../../runtime-browser/src/browser-runtime-host-internal';
+import { TRACECODE_HARNESS_VERSION } from '@tracecode/runtime-contracts';
 import {
   createPythonPreparedExecutionProvider,
 } from './python-runtime-client';
@@ -26,7 +30,7 @@ export function createPythonBrowserRuntimeProvider(
   return {
     id: '@tracecode/runtime-python',
     languages: ['python'],
-    create(context: BrowserRuntimeProviderContext): BrowserRuntimeProviderLease {
+    create(context: BrowserRuntimeProviderContext): BrowserRuntimeJudgeReceiptLease {
       const workerFactory = context.workerFactoryFor('python');
       const pythonPackageDescriptors = context.manifestAssetCollection('python', 'packages');
       const pythonManifest = context.assets.runtimeManifests?.python;
@@ -123,13 +127,33 @@ export function createPythonBrowserRuntimeProvider(
         RuntimePreparedExecutionProvider
       >([['python', preparedProvider]]);
 
-      const lease: BrowserRuntimeProviderLease & {
+      const receiptProvider: JudgeReceiptProvider = {
+        runtimeVersion: JSON.stringify({
+          harness: TRACECODE_HARNESS_VERSION,
+          worker: context.assets.pythonWorker,
+          runtime: context.assets.pythonRuntime,
+          snapshot: runtimeImageDescriptor.snapshot.integrity,
+          wasm: runtimeImageDescriptor.wasm.integrity,
+        }),
+        capabilities: {
+          observationLease: 'separate',
+          observationDeadlineMs: 15_000,
+          observationPrepareDeadlineMs: 30_000,
+          stoppingBatchAdmission: 'worker-start',
+          nonStoppingBatchAdmission: 'worker-start',
+        },
+        prepareObservation: (program, signal, traceOptions) =>
+          preparedProvider.prepareObservation(program, signal, traceOptions),
+      };
+
+      const lease: BrowserRuntimeJudgeReceiptLease & {
         readonly preparedProviders: ReadonlyMap<
           Language,
           RuntimePreparedExecutionProvider
         >;
       } = {
         preparedProviders,
+        judgeReceiptProviders: new Map([['python', receiptProvider]]),
         preflightLanguage: async () => {
           // The page verifies only the small bootstrap program. Its Worker
           // owns the CPython Wasm/snapshot fetch, integrity check, and compile.

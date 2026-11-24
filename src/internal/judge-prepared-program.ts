@@ -239,7 +239,10 @@ export class JudgeObservationSchedule<Result, Expected> {
 
   private async waitForDrawing(caseId: string, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
-    if (!this.admitted.has(caseId)) return;
+    if (!this.admitted.has(caseId)) {
+      if (this.receipt.hasCachedNotRunAttachment(caseId)) this.mark('observation-cache-hit', caseId);
+      return;
+    }
     const attempt = this.attempt(caseId);
     if (attempt.settled) {
       this.mark('observation-cache-hit', caseId, attempt.token.token);
@@ -480,8 +483,10 @@ export class RuntimePreparedProgramRegistry {
     }
     if (program.executeBatchIsolated) {
       return gate.run(call.signal, async () => {
-        if (!call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
-        if (!acknowledgeStarts || !admit) return program.executeBatchIsolated!(call);
+        if (!acknowledgeStarts || !admit) {
+          if (!call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
+          return program.executeBatchIsolated!(call);
+        }
         let live = true;
         const admittedBatch: JudgeOrdinaryBatchCall = {
           ...call,
