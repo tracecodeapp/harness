@@ -23,7 +23,10 @@ import { csharpTrustedArtifactKey } from './csharp-replenishment-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
-import { pythonProductionControlOutcome } from '../python-runner/python-production-control-witness.mjs';
+import {
+  pythonProductionControlOutcome,
+  pythonProductionControlWorker,
+} from '../python-runner/python-production-control-witness.mjs';
 import {
   liveControlPairGroups,
   liveControlVersions,
@@ -329,10 +332,13 @@ async function openPage(context, version, url, group) {
   }
 }
 
-function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey) {
+function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
+  priorResult) {
   if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
     if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
-    return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount);
+    return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount,
+      priorResult === undefined ? undefined :
+        pythonProductionControlWorker(priorResult.python?.phases ?? []));
   }
   if (liveControl && version === '0.17.1') {
     if (language === 'java') return javaProductionControlOutcome(result, role, caseCount);
@@ -708,7 +714,8 @@ try {
                         (releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
                     sample.invalid = candidateOutcome(sample.second, 'click', 1,
-                      fixture.cases[1].id, version, group.language, sample.trustedCsharpArtifactKey);
+                      fixture.cases[1].id, version, group.language, sample.trustedCsharpArtifactKey,
+                      sample.initial);
                   }
                 }
               }

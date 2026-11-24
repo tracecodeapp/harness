@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';
+import {
+  pythonProductionControlOutcome,
+  pythonProductionControlWorker,
+} from './python-production-control-witness.mjs';
 
 function journal(worker = 1, cases = 10) {
   return [
@@ -57,10 +60,20 @@ test('accepts the published legacy trace batch and rejects legacy per-case resta
     'Published Python single-worker witness differs');
 });
 
-test('accepts one published legacy continuation and rejects a second worker', () => {
+test('accepts published legacy single and batch continuations on the original worker', () => {
   const click = { worker: 7, role: 'legacy-trace', type: 'execute-prepared-program',
     mode: 'trace', tier: 'algorithm-fast', received: 20 };
-  assert.equal(pythonProductionControlOutcome([click], 'click', 1), undefined);
-  assert.equal(pythonProductionControlOutcome([click, { ...click, worker: 8 }], 'click', 1),
+  const batch = { ...click, type: 'execute-prepared-program-batch', cases: 1 };
+  assert.equal(pythonProductionControlOutcome([click], 'click', 1, 7), undefined);
+  assert.equal(pythonProductionControlOutcome([batch], 'click', 1, 7), undefined);
+  assert.equal(pythonProductionControlOutcome([{ ...batch, worker: 8 }], 'click', 1, 7),
     'Published Python single-worker witness differs');
+  assert.equal(pythonProductionControlOutcome([click, { ...click, worker: 8 }], 'click', 1, 7),
+    'Published Python single-worker witness differs');
+});
+
+test('extracts one positive production worker and rejects ambiguous identities', () => {
+  const command = { worker: 7, role: 'legacy-trace', type: 'prepare-program', received: 10 };
+  assert.equal(pythonProductionControlWorker([command]), 7);
+  assert.equal(pythonProductionControlWorker([command, { ...command, worker: 8 }]), undefined);
 });
