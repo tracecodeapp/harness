@@ -7,6 +7,7 @@ import {
   runtimeKernelVirtualPathTarget,
   withRuntimeUserAuthorityLockdown,
 } from './shared/runtime-kernel-policy.js';
+import { classifyCppExceptionUse } from './cpp-exceptions.js';
 
 const trustedCppWorkerPostMessage = self.postMessage.bind(self);
 
@@ -5812,221 +5813,31 @@ function stripComments(source) {
     .replace(/\/\/.*$/gm, '');
 }
 
-function cppNoExceptionDefaultReturn(returnType) {
-  const valueType = localCppType(String(returnType || 'void'));
-  const normalized = stripCppTypeQualifiers(valueType);
-  if (!normalized || normalized === 'void') return '';
-  if (normalized.endsWith('*') || normalized === 'nullptr_t') return 'nullptr';
-  if (normalized === 'bool') return 'false';
-  if (normalized === 'string') return 'std::string()';
-  if (
-    normalized.startsWith('vector<') ||
-    normalized.startsWith('array<') ||
-    normalized.startsWith('deque<') ||
-    normalized.startsWith('queue<') ||
-    normalized.startsWith('priority_queue<') ||
-    normalized.startsWith('stack<') ||
-    normalized.startsWith('unordered_map<') ||
-    normalized.startsWith('map<') ||
-    normalized.startsWith('unordered_set<') ||
-    normalized.startsWith('set<') ||
-    normalized.startsWith('pair<') ||
-    normalized.startsWith('tuple<')
-  ) return '{}';
-  if (/^(?:unsigned)?(?:short|int|long|longlong|longlongint|size_t|std::size_t|float|double|longdouble)$/.test(normalized)) {
-    return '0';
-  }
-  return `${valueType}()`;
+function cppExceptionRefusal(source, start) {
+  const classification = classifyCppExceptionUse(source);
+  if (!classification.usesExceptions) return undefined;
+  const { line, column } = classification.firstToken;
+  return {
+    success: false,
+    error: 'C++ exceptions are not supported yet',
+    diagnosticStage: 'compile',
+    errorLine: line,
+    diagnostic: {
+      code: 'cpp-exceptions-unsupported',
+      file: CPP_USER_SOURCE_FILE,
+      line,
+      column,
+    },
+    consoleOutput: [],
+    timings: { totalMs: elapsedMs(start) },
+  };
 }
 
-function cppExceptionMessageForThrowExpression(expression) {
-  const rawExpression = String(expression || '').trim();
-  const stringMatch = rawExpression.match(/"((?:\\.|[^"\\])*)"/);
-  if (stringMatch) {
-    try {
-      return JSON.parse(`"${stringMatch[1]}"`);
-    } catch {
-      return stringMatch[1];
-    }
-  }
-  return 'C++ exception thrown.';
-}
-
-function cppExceptionTraceInstrumentation(lineNumber, message) {
-  return `tracecode::emit_serialized_exception_event(${lineNumber}, ${cppStringLiteral(message)});`;
-}
-
-function cppThrowReplacementForReturnType(returnType, options = {}) {
-  const defaultValue = cppNoExceptionDefaultReturn(returnType);
-  const traceInstrumentation = options.traceLine
-    ? `${cppExceptionTraceInstrumentation(options.traceLine, options.message || 'C++ exception thrown.')} `
-    : '';
-  // Remember what was thrown and where: if no lowered catch clears it before
-  // the entry point returns, the driver ends the program as an uncaught
-  // exception (see __tracecode_fail_if_uncaught).
-  const record = options.uncaughtMessage
-    ? `__tracecode_exception_message = ${cppStringLiteral(options.uncaughtMessage)}; `
-    : '';
-  return defaultValue
-    ? `{ ${traceInstrumentation}${record}__tracecode_exception_pending = true; return ${defaultValue}; }`
-    : `{ ${traceInstrumentation}${record}__tracecode_exception_pending = true; return; }`;
-}
-
-function cppUncaughtExceptionMessage(expression, lineNumber) {
-  const rawExpression = String(expression || '').trim();
-  const typeMatch = /^(?:new\s+)?([A-Za-z_][\w:]*(?:<[^()]*>)?)\s*[({]/.exec(rawExpression);
-  const type = typeMatch ? typeMatch[1] : rawExpression ? 'exception' : 'rethrown exception';
-  const message = cppExceptionMessageForThrowExpression(rawExpression);
-  const detail = message === 'C++ exception thrown.' ? '' : `: ${message}`;
-  return `terminate called after throwing ${type}${detail} (line ${lineNumber})`;
-}
-
-function rewriteCppThrowsWithoutExceptions(source, options = {}) {
-  if (!/\bthrow\b/.test(source)) return source;
-  const lines = source.split(/\r?\n/);
-  const output = [];
-  const frames = [];
-  let depth = 0;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const lineNumber = index + 1;
-    let rewritten = line;
-    const lambdaMatch = line.match(/\[[^\]]*\]\s*\([^)]*\)\s*->\s*([^{]+?)\s*\{/);
-    const functionMatch = line.match(/^\s*(?!if\b|for\b|while\b|switch\b|catch\b)(?:[A-Za-z_][\w:<>?,*&\s]*?)\s+([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:const\s*)?(?:noexcept\s*)?\{/);
-    if (lambdaMatch) {
-      frames.push({ depth: depth + braceDeltaForLine(line), returnType: lambdaMatch[1].trim() });
-    } else if (functionMatch) {
-      const prefix = line.slice(0, line.indexOf(functionMatch[1])).trim();
-      const returnType = cleanCppReturnType(prefix);
-      frames.push({ depth: depth + braceDeltaForLine(line), returnType });
-    }
-
-    const activeFrame = frames.at(-1);
-    if (/\bthrow\b/.test(rewritten) && activeFrame) {
-      rewritten = rewritten.replace(/throw(?:\s+([^;]+))?\s*;/g, (_match, expression) => (
-        cppThrowReplacementForReturnType(activeFrame.returnType, {
-          uncaughtMessage: cppUncaughtExceptionMessage(expression, lineNumber),
-          ...(options.emitTraceEvents ? {
-            traceLine: lineNumber,
-            message: cppExceptionMessageForThrowExpression(expression),
-          } : {}),
-        })
-      ));
-    }
-
-    output.push(rewritten);
-    depth += braceDeltaForLine(line);
-    while (frames.length > 0 && depth < frames.at(-1).depth) frames.pop();
-  }
-
-  return output.join('\n');
-}
-
-function rewriteTryBodyReturnsForNoExceptions(tryBody, catchBody, tryId = 0) {
-  const trimmedCatch = catchBody.trim();
-  let returnIndex = 0;
-  return tryBody.replace(/^(\s*)return(?:\s+(.+?))?\s*;\s*$/gm, (match, indent, expression) => {
-    if (!trimmedCatch) return match;
-    if (!expression) {
-      return `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }\n${indent}return;`;
-    }
-    const trimmedExpression = String(expression).trim();
-    if (trimmedExpression.startsWith('{')) {
-      return `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }\n${indent}return ${trimmedExpression};`;
-    }
-    const localName = `__tracecode_try_return_${tryId}_${returnIndex++}`;
-    return [
-      `${indent}auto ${localName} = (${trimmedExpression});`,
-      `${indent}if (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${trimmedCatch} }`,
-      `${indent}return ${localName};`,
-    ].join('\n');
-  });
-}
-
-function rewriteCppTryCatchWithoutExceptions(source) {
-  if (!/\btry\s*\{/.test(source)) return source;
-  let output = '';
-  let cursor = 0;
-
-  while (cursor < source.length) {
-    const tryMatch = /\btry\s*\{/.exec(source.slice(cursor));
-    if (!tryMatch) {
-      output += source.slice(cursor);
-      break;
-    }
-    const tryStart = cursor + tryMatch.index;
-    const tryOpenBrace = source.indexOf('{', tryStart);
-    const tryCloseBrace = findMatchingBrace(source, tryOpenBrace);
-    if (tryOpenBrace < 0 || tryCloseBrace < 0) {
-      output += source.slice(cursor);
-      break;
-    }
-    const catchMatch = /^\s*catch\s*\([^)]*\)\s*\{/.exec(source.slice(tryCloseBrace + 1));
-    if (!catchMatch) {
-      output += source.slice(cursor, tryCloseBrace + 1);
-      cursor = tryCloseBrace + 1;
-      continue;
-    }
-    const catchStart = tryCloseBrace + 1 + catchMatch.index;
-    const catchOpenBrace = source.indexOf('{', catchStart);
-    const catchCloseBrace = findMatchingBrace(source, catchOpenBrace);
-    if (catchOpenBrace < 0 || catchCloseBrace < 0) {
-      output += source.slice(cursor);
-      break;
-    }
-
-    const tryBody = source.slice(tryOpenBrace + 1, tryCloseBrace);
-    const catchBody = source.slice(catchOpenBrace + 1, catchCloseBrace);
-    const loweredTryBody = rewriteTryBodyReturnsForNoExceptions(tryBody, catchBody, tryStart);
-    const loweredCatch = catchBody.trim()
-      ? `\nif (__tracecode_exception_pending) { __tracecode_exception_pending = false; ${catchBody.trim()} }\n`
-      : '\n__tracecode_exception_pending = false;\n';
-
-    output += source.slice(cursor, tryStart);
-    output += `{ __tracecode_exception_pending = false;${loweredTryBody}${loweredCatch}}`;
-    cursor = catchCloseBrace + 1;
-  }
-
-  return output;
-}
-
-function lowerCppExceptionSyntaxForNoExceptions(source, options = {}) {
-  if (!/\b(?:try|throw|catch)\b/.test(source)) return source;
-  const lowered = rewriteCppThrowsWithoutExceptions(rewriteCppTryCatchWithoutExceptions(source), options);
-  return `${CPP_NO_EXCEPTIONS_PRELUDE}${lowered}`;
-}
-
-// One line, like the flag it replaces, so line offsets are unchanged. The
-// runtime header the driver includes first provides <cstdio> and <cstdlib>.
-const CPP_NO_EXCEPTIONS_PRELUDE =
-  'static bool __tracecode_exception_pending = false; ' +
-  'static const char* __tracecode_exception_message = "terminate called after throwing an exception"; ' +
-  'static void __tracecode_fail_if_uncaught() { if (!__tracecode_exception_pending) return; ' +
-  'std::fflush(stdout); std::fputs(__tracecode_exception_message, stderr); std::fputs("\\n", stderr); ' +
-  'std::fflush(stderr); std::_Exit(134); }\n';
-
-/**
- * Exceptions are lowered to a pending flag (the toolchain builds without
- * exception support). A flag still pending when the entry point returns is an
- * uncaught exception: end the program before it reports a result.
- */
-function failUncaughtLoweredExceptionsBeforeResult(driverSource) {
-  if (!driverSource.includes('__tracecode_fail_if_uncaught')) return driverSource;
-  return driverSource.replace(
-    /(^|\n)([ \t]*)tracecode::write_result_json/g,
-    '$1$2__tracecode_fail_if_uncaught(); tracecode::write_result_json'
-  );
-}
-
-function normalizeCppUserSource(source, options = {}) {
-  const withoutUnsupportedIncludes = String(source || '')
+function normalizeCppUserSource(source) {
+  return String(source || '')
     .split(/\r?\n/)
     .map((line) => (/^\s*#\s*include\s*<bits\/stdc\+\+\.h>\s*$/.test(line) ? '' : line))
     .join('\n');
-  return lowerCppExceptionSyntaxForNoExceptions(withoutUnsupportedIncludes, {
-    emitTraceEvents: options.tracing === true,
-  });
 }
 
 function splitTopLevelCommaList(source) {
@@ -10376,7 +10187,7 @@ function normalizeOpsArguments(value) {
 }
 
 function buildOpsClassDriverSource(userCode, className, inputs, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
   const { operations, argumentsList } = getOpsClassInputs(inputs || {});
   let firstOperationIndex = 1;
@@ -11171,7 +10982,7 @@ function instrumentCppSourceForTracing(source, functionName, options = {}) {
 }
 
 function buildDriverSource(userCode, functionName, inputs, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
   const signature = parseMethodSignature(userCode, functionName, {
     parameterCount: Object.keys(inputs || {}).length,
@@ -11268,7 +11079,7 @@ ${traceReturn}
 }
 
 function buildBatchDriverSource(userCode, functionName, inputBatch, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const firstInputs = Array.isArray(inputBatch) && inputBatch.length > 0 && inputBatch[0] && typeof inputBatch[0] === 'object'
     ? inputBatch[0]
     : {};
@@ -11351,7 +11162,7 @@ ${invokeAndStore}
 }
 
 function buildOpsClassBatchDriverSource(userCode, className, inputBatch, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const firstInputs = Array.isArray(inputBatch) && inputBatch.length > 0 && inputBatch[0] && typeof inputBatch[0] === 'object'
     ? inputBatch[0]
     : {};
@@ -11571,7 +11382,7 @@ function collectPreparedOpsClassSignatures(source, className) {
 }
 
 function buildPreparedOpsClassDriverSource(userCode, className, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const aliases = collectCppTypeAliases(userCode);
   const signatures = collectPreparedOpsClassSignatures(userCode, className);
   const constructorSignatures = signatures.filter((signature) => signature.name === className);
@@ -11841,7 +11652,6 @@ function scriptLineCount(source) {
 }
 
 function buildScriptWrapperSource(userCode, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
   const userLineCount = scriptLineCount(userCode);
   return `auto ${CPP_SCRIPT_FUNCTION_NAME}() {
 #line 1 "${CPP_USER_SOURCE_FILE}"
@@ -11852,11 +11662,11 @@ ${userCode}
 }
 
 function buildScriptDriverSource(userCode, options = {}) {
-  userCode = normalizeCppUserSource(userCode, options);
+  userCode = normalizeCppUserSource(userCode);
   const userLineCount = scriptLineCount(userCode);
   const scriptClassNames = collectCppDeclaredClassNames(userCode);
   const traceMemberClassName = scriptClassNames.length === 1 ? scriptClassNames[0] : null;
-  const wrappedSource = buildScriptWrapperSource(userCode, options);
+  const wrappedSource = buildScriptWrapperSource(userCode);
   const sourceForDriver = options.tracing === true
     ? instrumentCppSourceForTracing(
         wrappedSource,
@@ -15592,10 +15402,14 @@ async function compileAndRunWithExternalCompiler(source, functionName, inputs, s
     timings.driverBuildMs = elapsedMs(driverStartedAt);
     emitRequestProgress('driver-build:complete', { tracing: Boolean(options.tracing), compiler: 'tracecc' });
   }
-  driverSource = bindCppResultNonce(failUncaughtLoweredExceptionsBeforeResult(driverSource.replace(
-    '#include "/tracecode_runtime.hpp"',
-    '#include "tracecode_runtime.hpp"'
-  )));
+  // A WASM trap skips libc cleanup. Make writes reach the WASI capture
+  // before user code runs, including during learner static initialization.
+  driverSource = bindCppResultNonce(driverSource.replace(
+    /#include "(?:\/)?tracecode_runtime\.hpp"/,
+    '#include "tracecode_runtime.hpp"\n' +
+    'static void __attribute__((constructor(101))) __tc_unbuffer_stdout() { ' +
+    'std::setvbuf(stdout, nullptr, _IONBF, 0); }'
+  ));
 
   const cacheKey = getProgramCacheKey('tracecc', driverSource);
   let programModule = getCachedProgramModule(cacheKey);
@@ -15836,6 +15650,9 @@ async function handlePrepareRuntimeProgram(payload) {
       timings: { totalMs: elapsedMs(startedAt) },
     };
   }
+
+  const refusal = cppExceptionRefusal(source, startedAt);
+  if (refusal) return refusal;
 
   const driverStartedAt = now();
   // A prepared executable has one input and return framing regardless of
@@ -16318,6 +16135,9 @@ async function handleCompileRun(payload) {
     };
   }
 
+  const refusal = cppExceptionRefusal(source, now());
+  if (refusal) return { ...refusal, output: null };
+
   try {
     return await compileAndRun(source, functionName, payload?.inputs || {}, {
       executionStyle: payload?.executionStyle || 'solution-method',
@@ -16435,6 +16255,9 @@ async function handleCompileRunBatch(payload) {
   if (!functionName.trim() && executionStyle !== 'function') {
     return failedBatchResult('C++ named execution requires a function name.');
   }
+
+  const refusal = cppExceptionRefusal(source, startedAt);
+  if (refusal) return { ...refusal, results: [] };
 
   if (!functionName.trim() && executionStyle === 'function') {
     // Script-style C++ has no stable per-case input contract today, so keep its
@@ -16598,6 +16421,9 @@ async function handleExecuteTraceBatch(payload) {
     return failedBatchResult('C++ named tracing requires a function name.');
   }
 
+  const refusal = cppExceptionRefusal(source, startedAt);
+  if (refusal) return { ...refusal, results: [] };
+
   const fallbackPerCase = async (reason) => {
     const results = [];
     for (const inputs of inputBatch) {
@@ -16735,6 +16561,9 @@ async function handleExecuteWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
     };
   }
+
+  const refusal = cppExceptionRefusal(source, now());
+  if (refusal) return { ...refusal, output: null };
 
   try {
     const result = await compileAndRun(source, functionName, payload?.inputs || {}, {

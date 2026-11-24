@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
@@ -12,8 +13,9 @@ const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-
 const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
   /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
   ''
-);
+).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
 const sandbox: Record<string, unknown> = {
+  classifyCppExceptionUse,
   console,
   TextEncoder,
   TextDecoder,
@@ -46,9 +48,9 @@ const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
 const isRuntimeProcPath = isRuntimeKernelProcPath;
 ${workerSource}
 globalThis.__tracecodeCppRewriter = {
-  findCppExceptionToken: typeof findCppExceptionToken === 'function' ? findCppExceptionToken : undefined,
   handleCompileRun,
   handleCompileRunBatch,
+  handleExecuteWithTracing,
   handleExecuteTraceBatch,
   handlePrepareRuntimeProgram,
   buildBatchDriverSource,
@@ -64,8 +66,8 @@ globalThis.__tracecodeCppRewriter = {
 );
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
-  findCppExceptionToken: (source: string) => { token: string; line: number; column: number } | undefined;
   handleCompileRun: (call: object) => Promise<Record<string, unknown>>;
+  handleExecuteWithTracing: (call: object) => Promise<Record<string, unknown>>;
   handleCompileRunBatch: (call: object) => Promise<Record<string, unknown>>;
   handleExecuteTraceBatch: (call: object) => Promise<Record<string, unknown>>;
   handlePrepareRuntimeProgram: (call: object) => Promise<Record<string, unknown>>;
@@ -116,7 +118,7 @@ for (const [source, token, line, column] of [
   ['// catch \\\nthrow\n  th\\\nrow 7;', 'throw', 3, 3],
   [mixedExceptionSource, 'throw', 4, 16],
 ] as const) {
-  const match = rewriter.findCppExceptionToken?.(source);
+  const match = classifyCppExceptionUse(source).firstToken;
   assertCondition(
     match?.token === token && match.line === line && match.column === column,
     `C++ exception token/location for ${JSON.stringify(source)}: ${JSON.stringify(match)}`,
@@ -132,12 +134,13 @@ for (const source of [
   'auto n = 1\'000; auto x = 1.2e-3; // throw',
   '#include <example/throw>',
 ]) {
-  assertCondition(rewriter.findCppExceptionToken(source) === undefined, `False C++ exception refusal: ${source}`);
+  assertCondition(!classifyCppExceptionUse(source).usesExceptions, `False C++ exception refusal: ${source}`);
 }
 for (const [handler, payload] of [
   [rewriter.handlePrepareRuntimeProgram, { mode: 'code' }],
   [rewriter.handlePrepareRuntimeProgram, { mode: 'trace' }],
   [rewriter.handleCompileRun, {}],
+  [rewriter.handleExecuteWithTracing, {}],
   [rewriter.handleCompileRunBatch, { inputBatch: [{}, {}] }],
   [rewriter.handleExecuteTraceBatch, { inputBatch: [{}, {}] }],
 ] as const) {
@@ -395,21 +398,6 @@ assertCondition(
   controlDriver.includes('tracecode::with_trace_line(6') && controlDriver.includes('tracecode::with_trace_line(7'),
   'control conditions should evaluate under the control header source line'
 );
-
-const exceptionSource = [
-  'class Solution {',
-  'public:',
-  '  int safe(int value) {',
-  '    if (value < 0) throw std::runtime_error("negative");',
-  '    return value;',
-  '  }',
-  '};',
-].join('\n');
-const exceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 }, { tracing: true });
-const nonTracingExceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 });
-assertCondition(exceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'lowered throw should emit native exception events when tracing');
-assertCondition(exceptionDriver.includes('"negative"'), 'lowered throw should preserve common literal exception messages');
-assertCondition(!nonTracingExceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'non-tracing lowered throws should not emit trace markers');
 
 const fieldSource = [
   'struct Node { unordered_map<string, int> children; };',

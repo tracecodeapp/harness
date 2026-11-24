@@ -1,3 +1,4 @@
+import { classifyCppExceptionUse } from '../../workers/cpp/cpp-exceptions.js';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
@@ -76,7 +77,7 @@ export async function loadCppConformanceBridge(): Promise<CppBridge> {
   const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
 
   const readAsset = async (url: string | URL) => {
     const pathname = String(url).replace('file://', '');
@@ -91,6 +92,7 @@ export async function loadCppConformanceBridge(): Promise<CppBridge> {
   };
 
   const sandbox: Record<string, unknown> = {
+    classifyCppExceptionUse,
     console,
     TextEncoder,
     TextDecoder,

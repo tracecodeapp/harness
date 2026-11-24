@@ -58,6 +58,18 @@ export interface CppRecorderEvidence {
   readonly cut?: Cut;
 }
 type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace; observation?: CppRecorderEvidence };
+
+interface CppBatchCompileFailure {
+  diagnosticStage?: 'compile';
+  errorLine?: number;
+  diagnostic?: unknown;
+}
+
+function cppBatchCompileFailure(result: CppBatchCompileFailure): CppBatchCompileFailure {
+  return result.diagnosticStage === 'compile'
+    ? { diagnosticStage: 'compile', errorLine: result.errorLine, diagnostic: result.diagnostic }
+    : {};
+}
 import type { RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall, TraceExecutionOptions } from '@tracecode/runtime-contracts';
 import {
   closeKernelHttpSyncServers,
@@ -1800,12 +1812,12 @@ export class CppWorkerClient {
     });
   }
 
-  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
+  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult & CppBatchCompileFailure> {
     const { code, functionName, inputBatch, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
-          this.core.sendMessageEffect<RawExecutionBatchPayload>(
+          this.core.sendMessageEffect<RawExecutionBatchPayload & CppBatchCompileFailure>(
             'compile-run-batch',
             { code, functionName, inputBatch, executionStyle, reportCaseProgress: true },
             null,
@@ -1818,7 +1830,7 @@ export class CppWorkerClient {
           signal,
           lifecycleGeneration
         );
-        return liftCodeBatchOutcome(result, 'C++ execution failed');
+        return { ...liftCodeBatchOutcome(result, 'C++ execution failed'), ...cppBatchCompileFailure(result) };
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
         this.throwIfTimedOutCompiling(error);
@@ -1833,12 +1845,12 @@ export class CppWorkerClient {
     });
   }
 
-  async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<{ results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
+  async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<CppBatchCompileFailure & { results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
     const { code, functionName, inputBatch, traceOptions, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
-          this.core.sendMessageEffect<{ results?: CppRawTraceResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
+          this.core.sendMessageEffect<RawExecutionBatchPayload & CppBatchCompileFailure & { results?: CppRawTraceResult[] }>(
             'execute-trace-batch',
             {
               code,
@@ -1859,6 +1871,7 @@ export class CppWorkerClient {
           lifecycleGeneration
         );
         return {
+          ...cppBatchCompileFailure(result),
           results: (result.results ?? []).map((entry) =>
             liftTraceOutcome(
               entry,

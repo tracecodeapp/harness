@@ -9,6 +9,7 @@
 //   toolchain (which also proves tracecode_http.hpp is injected and compiles);
 // - a stub RuntimeKernelHttpBridge stands in for the workspace kernel.
 
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -480,7 +481,7 @@ const sharedKernelPolicySource = (await readFile(repoRoot + '/workers/shared/run
 const workerSource = (await readFile(repoRoot + '/workers/cpp/cpp-worker.js', 'utf8')).replace(
   /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
   ''
-);
+).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
 
 const readAsset = async (url) => {
   const pathname = String(url).replace('file://', '');
@@ -495,6 +496,7 @@ const readAsset = async (url) => {
 };
 
 const sandbox = {
+  classifyCppExceptionUse,
   console,
   URL,
   TextEncoder,

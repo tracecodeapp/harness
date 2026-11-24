@@ -2747,7 +2747,7 @@ async function testCppWorkerProjectEventBudgets(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const posted: Array<{ type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } }> = [];
   const capturePostMessage = (message: unknown) => {
     posted.push(message as { type?: string; payload?: { type?: string; stream?: string; data?: string; change?: { path?: string } } });
@@ -2816,7 +2816,7 @@ async function testCppPinnedTraceccAssetsFailClosed(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const context = vm.createContext({
     console,
     self: {
@@ -2900,7 +2900,7 @@ async function testCppInheritedStdioRespectsKernelDevices(): Promise<void> {
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const sharedKernelPolicySource = (await readFile(join(dirname(testDirectory), 'workers', 'shared', 'runtime-kernel-policy.js'), 'utf8'))
     .replace(/^export (async )?function /gm, '$1function ');
   const context = vm.createContext({
@@ -3023,7 +3023,7 @@ async function testCppInferredNumericLiteralsRejectNonFiniteValues(): Promise<vo
   const source = (await readFile(join(dirname(testDirectory), 'workers', 'cpp', 'cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const context = vm.createContext({
     console,
     self: {

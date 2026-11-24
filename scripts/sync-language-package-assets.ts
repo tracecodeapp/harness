@@ -83,6 +83,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
         target: ['workers', 'cpp', 'cpp-worker.js'],
       },
       {
+        source: ['workers', 'cpp', 'cpp-exceptions.js'],
+        target: ['workers', 'cpp', 'cpp-exceptions.js'],
+      },
+      {
         source: ['workers', 'cpp', 'tracecode_runtime.hpp'],
         target: ['workers', 'cpp', 'tracecode_runtime.hpp'],
       },
@@ -214,6 +218,10 @@ const PACKAGE_ASSET_PLANS: PackageAssetPlan[] = [
       {
         source: ['workers', 'cpp', 'cpp-worker.js'],
         target: ['workers', 'cpp-worker.js'],
+      },
+      {
+        source: ['workers', 'cpp', 'cpp-exceptions.js'],
+        target: ['workers', 'cpp-exceptions.js'],
       },
       {
         source: ['workers', 'cpp', 'cpp-worker.js'],
