@@ -3018,6 +3018,7 @@ function receiptFixture(options: {
   observe?: (call: ObserverCall) => Promise<ObserverReply>;
   idleMs?: number;
   deadlineMs?: number;
+  prepareDeadlineMs?: number;
   compileFailure?: boolean;
   nativeStop?: boolean;
   nativeAdmission?: boolean;
@@ -3167,6 +3168,7 @@ function receiptFixture(options: {
       observationLease: 'separate' as const,
       certification: options.certification,
       observationDeadlineMs: options.deadlineMs ?? 3000,
+      ...(options.prepareDeadlineMs ? { observationPrepareDeadlineMs: options.prepareDeadlineMs } : {}),
       ...(options.overlapObservationWithInitialization ? { overlapObservationWithInitialization: true as const } : {}),
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
       ...(options.replyOwnership ? { observationReplyOwnership: options.replyOwnership } : {}),
@@ -4505,6 +4507,155 @@ test('runaway-release: click draw on an unselected clock runaway gets the ordina
     assert.equal(f.observerCalls.length, 2);
   } finally {
     never.resolve(recordedDrawing(f.observerCalls[1] ?? ({ attemptToken: 'late' } as ObserverCall)));
+    f.host.dispose();
+  }
+});
+
+// An observer that has not reached observer-start when ordinary commits a
+// client-timeout gets one budget from commit to start. Once started, the
+// budget counts from its own start (never past commit + 2 budgets).
+for (const shape of [
+  { name: 'JavaScript/TypeScript, 30 s prepare deadline', nativeStop: false, nativeAdmission: false, deadlineMs: OBSERVER_BACKSTOP_MS, prepareDeadlineMs: undefined },
+  { name: 'Java, 120 s prepare deadline, 30 s backstop', nativeStop: true, nativeAdmission: true, deadlineMs: 30_000, prepareDeadlineMs: 120_000 },
+] as const) {
+  test(`runaway-release: an observer still preparing at commit that never starts releases Run at commit + budget (${shape.name})`, { timeout: 5000 }, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const prepared = controlled();
+    const f = receiptFixture({
+      nativeStop: shape.nativeStop,
+      nativeAdmission: shape.nativeAdmission,
+      deadlineMs: shape.deadlineMs,
+      ...(shape.prepareDeadlineMs ? { prepareDeadlineMs: shape.prepareDeadlineMs } : {}),
+      prepareObserver: () => prepared.promise,
+      observe: async (call) => truncatedPrefix(call),
+    });
+    try {
+      const bundle = await receiptBundle([{ id: 'A', input: { label: 'A', mode: 'clock' }, expected: 'A' }], RUN_LIMIT);
+      let resolved = false;
+      const pending = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+        .finally(() => { resolved = true; });
+      await pumpUntil(t.mock.timers, () => f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+      assert.equal(f.markers.some(({ phase }) => phase === 'observer-start'), false, 'observer still preparing at commit');
+      t.mock.timers.tick(RUN_LIMIT.wallClockMs - 1);
+      await drainTurns();
+      assert.equal(resolved, false, 'the pre-start budget has not run out');
+      t.mock.timers.tick(1);
+      await drainTurns();
+      assert.equal(resolved, true, 'Run must resolve at commit + budget, not wait for observer preparation');
+      const [row] = (await pending).evaluation.cases;
+      assertOrdinaryClock(row, 'A');
+      assert.equal(row?.attachment?.status === 'refused' && row.attachment.reason, 'observer-timeout');
+      const phases = journalPhases(f.markers);
+      assert.equal(phases.includes('observer-start'), false, 'the observer never ran');
+      assert.deepEqual(phases.slice(phases.indexOf('ordinary-commit')), [
+        'ordinary-commit', 'observer-expire', 'attachment-bind', 'public-resolve',
+      ]);
+      // Preparation finishing later neither observes nor rebinds the case.
+      prepared.resolve();
+      await drainTurns();
+      assert.equal(f.observerCalls.length, 0);
+    } finally {
+      prepared.resolve();
+      f.host.dispose();
+    }
+  });
+}
+
+test('runaway-release: an observer still preparing at commit that starts within the budget keeps its own-start budget and its prefix', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const prepared = controlled();
+  const prefix = controlled<ObserverReply>();
+  const f = receiptFixture({
+    deadlineMs: OBSERVER_BACKSTOP_MS,
+    prepareObserver: () => prepared.promise,
+    observe: () => prefix.promise,
+  });
+  try {
+    const bundle = await receiptBundle([{ id: 'A', input: { label: 'A', mode: 'clock' }, expected: 'A' }], RUN_LIMIT);
+    let resolved = false;
+    const pending = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .finally(() => { resolved = true; });
+    await pumpUntil(t.mock.timers, () => f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    assert.equal(f.observerCalls.length, 0);
+    // Starts late, inside the pre-start budget.
+    t.mock.timers.tick(RUN_LIMIT.wallClockMs - 200);
+    prepared.resolve();
+    await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1);
+    // Past commit + budget, but inside the observer's own budget.
+    t.mock.timers.tick(RUN_LIMIT.wallClockMs - 100);
+    await drainTurns();
+    assert.equal(resolved, false);
+    assert.equal(f.observerCalls[0]?.signal?.aborted, false);
+    prefix.resolve(truncatedPrefix(f.observerCalls[0]!));
+    const [row] = (await pending).evaluation.cases;
+    assertOrdinaryClock(row, 'A');
+    assert.equal(row?.attachment?.status === 'truncated' && row.attachment.reason, 'single-line-budget');
+    assert.equal(journalPhases(f.markers).includes('observer-expire'), false);
+  } finally {
+    prepared.resolve();
+    prefix.resolve(truncatedPrefix(f.observerCalls[0] ?? ({ attemptToken: 'late' } as ObserverCall)));
+    f.host.dispose();
+  }
+});
+
+test('runaway-release: an observer that starts late and stalls expires at its own-start budget', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const prepared = controlled();
+  const never = controlled<ObserverReply>();
+  const f = receiptFixture({
+    deadlineMs: OBSERVER_BACKSTOP_MS,
+    prepareObserver: () => prepared.promise,
+    observe: () => never.promise,
+  });
+  try {
+    const bundle = await receiptBundle([{ id: 'A', input: { label: 'A', mode: 'clock' }, expected: 'A' }], RUN_LIMIT);
+    let resolved = false;
+    const pending = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .finally(() => { resolved = true; });
+    await pumpUntil(t.mock.timers, () => f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    t.mock.timers.tick(RUN_LIMIT.wallClockMs - 200);
+    prepared.resolve();
+    await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1);
+    t.mock.timers.tick(RUN_LIMIT.wallClockMs - 1);
+    await drainTurns();
+    assert.equal(resolved, false, 'inside the observer\'s own budget');
+    t.mock.timers.tick(1);
+    await drainTurns();
+    assert.equal(resolved, true, 'Run must resolve at observer-start + budget');
+    const [row] = (await pending).evaluation.cases;
+    assert.equal(row?.attachment?.status === 'refused' && row.attachment.reason, 'observer-timeout');
+    const phases = journalPhases(f.markers);
+    assert.deepEqual(phases.slice(phases.indexOf('ordinary-commit')), [
+      'ordinary-commit', 'observer-start', 'observer-expire', 'observer-end', 'attachment-bind', 'public-resolve',
+    ]);
+  } finally {
+    prepared.resolve();
+    never.resolve(recordedDrawing(f.observerCalls[0] ?? ({ attemptToken: 'late' } as ObserverCall)));
+    f.host.dispose();
+  }
+});
+
+test('runaway-release: a pending observer of a row another limit stopped is never expired', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const drawing = controlled<ObserverReply>();
+  const f = receiptFixture({ deadlineMs: OBSERVER_BACKSTOP_MS, observe: () => drawing.promise });
+  try {
+    const bundle = await receiptBundle([{ id: 'A', input: { label: 'A', mode: 'limit' }, expected: 'A' }], RUN_LIMIT);
+    let resolved = false;
+    const pending = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .finally(() => { resolved = true; });
+    await pumpUntil(t.mock.timers, () => f.observerCalls.length === 1 &&
+      f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    t.mock.timers.tick(RUN_LIMIT.wallClockMs * 4);
+    await drainTurns();
+    assert.equal(resolved, false, 'a line limit is not the ordinary clock');
+    drawing.resolve(truncatedPrefix(f.observerCalls[0]!));
+    const [row] = (await pending).evaluation.cases;
+    assert.equal(row?.failure?.origin === 'limit' && row.failure.reason, 'line-limit');
+    assert.equal(row?.attachment?.status, 'truncated');
+    assert.equal(journalPhases(f.markers).includes('observer-expire'), false);
+  } finally {
+    drawing.resolve(truncatedPrefix(f.observerCalls[0] ?? ({ attemptToken: 'late' } as ObserverCall)));
     f.host.dispose();
   }
 });

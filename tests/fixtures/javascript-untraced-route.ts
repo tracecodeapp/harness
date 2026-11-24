@@ -373,7 +373,9 @@ export async function runUntracedRouteChecks(
     const runaways = [
       // No line events inside the regex, so only the clock stops it.
       ['time limit', 'timed-out', 'for (let i = 0; i < 200; i++) console.log(i);\n  return /^(a+)+$/.test("a".repeat(40 + n) + "b") ? 1 : n;'],
-      // The app's single-line budget stops these first: never asked of the pool.
+      // The untraced ordinary run has no line budget, so its 1,500 ms clock
+      // gives the verdict. The observer's single-line budget cuts the drawing,
+      // and that prefix is kept.
       ['step limit', undefined, 'for (let i = 0; i < 200; i++) console.log(i);\n  while (n > -1) { n += 1; }\n  return n;'],
       ['printing loop', undefined, 'while (true) console.log(n);'],
     ] as const;
