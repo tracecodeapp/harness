@@ -215,8 +215,8 @@ function probe(python: PythonInterpreter) {
   };
 }
 
-function receiptHost() {
-  const world = createInProcessWorld();
+function receiptHost(prime?: (python: PythonInterpreter) => void) {
+  const world = createInProcessWorld(prime ? { prime } : {});
   const provider = createPythonPreparedExecutionProvider({
     replenishStandbyAfterUse: true,
     createWorkerClient: () => new PythonWorkerClient({
@@ -278,8 +278,12 @@ function returned(events: readonly unknown[]): unknown {
 }
 
 /** A fresh interpreter's drawing of one case, through the same provider path. */
-async function freshDrawing(input: Record<string, unknown>) {
-  const world = createInProcessWorld();
+async function freshDrawing(
+  input: Record<string, unknown>,
+  code = CODE,
+  prime?: (python: PythonInterpreter) => void
+) {
+  const world = createInProcessWorld(prime ? { prime } : {});
   const provider = createPythonPreparedExecutionProvider({
     replenishStandbyAfterUse: false,
     createWorkerClient: () => new PythonWorkerClient({
@@ -290,7 +294,7 @@ async function freshDrawing(input: Record<string, unknown>) {
   });
   try {
     const drawing = await provider.observe({
-      program: { code: CODE, functionName: 'solve', executionStyle: 'function' },
+      program: { code, functionName: 'solve', executionStyle: 'function' },
       inputs: input,
       attemptToken: 'fresh',
     });
@@ -435,4 +439,137 @@ test('the reverse: drawing then verdict batch on one interpreter gives fresh ver
     await verdictBatch(reused),
     CASES.map((testCase) => ({ success: true, output: testCase.expected, error: undefined }))
   );
+});
+
+// The interpreter-wide state the guard snapshots and restores around every
+// scope: the random module's state and the recursion limit. A fresh
+// interpreter seeds random from the OS, so each interpreter here is given
+// the same seed when it loads, before any command: the interpreter's own
+// state, not the learner's. Each verdict case that is given a seed seeds
+// random and draws; an unseeded call draws from whatever state its scope
+// began with.
+const INTERPRETER_SEED = 'import random as _tc_random\n_tc_random.seed(20261124)\ndel _tc_random';
+const seedInterpreter = (python: PythonInterpreter) => python.pyodide.runPython(INTERPRETER_SEED);
+
+const RANDOM_CODE = [
+  'import random',
+  '',
+  'def solve(seed):',
+  '    if seed:',
+  '        random.seed(seed)',
+  '    return [random.randint(0, 10 ** 9) for _ in range(3)]',
+].join('\n');
+
+test('a verdict that seeds random leaves the drawing on its worker the fresh random sequence', { timeout: 300_000 }, async () => {
+  const { world, provider, host } = receiptHost(seedInterpreter);
+  try {
+    await provider.init();
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'python-sequential-random',
+      language: 'python',
+      code: RANDOM_CODE,
+      functionName: 'solve',
+      executionStyle: 'function',
+      trace: true,
+      limits: LIMITS,
+      // The selected case draws unseeded, after the verdict's last case
+      // seeded random and drew.
+      cases: [7, 0, 11].map((seed, index) => ({ id: `case-${index + 1}`, input: { seed }, expected: null })),
+    });
+    const run = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['case-2'] } });
+    assert.equal(run.evaluation.status, 'completed');
+    // The drawing was made on the verdict's interpreter, after the batch.
+    assert.deepEqual(
+      world.commands.filter((command) => command.type.startsWith('execute-')).map(({ worker, type }) => ({ worker, type })),
+      [
+        { worker: 0, type: 'execute-prepared-program-batch' },
+        { worker: 0, type: 'execute-prepared-program' },
+      ],
+      JSON.stringify(world.commands)
+    );
+    const drawn = row(run.evaluation, 'case-2').attachment;
+    assert.equal(drawn?.status, 'drawn');
+    const events = drawn!.trace!.events;
+    // The verdict row of the same unseeded case drew the same numbers: both
+    // began from the interpreter's own state.
+    assert.deepEqual(returned(events), row(run.evaluation, 'case-2').value);
+    assert.equal(
+      JSON.stringify(events),
+      await freshDrawing({ seed: 0 }, RANDOM_CODE, seedInterpreter),
+      'the drawing\'s random sequence equals a fresh interpreter\'s'
+    );
+    await host.disposeExecution(run.executionId!);
+  } finally {
+    host.dispose();
+    provider.terminate();
+  }
+});
+
+// sys.setrecursionlimit keeps a program off the fast tier, and the worker
+// rechecks that classification before any fast batch, so such a verdict is
+// never handed over: its cases run in the compatibility scope and its
+// observer gets a fresh worker (test-python-sequential-observation.ts,
+// "a hard-isolated program draws on a fresh worker"). Here its verdict runs
+// on the path it really takes, then a drawing forced onto the fast tier, as
+// if the classifier had missed it, runs on the same interpreter: the
+// verdict's recursion limit and seeded random still do not reach it.
+const LIMIT_CODE = [
+  'import random',
+  'import sys',
+  '',
+  'def solve(seed, limit):',
+  '    if seed:',
+  '        random.seed(seed)',
+  '        sys.setrecursionlimit(limit)',
+  '    return [sys.getrecursionlimit(), [random.randint(0, 10 ** 9) for _ in range(3)]]',
+].join('\n');
+
+async function prepareLimit(python: PythonInterpreter, mode: 'code' | 'trace') {
+  const prepared = await python.runtime.prepareProgram!(python.deps, {
+    mode,
+    code: LIMIT_CODE,
+    functionName: 'solve',
+    executionStyle: 'function',
+    traceOptions: {},
+    ...(mode === 'trace' ? { observationOnly: true } : {}),
+  });
+  assert.equal(prepared.success, true, JSON.stringify(prepared).slice(0, 400));
+  assert.notEqual(prepared.artifact.isolationProfile.tier, 'algorithm-fast', 'the classifier keeps sys.setrecursionlimit off the fast tier');
+  return prepared.artifact;
+}
+
+async function limitDrawing(python: PythonInterpreter, inputs: Record<string, unknown>) {
+  const artifact = await prepareLimit(python, 'trace');
+  const forced = { ...artifact, isolationProfile: { ...artifact.isolationProfile, tier: 'algorithm-fast' } };
+  const result = await python.runtime.executePreparedProgram!(
+    python.deps, forced, inputs, { guest: guestGuardOptions({ wallClockMs: 10_000 }) }
+  );
+  const { executionTimeMs: _clock, timings: _timings, ...drawing } = structuredClone(result);
+  assert.equal(drawing.observation?.recorderCompleted, true, JSON.stringify(drawing).slice(0, 300));
+  return drawing;
+}
+
+test('one interpreter: a verdict that changes the recursion limit and seeds random leaves the next drawing fresh', { timeout: 300_000 }, async () => {
+  const reused = await loadPythonInterpreter();
+  seedInterpreter(reused);
+  const defaultLimit = reused.pyodide.runPython('import sys as _tc_sys\n_tc_sys.getrecursionlimit()');
+  const ordinary = await prepareLimit(reused, 'code');
+  const limits = [defaultLimit + 321, defaultLimit + 654];
+  for (const [index, limit] of limits.entries()) {
+    const verdict = structuredClone(await reused.runtime.executePreparedProgram!(
+      reused.deps, ordinary, { seed: 7 + index, limit }, { guest: guestGuardOptions(LIMITS) }
+    ));
+    // The verdict really changed the limit inside its scope.
+    assert.equal(verdict.success, true, JSON.stringify(verdict).slice(0, 300));
+    assert.equal(verdict.output[0], limit);
+  }
+
+  const afterVerdict = await limitDrawing(reused, { seed: 0, limit: 0 });
+  const fresh = await loadPythonInterpreter();
+  seedInterpreter(fresh);
+  const freshDrawn = await limitDrawing(fresh, { seed: 0, limit: 0 });
+  const value = returned(afterVerdict.trace.events) as [number, number[]];
+  assert.equal(value[0], defaultLimit, 'the drawing sees the default recursion limit');
+  assert.deepEqual(value, returned(freshDrawn.trace.events), 'and the fresh random sequence');
+  assert.equal(JSON.stringify(afterVerdict), JSON.stringify(freshDrawn), 'the drawing equals a fresh interpreter\'s');
 });

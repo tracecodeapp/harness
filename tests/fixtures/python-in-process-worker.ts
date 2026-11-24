@@ -100,13 +100,18 @@ export interface InProcessCommand {
 export interface InProcessWorld {
   readonly workers: InProcessPythonWorker[];
   readonly commands: InProcessCommand[];
+  /** Runs on each worker's interpreter as soon as it loads, before any command. */
+  readonly prime?: (python: PythonInterpreter) => void;
   factory(): InProcessPythonWorker;
 }
 
-export function createInProcessWorld(): InProcessWorld {
+export function createInProcessWorld(
+  options: { prime?: (python: PythonInterpreter) => void } = {}
+): InProcessWorld {
   const world: InProcessWorld = {
     workers: [],
     commands: [],
+    ...(options.prime ? { prime: options.prime } : {}),
     factory() {
       const worker = new InProcessPythonWorker(world, world.workers.length);
       world.workers.push(worker);
@@ -129,7 +134,10 @@ export class InProcessPythonWorker {
 
   /** This worker's interpreter (loaded on first use). */
   python(): Promise<PythonInterpreter> {
-    return this.interpreter ??= loadPythonInterpreter();
+    return this.interpreter ??= loadPythonInterpreter().then((python) => {
+      this.world.prime?.(python);
+      return python;
+    });
   }
 
   postMessage(message: unknown): void {
