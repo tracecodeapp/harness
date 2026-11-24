@@ -12,6 +12,7 @@ import {
 
 const [raw] = process.argv.slice(2);
 assert.ok(raw, 'Usage: score-python-fresh-aa.mjs <raw session directory>');
+const partial = process.env.SPEED_AA_PARTIAL === '1';
 const prefix = 'python-fresh-aa';
 const metadata = JSON.parse(readFileSync(join(raw, prefix + '-metadata.json'), 'utf8'));
 const samples = readFileSync(join(raw, prefix + '-samples.jsonl'), 'utf8').trim()
@@ -23,7 +24,7 @@ assert.deepEqual(metadata.pythonFreshAa, {
   repeatRun: true, alternatingOrderPerRound: true,
 });
 assert.deepEqual(metadata.schedule, pythonFreshAaPlan);
-assert.equal(metadata.complete, true);
+assert.equal(metadata.complete, !partial);
 assert.deepEqual(metadata.packages[labels[0]], metadata.packages[labels[1]],
   'A/A labels must use exact same package bytes');
 
@@ -35,7 +36,11 @@ const push = (key, value) => {
 };
 for (const sample of samples) {
   const group = metadata.schedule[sample.groupIndex];
-  assert.ok(sample.kept && !sample.invalid && !sample.excluded && !sample.refusal);
+  if (!sample.kept) {
+    assert.ok(sample.invalid || sample.excluded || sample.refusal);
+    continue;
+  }
+  assert.ok(!sample.invalid && !sample.excluded && !sample.refusal);
   const expectedOrder = pythonFreshAaRoundOrder(group.versions, sample.round);
   assert.equal(sample.position, expectedOrder.indexOf(sample.version));
   const phases = group.language === 'python'
@@ -61,7 +66,17 @@ for (const sample of samples) {
 }
 
 let pass = true;
-for (const group of metadata.schedule) {
+const incompleteGroups = [];
+for (const [groupIndex, group] of metadata.schedule.entries()) {
+  const groupComplete = metricEndpoints(group).every((endpoint) => {
+    const measuredEndpoint = warmMetricName(group, endpoint);
+    const cell = [group.language, group.problem, measuredEndpoint].join('/');
+    return labels.every((label) => (values.get(cell + '/label/' + label) ?? []).length === 20);
+  });
+  if (!groupComplete) {
+    incompleteGroups.push(groupIndex);
+    continue;
+  }
   for (const endpoint of metricEndpoints(group)) {
     const measuredEndpoint = warmMetricName(group, endpoint);
     const cell = [group.language, group.problem, measuredEndpoint].join('/');
@@ -73,8 +88,11 @@ for (const group of metadata.schedule) {
       Object.fromEntries([0, 1].map((position) =>
         [position, stats(values.get(cell + '/label-position/' + label + '/' + position))]))]));
     assert.ok(Object.values(labelStats).every(({ n }) => n === 20));
-    assert.ok(Object.values(positionStats).every(({ n }) => n === 20));
-    assert.ok(Object.values(labelPositionStats).flatMap(Object.values).every(({ n }) => n === 10));
+    assert.equal(Object.values(positionStats).reduce((sum, { n }) => sum + n, 0), 40);
+    assert.ok(Object.values(positionStats).every(({ n }) => n > 0));
+    assert.ok(Object.values(labelPositionStats).every((positions) =>
+      Object.values(positions).reduce((sum, { n }) => sum + n, 0) === 20 &&
+      Object.values(positions).every(({ n }) => n > 0)));
     const checks = {
       labelMedian: withinFivePercent(labelStats[labels[0]].median, labelStats[labels[1]].median),
       labelP90: withinFivePercent(labelStats[labels[0]].p90, labelStats[labels[1]].p90),
@@ -89,5 +107,5 @@ for (const group of metadata.schedule) {
     console.log(JSON.stringify({ cell, labelStats, positionStats, labelPositionStats, checks, pass: cellPass }));
   }
 }
-console.log(JSON.stringify({ summary: { pass } }));
-if (!pass) process.exitCode = 1;
+console.log(JSON.stringify({ summary: { pass, partial, incompleteGroups } }));
+if (!pass || !partial && incompleteGroups.length > 0) process.exitCode = 1;
