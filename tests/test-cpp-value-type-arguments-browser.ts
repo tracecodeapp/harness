@@ -1,0 +1,487 @@
+#!/usr/bin/env npx tsx
+
+/**
+ * C++ learner value types as call arguments, across every driver.
+ *
+ * A learner type such as `struct Value { Value(int); Value(const std::string&); }`
+ * receives JSON scalars through its one-argument constructors and JSON objects
+ * field by field. Every driver must decode it the same way: the single-case
+ * drivers (literals), the batch driver and the prepared driver (the generated
+ * JsonObjectAdapter), untraced and traced. A value the type cannot be built
+ * from fails with a message naming the type; it is never a default-constructed
+ * value. The GA G6 fixtures `cpp-value-default` and `cpp-value-no-default` are
+ * the first two scenarios.
+ */
+
+import { test } from 'node:test';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { build } from 'esbuild';
+import { chromium } from 'playwright';
+import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
+import { runCommand, waitForHttp } from './example-app-smoke';
+
+function assertCondition(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+// Same default as the learner-failure matrix: the headless shell crashes on
+// C++ WebAssembly traps on Linux, so use full Chromium there.
+const BROWSER_CHANNEL = process.env.TRACECODE_MATRIX_BROWSER_CHANNEL ||
+  (process.platform === 'linux' ? 'chromium' : undefined);
+
+interface Scenario {
+  name: string;
+  functionName: string;
+  executionStyle: 'solution-method' | 'ops-class';
+  code: string;
+  cases: Record<string, unknown>[];
+  /** Expected output per case, or `{ error }`: the run must fail and its report include the text. */
+  expected: Array<unknown | { error: string }>;
+  /**
+   * Paths not asserted, with the reason. The GA fixtures index a traced
+   * `vector<vector<Value>>` element's member, which the runtime's traced nested
+   * vector reference does not forward (a header limit, unchanged here).
+   */
+  untracedOnly?: string;
+}
+
+const VALUE_TYPE = (withDefault: boolean) => `struct Value {
+  int number;
+  std::string text;
+  ${withDefault ? 'Value() : number(0) {}' : ''}
+  Value(int n) : number(n) {}
+  Value(const std::string& s) : number(0), text(s) {}
+};`;
+
+const GA_FIXTURE = (withDefault: boolean) => `#include <string>
+#include <vector>
+${VALUE_TYPE(withDefault)}
+class Solution {
+public:
+  int solve(std::vector<std::vector<Value>> operations) {
+    return operations[0][0].text == "add" ? operations[0][1].number : -1;
+  }
+};`;
+
+const FLAT_FIXTURE = (withDefault: boolean) => `#include <string>
+#include <vector>
+${VALUE_TYPE(withDefault)}
+class Solution {
+public:
+  int solve(std::vector<Value> args, Value scale) {
+    return args[0].text == "add" ? args[1].number * scale.number : -1;
+  }
+};`;
+
+const OPS_FIXTURE = (withDefault: boolean) => `#include <string>
+#include <vector>
+${VALUE_TYPE(withDefault)}
+class Ledger {
+  int total = 0;
+
+public:
+  Ledger() = default;
+
+  int add(Value amount) {
+    total += amount.number;
+    return total;
+  }
+
+  std::string label(Value name) {
+    return name.text;
+  }
+};`;
+
+const OPS_CASES = [
+  { operations: ['Ledger', 'add', 'label', 'add'], arguments: [[], [7], ['rent'], [4]] },
+  { operations: ['Ledger', 'add', 'label', 'add'], arguments: [[], [1], ['food'], [2]] },
+];
+
+const method = (name: string, types: string, signature: string, body: string) => `#include <string>
+#include <string_view>
+#include <vector>
+${types}
+class Solution {
+public:
+  ${signature} {
+    ${body}
+  }
+};`;
+
+const KINDS = 'std::string out; for (auto& value : values) out += value.kind + ","; return out;';
+
+const SCENARIOS: Scenario[] = [
+  ...[false, true].map((withDefault): Scenario => ({
+    name: `GA cpp-value-${withDefault ? 'default' : 'no-default'}`,
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: GA_FIXTURE(withDefault),
+    cases: [{ operations: [['add', 7]] }, { operations: [['add', 11]] }],
+    expected: [7, 11],
+    untracedOnly: 'traced vector<vector<Value>> element member access (runtime header limit)',
+  })),
+  ...[false, true].map((withDefault): Scenario => ({
+    name: `flat value arguments, ${withDefault ? 'default-constructible' : 'no default constructor'}`,
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: FLAT_FIXTURE(withDefault),
+    cases: [{ args: ['add', 7], scale: 2 }, { args: ['sub', 7], scale: 3 }],
+    expected: [14, -1],
+  })),
+  ...[false, true].map((withDefault): Scenario => ({
+    name: `ops-class value arguments, ${withDefault ? 'default-constructible' : 'no default constructor'}`,
+    functionName: 'Ledger',
+    executionStyle: 'ops-class',
+    code: OPS_FIXTURE(withDefault),
+    cases: OPS_CASES,
+    expected: [[null, 7, 'rent', 11], [null, 1, 'food', 3]],
+  })),
+  {
+    // An integer picks int over double and long long; past int's range it
+    // picks long long; a fraction picks double: as the literal would.
+    name: 'integer, floating and wide overloads',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('overloads',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(double) : kind("double") {} Kind(long long) : kind("long long") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [7, 2.5, 3000000000, -4] }],
+    expected: ['int,double,long long,int,'],
+  },
+  {
+    name: 'bool and int overloads, explicit',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('bool',
+      'struct Kind { std::string kind; explicit Kind(bool) : kind("bool") {} explicit Kind(int) : kind("int") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [true, 1, false, 0] }],
+    expected: ['bool,int,bool,int,'],
+  },
+  {
+    name: 'string, const char* and string_view constructors',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('strings',
+      'struct Both { std::string kind; Both(const std::string&) : kind("string") {} Both(const char*) : kind("const char*") {} };\n' +
+      'struct View { std::string kind; View(std::string_view text) : kind(text) {} };',
+      'std::string solve(Both both, View view)', 'return both.kind + "|" + view.kind;'),
+    cases: [{ both: 'x', view: 'seen' }],
+    expected: ['const char*|seen'],
+  },
+  {
+    name: 'object and scalar forms of one type, and a one-field aggregate',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('forms',
+      'struct Pair { int n = 0; std::string s; Pair() = default; Pair(int x) : n(x) {} };\nstruct Wrap { int v; };',
+      'std::string solve(std::vector<Pair> values, std::vector<Wrap> wraps)',
+      'std::string out; for (auto& value : values) out += std::to_string(value.n) + value.s + ","; for (auto& w : wraps) out += std::to_string(w.v) + ";"; return out;'),
+    cases: [{ values: [{ n: 3, s: 'x' }, 5], wraps: [4, { v: 6 }] }],
+    expected: ['3x,5,4;6;'],
+  },
+  {
+    // One case per scenario: the compile-once batch driver runs every case in
+    // one program, so a case that fails takes the batch with it.
+    name: 'a scalar for a type with no matching constructor names the type',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('nomatch', 'struct Point { int x; int y; };', 'int solve(Point point)', 'return point.x + point.y;'),
+    cases: [{ point: 7 }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Point' from an integer argument" }],
+  },
+  {
+    name: 'an object for a type with no constructors still decodes field by field',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('fields', 'struct Point { int x; int y; };', 'int solve(Point point)', 'return point.x + point.y;'),
+    cases: [{ point: { x: 1, y: 2 } }],
+    expected: [3],
+  },
+  {
+    name: 'null for a type with no default constructor names the type',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('null', 'struct Box { int n; Box(int x) : n(x) {} };', 'int solve(std::vector<Box> boxes)', 'int t = 0; for (auto& b : boxes) t += b.n; return t;'),
+    cases: [{ boxes: [null, 1] }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Box' from null" }],
+  },
+  {
+    name: 'ambiguous constructors are a compile-stage diagnostic naming the type',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('ambiguous', 'struct Wide { long n; Wide(long x) : n(x) {} Wide(short x) : n(x) {} };', 'int solve(Wide wide)', 'return static_cast<int>(wide.n);'),
+    cases: [{ wide: 7 }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Wide' from an integer argument: its constructors taking long and short are equally good matches." }],
+  },
+];
+
+interface RunSummary {
+  ok: boolean;
+  output?: unknown;
+  events?: number;
+  raw: string;
+}
+
+type PathResults = Record<string, RunSummary[]>;
+
+const REQUIRED_TRACECC_ASSETS = [
+  'tracecc-reactor.wasm',
+  'llvm-resources.tar',
+  'tracecode_runtime.hpp',
+  'narrow.pch',
+  'narrow.source.hpp',
+  'narrow.o',
+  'broad.pch',
+  'broad.source.hpp',
+  'broad.o',
+  'map.pch',
+  'map.source.hpp',
+  'map.o',
+] as const;
+
+// The TraceCC compiler assets, as tests/test-tracecc-browser-runtime.ts loads them.
+async function resolveTraceCCAssets(root: string): Promise<{
+  sourceRoot: string;
+  files: readonly { path: string; size: number; sha256: string }[];
+}> {
+  if (process.env.TRACECC_RUNTIME_ASSET_DIR) {
+    const sourceRoot = resolve(process.env.TRACECC_RUNTIME_ASSET_DIR);
+    return {
+      sourceRoot,
+      files: await Promise.all(REQUIRED_TRACECC_ASSETS.map(async (path) => {
+        const bytes = await readFile(join(sourceRoot, path));
+        return { path, size: bytes.byteLength, sha256: createHash('sha256').update(bytes).digest('hex') };
+      })),
+    };
+  }
+  const { tracecc } = await loadEngineRuntimePackages(root);
+  return {
+    sourceRoot: tracecc.sourceRoot,
+    files: tracecc.files.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+  };
+}
+
+async function main(): Promise<void> {
+  const root = resolve(process.cwd());
+  const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-cpp-value-type-browser-'));
+  const workersRoot = join(tempRoot, 'workers');
+  const port = 5600 + Math.floor(Math.random() * 200);
+  const origin = `http://127.0.0.1:${port}`;
+  const scenarios = SCENARIOS;
+  const traceccAssets = await resolveTraceCCAssets(root);
+  const compilerIntegrity = {
+    assets: traceccAssets.files.map((file) => ({
+      url: `${origin}/tracecc/${file.path}`,
+      size: file.size,
+      sha256: file.sha256,
+    })),
+  };
+
+  await runCommand('pnpm', ['exec', 'tsx', 'src/cli.ts', 'sync-assets', workersRoot, '--languages', 'cpp'], root);
+  await symlink(traceccAssets.sourceRoot, join(tempRoot, 'tracecc'), 'dir');
+  for (const entry of ['cpp-worker-client', 'cpp-prepared-provider', 'tracecc-compiler-service']) {
+    await build({
+      entryPoints: [join(root, 'packages', 'runtime-cpp', 'src', `${entry}.ts`)],
+      outfile: join(tempRoot, `${entry}.js`),
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+      tsconfig: join(root, 'tsconfig.base.json'),
+      alias: {
+        zlib: join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+        'node:zlib': join(root, 'packages/tracekernel/src/zlib-browser-shim.ts'),
+      },
+      define: { 'process.env.NODE_ENV': '"production"' },
+    });
+  }
+  await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>C++ value-type arguments</title>', 'utf8');
+
+  const server = spawn('python3', ['-c', [
+    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
+    'import os',
+    'class Handler(SimpleHTTPRequestHandler):',
+    '    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".hpp": "text/plain"}',
+    '    def end_headers(self):',
+    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
+    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
+    '        self.send_header("Cache-Control", "no-cache")',
+    '        super().end_headers()',
+    `os.chdir(${JSON.stringify(tempRoot)})`,
+    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
+  ].join('\n')], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+
+  const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
+  try {
+    await waitForHttp(origin, 30_000);
+    const page = await browser.newPage();
+    page.setDefaultTimeout(600_000);
+    await page.goto(origin);
+    await page.evaluate('globalThis.__name = (fn) => fn');
+    const results = await page.evaluate(`(async () => {
+      const { CppWorkerClient } = await import('/cpp-worker-client.js');
+      const { createCppPreparedExecutionProvider } = await import('/cpp-prepared-provider.js');
+      const { TraceCCCompilerService } = await import('/tracecc-compiler-service.js');
+      const shard = (name) => ({
+        pchUrl: '/tracecc/' + name + '.pch',
+        pchSourceUrl: '/tracecc/' + name + '.source.hpp',
+        runtimeObjectUrl: '/tracecc/' + name + '.o',
+      });
+      const compiler = new TraceCCCompilerService({
+        workerUrl: '/workers/cpp-worker.js',
+        compilerUrl: '/tracecc/tracecc-reactor.wasm',
+        resourcesUrl: '/tracecc/llvm-resources.tar',
+        runtimeHeaderUrl: '/tracecc/tracecode_runtime.hpp',
+        compilerIntegrity: ${JSON.stringify(compilerIntegrity)},
+        maxCompilesPerWorker: 8,
+        shards: { narrow: shard('narrow'), broad: shard('broad'), map: shard('map') },
+      });
+      const workerOptions = {
+        workerUrl: '/workers/cpp-worker.js',
+        compilerWasmUrl: '/tracecc/tracecc-reactor.wasm',
+        linkerWasmUrl: '/tracecc/tracecc-reactor.wasm',
+        sysrootUrl: '/tracecc/llvm-resources.tar',
+        runtimeHeaderUrl: '/tracecc/tracecode_runtime.hpp',
+        trustedCompilerService: compiler,
+        executionTimeoutMs: 60000,
+        tracingTimeoutMs: 60000,
+      };
+      const scenarios = ${JSON.stringify(scenarios)};
+      const traceOptions = { maxTraceSteps: 2000 };
+      const summarize = (result) => {
+        let raw;
+        try { raw = JSON.stringify(result); } catch (error) { raw = String(error); }
+        const ok = result && (result.kind !== undefined ? result.kind === 'completed' : result.success === true);
+        const events = result && result.trace && Array.isArray(result.trace.events) ? result.trace.events.length : undefined;
+        return { ok: Boolean(ok), output: result ? result.output : undefined, events, raw: String(raw).slice(0, 2000) };
+      };
+      const failure = (error) => ({ ok: false, raw: 'threw: ' + (error && error.message ? error.message : String(error)) });
+      const client = new CppWorkerClient(workerOptions);
+      const out = {};
+      for (const scenario of scenarios) {
+        const paths = {};
+        const base = { code: scenario.code, functionName: scenario.functionName, executionStyle: scenario.executionStyle };
+
+        paths.singleCase = [];
+        paths.singleCaseTraced = [];
+        for (const inputs of scenario.cases) {
+          try { paths.singleCase.push(summarize(await client.executeCode({ ...base, inputs }))); }
+          catch (error) { paths.singleCase.push(failure(error)); }
+          try { paths.singleCaseTraced.push(summarize(await client.executeWithTracing({ ...base, inputs, traceOptions }))); }
+          catch (error) { paths.singleCaseTraced.push(failure(error)); }
+        }
+        try {
+          const batch = await client.executeCodeBatch({ ...base, inputBatch: scenario.cases });
+          paths.batch = scenario.cases.map((_inputs, index) => summarize(batch.results[index]));
+        } catch (error) {
+          paths.batch = scenario.cases.map(() => failure(error));
+        }
+
+        const codeProvider = createCppPreparedExecutionProvider({ createWorkerClient: () => new CppWorkerClient(workerOptions) });
+        await codeProvider.init();
+        const prepared = await codeProvider.prepareProgram({ mode: 'code', ...base });
+        if (prepared.kind !== 'prepared') {
+          paths.prepared = scenario.cases.map(() => failure(new Error('prepare failed: ' + JSON.stringify(prepared))));
+          paths.preparedBatch = paths.prepared;
+        } else {
+          paths.prepared = [];
+          for (const inputs of scenario.cases) {
+            try { paths.prepared.push(summarize(await prepared.program.executeIsolated({ inputs }))); }
+            catch (error) { paths.prepared.push(failure(error)); }
+          }
+          try {
+            const batch = await prepared.program.executeBatchIsolated({ inputBatch: scenario.cases });
+            paths.preparedBatch = batch.map(summarize);
+          } catch (error) {
+            paths.preparedBatch = scenario.cases.map(() => failure(error));
+          }
+          await prepared.program.dispose();
+        }
+
+        const traceProvider = createCppPreparedExecutionProvider({ createWorkerClient: () => new CppWorkerClient(workerOptions) });
+        await traceProvider.init();
+        const preparedTrace = await traceProvider.prepareProgram({ mode: 'trace', ...base, traceOptions });
+        if (preparedTrace.kind !== 'prepared') {
+          const failed = scenario.cases.map(() => failure(new Error('trace prepare failed: ' + JSON.stringify(preparedTrace))));
+          paths.preparedTraceRecording = failed;
+          paths.preparedTraceNotRecording = failed;
+          paths.preparedTraceBatchMixed = failed;
+        } else {
+          paths.preparedTraceRecording = [];
+          paths.preparedTraceNotRecording = [];
+          for (const inputs of scenario.cases) {
+            try { paths.preparedTraceRecording.push(summarize(await preparedTrace.program.executeIsolated({ inputs, recordTrace: true }))); }
+            catch (error) { paths.preparedTraceRecording.push(failure(error)); }
+            try { paths.preparedTraceNotRecording.push(summarize(await preparedTrace.program.executeIsolated({ inputs, recordTrace: false }))); }
+            catch (error) { paths.preparedTraceNotRecording.push(failure(error)); }
+          }
+          try {
+            const batch = await preparedTrace.program.executeBatchIsolated({
+              inputBatch: scenario.cases,
+              traceEnabledBatch: scenario.cases.map((_inputs, index) => index % 2 === 0),
+            });
+            paths.preparedTraceBatchMixed = batch.map(summarize);
+          } catch (error) {
+            paths.preparedTraceBatchMixed = scenario.cases.map(() => failure(error));
+          }
+          await preparedTrace.program.dispose();
+        }
+        out[scenario.name] = paths;
+        codeProvider.terminate();
+        traceProvider.terminate();
+      }
+      client.terminate();
+      compiler.terminate();
+      return out;
+    })()`) as Record<string, PathResults>;
+
+    const failures: string[] = [];
+    for (const scenario of scenarios) {
+      const paths = results[scenario.name];
+      for (const [pathName, runs] of Object.entries(paths)) {
+        const traced = /Trace|Traced/.test(pathName);
+        if (traced && scenario.untracedOnly) {
+          console.log(`known limit (not asserted): ${scenario.name} / ${pathName}: ${scenario.untracedOnly}: ${runs.map((run) => JSON.stringify(run.ok ? run.output : 'failed')).join(', ')}`);
+          continue;
+        }
+        scenario.expected.forEach((expected, index) => {
+          const run = runs[index];
+          const label = `${scenario.name} / ${pathName} / case ${index + 1}`;
+          if (expected && typeof expected === 'object' && !Array.isArray(expected) && 'error' in expected) {
+            const text = (expected as { error: string }).error;
+            if (run.ok || !run.raw.includes(text)) failures.push(`${label}: expected a failure naming "${text}", got ${run.raw}`);
+            return;
+          }
+          if (!run.ok || JSON.stringify(run.output) !== JSON.stringify(expected)) {
+            failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${run.raw}`);
+          }
+        });
+      }
+      for (const [index, expected] of scenario.expected.entries()) {
+        if (scenario.untracedOnly || (expected && typeof expected === 'object' && 'error' in (expected as object))) continue;
+        const recorded = paths.preparedTraceRecording[index];
+        const silent = paths.preparedTraceNotRecording[index];
+        if (recorded.ok && !(typeof recorded.events === 'number' && recorded.events > 0)) {
+          failures.push(`${scenario.name} / preparedTraceRecording / case ${index + 1}: no trace events recorded`);
+        }
+        if (silent.ok && typeof silent.events === 'number' && silent.events > 0) {
+          failures.push(`${scenario.name} / preparedTraceNotRecording / case ${index + 1}: recorded ${silent.events} events`);
+        }
+      }
+      console.log(`${scenario.name}: ${Object.keys(paths).length} paths x ${scenario.cases.length} cases`);
+    }
+    assertCondition(failures.length === 0, `C++ value-type arguments diverged:\n${failures.join('\n')}`);
+    console.log(`PASS: C++ value-type arguments decode alike on every driver (${scenarios.length} scenarios)`);
+  } finally {
+    await browser.close();
+    server.kill('SIGTERM');
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+test('cpp value-type arguments decode alike on every driver', main);

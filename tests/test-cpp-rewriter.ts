@@ -58,6 +58,7 @@ globalThis.__tracecodeCppRewriter = {
   finalizePreparedObservation,
   buildDriverSource,
   buildOpsClassDriverSource,
+  buildOpsClassBatchDriverSource,
   buildPreparedOpsClassDriverSource,
   instrumentCppSourceForTracing,
   parseCppFunctionSignatures,
@@ -91,6 +92,12 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
     source: string,
     functionName: string,
     inputs: Record<string, unknown>,
+    options?: Record<string, unknown>
+  ) => string;
+  buildOpsClassBatchDriverSource: (
+    source: string,
+    className: string,
+    inputBatch: readonly Record<string, unknown>[],
     options?: Record<string, unknown>
   ) => string;
   buildPreparedOpsClassDriverSource: (
@@ -759,6 +766,97 @@ assertCondition(
     !/emit_serialized_call_event\(\d+, "delete",/.test(tracedSingleDelete) &&
     /emit_serialized_call_event\(7, "deleteKey", __tc_args_json_7_7\)/.test(tracedPreparedDelete),
   `traced ops-class drivers should record the aliased call as deleteKey in both drivers:\n${tracedSingleDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}\n${tracedPreparedDelete.split('\n').filter((line) => line.includes('emit_serialized_call_event')).join('\n')}`
+);
+
+// Learner value types as arguments (GA G6 cpp-value-default and
+// cpp-value-no-default): a JSON scalar reaches the type through its
+// one-argument constructor on every driver, and no driver default-constructs
+// a type that has no default constructor.
+const valueTypeSource = (withDefault: boolean, owner: 'solution' | 'ops') => [
+  '#include <string>',
+  '#include <vector>',
+  'struct Value {',
+  '  int number;',
+  '  std::string text;',
+  withDefault ? '  Value() : number(0) {}' : '',
+  '  Value(int n) : number(n) {}',
+  '  Value(const std::string& s) : number(0), text(s) {}',
+  '};',
+  ...(owner === 'solution'
+    ? [
+        'class Solution {',
+        'public:',
+        '  int solve(std::vector<std::vector<Value>> operations) {',
+        '    return operations[0][0].text == "add" ? operations[0][1].number : -1;',
+        '  }',
+        '};',
+      ]
+    : [
+        'class Ledger {',
+        '  int total = 0;',
+        'public:',
+        '  Ledger() = default;',
+        '  int add(Value amount) {',
+        '    total += amount.number;',
+        '    return total;',
+        '  }',
+        '  std::string label(Value name) {',
+        '    return name.text;',
+        '  }',
+        '};',
+      ]),
+].join('\n');
+const valueOps = { operations: ['Ledger', 'add', 'label'], arguments: [[], [7], ['rent']] };
+for (const withDefault of [false, true]) {
+  for (const tracing of [false, true]) {
+    const solution = valueTypeSource(withDefault, 'solution');
+    const ops = valueTypeSource(withDefault, 'ops');
+    const adapterDrivers: Record<string, string> = {
+      single: rewriter.buildDriverSource(solution, 'solve', { operations: [['add', 7]] }, { tracing }),
+      batch: rewriter.buildBatchDriverSource(solution, 'solve', [{ operations: [['add', 7]] }], { tracing }),
+      prepared: rewriter.buildBatchDriverSource(solution, 'solve', [{}], { tracing }),
+      opsBatch: rewriter.buildOpsClassBatchDriverSource(ops, 'Ledger', [valueOps], { tracing }),
+      opsPrepared: rewriter.buildPreparedOpsClassDriverSource(ops, 'Ledger', { tracing }),
+    };
+    for (const [name, driver] of Object.entries(adapterDrivers)) {
+      const label = `${name} driver (default constructor ${withDefault}, tracing ${tracing})`;
+      assertCondition(
+        driver.includes('struct JsonObjectAdapter<Value>') &&
+          driver.includes('return Self(tracecode::json_to<int>(value));') &&
+          driver.includes('return Self(std::string(value.string_value));'),
+        `${label} should decode a JSON integer through Value(int) and a JSON string through Value(const std::string&)`
+      );
+      assertCondition(
+        !/\bValue out\{\}/.test(driver) &&
+          /if constexpr \(std::is_default_constructible_v<Self>\) \{\s*Self out\{\};/.test(driver),
+        `${label} should default-construct Value only under a default-constructibility check`
+      );
+    }
+    const opsSingle = rewriter.buildOpsClassDriverSource(ops, 'Ledger', valueOps, { tracing });
+    assertCondition(
+      opsSingle.includes('Value(static_cast<int>(7))') && opsSingle.includes('Value(std::string("rent"))'),
+      `single-case ops-class driver (default constructor ${withDefault}, tracing ${tracing}) should build Value literals through the same constructors:\n${opsSingle.split('\n').filter((line) => line.includes('Value')).join('\n')}`
+    );
+  }
+}
+// Ambiguous constructors are a compile-stage diagnostic naming the type, and
+// a type that no JSON value can build is refused at compile time too.
+const ambiguousDriver = rewriter.buildBatchDriverSource(
+  'struct Wide { long n; Wide(long x) : n(x) {} Wide(short x) : n(x) {} };\nclass Solution {\npublic:\n  int solve(Wide wide) { return (int)wide.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  ambiguousDriver.includes("TraceCode cannot build C++ type 'Wide' from an integer argument: its constructors taking long and short are equally good matches.") &&
+    /static_assert\(sizeof\(Json\) == 0,/.test(ambiguousDriver),
+  'ambiguous one-argument constructors should be a static_assert naming the type'
+);
+const unusableDriver = rewriter.buildBatchDriverSource(
+  '#include <vector>\nstruct Bag { int n; Bag(std::vector<int> v) : n(v.size()) {} };\nclass Solution {\npublic:\n  int solve(Bag bag) { return bag.n; }\n};',
+  'solve', [{}], {}
+);
+assertCondition(
+  unusableDriver.includes("static_assert(std::is_default_constructible_v<Self>, \"TraceCode cannot build C++ type 'Bag' from test input"),
+  'a type with neither a default nor a scalar constructor should be refused at compile time, naming the type'
 );
 
 console.log('PASS: C++ rewriter source snapshots');
