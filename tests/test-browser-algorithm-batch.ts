@@ -283,13 +283,14 @@ function assertPythonInteractiveWorkers(result: BatchLanguageResult): void {
     if (imageWorker && commands.length === 1 && commands[0]?.type === 'build-runtime-image') {
       return { role: 'runtime-image', createdDuringRun, executions };
     }
-    if (executions.length === 1 && executions[0]?.type === 'execute-prepared-program-batch' &&
-        executions[0].mode === 'code' && executions[0].batchSize === algorithmCaseCount) {
-      return { role: 'ordinary', createdDuringRun, executions };
-    }
-    if (executions.length === algorithmCaseCount && executions.every(({ type, mode, observationOnly }) =>
-      type === 'execute-prepared-program' && mode === 'trace' && observationOnly === true)) {
-      return { role: 'observer', createdDuringRun, executions };
+    // Sequential observation: the verdict batch, then every drawing (the
+    // Run's and each click-draw's) on the same worker.
+    const [verdict, ...drawings] = executions;
+    if (verdict?.type === 'execute-prepared-program-batch' && verdict.mode === 'code' &&
+        verdict.batchSize === algorithmCaseCount && drawings.length === algorithmCaseCount &&
+        drawings.every(({ type, mode, observationOnly }) =>
+          type === 'execute-prepared-program' && mode === 'trace' && observationOnly === true)) {
+      return { role: 'ordinary-then-observer', createdDuringRun, executions };
     }
     if (!imageWorker && createdDuringRun && commands.every(({ type }) => type === 'init' || type === 'warmup')) {
       return { role: 'replacement-standby', createdDuringRun, executions };
@@ -297,12 +298,12 @@ function assertPythonInteractiveWorkers(result: BatchLanguageResult): void {
     return { role: 'unexpected', createdDuringRun, executions };
   });
   const actual = roles.map(({ role }) => role).sort();
-  const expected = ['observer', 'ordinary'];
+  const expected = ['ordinary-then-observer'];
   if (result.warmMode === 'cold') expected.push('runtime-image');
   if (workerLifecycle === 'warm-and-retire') expected.push('replacement-standby');
   assertCondition(
     JSON.stringify(actual) === JSON.stringify(expected.sort()),
-    `Python interactive Run must keep one ordinary worker and one observer across all ${algorithmCaseCount} cases: ${JSON.stringify(workers)}`
+    `Python interactive Run must judge and then draw all ${algorithmCaseCount} cases on one worker: ${JSON.stringify(workers)}`
   );
   console.log(JSON.stringify({
     fixture: 'Python interactive worker roles',

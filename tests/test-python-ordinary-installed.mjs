@@ -237,7 +237,12 @@ try {
     assert.equal(ordinary.length, 1);
     assert.equal(ordinary[0].count, 2);
     assert.equal(observer.length, 2);
-    assert.ok(observer.every(({ worker }) => worker !== ordinary[0].worker));
+    // Sequential observation: the drawings run on the verdict's worker,
+    // and only after the verdict batch answered.
+    assert.ok(observer.every(({ worker }) => worker === ordinary[0].worker));
+    const verdictAck = result.watchedTraffic.findIndex(({ phase, mode }) => phase === 'ack' && mode === 'code');
+    const firstDrawing = result.watchedTraffic.findIndex(({ phase, observer: drawing }) => phase === 'dispatch' && drawing);
+    assert.ok(verdictAck >= 0 && firstDrawing > verdictAck, JSON.stringify(result.watchedTraffic));
     assert.deepEqual(result.watchedTraffic.filter(({ phase }) => phase === 'admit').map(({ index }) => index), [0, 1]);
     assert.deepEqual(result.submitTraffic.map(({ phase, mode, index }) => [phase, mode, index]), [
       ['dispatch', 'code', undefined],

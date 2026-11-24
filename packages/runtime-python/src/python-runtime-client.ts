@@ -1,5 +1,6 @@
 import type {
   PythonPreparedProgramHandle,
+  PythonPreparedProgramResult,
   PythonRawTraceResult,
   PythonProjectCommandRequest,
   PythonWorkerClient,
@@ -51,6 +52,7 @@ import {
   isExecutionTimeoutError,
   isRuntimeProjectExecuteRequest,
 } from '@tracecode/runtime-browser/internal';
+import { findJudgeOrdinaryPreparationKey } from '../../runtime-browser/src/browser-runtime-host-internal';
 
 const PYTHON_TRACE_EVENT_KINDS = new Set<RuntimeTraceEventKind>([
   'line',
@@ -282,6 +284,24 @@ function pythonTraceResultKeepsFastWorker(result: ExecutionResult): boolean {
     return false;
   }
   return !(result.kind === 'limit' && result.reason === 'client-timeout');
+}
+
+/**
+ * An algorithm-fast verdict batch left its interpreter as the batch itself
+ * would leave it for a next case: every row ran in the fast batch's
+ * per-case scope and none ended the runtime. A worker the client had to
+ * terminate (a case outlived its clock) is excluded by the caller.
+ */
+function pythonBatchKeepsInterpreter(rows: readonly CodeExecutionResult[]): boolean {
+  return rows.length > 0 && rows.every((row) =>
+    row.timings?.algorithmFastBatch === true &&
+    !(row.kind === 'failed' && row.error.startsWith(PYTHON_RUNTIME_ENDED_PREFIX))
+  );
+}
+
+function pythonRawRowEndedRuntime(row: unknown): boolean {
+  const error = (row as { error?: unknown } | null)?.error;
+  return typeof error === 'string' && error.startsWith(PYTHON_RUNTIME_ENDED_PREFIX);
 }
 
 function normalizeExecutionTimings(value: unknown): RuntimeExecutionTimings | undefined {
@@ -821,6 +841,24 @@ type PythonOrdinaryBatchCall = RuntimePreparedCodeBatchCall & {
   readonly onCaseStarted?: (index: number) => void;
 };
 
+/** The verdict's worker, handed to its program's observer. */
+type PythonObserverHandoff = {
+  readonly worker: WarmedPythonWorker;
+  /** The observer's prepare, already queued on this worker behind the verdict batch. */
+  readonly prepared?: Promise<PythonPreparedProgramResult>;
+};
+
+interface PendingPythonObserver {
+  readonly program: RuntimeObservationCall['program'];
+  readonly traceOptions: RuntimeObservationCall['traceOptions'];
+  readonly signal: AbortSignal;
+  prepared?: {
+    readonly client: PythonWorkerClient;
+    readonly result: Promise<PythonPreparedProgramResult>;
+  };
+  settle(handoff: PythonObserverHandoff | null): void;
+}
+
 class PreparedPythonProgramLifetime {
   private phase: 'active' | 'disposing' | 'disposed' = 'active';
   private operationTail: Promise<void> = Promise.resolve();
@@ -830,6 +868,11 @@ class PreparedPythonProgramLifetime {
   private disposedNotificationSent = false;
   private readonly ownedWorkers = new Set<PythonWorkerClient>();
   private readonly operationControllers = new Set<AbortController>();
+  // Sequential observation: one observer per ordinary program, released
+  // once the verdict's ordinary work has settled.
+  private observer: PendingPythonObserver | undefined;
+  private observerRequested = false;
+  private verdictSettled = false;
 
   constructor(
     private readonly handle: PythonPreparedProgramHandle,
@@ -844,16 +887,97 @@ class PreparedPythonProgramLifetime {
     this.ownedWorkers.add(initialWorker.client);
   }
 
+  /**
+   * Sequential observation. This program's observer waits for the verdict,
+   * then takes the verdict's worker while it is warm, if the verdict batch
+   * left it reusable (an algorithm-fast batch that kept its interpreter).
+   * It resolves null when there is no such worker; the observer then starts
+   * a fresh one, still after the verdict. Two leases never run learner code
+   * for one evaluation at the same time.
+   */
+  handOffObserverWorker(
+    program: RuntimeObservationCall['program'],
+    traceOptions: RuntimeObservationCall['traceOptions'],
+    signal: AbortSignal
+  ): Promise<PythonObserverHandoff | null> {
+    if (this.observerRequested) {
+      return Promise.reject(new Error('A prepared Python program has one observer.'));
+    }
+    this.observerRequested = true;
+    if (this.verdictSettled || this.phase !== 'active' || signal.aborted) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      const abandon = () => pending.settle(null);
+      const pending: PendingPythonObserver = {
+        program,
+        traceOptions,
+        signal,
+        settle: (handoff) => {
+          if (this.observer !== pending) return;
+          this.observer = undefined;
+          signal.removeEventListener('abort', abandon);
+          resolve(handoff);
+        },
+      };
+      this.observer = pending;
+      signal.addEventListener('abort', abandon, { once: true });
+    });
+  }
+
+  /** The verdict's ordinary work is over; an observer still waiting gets no worker. */
+  private settleVerdict(): void {
+    this.verdictSettled = true;
+    this.observer?.settle(null);
+  }
+
+  private ordinary<T>(work: Promise<T>): Promise<T> {
+    return work.finally(() => this.settleVerdict());
+  }
+
+  /**
+   * Queue the observer's prepare on the verdict worker as soon as the
+   * stopping batch's last case has finished. The worker answers in order,
+   * so it starts the prepare only after the batch reply, and the page's
+   * handling of that reply overlaps the prepare instead of preceding it.
+   * The prepare carries no abort signal: aborting a request tears its
+   * worker down, and this worker still owes the verdict its reply. If the
+   * batch then cannot hand the worker over, the worker is retired with it.
+   */
+  private queueObserverPrepare(client: PythonWorkerClient): void {
+    const observer = this.observer;
+    if (!observer || observer.prepared || observer.signal.aborted) return;
+    const result = client.prepareProgram({
+      mode: 'trace',
+      code: observer.program.code,
+      functionName: observer.program.functionName,
+      executionStyle: observer.program.executionStyle,
+      ...(observer.traceOptions ? { traceOptions: observer.traceOptions } : {}),
+    }, true);
+    void result.catch(() => undefined);
+    observer.prepared = { client, result };
+  }
+
+  /** Give the verdict's worker to a waiting observer, if the batch kept it reusable. */
+  private handOffVerdictWorker(worker: WarmedPythonWorker, rows: readonly CodeExecutionResult[]): boolean {
+    const observer = this.observer;
+    if (!observer || observer.signal.aborted || !pythonBatchKeepsInterpreter(rows)) return false;
+    const prepared = observer.prepared?.client === worker.client ? observer.prepared.result : undefined;
+    this.verdictSettled = true;
+    observer.settle({ worker, ...(prepared ? { prepared } : {}) });
+    return true;
+  }
+
   executeCode(
     call: Pick<RuntimeCodeCall, 'inputs' | 'signal' | 'limits'>
   ): Promise<CodeExecutionResult> {
-    return this.executeSerial(call.signal, (client, signal) =>
+    return this.ordinary(this.executeSerial(call.signal, (client, signal) =>
       client.executePreparedCode(this.handle, { ...call, signal })
         .catch((error: unknown) => {
           if (signal.aborted) throw error;
           return pythonCaseTransportOutcome(error);
         })
-    );
+    ));
   }
 
   executeTrace(
@@ -862,7 +986,7 @@ class PreparedPythonProgramLifetime {
     const useFastProfile =
       this.handle.artifact.isolationProfile.tier === 'algorithm-fast' &&
       !pythonInputsRequireCompatibility(call.inputs);
-    return this.executeSerial(
+    return this.ordinary(this.executeSerial(
       call.signal,
       async (client, signal) => {
         try {
@@ -875,7 +999,7 @@ class PreparedPythonProgramLifetime {
         }
       },
       useFastProfile ? pythonTraceResultKeepsFastWorker : undefined
-    );
+    ));
   }
 
   executeObservation(call: RuntimeObservationCall): Promise<Drawing> {
@@ -901,7 +1025,13 @@ class PreparedPythonProgramLifetime {
     );
   }
 
-  async executeCodeBatch(
+  executeCodeBatch(
+    call: PythonOrdinaryBatchCall
+  ): Promise<readonly CodeExecutionResult[]> {
+    return this.ordinary(this.executeVerdictBatch(call));
+  }
+
+  private async executeVerdictBatch(
     call: PythonOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     const budget = new PythonBatchExecutionBudget(
@@ -935,6 +1065,14 @@ class PreparedPythonProgramLifetime {
         ...call,
         signal,
         onCaseStarted,
+        ...(call.stopAtFirstRunaway === true && this.observer
+          ? {
+              onCasesFinished: (rows: readonly unknown[]) => {
+                // A case that ended the runtime leaves no worker to prepare on.
+                if (!rows.some(pythonRawRowEndedRuntime)) this.queueObserverPrepare(client);
+              },
+            }
+          : {}),
       });
       if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
         throw new Error('Prepared Python batch returned an invalid result envelope.');
@@ -945,10 +1083,14 @@ class PreparedPythonProgramLifetime {
       // A stopping batch is held to a per-case clock by the worker client,
       // which returns the finished prefix and the case that outlived its
       // clock; a whole-batch budget here would cut a later case short.
-      return await this.executeSerial(call.signal, (client, signal) =>
-        call.stopAtFirstRunaway === true
-          ? runBatch(client, signal)
-          : budget.run((budgetSignal) => runBatch(client, budgetSignal), signal)
+      return await this.executeSerial(
+        call.signal,
+        (client, signal) =>
+          call.stopAtFirstRunaway === true
+            ? runBatch(client, signal)
+            : budget.run((budgetSignal) => runBatch(client, budgetSignal), signal),
+        undefined,
+        (worker, rows) => this.handOffVerdictWorker(worker, rows)
       );
     } catch (error) {
       if (budget.isTimeout(error)) {
@@ -975,6 +1117,12 @@ class PreparedPythonProgramLifetime {
   }
 
   executeTraceBatch(
+    call: RuntimePreparedTraceBatchCall
+  ): Promise<readonly ExecutionResult[]> {
+    return this.ordinary(this.executeTracedBatch(call));
+  }
+
+  private executeTracedBatch(
     call: RuntimePreparedTraceBatchCall
   ): Promise<readonly ExecutionResult[]> {
     if (
@@ -1160,7 +1308,9 @@ class PreparedPythonProgramLifetime {
   private executeSerial<T>(
     signal: AbortSignal | undefined,
     operation: (client: PythonWorkerClient, signal: AbortSignal) => Promise<T>,
-    retainOnSuccess?: (result: T) => boolean
+    retainOnSuccess?: (result: T) => boolean,
+    /** Moves a reusable worker out of this lifetime; true when it took it. */
+    handOff?: (worker: WarmedPythonWorker, result: T) => boolean
   ): Promise<T> {
     if (this.phase !== 'active') {
       return Promise.reject(new Error('Prepared Python program has been disposed.'));
@@ -1202,15 +1352,18 @@ class PreparedPythonProgramLifetime {
         return result;
       } finally {
         if (worker) {
-          const retain =
+          const reusable =
             completed &&
             !controller.signal.aborted &&
             this.phase === 'active' &&
             // A client whose worker was terminated mid-run (a stopping batch's
             // clock) is not warm, even if every result it returned was.
-            worker.client.hasLiveWorker !== false &&
-            retainOnSuccess?.(result as T) === true;
-          if (retain) {
+            worker.client.hasLiveWorker !== false;
+          if (reusable && handOff?.(worker, result as T) === true) {
+            // The observer owns it now; this lifetime never touches it again.
+            this.ownedWorkers.delete(worker.client);
+            if (activeWorker === worker) activeWorker = undefined;
+          } else if (reusable && retainOnSuccess?.(result as T) === true) {
             this.initialWorker = worker;
           } else {
             this.retireWorker(worker.client);
@@ -1294,6 +1447,7 @@ class PreparedPythonProgramLifetime {
   private abortAndRetire(reason: unknown): void {
     this.generation += 1;
     this.initialWorker = null;
+    this.settleVerdict();
     const controllers = [...this.operationControllers];
     this.operationControllers.clear();
     for (const controller of controllers) {
@@ -1324,8 +1478,25 @@ class PythonPreparedExecutionProvider
   private readonly preparationWorkers = new Set<PythonWorkerClient>();
   private readonly programs = new Set<PreparedPythonProgramLifetime>();
   private readonly preparationControllers = new Set<AbortController>();
+  // The ordinary program each Judge preparation call produced, keyed by the
+  // call Judge binds to its observation program. Null when it produced none.
+  private readonly ordinaryPrograms = new WeakMap<object, {
+    readonly ready: Promise<PreparedPythonProgramLifetime | null>;
+    bind(lifetime: PreparedPythonProgramLifetime | null): void;
+  }>();
 
   constructor(private readonly options: PythonPreparedExecutionProviderOptions) {}
+
+  private ordinaryProgram(key: object) {
+    let slot = this.ordinaryPrograms.get(key);
+    if (!slot) {
+      let bind!: (lifetime: PreparedPythonProgramLifetime | null) => void;
+      const ready = new Promise<PreparedPythonProgramLifetime | null>((resolve) => { bind = resolve; });
+      slot = { ready, bind };
+      this.ordinaryPrograms.set(key, slot);
+    }
+    return slot;
+  }
 
   async init(): Promise<{ success: boolean; loadTimeMs: number }> {
     this.assertActive();
@@ -1346,9 +1517,10 @@ class PythonPreparedExecutionProvider
     const controller = new AbortController();
     const unlink = linkAbortSignal(call.signal, controller);
     this.preparationControllers.add(controller);
+    const ordinary = this.ordinaryProgram(call);
     const previous = this.preparationTail;
     const underlying = previous.then(() =>
-      this.prepareSerial(call, generation, controller.signal)
+      this.prepareSerial(call, generation, controller.signal, ordinary.bind)
     );
     this.preparationTail = underlying.then(
       () => undefined,
@@ -1358,10 +1530,13 @@ class PythonPreparedExecutionProvider
       () => {
         unlink();
         this.preparationControllers.delete(controller);
+        // A compile failure, or a trace-mode program: nothing to observe on.
+        ordinary.bind(null);
       },
       () => {
         unlink();
         this.preparationControllers.delete(controller);
+        ordinary.bind(null);
       }
     );
     return raceWithAbort(underlying, controller.signal);
@@ -1395,30 +1570,55 @@ class PythonPreparedExecutionProvider
       return { status: 'refused', reason: 'unsupported-option' };
     }
 
-    // This factory belongs to the original browser host and uses its image
-    // factory and custom assets. A fresh worker keeps the ordinary command
-    // queue and interpreter outside the observer's lifetime.
-    const worker = this.options.createWorkerClient();
-    this.preparationWorkers.add(worker);
     const controller = new AbortController();
     const unlink = linkAbortSignal(callerSignal, controller);
     this.preparationControllers.add(controller);
     const { signal } = controller;
+    let worker: WarmedPythonWorker | undefined;
+    // The worker this preparation holds until its lease takes it.
+    let owned: PythonWorkerClient | undefined;
+    let handoff: Promise<PythonObserverHandoff | null> | undefined;
     try {
-      const warmup = await raceWithAbort(worker.warmup(), signal);
-      const prepared = await raceWithAbort(
-        worker.prepareProgram({ ...program, mode: 'trace', traceOptions, signal }, true),
+      // Sequential observation: an observer of a Judge evaluation's program
+      // runs after that program's verdict, on the verdict's worker when the
+      // verdict batch leaves it reusable, else on a fresh worker started
+      // only now. A direct observe call, bound to no evaluation, uses a
+      // fresh worker.
+      const key = findJudgeOrdinaryPreparationKey(program);
+      let prepared: Promise<PythonPreparedProgramResult> | undefined;
+      if (key) {
+        const ordinary = await raceWithAbort(this.ordinaryProgram(key).ready, signal);
+        // No ordinary program (its compile failed): no verdict to draw for.
+        if (!ordinary) return { status: 'refused', reason: 'observer-prepare' };
+        handoff = ordinary.handOffObserverWorker(program, traceOptions, signal);
+        const received = await raceWithAbort(handoff, signal);
+        if (received) {
+          worker = received.worker;
+          owned = worker.client;
+          this.preparationWorkers.add(owned);
+          prepared = received.prepared;
+        }
+      }
+      if (!worker) {
+        // This factory belongs to the original browser host and uses its
+        // image factory and custom assets.
+        owned = this.options.createWorkerClient();
+        this.preparationWorkers.add(owned);
+        worker = { client: owned, warmup: await raceWithAbort(owned.warmup(), signal) };
+      }
+      const result = await raceWithAbort(
+        prepared ?? worker.client.prepareProgram({ ...program, mode: 'trace', traceOptions, signal }, true),
         signal
       );
       signal.throwIfAborted();
-      if (!prepared.success) return { status: 'refused', reason: 'observer-prepare' };
+      if (!result.success) return { status: 'refused', reason: 'observer-prepare' };
 
-      this.preparationWorkers.delete(worker);
+      this.preparationWorkers.delete(worker.client);
       const lifetime = new PreparedPythonProgramLifetime(
-        prepared,
+        result,
         this.options.createWorkerClient,
         (released) => { this.programs.delete(released); },
-        { client: worker, warmup }
+        worker
       );
       this.programs.add(lifetime);
       return {
@@ -1431,7 +1631,9 @@ class PythonPreparedExecutionProvider
     } finally {
       unlink();
       this.preparationControllers.delete(controller);
-      this.retirePreparationWorker(worker);
+      if (owned) this.retirePreparationWorker(owned);
+      // A worker handed over after this preparation gave up is nobody's.
+      else void handoff?.then((late) => late?.worker.client.terminate(), () => undefined);
     }
   }
 
@@ -1474,7 +1676,8 @@ class PythonPreparedExecutionProvider
   private async prepareSerial(
     call: RuntimeProgramPreparationCall,
     generation: number,
-    signal: AbortSignal
+    signal: AbortSignal,
+    bindOrdinary: (lifetime: PreparedPythonProgramLifetime) => void
   ): Promise<RuntimeProgramPreparationResult> {
     this.assertGeneration(generation);
     let preparationWorker: WarmedPythonWorker | undefined;
@@ -1535,6 +1738,7 @@ class PythonPreparedExecutionProvider
       preparationWorker
     );
     this.programs.add(lifetime);
+    if (call.mode === 'code') bindOrdinary(lifetime);
 
     if (call.mode === 'trace') {
       return {
