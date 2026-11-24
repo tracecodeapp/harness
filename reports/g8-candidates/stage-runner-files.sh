@@ -6,9 +6,12 @@ receipt="$source_dir/runner.sha256"
 test -r "$receipt" -a -d "$target_dir"
 
 while read -r _ file; do
-  test -r "$source_dir/$file"
-  mkdir -p "$target_dir/$(dirname "$file")"
-  cp -p "$source_dir/$file" "$target_dir/$file"
+  if [[ -r "$source_dir/$file" ]]; then
+    mkdir -p "$target_dir/$(dirname "$file")"
+    cp -p "$source_dir/$file" "$target_dir/$file"
+  else
+    test -r "$target_dir/$file"
+  fi
 done < "$receipt"
 cp -p "$receipt" "$target_dir/runner.sha256"
 (cd "$target_dir" && sha256sum --strict -c runner.sha256)
