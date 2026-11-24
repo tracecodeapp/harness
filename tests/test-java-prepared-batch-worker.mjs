@@ -266,14 +266,31 @@ test('ordinary batch keeps its admission id across compatibility JVM replacement
   ]);
 });
 
-test('System.exit(0) without the runner result does not finish or dispatch the suffix', async () => {
-  const { calls, result } = testBatch(({ caseId }) =>
-    completed(caseId === 'second' ? 'printed before System.exit(0)' : output(caseId)), {
-    mode: 'ordinary', profile: 'compatibility', stop: false,
+for (const stop of [false, true]) {
+  test(`a marker-less JVM exit is a learner runtime failure and grades the suffix (stop=${stop})`, async () => {
+    const { calls, result } = testBatch(({ caseId }) => completed(
+      caseId === 'second' ? 'printed before JVM exit' : output(caseId === 'first' ? 1 : 3)
+    ), { mode: 'ordinary', profile: 'compatibility', stop });
+    const batch = await result;
+    const presentationWorker = readFileSync(new URL('../workers/java/java-worker.js', import.meta.url), 'utf8');
+    const rows = JSON.parse(runInNewContext(presentationWorker + `
+      JSON.stringify(reports.map((report) => preparedJavaResultFromReport(
+        { mode: 'code' }, report, 0, 0
+      )))
+    `, { self: workerGlobal(), URL, queueMicrotask, reports: batch.results }));
+    assert.equal(batch.success, false);
+    assert.deepEqual(rows.map(({ success, output }) => [success, output]), [
+      [true, 1], [false, null], [true, 3],
+    ]);
+    assert.equal(rows[1].diagnosticStage, 'runtime');
+    assert.match(rows[1].error, /without a Harness result marker/);
+    assert.deepEqual(rows[1].consoleOutput, ['printed before JVM exit']);
+    assert.equal(rows[1].timeoutReason, undefined);
+    assert.deepEqual(rows[2].consoleOutput, []);
+    assert.deepEqual(calls.filter(([event]) => event === 'run'), [
+      ['run', 1, 'first', 'Clean'],
+      ['run', 2, 'second', 'Clean'],
+      ['run', 3, 'suffix', 'Clean'],
+    ]);
   });
-  await assert.rejects(result, /without a Harness result marker/);
-  assert.deepEqual(calls.filter(([event]) => ['admit', 'finish', 'run'].includes(event)), [
-    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['finish', 0, 73, 'first'],
-    ['admit', 1, 73], ['run', 2, 'second', 'Clean'],
-  ]);
-});
+}
