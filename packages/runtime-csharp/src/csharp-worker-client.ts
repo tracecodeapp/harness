@@ -273,6 +273,9 @@ export class CSharpWorkerClient {
         }
       },
       onCommandMessage: (commandId, type, payload, pending) => {
+        // WorkerSessionCore has already matched the request ID and token.
+        // A start attestation never settles the command or touches its clock.
+        if (type === 'runtime-progress') return true;
         if (type === 'kernel-syscall') {
           if (!pending.kernelSyscalls) return true;
           void pending.kernelSyscalls.service().catch(() => {
@@ -681,6 +684,9 @@ export class CSharpWorkerClient {
           this.core.withExecutionDeadline(
             this.sendCommandEffect<CSharpWorkerExecuteResult>('execute-prepared-code', {
               prepared,
+              // The trusted standby prime uses a trace artifact through this
+              // command. It is not an ordinary learner case.
+              ...(prepared.mode === 'code' ? { reportCaseProgress: true } : {}),
               inputs: call.inputs,
               ...(inputBytes ? { inputBytes } : {}),
               assetBaseUrl: this.options.assetBaseUrl,
@@ -815,11 +821,15 @@ export class CSharpWorkerClient {
               reason?: Cut | 'observer-encode' | 'observer-runtime' | 'observer-timeout' | 'recorder-unavailable';
               events?: RuntimeTraceEvent[];
               attemptedEvents?: number;
+              observation?: { attemptToken?: unknown };
             }>('execute-prepared-trace', {
               prepared,
               inputs: call.inputs,
               ...(inputBytes ? { inputBytes } : {}),
-              observation: { maxTraceBytes: maxTraceBytes === 0 ? 1 : maxTraceBytes },
+              observation: {
+                attemptToken: call.attemptToken,
+                maxTraceBytes: maxTraceBytes === 0 ? 1 : maxTraceBytes,
+              },
               assetBaseUrl: this.options.assetBaseUrl,
               timeoutMs: Math.max(100, wallClockMs - 1_000),
               traceEventTransport: traceEventTransferRequest(),
@@ -841,6 +851,9 @@ export class CSharpWorkerClient {
             ? 'observer-timeout'
             : 'observer-runtime',
         };
+      }
+      if (result.observation?.attemptToken !== call.attemptToken) {
+        return { status: 'refused', reason: 'observer-protocol' };
       }
       const { observationStatus, reason, events, attemptedEvents } = result;
       if (observationStatus === 'refused' &&

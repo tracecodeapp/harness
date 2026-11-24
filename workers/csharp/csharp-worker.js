@@ -103,7 +103,7 @@ function prepareCSharpTraceEventTransfer(result, request) {
     encoded = new TextEncoder().encode(JSON.stringify(events));
   } catch {
     return result.observationStatus
-      ? { payload: { observationStatus: 'refused', reason: 'observer-encode' } }
+      ? { payload: refuseCSharpObservation(result.observation.attemptToken, 'observer-encode') }
       : null;
   }
   const requestedMinBytes = Number(request.minTransferBytes);
@@ -4253,6 +4253,7 @@ async function executePreparedCSharpProgram(message) {
           },
         };
       }
+      message.onOrdinaryStart?.();
       const outputBytes = await withCSharpUserAuthorityLockdown(() =>
         executeAlgorithmPreparedExport(
           request.compiledArtifactKey,
@@ -4315,6 +4316,7 @@ async function executePreparedCSharpProgram(message) {
       );
     }
   }
+  message.onOrdinaryStart?.();
   const hostCallStartedAt = now();
   const result = await withCSharpUserAuthorityLockdown(() => {
     const requestJson = JSON.stringify(request);
@@ -4356,6 +4358,18 @@ function encodeCSharpObservationEvents(events, maximumBytes) {
   return { events: events.slice(0, retained), byteCut: retained < events.length };
 }
 
+function refuseCSharpObservation(attemptToken, reason) {
+  return {
+    observationStatus: 'refused',
+    reason,
+    observation: {
+      attemptToken,
+      recorderCompleted: false,
+      ...(reason === 'observer-encode' ? { encodeFailed: true } : {}),
+    },
+  };
+}
+
 async function observePreparedCSharpProgram(message) {
   const { prepared, observation } = message.payload;
   if (prepared?.mode !== 'trace') throw new Error('C# observation requires a trace artifact.');
@@ -4368,7 +4382,7 @@ async function observePreparedCSharpProgram(message) {
       ? { success: true, observerFailure: reply.observerFailure }
       : reply;
   });
-  const refuse = (reason) => ({ observationStatus: 'refused', reason });
+  const refuse = (reason) => refuseCSharpObservation(observation.attemptToken, reason);
   if (result?.observerFailure === 'observer-encode') return refuse('observer-encode');
   const deadline = result?.timeoutReason === 'client-timeout';
   if (!Array.isArray(result?.events)) {
@@ -4393,16 +4407,23 @@ async function observePreparedCSharpProgram(message) {
   }
   const reason = encoded.byteCut ? 'byte-budget' : cut;
   if (reason === 'observer-deadline' && !encoded.events.length) return refuse('observer-timeout');
+  const attemptedEvents = recorded.length + (cut && !deadline ? 1 : 0);
+  const recorder = {
+    attemptToken: observation.attemptToken,
+    recorderCompleted: true,
+    attemptedEvents,
+  };
   if (reason) {
     return {
       observationStatus: 'truncated',
       reason,
       events: encoded.events,
-      attemptedEvents: recorded.length + (cut && !deadline ? 1 : 0),
+      attemptedEvents,
+      observation: { ...recorder, cut: reason },
     };
   }
   if (!recorded.length) return refuse(result.success ? 'recorder-unavailable' : 'observer-runtime');
-  return { observationStatus: 'drawn', events: encoded.events };
+  return { observationStatus: 'drawn', events: encoded.events, observation: recorder };
 }
 
 function disposePreparedCSharpProgram(payload) {
@@ -4788,6 +4809,22 @@ self.addEventListener('message', (event) => {
   applyWorkerOptions(payload);
   queuedTasks += 1;
 
+  // A prepared batch is a host-side sequence of single-case commands.
+  // The worker attests only its own index, relative to that command.
+  const startedCaseIndexes = type === 'execute-prepared-code' &&
+    payload?.prepared?.mode === 'code' && payload.reportCaseProgress === true ? [] : undefined;
+  const onOrdinaryStart = startedCaseIndexes && (() => {
+    startedCaseIndexes.push(0);
+    trustedCSharpWorkerPostMessage({
+      id,
+      protocolToken,
+      type: 'runtime-progress',
+      payload: { stage: 'ordinary-case-started', detail: { caseIndex: 0 } },
+    });
+  });
+  const withStarts = (result) => startedCaseIndexes === undefined
+    ? result : { ...result, startedCaseIndexes };
+
   queue = queue
     .catch(() => {})
     .then(async () => {
@@ -4799,12 +4836,13 @@ self.addEventListener('message', (event) => {
         protocolToken,
         kernelSyscallChannel,
         kernelSignalMailbox,
+        onOrdinaryStart,
       });
       const transported = type === 'execute-with-tracing' || type === 'execute-prepared-trace'
         ? prepareCSharpTraceEventTransfer(result, payload?.traceEventTransport)
         : null;
       trustedCSharpWorkerPostMessage(
-        { id, type, payload: transported?.payload ?? result, protocolToken },
+        { id, type, payload: withStarts(transported?.payload ?? result), protocolToken },
         transported?.transfer ?? []
       );
     })
@@ -4818,7 +4856,7 @@ self.addEventListener('message', (event) => {
         id,
         type: 'error',
         protocolToken,
-        payload: { error: errorMessage },
+        payload: withStarts({ error: errorMessage }),
       });
     })
     .finally(() => {
