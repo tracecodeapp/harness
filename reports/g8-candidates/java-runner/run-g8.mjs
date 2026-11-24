@@ -22,6 +22,10 @@ import { csharpProductionControlOutcome } from './csharp-production-control-witn
 import { csharpTrustedArtifactKey } from './csharp-replenishment-witness.mjs';
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
+import {
+  assertExactHistoricalPackage,
+  candidatePreparationSourceVersion,
+} from './version-preparation.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
 import {
   pythonProductionControlOutcome,
@@ -683,10 +687,10 @@ try {
     } else if (pythonFreshAa) {
       prepared[version] = prepared[pythonFreshAaVersions[0]] ?? await prepareVersion('0.17.1');
     } else {
-      prepared[version] = candidate && prepared['candidate-main']
-        ? prepared['candidate-main']
-        : await prepareVersion(version);
+      const sourceVersion = candidatePreparationSourceVersion(version, candidate);
+      prepared[version] = prepared[sourceVersion] ?? await prepareVersion(sourceVersion);
     }
+    assertExactHistoricalPackage(version, prepared[version].metadata);
     report.packages[version] = prepared[version].metadata;
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
