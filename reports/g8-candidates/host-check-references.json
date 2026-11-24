@@ -36,6 +36,13 @@
       "oldReference": { "n": 12, "median": 439.59999990463257, "p90": 521.1000003814697 },
       "newReference": { "n": 20, "median": 416.39999985694885, "p90": 438.80000019073486 },
       "reason": "Same-window 0.17.1 p90 drifted -15.9% from the frozen reference on 2026-11-24."
+    },
+    {
+      "cell": "java/1/binary-search/warm/lessonContinue",
+      "version": "0.17.1",
+      "oldReference": { "n": 0 },
+      "newReference": { "n": 20, "median": 763, "p90": 781.4000000953674 },
+      "reason": "The frozen host-check reference was missing."
     }
   ]
 }
