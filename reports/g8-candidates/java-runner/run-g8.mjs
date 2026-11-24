@@ -339,8 +339,14 @@ async function openPage(context, version, url, group) {
 function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
   priorResult, context = {}) {
   if ((releasePythonWarm || pythonFreshAa) && repeatPenaltyLanguages.includes(language)) {
-    if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey,
-      context.allowCsharpTrustedPromotion ? { caseCount } : undefined);
+    if (language === 'csharp') {
+      const replenishmentOptions = {
+        ...(context.allowCsharpTrustedPromotion && { caseCount }),
+        ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
+      };
+      return csharpProductionControlOutcome(result, trustedArtifactKey,
+        Object.keys(replenishmentOptions).length > 0 ? replenishmentOptions : undefined);
+    }
     return pythonProductionControlOutcome(result.python?.phases ?? [], role, caseCount,
       priorResult === undefined ? undefined :
         pythonProductionControlWorker(priorResult.python?.phases ?? []));
@@ -708,6 +714,8 @@ try {
                   sample.trustedCsharpArtifactKey, undefined, {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
                       group.csharpWarmMode === csharpWarmModes.repeatRun,
+                    allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
+                      group.csharpWarmMode === csharpWarmModes.submitAfterRun,
                   });
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {

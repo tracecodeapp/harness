@@ -39,7 +39,7 @@ function isPromotedOrdinaryWorker(phases, workerPhases, trustedPrime, caseCount)
 // provider warmup. A compatibility label alone is never enough. A recognized
 // replenishment worker may only initialize, warm and execute that exact trusted
 // artifact; any learner command on it invalidates the sample.
-export function csharpReplenishmentOutcome(phases, trustedArtifactKey, promotedOrdinary) {
+export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) {
   const trustedPrimes = phases.filter((phase) =>
     isTrustedCsharpPrime(phase, trustedArtifactKey));
   if (trustedPrimes.length === 0) {
@@ -59,16 +59,20 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, promotedO
     const sequenceValid = Number.isSafeInteger(worker) && worker > 0 &&
       init.length === 1 && warmup.length === 1 && primes.length === 1 &&
       Number.isFinite(init[0].received) && Number.isFinite(warmup[0].received) &&
-      Number.isFinite(primes[0].received) &&
       phases.indexOf(init[0]) < phases.indexOf(warmup[0]) &&
       phases.indexOf(warmup[0]) < phases.indexOf(primes[0]);
     if (!sequenceValid) return false;
     if (otherCommands.length === 0) {
+      const completedPrime = Number.isFinite(primes[0].received);
+      const pendingPrime = options?.allowPendingTrustedPrime === true &&
+        !Object.hasOwn(primes[0], 'received') && !Object.hasOwn(primes[0], 'timings');
+      if (!completedPrime && !pendingPrime) return false;
       trustedWorkers.add(worker);
       return true;
     }
+    if (!Number.isFinite(primes[0].received)) return false;
     if (isPromotedOrdinaryWorker(phases, workerPhases, primes[0],
-      promotedOrdinary?.caseCount)) {
+      options?.caseCount)) {
       promotedOrdinaryWorkers.add(worker);
       return true;
     }

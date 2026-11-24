@@ -2,9 +2,9 @@ import { csharpReplenishmentOutcome } from './csharp-replenishment-witness.mjs';
 
 const WITNESS_ERROR = 'Published C# single-worker witness differs';
 
-export function csharpProductionControlOutcome(result, trustedArtifactKey, promotedOrdinary) {
+export function csharpProductionControlOutcome(result, trustedArtifactKey, replenishmentOptions) {
   const phases = result?.csharp?.phases ?? [];
-  const replenishment = csharpReplenishmentOutcome(phases, trustedArtifactKey, promotedOrdinary);
+  const replenishment = csharpReplenishmentOutcome(phases, trustedArtifactKey, replenishmentOptions);
   if (replenishment.error) return replenishment.error;
   const executions = phases.filter(({ type }) =>
     ['execute-code', 'execute-code-batch', 'execute-with-tracing',
