@@ -19,7 +19,6 @@ import {
 import { RuntimeProgramConcurrencyGate } from '../../packages/runtime-browser/src/program-concurrency-gate';
 
 import type {
-  RuntimeObservationCall,
   RuntimeObservationReply,
 } from '../../packages/runtime-contracts/src/runtime-calls';
 import type {
@@ -29,6 +28,7 @@ import type {
   JudgeReceiptProvider,
   JudgeSchedulePhase,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
+import { bindJudgeOrdinaryPreparation } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../../packages/judge/src/algorithm-model';
 import type { Binding } from '../../packages/judge/src/internal/receipt-types';
 import type { JudgeEvaluationResult } from '../../packages/judge/src/model';
@@ -101,13 +101,14 @@ export class JudgeObservationSchedule<Result, Expected> {
     );
   }
 
-  recordPrepare(call: RuntimeObservationCall['program']): void {
+  recordPrepare(call: RuntimeProgramPreparationCall): void {
     this.program = Object.freeze({
       code: call.code,
       functionName: call.functionName,
       executionStyle: call.executionStyle,
       runtimeVersion: this.registration.runtimeVersion,
     });
+    bindJudgeOrdinaryPreparation(this.program, call);
     if (this.selected.size > 0) this.prepareObserver();
   }
 
@@ -163,7 +164,7 @@ export class JudgeObservationSchedule<Result, Expected> {
   private ack(
     context: ReturnType<JudgeObservationSchedule<Result, Expected>['faultContext']>,
     point: 'prepare' | 'observe' | 'encode',
-    fault: 'prepare' | 'runtime' | 'deadline' | 'encode'
+    fault: 'prepare' | 'runtime' | 'deadline' | 'encode' | 'no-recorder'
   ): void {
     this.testBridge?.onEvent(Object.freeze({
       ...context, phase: 'injection-ack', point, fault, at: globalThis.performance.now(),
@@ -299,18 +300,28 @@ export class JudgeObservationSchedule<Result, Expected> {
             this.ack(context, 'observe', fault);
             return observationRefused('observer-runtime');
           }
-          const work = waitForSignal(lease.observe({
+          const call = {
             program: this.program!,
             inputs: structuredClone(this.inputs.get(caseId)!),
             traceOptions: this.traceOptions,
             attemptToken,
             signal: observationSignal,
-          }), observationSignal);
+          };
+          const withoutRecorder = this.language === 'javascript' && fault === 'no-recorder'
+            ? lease.observeWithoutRecorderForTest
+            : undefined;
+          const work = waitForSignal(
+            withoutRecorder ? withoutRecorder.call(lease, call) : lease.observe(call), observationSignal
+          );
           if (context && fault === 'deadline') {
             deadline.abort(new DOMException('Observation timed out.', 'TimeoutError'));
             this.ack(context, 'observe', fault);
           }
           const drawing = await work;
+          if (context && withoutRecorder && drawing.status === 'refused' &&
+            drawing.reason === 'recorder-unavailable') {
+            this.ack(context, 'observe', 'no-recorder');
+          }
           if (context && (drawing?.status === 'drawn' || drawing?.status === 'truncated') &&
             this.testBridge?.faultAt?.({ ...context, point: 'encode' }) === 'encode') {
             this.ack(context, 'encode', 'encode');

@@ -87,6 +87,7 @@ class VmJavaScriptWorker {
 
     const context = vm.createContext({
       console,
+      TextEncoder,
       self: this.workerSelf,
       performance: { now: () => performance.now() },
       setTimeout,
@@ -152,6 +153,63 @@ class VmJavaScriptWorker {
       )
     );
   }
+}
+
+for (const language of ['javascript', 'typescript'] as const) {
+  test(`${language} observations reuse trusted preparation on separate case workers`, async () => {
+    resetVmWorkers();
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/workers/javascript/javascript-worker.js',
+      workerFactory: (url) => new VmJavaScriptWorker(url),
+      replenishStandbyAfterUse: false,
+    });
+    const code = language === 'typescript'
+      ? 'interface Marker {}\nfunction solve(n: number): number {\n  console.log("case", n);\n  return n + 1;\n}'
+      : 'function solve(n) {\n  console.log("case", n);\n  return n + 1;\n}';
+    const descriptor = { code, functionName: 'solve' };
+    try {
+      const call = { mode: 'code' as const, ...descriptor };
+      const observing = client.prepareObservation(call, undefined);
+      const prepared = await client.prepareProgram(call, language);
+      assert(prepared.kind === 'prepared' && prepared.program.mode === 'code');
+      const ordinary = await prepared.program.executeIsolated({ inputs: { n: 4 } });
+      assert.equal(ordinary.kind, 'completed');
+      if (ordinary.kind === 'completed') assert.equal(ordinary.output, 5);
+      assert.deepEqual([...ordinary.consoleOutput], ['case 4']);
+
+      const full = await observing;
+      const options = { maxTraceBytes: 1 };
+      const tiny = await client.prepareObservation(call, options);
+      try {
+        const observed = await full.observe({
+          program: descriptor, inputs: { n: 7 }, attemptToken: 'full',
+        });
+        assert.equal(observed.status, 'drawn');
+        if (observed.status === 'drawn') {
+          const stdoutLine = language === 'typescript' ? 3 : 2;
+          assert(observed.trace.events.some((event) => event.kind === 'stdout' && event.line === stdoutLine));
+        }
+        const capped = await tiny.observe({
+          program: descriptor, inputs: { n: 4 }, traceOptions: options, attemptToken: 'tiny',
+        });
+        assert.equal(capped.status, 'truncated');
+        if (capped.status === 'truncated') {
+          assert.equal(capped.reason, 'byte-budget');
+          assert.equal(capped.trace.events.length, 0);
+          assert(capped.attemptedEvents > 0);
+        }
+        const workerTypes = VmJavaScriptWorker.instances.map((worker) => worker.postedTypes);
+        assert.equal(workerTypes.flat().filter((type) => type === 'prepare-execution').length, 1);
+        assert.equal(workerTypes.filter((types) => types.includes('observe-execution')).length, 2);
+        assert(!workerTypes.some((types) => types.includes('observe-execution') && types.includes('execute-code')));
+      } finally {
+        full.dispose();
+        tiny.dispose();
+      }
+    } finally {
+      client.terminate();
+    }
+  });
 }
 
 function resetVmWorkers(): void {
@@ -834,6 +892,7 @@ async function exerciseResetDuringQueuedExecution(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  resetVmWorkers();
   const originalWorker = globalThis.Worker;
   Object.defineProperty(globalThis, 'Worker', {
     configurable: true,
@@ -1086,3 +1145,72 @@ async function main(): Promise<void> {
 }
 
 test('javascript worker lifecycle', main);
+
+for (const language of ['javascript', 'typescript'] as const) {
+  test(`${language} pool fault ends the request and replaces the failed lane`, async () => {
+    resetVmWorkers();
+    const poolWorkers: Array<{ terminated: boolean }> = [];
+    let failNextCase = true;
+    let caseStarts = 0;
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/workers/javascript/javascript-worker.js',
+      algorithmExecution: 'ses-compartment-pool',
+      algorithmWorkerUrl: '/workers/javascript/javascript-ses-algorithm-worker.js',
+      replenishStandbyAfterUse: false,
+      workerFactory: (url) => {
+        if (!String(url).includes('ses-algorithm')) return new VmJavaScriptWorker(url);
+        const worker = {
+          onmessage: null as ((event: MessageEvent) => void) | null,
+          onerror: null as ((event: ErrorEvent) => void) | null,
+          terminated: false,
+          terminate() { this.terminated = true; },
+          postMessage(request: { id: number; type: string }) {
+            queueMicrotask(() => {
+              if (this.terminated) return;
+              let value: unknown = null;
+              if (request.type === 'init') value = { mode: 'ses', hardened: true };
+              if (request.type === 'execute-batch') {
+                caseStarts += 1;
+                if (failNextCase) {
+                  failNextCase = false;
+                  this.onerror?.({ message: 'fixture SES service failure' } as ErrorEvent);
+                  return;
+                }
+                value = [{ kind: 'completed', output: 5, consoleOutput: [] }];
+              }
+              this.onmessage?.({ data: { id: request.id, ok: true, value } } as MessageEvent);
+            });
+          },
+        };
+        poolWorkers.push(worker);
+        return worker;
+      },
+    });
+    const prepare = () => client.prepareProgram({
+      mode: 'code',
+      code: language === 'typescript'
+        ? 'function solve(n: number): number { return n + 1; }'
+        : 'function solve(n) { return n + 1; }',
+      functionName: 'solve',
+    }, language);
+    try {
+      const first = await prepare();
+      assert(first.kind === 'prepared' && first.program.mode === 'code');
+      await assert.rejects(
+        first.program.executeIsolated({ inputs: { n: 4 } }),
+        /fixture SES service failure/,
+      );
+      assert.equal(caseStarts, 1);
+      assert(poolWorkers.some((worker) => worker.terminated));
+      const next = await prepare();
+      assert(next.kind === 'prepared' && next.program.mode === 'code');
+      assert.equal(next.program.capabilities.profile, 'fast');
+      assert.equal((await next.program.executeIsolated({ inputs: { n: 4 } })).kind, 'completed');
+      assert.equal(caseStarts, 2);
+      assert.equal(VmJavaScriptWorker.instances.filter((worker) =>
+        worker.postedTypes.includes('execute-code')).length, 0);
+    } finally {
+      client.terminate();
+    }
+  });
+}

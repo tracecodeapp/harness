@@ -21,8 +21,7 @@ const JAVASCRIPT_RUNTIME_RESERVED_SELECTOR_WORDS = Object.freeze([
   'typeof', 'var', 'void', 'while', 'with', 'yield',
 ] as const);
 
-export const SES_CONSOLE_COMPATIBILITY_REQUIRED =
-  'ERR_SES_CONSOLE_BUDGET_REQUIRES_COMPATIBILITY';
+
 
 export function isAdmittedJavaScriptModule(value: unknown): value is string {
   return typeof value === 'string' &&

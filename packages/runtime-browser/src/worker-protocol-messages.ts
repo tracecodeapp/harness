@@ -33,9 +33,11 @@ export const WORKER_REQUEST_MESSAGES: Readonly<Record<BrowserWorkerProtocolLangu
     'init',
     'warmup',
     'prepare-execution',
+    'prepare-observation',
     'prewarm-executor',
     'execute-code',
     'execute-with-tracing',
+    'observe-execution',
   ],
   java: [
     'init',

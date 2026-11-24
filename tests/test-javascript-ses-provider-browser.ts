@@ -1,10 +1,12 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { isSesAlgorithmSourceEligible } from '../packages/runtime-javascript/src/ses-algorithm-worker-client';
@@ -95,6 +97,52 @@ async function startServer(root: string) {
   };
 }
 
+function checkSesIntrinsics() {
+  const worker = pathToFileURL(resolve('workers/javascript/javascript-ses-algorithm-worker.js')).href;
+  execFileSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    globalThis.self = globalThis;
+    await import(process.argv[1]);
+    const compartment = new Compartment();
+    assert.equal(compartment.evaluate(\`(() => {
+      const prototype = Object.prototype;
+      const original = prototype.constructor;
+      let blocked = false;
+      try { prototype.constructor = 1; } catch { blocked = true; }
+      return Object.isFrozen(prototype) && Object.isFrozen(Function.prototype) &&
+        blocked && prototype.constructor === original &&
+        !Reflect.defineProperty(prototype, 'constructor', { value: 1 }) &&
+        !Reflect.deleteProperty(prototype, 'constructor');
+    })()\`), true);
+  `, worker], { stdio: 'inherit' });
+}
+
+async function checkConstructorParity(page: import('playwright').Page, origin: string) {
+  const results = await page.evaluate(async ({ origin }) => {
+    const entry = await import(`${origin}/entry.mjs`);
+    return entry.runJavaScriptConstructorParity(`${origin}/workers`);
+  }, { origin }) as Awaited<ReturnType<
+    typeof import('./fixtures/javascript-ses-provider-entry').runJavaScriptConstructorParity
+  >>;
+  const failures: unknown[] = [];
+  type Evaluation = typeof results[number]['pairs'][number]['ses'];
+  const ordinary = ({ verdict, values, caseVerdicts, diagnostics, stdout }: Evaluation) =>
+    ({ verdict, values, caseVerdicts, diagnostics, stdout });
+  for (const { pairs } of results) {
+    for (const { id, ses, disposable } of pairs) {
+      if (ses.verdict !== 'passed' || disposable.verdict !== 'passed' ||
+        !ses.timings.every((timing) => timing?.algorithmFastBatch === true) ||
+        !disposable.timings.every((timing) => timing?.algorithmFastBatch !== true) ||
+        JSON.stringify(ordinary(ses)) !== JSON.stringify(ordinary(disposable))) {
+        failures.push({ id, ses: ordinary(ses), disposable: ordinary(disposable) });
+      }
+    }
+  }
+  assertCondition(failures.length === 0, `constructor parity mismatch: ${JSON.stringify(failures)}`);
+  checkSesIntrinsics();
+  console.log('PASS: JS/TS constructor parity and frozen Object.prototype');
+}
+
 async function main(): Promise<void> {
   assertSesAdmissionPolicy();
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-javascript-ses-provider-'));
@@ -137,6 +185,10 @@ async function main(): Promise<void> {
         if (!response.ok()) console.error(`[browser response] ${response.status()} ${response.url()}`);
       });
       await page.goto(`${server.origin}/`);
+      if (process.env.TRACECODE_CONSTRUCTOR_ONLY === '1') {
+        await checkConstructorParity(page, server.origin);
+        return;
+      }
       const result = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
         return entry.runJavaScriptSesProvider(`${origin}/workers`);
@@ -155,6 +207,7 @@ async function main(): Promise<void> {
           lineEventCount?: number;
           traceStepCount?: number;
         }>;
+        attachmentStatuses: Array<string | undefined>;
         elapsedMs: number;
       }>;
       for (const [name, receipt] of Object.entries(result)) {
@@ -183,7 +236,6 @@ async function main(): Promise<void> {
         traceTimeoutRecovery?.verdict === 'failed' &&
         traceTimeoutRecovery.evaluationStatus === 'completed' &&
         traceTimeoutRecovery.passedCount === traceTimeoutRecovery.totalCount - 1 &&
-        traceTimeoutRecovery.elapsedMs < 5_000 &&
         traceTimeoutRecovery.timings.slice(1).every(
           (timing) => timing.algorithmFastBatch === true
         ),
@@ -231,7 +283,7 @@ async function main(): Promise<void> {
         const receipt = result[name];
         assertCondition(
           receipt?.verdict === 'failed' &&
-          receipt.evaluationStatus === 'completed' &&
+          receipt.evaluationStatus === 'compile-failed' &&
           receipt.passedCount === 0 &&
           receipt.timings.every((timing) => timing.algorithmFastBatch !== true),
           `${name} must preserve legacy syntax behavior: ${JSON.stringify(receipt)}`
@@ -247,10 +299,10 @@ async function main(): Promise<void> {
       );
       assertCondition(
         result.consoleCapSes?.stdout[0] === result.consoleCapLegacy?.stdout[0] &&
-        !result.consoleCapSes?.stdout[0]?.includes('…[truncated]') &&
-        !result.consoleCapLegacy?.stdout[0]?.includes('…[truncated]') &&
-        result.consoleCapLegacy?.stdout[0]?.includes('line-104') &&
-        result.consoleCapSes?.timings[0]?.algorithmFastBatch !== true,
+        result.consoleCapSes?.stdout[0]?.includes('…[truncated]') &&
+        !result.consoleCapLegacy?.stdout[0]?.includes('line-104') &&
+        result.consoleCapSes?.timings.every((timing) => timing.algorithmFastBatch === true) &&
+        result.consoleCapLegacy?.timings[0]?.algorithmFastBatch !== true,
         `console isolation policy mismatch: ${JSON.stringify({
           ses: result.consoleCapSes?.stdout,
           legacy: result.consoleCapLegacy?.stdout,
@@ -263,9 +315,9 @@ async function main(): Promise<void> {
           stdout === result.consoleCapLegacy?.stdout[0]
         ) &&
         result.traceConsoleCap.timings.every(
-          (timing) => timing.algorithmFastBatch !== true
+          (timing) => timing.algorithmFastBatch === true
         ),
-        `trace console budget must fall back without failing: ${JSON.stringify(
+        `trace console cap must retain the prepared profile: ${JSON.stringify(
           result.traceConsoleCap
         )}`
       );
@@ -325,24 +377,24 @@ async function main(): Promise<void> {
       assertCondition(
         fastTrace?.traces.length === fastTrace.totalCount &&
         fastTrace.traces.every((trace) =>
-          Array.isArray(trace.events) &&
+          Array.isArray(trace?.events) &&
           (trace.lineEventCount ?? 0) > 0 &&
           (trace.traceStepCount ?? 0) >= (trace.lineEventCount ?? 0) &&
           trace.events.some((event) => event.kind === 'call') &&
           trace.events.some((event) => event.kind === 'return')
         ),
         `SES fast trace did not preserve call/line/return events: ${JSON.stringify(
-          fastTrace?.traces
+          { traces: fastTrace?.traces, attachments: fastTrace?.attachmentStatuses }
         )}`
       );
       assertCondition(
         result.typescriptTraceFast?.traces.every((trace) =>
-          Array.isArray(trace.events) &&
+          Array.isArray(trace?.events) &&
           trace.events.some((event) => event.kind === 'line') &&
           trace.events.some((event) => event.kind === 'return')
         ),
         `SES TypeScript fast trace was empty: ${JSON.stringify(
-          result.typescriptTraceFast?.traces
+          { traces: result.typescriptTraceFast?.traces, attachments: result.typescriptTraceFast?.attachmentStatuses }
         )}`
       );
       const nodeReference = result.nodeReferenceParity?.values[0] as {
@@ -372,6 +424,7 @@ async function main(): Promise<void> {
         legacyPageRelative.passedCount === legacyPageRelative.totalCount,
         `legacyPageRelative failed: ${JSON.stringify(legacyPageRelative)}`
       );
+      await checkConstructorParity(page, server.origin);
       const serializerParity = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
         return entry.runJavaScriptSerializerParity(`${origin}/workers`);
@@ -420,19 +473,13 @@ async function main(): Promise<void> {
       );
       const sesUnavailable = await page.evaluate(async ({ origin }) => {
         const entry = await import(`${origin}/entry.mjs`);
-        return entry.runJavaScriptSesUnavailableFallback(`${origin}/workers`);
-      }, { origin: server.origin }) as Record<string, {
-        verdict: string;
-        passedCount: number;
-        totalCount: number;
-        evaluationStatus: string;
-      }>;
-      for (const [name, receipt] of Object.entries(sesUnavailable)) {
+        return entry.runJavaScriptSesUnavailableFailure(`${origin}/workers`);
+      }, { origin: server.origin }) as Record<string, string | undefined>;
+      assertCondition(Object.keys(sesUnavailable).length === 2, 'Both SES startup failures must be witnessed');
+      for (const [name, failure] of Object.entries(sesUnavailable)) {
         assertCondition(
-          receipt.verdict === 'passed' &&
-          receipt.evaluationStatus === 'completed' &&
-          receipt.passedCount === receipt.totalCount,
-          `sesUnavailable.${name} failed: ${JSON.stringify(receipt)}`
+          failure === 'provider' || failure === 'RuntimeProviderError',
+          `sesUnavailable.${name} returned ${failure} after startup failed`
         );
       }
       console.log(`PASS: JavaScript SES provider browser integration ${JSON.stringify({

@@ -470,102 +470,66 @@ function performanceNow() {
   return Date.now();
 }
 
-function formatConsoleArg(value) {
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-// The SES pool's console budget (CONSOLE_BOOTSTRAP_SOURCE in its worker), the
-// same rules in the same order, applied to the same rendered arguments: a
-// traced case run here reports whether its console would need the pool's
-// compatibility fallback, which keeps untraced Submit off the pool.
-function createSesConsoleBudget() {
-  const marker = '…[truncated]';
+// Shared with the SES worker generator. Construct one capture per case.
+function createConsoleProxy(output) {
+  const stringify = JSON.stringify;
+  const mathMin = Math.min;
+  const mathMax = Math.max;
+  const truncationMarker = '…[truncated]';
   const truncate = (text, limit) => {
     if (text.length <= limit) return text;
-    if (limit <= marker.length) return marker.slice(0, limit);
-    return text.slice(0, limit - marker.length) + marker;
+    if (limit <= truncationMarker.length) return truncationMarker.slice(0, limit);
+    return text.slice(0, limit - truncationMarker.length) + truncationMarker;
   };
-  let lines = 0;
+  const format = (value) => {
+    if (typeof value === 'string') {
+      return truncate(value, 4096);
+    }
+    if (value === null || value === undefined ||
+        typeof value === 'number' || typeof value === 'boolean') {
+      return truncate(String(value), 4096);
+    }
+    try {
+      const encoded = stringify(value);
+      return typeof encoded === 'string' ? truncate(encoded, 4096) : '';
+    } catch {
+      try { return truncate(String(value), 4096); } catch { return '[Unprintable]'; }
+    }
+  };
   let totalCharacters = 0;
   let stopped = false;
-  let exceeded = false;
-  return {
-    // `rendered` holds the arguments this console rendered: all `count` of
-    // them, or those before one that could not be printed (`failed`).
-    capture(rendered, count = rendered.length, failed = false) {
-      if (stopped) return;
-      if (lines >= 99) {
-        stopped = true;
-        exceeded = true;
-        return;
-      }
-      const argumentLimit = Math.min(count, 40);
-      const values = rendered.slice(0, argumentLimit);
-      if (failed && values.length < argumentLimit) {
-        values.push('[Unprintable]');
-        // The pool renders the arguments after it too; this console never
-        // did, so the pool must be asked.
-        if (values.length < argumentLimit) exceeded = true;
-      }
-      let line = '';
-      for (let index = 0; index < values.length; index += 1) {
-        const value = truncate(values[index] ?? '', 4096);
-        if (value.endsWith(marker)) exceeded = true;
-        line = truncate(line + (index === 0 ? '' : ' ') + value, 8192);
-        if (line.endsWith(marker)) {
-          exceeded = true;
-          break;
-        }
-      }
-      if (count > argumentLimit && !line.endsWith(marker)) {
-        exceeded = true;
-        line = truncate(line + ' … ' + (count - argumentLimit) + ' more', 8192);
-      }
-      const remaining = 65536 - totalCharacters;
-      if (line.length > remaining) {
-        line = truncate(line, Math.max(0, remaining));
-        stopped = true;
-        exceeded = true;
-      }
-      lines += 1;
-      totalCharacters += line.length;
-    },
-    exceeded: () => exceeded,
-  };
-}
-
-function createConsoleProxy(output, sesConsoleBudget) {
-  const capture = (...args) => {
-    // Each argument is rendered once, in order, as before: a learner's toJSON
-    // or getter runs once, and one that cannot be printed still throws here.
-    const rendered = [];
-    for (const arg of args) {
-      try {
-        rendered.push(formatConsoleArg(arg));
-      } catch (error) {
-        sesConsoleBudget?.capture(rendered, args.length, true);
-        throw error;
-      }
+  const capture = (...values) => {
+    if (stopped) return;
+    if (output.length >= 99) {
+      output.push(truncationMarker);
+      stopped = true;
+      return;
     }
-    sesConsoleBudget?.capture(rendered);
-    output.push(rendered.join(' '));
+    const argumentLimit = mathMin(values.length, 40);
+    let line = '';
+    for (let index = 0; index < argumentLimit; index += 1) {
+      const rendered = format(values[index]);
+      line = truncate(line + (index === 0 ? '' : ' ') + rendered, 8192);
+      if (line.endsWith(truncationMarker)) break;
+    }
+    if (values.length > argumentLimit && !line.endsWith(truncationMarker)) {
+      line = truncate(line + ' … ' + (values.length - argumentLimit) + ' more', 8192);
+    }
+    const remaining = 65536 - totalCharacters;
+    if (line.length > remaining) {
+      line = truncate(line, mathMax(0, remaining));
+      stopped = true;
+    }
+    output.push(line);
+    totalCharacters += line.length;
   };
-
-  return {
+  return Object.freeze({
     log: capture,
     info: capture,
     warn: capture,
     error: capture,
     debug: capture,
-  };
+  });
 }
 
 function isLikelyTreeNodeValue(value) {
@@ -1940,6 +1904,17 @@ function createTraceRecorder(options = {}) {
   const minimalTrace = options.minimalTrace === true;
   const statementSourceMap = options.statementSourceMap instanceof Map ? options.statementSourceMap : new Map();
 
+  const observation = options.observation === true;
+  const maxTraceBytes = getNumericOption(options.maxTraceBytes, Number.POSITIVE_INFINITY);
+  const byteEncoder = observation && Number.isFinite(maxTraceBytes) ? new TextEncoder() : null;
+  let retainedBytes = 0;
+  let attemptedEvents = 0;
+  let observationCut;
+  const cutObservation = (reason, lineNumber) => {
+    observationCut = reason;
+    traceLimitExceeded = true;
+    throw createLimitError(reason, normalizeLine(lineNumber), 'Observation budget exhausted');
+  };
   let lineEventCount = 0;
   let traceLimitExceeded = false;
   let timeoutReason;
@@ -2145,6 +2120,10 @@ function createTraceRecorder(options = {}) {
       return;
     }
     if (trace.length >= effectiveMaxTraceSteps) {
+      if (observation) {
+        attemptedEvents += 1;
+        cutObservation(maxTraceSteps <= maxStoredEvents ? 'step-budget' : 'stored-event-budget', step?.line);
+      }
       markTraceCaptureLimit(step?.line, step?.function);
       return;
     }
@@ -2267,6 +2246,21 @@ function createTraceRecorder(options = {}) {
       ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     const pushRuntimeTraceEvent = (event) => {
+      if (observation) {
+        attemptedEvents += 1;
+        if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
+          cutObservation('stored-event-budget', step?.line);
+        }
+        if (byteEncoder) {
+          const bytes = byteEncoder.encode(JSON.stringify({
+            ...event,
+            runId: `${options.language}:run`,
+            file: defaultRuntimeTraceFile(options.language),
+          })).byteLength;
+          if (retainedBytes + bytes > maxTraceBytes) cutObservation('byte-budget', step?.line);
+          retainedBytes += bytes;
+        }
+      }
       if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
         markTraceCaptureLimit(step?.line, step?.function);
         return false;
@@ -2375,6 +2369,14 @@ function createTraceRecorder(options = {}) {
 
   function markTimeout(reason, lineNumber, message) {
     const normalizedLine = normalizeLine(lineNumber, 1);
+    if (observation) {
+      attemptedEvents += 1;
+      cutObservation(
+        reason === 'line-limit' ? 'line-budget' :
+          reason === 'single-line-limit' ? 'single-line-budget' : 'depth-budget',
+        normalizedLine
+      );
+    }
     if (!traceLimitExceeded) {
       traceLimitExceeded = true;
       timeoutReason = reason;
@@ -2836,6 +2838,12 @@ function createTraceRecorder(options = {}) {
     getTimeoutReason() {
       return timeoutReason;
     },
+    getObservationCut() {
+      return observationCut;
+    },
+    getAttemptedEventCount() {
+      return attemptedEvents;
+    },
   };
 }
 
@@ -3007,7 +3015,7 @@ async function ensureTypeScriptCompiler() {
   }
 }
 
-function transpileTypeScript(sourceCode) {
+function transpileTypeScript(sourceCode, includeSourceMap = false) {
   const ts = getTypeScriptCompiler();
   if (!ts) {
     throw new Error('TypeScript compiler failed to initialize.');
@@ -3020,6 +3028,7 @@ function transpileTypeScript(sourceCode) {
       module: ts.ModuleKind.None,
       strict: false,
       esModuleInterop: true,
+      sourceMap: includeSourceMap,
     },
     reportDiagnostics: true,
     fileName: 'solution.ts',
@@ -3043,7 +3052,12 @@ function transpileTypeScript(sourceCode) {
     throw error;
   }
 
-  return transpiled.outputText;
+  return includeSourceMap
+    ? {
+        executableCode: transpiled.outputText.replace(/\n?\/\/# sourceMappingURL=.*$/u, ''),
+        sourceMap: transpiled.sourceMapText,
+      }
+    : transpiled.outputText;
 }
 
 function stripJavaScriptModuleExports(sourceCode) {
@@ -3053,16 +3067,20 @@ function stripJavaScriptModuleExports(sourceCode) {
     .replace(/(^|\n)[ \t]*export\s*\{[^}]*\};?[ \t]*(?=\n|$)/g, '$1');
 }
 
+function withoutExecutableHashbang(code) {
+  return code.replace(/^#![^\r\n]*/u, '');
+}
+
 async function prepareExecutableCode(sourceCode, language) {
   if (WORKER_ROLE !== 'coordinator') {
     ensureJavaScriptLibraries();
   }
   if (language === 'typescript') {
     await ensureTypeScriptCompiler();
-    return transpileTypeScript(sourceCode);
+    return withoutExecutableHashbang(transpileTypeScript(sourceCode));
   }
 
-  return stripJavaScriptModuleExports(sourceCode);
+  return withoutExecutableHashbang(stripJavaScriptModuleExports(sourceCode));
 }
 
 function addBindingNames(ts, nameNode, names) {
@@ -5237,8 +5255,25 @@ function tracerBrokeAssignmentTarget(ts, root) {
   return visit(root);
 }
 
+function mapTracePositions(ts, sourceFile, sourceMap) {
+  const lines = [];
+  for (const mapping of ts.decodeMappings(JSON.parse(sourceMap).mappings)) {
+    if (mapping.sourceIndex !== 0) continue;
+    (lines[mapping.generatedLine] ??= []).push(mapping);
+  }
+  const generatedPosition = sourceFile.getLineAndCharacterOfPosition.bind(sourceFile);
+  sourceFile.getLineAndCharacterOfPosition = (offset) => {
+    const position = generatedPosition(offset);
+    const mappings = lines[position.line];
+    if (!mappings) return position;
+    const mapping = mappings.findLast((entry) => entry.generatedCharacter <= position.character)
+      ?? mappings[0];
+    return { line: mapping.sourceLine, character: mapping.sourceCharacter };
+  };
+}
+
 /** The instrumented source, or null when the tracer cannot build it. */
-async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption) {
+async function instrumentCodeForTracing(sourceCode, language, traceFunctionName, maxPathDepthOption, sourceMap) {
   await ensureTypeScriptCompiler();
   const ts = getTypeScriptCompiler();
   if (!ts || typeof sourceCode !== 'string') {
@@ -5257,6 +5292,7 @@ async function instrumentCodeForTracing(sourceCode, language, traceFunctionName,
   // The parser recovers from what it cannot parse and the printer prints the
   // recovered tree, which is a different program from the learner's.
   if (sourceFile.parseDiagnostics?.length) return null;
+  if (sourceMap) mapTracePositions(ts, sourceFile, sourceMap);
 
   const variableNames = collectTraceVariableNames(ts, sourceFile);
   const userCallsiteNames = collectUserCallsiteNames(ts, sourceFile);
@@ -6984,7 +7020,19 @@ async function prepareExecutionRequest(payload) {
   }
 
   if (operation === 'execute-with-tracing') await loadTracerCompiler();
-  const executableCode = await prepareExecutableCode(code, language);
+  let executableCode;
+  let sourceMap;
+  if (language === 'typescript') {
+    await loadTracerCompiler();
+    ({ executableCode, sourceMap } = transpileTypeScript(code, true));
+    executableCode = withoutExecutableHashbang(executableCode);
+  } else {
+    executableCode = await prepareExecutableCode(code, language);
+  }
+  // Validate executable source before a printer can repair its syntax. Profile
+  // wrapper validation stays with the chosen executor.
+  const strict = functionName ? '"use strict";\n' : '';
+  new Function(strict + executableCode);
   const materializers = await resolveInputMaterializers(code, functionName, executionStyle, language);
   const hasNamedFunction = typeof functionName === 'string' && functionName.length > 0;
   const targetName = hasNamedFunction
@@ -7044,6 +7092,7 @@ async function prepareExecutionRequest(payload) {
     preparedExecution: {
       schema: PREPARED_EXECUTION_SCHEMA,
       executableCode,
+      ...(sourceMap ? { sourceMap } : {}),
       materializers,
       inputArguments,
       ...(instrumentedCode === undefined ? {} : { instrumentedCode }),
@@ -7053,6 +7102,22 @@ async function prepareExecutionRequest(payload) {
       ? { totalMs, compileMs: totalMs, compileCacheHit: false }
       : { totalMs, rewriteMs: totalMs },
   };
+}
+
+async function prepareObservation(payload) {
+  const { code, functionName, executionStyle, options, preparedExecution } = payload;
+  if (!preparedExecutionFromPayload(payload)) throw new Error('Missing ordinary JavaScript artifact.');
+  await loadTracerCompiler();
+  const instrumentedCode = await instrumentCodeForTracing(
+    preparedExecution.executableCode,
+    'javascript',
+    functionName || '<module>',
+    options?.maxPathDepth,
+    preparedExecution.sourceMap
+  );
+  return instrumentedCode
+    ? { ...preparedExecution, instrumentedCode, traceLineBounds: determineTraceLineBounds(code, functionName, executionStyle) }
+    : null;
 }
 
 // Stack lines come from generated wrappers and instrumentation; a line outside
@@ -7197,6 +7262,7 @@ const TRACE_UNAVAILABLE_RESULT = Object.freeze({});
 
 async function executeWithTracing(payload) {
   const startedAt = performanceNow();
+  const observation = payload?.observation === true;
   if (payload?.tracingEnabled === false) {
     const result = await executeCode(payload);
     const language = payload?.language === 'typescript' ? 'typescript' : 'javascript';
@@ -7225,8 +7291,7 @@ async function executeWithTracing(payload) {
     language = 'javascript',
   } = payload ?? {};
   const consoleOutput = [];
-  const sesConsoleBudget = createSesConsoleBudget();
-  const consoleProxy = createConsoleProxy(consoleOutput, sesConsoleBudget);
+  const consoleProxy = createConsoleProxy(consoleOutput);
   ensureJavaScriptLibraries();
   const runtimeGlobal = createJavaScriptRuntimeGlobal(consoleProxy);
   const prepared = preparedExecutionFromPayload(payload);
@@ -7247,7 +7312,26 @@ async function executeWithTracing(payload) {
   const traceFunctionName = hasNamedFunction ? targetName : '<module>';
   const maxPathDepth = getMaxPathDepthOption(options?.maxPathDepth);
   const statementSourceMap = typeof code === 'string' ? buildRuntimeStatementSourceMap(code) : new Map();
-  const traceRecorder = createTraceRecorder({ ...(options ?? {}), maxPathDepth, statementSourceMap });
+  if (observation && (payload.disableRecorderForTest === true || typeof createTraceRecorder !== 'function')) {
+    return { status: 'refused', reason: 'recorder-unavailable' };
+  }
+  const traceRecorder = createTraceRecorder({
+    ...(options ?? {}), maxPathDepth, statementSourceMap, observation, language,
+  });
+  const snapshotDrawing = () => {
+    try {
+      const trace = traceRecorder.getRuntimeTrace(language, `${language}:run`, defaultRuntimeTraceFile(language));
+      const reason = traceRecorder.getObservationCut();
+      const attemptedEvents = traceRecorder.getAttemptedEventCount();
+      if (reason && (trace.events.length > 0 || (reason === 'byte-budget' && attemptedEvents > 0))) {
+        return { status: 'truncated', reason, trace, attemptedEvents };
+      }
+      if (trace.events.length === 0) return { status: 'refused', reason: 'uncertified-drawing' };
+      return { status: 'drawn', trace };
+    } catch (_error) {
+      return { status: 'refused', reason: 'observer-encode' };
+    }
+  };
 
   let traceLineBounds = { startLine: 1, endLine: 1 };
   let untracedBuildFault;
@@ -7270,47 +7354,40 @@ async function executeWithTracing(payload) {
       );
     }
 
-    // The untraced build is the truth on whether this program compiles, so it
-    // comes first, exactly as executeCode builds it. Whatever stops it is
-    // what the untraced Run reports: the traced Run reports that, untraced.
     let executableCode;
     let argNames = [];
     let argValues = [];
     let argumentMaterializers = [];
     try {
+      if (observation && !hasPreparedTracedBuild) {
+        return { status: 'refused', reason: 'observer-prepare' };
+      }
       executableCode = prepared?.executableCode ?? await prepareExecutableCode(code, language);
-      if (hasNamedFunction) {
-        if (executionStyle !== 'ops-class') {
-          const inputArguments = prepared
-            ? orderInputArgumentsByParameterDescriptors(
-              prepared.inputArguments,
-              materializedInputs,
-              Object.keys(materializedInputs)
-            )
-            : await resolveOrderedInputArguments(
-              code,
-              targetName,
-              materializedInputs,
-              executionStyle,
-              language
-            );
-          argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
-          argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
-          argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
+      if (hasNamedFunction && executionStyle !== 'ops-class') {
+        const inputArguments = prepared
+          ? orderInputArgumentsByParameterDescriptors(
+            prepared.inputArguments, materializedInputs, Object.keys(materializedInputs)
+          )
+          : await resolveOrderedInputArguments(code, targetName, materializedInputs, executionStyle, language);
+        argNames = inputArguments.map((argument, index) => `__arg${index}${argument.rest ? '__tracecodeRest' : ''}`);
+        argValues = inputArguments.map((argument) => materializedInputs[argument.key]);
+        argumentMaterializers = inputArguments.map((argument) => materializers[argument.key] ?? null);
+      }
+      if (!observation) {
+        if (hasNamedFunction) {
+          buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
+        } else {
+          if (executionStyle !== 'function') {
+            throw new Error('Script-mode execution only supports executionStyle="function".');
+          }
+          buildScriptExecutionRunner(executableCode, code);
         }
-        buildFunctionExecutionRunner(executableCode, executionStyle, argNames, argumentMaterializers, code, targetName);
-      } else {
-        if (executionStyle !== 'function') {
-          throw new Error('Script-mode execution only supports executionStyle="function".');
-        }
-        buildScriptExecutionRunner(executableCode, code);
       }
     } catch (untracedBuildError) {
-      // Untraced Submit's route compiled it; only this traced route cannot.
+      if (observation) return { status: 'refused', reason: 'observer-prepare' };
       if (payload.untracedCompiles === true) return TRACE_UNAVAILABLE_RESULT;
       const untraced = await executeWithTracing({ ...payload, tracingEnabled: false });
       if (!untraced.success) return untraced;
-      // The same build works the second time: the first failure was not the program's.
       untracedBuildFault = runtimeFault(untracedBuildError);
       throw untracedBuildFault;
     }
@@ -7323,21 +7400,19 @@ async function executeWithTracing(payload) {
       const instrumentedCode = hasPreparedTracedBuild
         ? prepared.instrumentedCode
         : await buildInstrumentedExecutableCode(code, executableCode, language, traceFunctionName, maxPathDepth);
-      if (!instrumentedCode) return TRACE_UNAVAILABLE_RESULT;
+      if (!instrumentedCode) return observation
+        ? { status: 'refused', reason: 'observer-prepare' }
+        : TRACE_UNAVAILABLE_RESULT;
       runner = hasNamedFunction
         ? buildFunctionTracingRunner(instrumentedCode, executionStyle, argNames, maxPathDepth, argumentMaterializers, code, targetName)
         : buildScriptTracingRunner(instrumentedCode, maxPathDepth, code);
     } catch (tracedBuildError) {
+      if (observation) return { status: 'refused', reason: 'observer-prepare' };
       const message = tracedBuildError instanceof Error ? tracedBuildError.message : String(tracedBuildError);
       emitRuntimeDiagnostic('warn', 'trace-build-failed', 'The traced build failed; this case is trace-unavailable.', {
         message,
       });
       return TRACE_UNAVAILABLE_RESULT;
-    }
-
-    const serializedInputs = {};
-    for (const [key, value] of Object.entries(materializedInputs)) {
-      serializedInputs[key] = serializeTopLevelValue(value, { ids: new WeakMap(), nextId: 1 });
     }
 
     let output;
@@ -7371,12 +7446,12 @@ async function executeWithTracing(payload) {
       }
     }
 
-    const serializedTraceOutput = serializeTopLevelValue(output, { ids: new WeakMap(), nextId: 1 });
-    const serializedOutput = serializeOutputValue(output);
     if (!hasNamedFunction) {
       traceRecorder.popToFunction(traceFunctionName);
-      traceRecorder.recordReturn(traceLineBounds.endLine, serializedTraceOutput, traceFunctionName);
+      traceRecorder.recordReturn(traceLineBounds.endLine, output, traceFunctionName);
     }
+    if (observation) return snapshotDrawing();
+    const serializedOutput = serializeOutputValue(output);
 
     const executionTimeMs = performanceNow() - startedAt;
     const trace = traceRecorder.getRuntimeTrace(language, `${language}:run`, defaultRuntimeTraceFile(language));
@@ -7390,7 +7465,6 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded: traceRecorder.isTraceLimitExceeded(),
       timeoutReason: traceRecorder.getTimeoutReason(),
-      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
@@ -7398,6 +7472,15 @@ async function executeWithTracing(payload) {
       },
     };
   } catch (error) {
+    if (observation) {
+      if (!traceRecorder.isTraceLimitExceeded()) {
+        traceRecorder.popToFunction(traceFunctionName);
+        traceRecorder.recordException(
+          traceLineBounds.endLine, formatRuntimeErrorMessage(error), traceFunctionName
+        );
+      }
+      return snapshotDrawing();
+    }
     if (untracedBuildFault) throw untracedBuildFault;
     const executionTimeMs = performanceNow() - startedAt;
     const message = formatRuntimeErrorMessage(error);
@@ -7433,7 +7516,6 @@ async function executeWithTracing(payload) {
       traceStepCount: trace.traceStepCount,
       traceLimitExceeded,
       timeoutReason,
-      sesConsoleBudgetExceeded: sesConsoleBudget.exceeded(),
       timings: {
         totalMs: executionTimeMs,
         runMs: executionTimeMs,
@@ -7551,6 +7633,42 @@ async function processMessage(data) {
         break;
       }
 
+      case 'prepare-observation': {
+        if (WORKER_ROLE !== 'coordinator') throw new Error('Observation preparation requires the trusted coordinator.');
+        const result = await prepareObservation(payload);
+        postProtocolMessage(id, protocolToken, 'prepare-result', result);
+        break;
+      }
+
+      case 'observe-execution': {
+        if (WORKER_ROLE === 'coordinator') throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        postWorkerMessage({
+          type: 'observation-started',
+          payload: { requestId: id, attemptToken: payload.attemptToken },
+        });
+        let drawing;
+        try {
+          drawing = await executeWithTracing({ ...payload, observation: true });
+        } catch (_error) {
+          drawing = { status: 'refused', reason: 'observer-runtime' };
+        }
+        try {
+          postProtocolMessage(id, protocolToken, 'execute-result', {
+            attemptToken: payload.attemptToken, drawing,
+            ...(payload.disableRecorderForTest === true &&
+              drawing.status === 'refused' && drawing.reason === 'recorder-unavailable'
+              ? { recorderDisabled: true }
+              : {}),
+          });
+        } catch (_error) {
+          postProtocolMessage(id, protocolToken, 'execute-result', {
+            attemptToken: payload.attemptToken,
+            drawing: { status: 'refused', reason: 'observer-encode' },
+          });
+        }
+        break;
+      }
+
       case 'execute-with-tracing': {
         if (WORKER_ROLE === 'coordinator') {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
@@ -7578,6 +7696,12 @@ async function processMessage(data) {
       case 'execute-code': {
         if (WORKER_ROLE === 'coordinator') {
           throw new Error('Trusted JavaScript coordinator workers cannot execute user code.');
+        }
+        if (payload?.reportCaseProgress === true) {
+          postProtocolMessage(id, protocolToken, 'runtime-progress', {
+            stage: 'ordinary-case-started',
+            detail: { caseIndex: 0 },
+          });
         }
         const result = await executeCode(payload);
         postProtocolMessage(id, protocolToken, 'execute-result', result);

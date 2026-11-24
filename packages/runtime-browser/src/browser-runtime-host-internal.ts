@@ -16,6 +16,18 @@ export type JudgeObservationProgram = RuntimeObservationCall['program'] & {
   readonly runtimeVersion: string;
 };
 
+const ordinaryPreparationKeys = new WeakMap<JudgeObservationProgram, object>();
+
+export function bindJudgeOrdinaryPreparation(program: JudgeObservationProgram, key: object): void {
+  ordinaryPreparationKeys.set(program, key);
+}
+
+export function getJudgeOrdinaryPreparationKey(program: JudgeObservationProgram): object {
+  const key = ordinaryPreparationKeys.get(program);
+  if (!key) throw new Error('Missing ordinary preparation for Judge observation.');
+  return key;
+}
+
 type ObservationRefusal = Extract<RuntimeObservationReply, { status: 'refused' }>;
 
 export interface JudgeObservationLease extends RuntimeObservationProvider {
@@ -24,6 +36,8 @@ export interface JudgeObservationLease extends RuntimeObservationProvider {
    * that state before the adapter admits a subsequent case on the lease.
    */
   observe(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
+  /** Only the captured Judge test bridge can request this observer control. */
+  observeWithoutRecorderForTest?(call: RuntimeObservationCall): Promise<RuntimeObservationReply>;
   dispose(): void | Promise<void>;
 }
 
@@ -57,6 +71,7 @@ export interface JudgeReceiptProvider {
   readonly capabilities: {
     readonly observationLease: 'separate';
     readonly certification?: 'ends-same';
+    readonly algorithmBundlesOnly?: true;
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
@@ -69,7 +84,7 @@ export interface JudgeReceiptProvider {
   prepareObservation(
     program: JudgeObservationProgram,
     signal: AbortSignal,
-    traceOptions?: Readonly<TraceExecutionOptions>
+    traceOptions?: Readonly<TraceExecutionOptions>,
   ): Promise<JudgeObservationLease | ObservationRefusal>;
   /** Private trusted composition journal. Never comes from a request or a worker. */
   mark?(marker: JudgeScheduleMarker): void;

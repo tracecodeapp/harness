@@ -243,7 +243,7 @@ export async function runUntracedRouteChecks(
   // Untraced Submit sends a batch to compatibility workers when a case
   // outgrows the pool's console, and keeps the program there (stop-mode
   // Submit: every later case too). A Run equals that Submit of the same cases.
-  const consoleCheck = named('console fallback: a Run equals stop-mode Submit of the same cases, and a compile error stays one');
+  const consoleCheck = named('bounded console preserves the ordinary answer across Run and Submit');
   const noisyPrograms = {
     process: {
       javascript: 'function process(n) {\n  for (let i = 0; i < n; i++) console.log(i);\n  return n;\n}',
@@ -256,8 +256,8 @@ export async function runUntracedRouteChecks(
       functionName: 'solve',
     },
   } as const;
-  // Each needs the pool's console fallback in its noisy case (input 1) only;
-  // the quiet case's `localeCompare` answers differently on the two routes.
+  // The quiet case's localeCompare distinguishes the profiles if a noisy
+  // sibling changes its selected route.
   const UNPRINTABLE = "const bad = { toJSON() { throw new Error('no json'); }, toString() { throw new Error('no string'); } };";
   const witnessBody = (noisy: string) => ({
     javascript: `function solve(n) {\n  if (n === 1) {\n    ${noisy}\n  }\n  return 'ä'.localeCompare('z');\n}`,
@@ -269,17 +269,12 @@ export async function runUntracedRouteChecks(
     'fails after 100 lines': witnessBody("for (let i = 0; i < 100; i++) console.log(i);\n    throw new Error('boom');"),
     // One short line that ends in the pool's truncation marker.
     'logs the truncation marker': witnessBody("console.log('…[truncated]');"),
-    // An argument that cannot be printed: the pool prints `[Unprintable]`
-    // and keeps counting; this console throws, which the learner catches.
+    // An argument that cannot be printed is handled by the bounded capture.
     '99 lines, then an unprintable argument': witnessBody(`${UNPRINTABLE}\n    for (let i = 0; i < 99; i++) console.log(i);\n    try { console.log(bad); } catch (error) { }`),
     '40 arguments, then an unprintable one': witnessBody(`${UNPRINTABLE}\n    try { console.log(...Array.from({ length: 40 }, (_, i) => i), bad); } catch (error) { }`),
     '100 unprintable lines': witnessBody(`${UNPRINTABLE}\n    for (let i = 0; i < 100; i++) { try { console.log(bad); } catch (error) { } }`),
   } as const;
-  // Known limit: a traced case that a limit stopped is never checked against
-  // the pool's console budget (a second run would cost a runaway one more
-  // clock), so the Run's untraced siblings stay on the pool here.
   const pastTraceBudget = witnessBody('for (let i = 0; i < 1500; i++) console.log(i);');
-  const isRefused = (result: any) => result.diagnostics?.some((entry: any) => entry.code === 'trace-unavailable');
   for (const language of LANGUAGES) {
     for (const [name, source] of [...Object.entries(noisyPrograms), ...Object.entries(witnesses)]) {
       const isWitness = Object.hasOwn(witnesses, name);
@@ -319,19 +314,8 @@ export async function runUntracedRouteChecks(
               for (const result of run.cases) {
                 const expected = truth.cases.find((entry: any) => entry.caseId === result.caseId);
                 const same = JSON.stringify(answer(result)) === JSON.stringify(answer(expected));
-                if (result.caseId !== tracedId) {
-                  if (!same) consoleCheck.violations.push(`${label}: untraced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
-                } else if (expected?.failure?.stage === 'compile') {
-                  if (!same) consoleCheck.violations.push(`${label}: traced case ${result.caseId} must show Submit's compile error, got ${JSON.stringify(answer(result)).slice(0, 200)}`);
-                } else if (isWitness && program.cases.find((entry) => entry.id === result.caseId)?.input.n !== 1) {
-                  // Known limit: a traced case off the pool runs where
-                  // `localeCompare` orders differently, so a witness's quiet
-                  // case may answer differently when it is the traced one.
-                  continue;
-                } else if (!same && !isRefused(result) && result.failure?.origin !== 'limit') {
-                  consoleCheck.violations.push(`${label}: traced case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
-                } else if (isRefused(result) && passes(expected) === false && expected?.failure?.stage === 'compile') {
-                  consoleCheck.violations.push(`${label}: refused a compile error`);
+                if (!same) {
+                  consoleCheck.violations.push(`${label}: case ${result.caseId} ${JSON.stringify(answer(result)).slice(0, 160)} != Submit ${JSON.stringify(answer(expected)).slice(0, 160)}`);
                 }
               }
             }
@@ -341,7 +325,7 @@ export async function runUntracedRouteChecks(
     }
   }
 
-  const residual = named('known limit: a traced case stopped by a trace budget is not checked against the console budget');
+  const residual = named('a trace cutoff and a bounded console preserve both ordinary rows');
   for (const language of LANGUAGES) {
     const program = {
       code: pastTraceBudget[language],
@@ -350,7 +334,6 @@ export async function runUntracedRouteChecks(
       cases: [{ id: '1', input: { n: 1 }, expected: 1 }, { id: '2', input: { n: 2 }, expected: 2 }],
       policy: allCasesPassPolicy(),
     };
-    // One batch: an interactive Run would stop at the traced case's limit.
     const stop = await onHost(async (host) =>
       (await host.evaluateAlgorithm({ bundle: await bundle(language, program) })).evaluation as any);
     const alone = await onHost(async (host) =>
@@ -360,13 +343,13 @@ export async function runUntracedRouteChecks(
     });
     residual.compared += 1;
     const at = (evaluation: any, id: string) => JSON.stringify(answer(evaluation.cases.find((result: any) => result.caseId === id)));
-    if (run.cases.find((result: any) => result.caseId === '1')?.failure?.origin !== 'limit') {
-      residual.violations.push(`${language}: the traced case should stop at the trace budget`);
+    const selected = run.cases.find((result: any) => result.caseId === '1');
+    if (selected?.attachment?.status !== 'truncated' || selected.status !== 'completed' ||
+        at(run, '1') !== at(stop, '1')) {
+      residual.violations.push(`${language}: trace cutoff changed the selected ordinary row`);
     }
-    // Pinned as documented: the sibling keeps the pool's answer, which
-    // Submit of the same cases does not give.
     if (at(run, '2') !== at(alone, '2')) residual.violations.push(`${language}: the untraced sibling left the pool: ${at(run, '2')}`);
-    if (at(stop, '2') === at(alone, '2')) residual.violations.push(`${language}: Submit no longer moves the sibling off the pool; update this known limit`);
+    if (at(stop, '2') !== at(alone, '2')) residual.violations.push(`${language}: Submit moved the sibling off the pool`);
   }
 
   if (settings.runaway) {

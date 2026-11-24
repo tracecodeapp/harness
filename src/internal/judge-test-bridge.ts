@@ -3,7 +3,7 @@ import type { JudgeScheduleMarker } from '../../packages/runtime-browser/src/bro
 
 type FaultAtPoint = {
   prepare: 'prepare';
-  observe: 'runtime' | 'deadline';
+  observe: 'runtime' | 'deadline' | 'no-recorder';
   encode: 'encode';
 };
 

@@ -60,6 +60,7 @@ async function evaluate(
     passedCount: receipt.passedCount,
     totalCount: receipt.totalCount,
     evaluationStatus: receipt.evaluation.status,
+    compileFailure: receipt.evaluation.compile?.failure,
     values: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.value)
       : [],
@@ -75,6 +76,9 @@ async function evaluate(
     traces: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.trace)
       : [],
+    attachmentStatuses: receipt.evaluation.cases.map(({ attachment }) =>
+      attachment && ('reason' in attachment ? attachment.reason : attachment.status)
+    ),
     caseVerdicts: receipt.evaluation.status === 'completed'
       ? receipt.evaluation.cases.map((testCase) => testCase.verdict.kind)
       : [],
@@ -1157,6 +1161,66 @@ function solve(values) {
   }
 }
 
+export async function runJavaScriptConstructorParity(assetBaseUrl: string) {
+  const createHost = (algorithmExecution: 'ses-compartment-pool' | 'disposable-worker') =>
+    createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+      assetBaseUrl,
+      providers: ['javascript', 'typescript'],
+      providerRegistry: createBrowserRuntimeProviderRegistry([
+        createJavaScriptBrowserRuntimeProvider({ algorithmExecution }),
+      ]),
+      safeExecution: { workerLifecycle: 'retire-only' },
+    }));
+  const ses = createHost('ses-compartment-pool');
+  const disposable = createHost('disposable-worker');
+  try {
+    const results = [];
+    for (const language of ['javascript', 'typescript'] as const) {
+      const input: Parameters<typeof evaluate>[1] = {
+        id: `${language}-constructor-key`,
+        language,
+        functionName: 'detectDrift',
+        executionStyle: 'solution-method' as const,
+        code: 'class Solution { detectDrift(snapshot) { return Object.keys(Object.assign({}, snapshot)).length; } }',
+        cases: [
+          { id: 'A', input: { snapshot: { constructor: 'example-only' } }, expected: 1 },
+          { id: 'B', input: { snapshot: { ordinary: 'example-only' } }, expected: 1 },
+        ],
+      };
+      const mutations: Parameters<typeof evaluate>[1] = {
+        id: `${language}-own-key-writes`,
+        language,
+        functionName: 'solve',
+        code: `function solve(source, key, initial) {
+          const copy = source;
+          copy[key] = initial;
+          copy[key] += 1;
+          const own = Object.hasOwn(copy, key);
+          return [copy[key], own, Object.keys(copy).includes(key)];
+        }`,
+        cases: [
+          { id: 'new-constructor', input: { source: {}, key: 'constructor', initial: 3 }, expected: [4, true, true] },
+          { id: 'existing-constructor', input: { source: { constructor: 0 }, key: 'constructor', initial: 7 }, expected: [8, true, true] },
+          { id: 'inherited-method', input: { source: {}, key: 'hasOwnProperty', initial: 11 }, expected: [12, true, true] },
+        ],
+      };
+      const pairs = [];
+      for (const fixture of [input, mutations]) {
+        pairs.push({
+          id: fixture.id,
+          ses: await evaluate(ses, fixture),
+          disposable: await evaluate(disposable, fixture),
+        });
+      }
+      results.push({ language, pairs });
+    }
+    return results;
+  } finally {
+    ses.dispose();
+    disposable.dispose();
+  }
+}
+
 export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
   const providers = (algorithmExecution: 'ses-compartment-pool' | 'disposable-worker') =>
     createBrowserRuntimeHost({
@@ -1304,7 +1368,7 @@ export async function runJavaScriptTraceParity(assetBaseUrl: string) {
   }
 }
 
-export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) {
+export async function runJavaScriptSesUnavailableFailure(assetBaseUrl: string) {
   const runtimeHost = createBrowserRuntimeHost({
     assetBaseUrl,
     assets: {
@@ -1319,22 +1383,33 @@ export async function runJavaScriptSesUnavailableFallback(assetBaseUrl: string) 
     safeExecution: { workerLifecycle: 'retire-only' },
   });
   const host = createBrowserJudgeHostFromRuntimeHost(runtimeHost);
+  const failureOf = async (result: ReturnType<typeof evaluate>) => {
+    try {
+      const receipt = await result;
+      return receipt.evaluationStatus === 'compile-failed' &&
+        receipt.compileFailure?.origin === 'provider' && receipt.totalCount === 0
+        ? 'provider'
+        : JSON.stringify(receipt);
+    } catch (error) {
+      return error instanceof Error ? error.name : String(error);
+    }
+  };
   try {
-    const code = await evaluate(host, {
-      id: 'ses-unavailable-code-fallback',
+    const code = await failureOf(evaluate(host, {
+      id: 'ses-unavailable-code-failure',
       language: 'javascript',
       code: 'function solve(value) { return value + 1; }',
       functionName: 'solve',
       cases: [{ id: 'code', input: { value: 4 }, expected: 5 }],
-    });
-    const trace = await evaluate(host, {
-      id: 'ses-unavailable-trace-fallback',
+    }));
+    const trace = await failureOf(evaluate(host, {
+      id: 'ses-unavailable-trace-failure',
       language: 'javascript',
       code: 'function solve(value) { return value + 1; }',
       functionName: 'solve',
       trace: true,
       cases: [{ id: 'trace', input: { value: 7 }, expected: 8 }],
-    });
+    }));
     return { code, trace };
   } finally {
     host.dispose();

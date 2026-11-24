@@ -11,11 +11,11 @@ import type {
   BrowserWorkerFactory,
   BrowserWorkerLike,
 } from '@tracecode/runtime-browser/internal';
+import { createWorkerProtocolToken } from '@tracecode/runtime-browser/internal';
 import { isJavaScriptRuntimeSourceAllowed } from './javascript-runtime-source-policy';
 import {
   isAdmittedJavaScriptModule,
   isJavaScriptRuntimeSelectorAllowed,
-  SES_CONSOLE_COMPATIBILITY_REQUIRED,
 } from './javascript-runtime-policy';
 
 export type SesAlgorithmExecutionStyle =
@@ -48,6 +48,7 @@ export interface SesAlgorithmPreparedSource {
 
 export interface SesAlgorithmWorkerPoolOptions {
   readonly workerUrl: string | URL;
+  readonly debug?: boolean;
   readonly workerFactory?: BrowserWorkerFactory;
   readonly javascriptLibrariesUrl?: string;
   readonly javascriptLibrariesIntegrity?: string;
@@ -816,6 +817,18 @@ function snapshotMaterializer(value: unknown, depth = 0): unknown {
   return Object.freeze(Object.fromEntries(entries));
 }
 
+export function supportsSesTraceOptions(options: RuntimeTraceOptions | undefined): boolean {
+  return options === undefined || (
+    isRecord(options) &&
+    hasOnlyKeys(options, [], ['runId', 'file', 'maxPathDepth']) &&
+    (options.runId === undefined || typeof options.runId === 'string') &&
+    (options.file === undefined || typeof options.file === 'string') &&
+    (options.maxPathDepth === undefined ||
+      (typeof options.maxPathDepth === 'number' &&
+        Number.isFinite(options.maxPathDepth) && options.maxPathDepth > 0))
+  );
+}
+
 function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPreparedSource {
   if (
     (source.mode !== 'code' && source.mode !== 'trace') ||
@@ -844,19 +857,7 @@ function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPrepare
   ) {
     throw new TypeError('SES trace preparation has an invalid instrumented artifact.');
   }
-  if (
-    source.traceOptions !== undefined &&
-    (
-      !isRecord(source.traceOptions) ||
-      !hasOnlyKeys(source.traceOptions, [], ['runId', 'file', 'maxPathDepth']) ||
-      (source.traceOptions.runId !== undefined && typeof source.traceOptions.runId !== 'string') ||
-      (source.traceOptions.file !== undefined && typeof source.traceOptions.file !== 'string') ||
-      (source.traceOptions.maxPathDepth !== undefined &&
-        (typeof source.traceOptions.maxPathDepth !== 'number' ||
-          !Number.isFinite(source.traceOptions.maxPathDepth) ||
-          source.traceOptions.maxPathDepth <= 0))
-    )
-  ) {
+  if (!supportsSesTraceOptions(source.traceOptions)) {
     throw new TypeError('SES trace preparation has invalid trace options.');
   }
   assertCoordinatorCompatibleSelector(source.functionName, source.executionStyle);
@@ -925,13 +926,6 @@ export class SesAlgorithmWorkerReportedError extends Error {
   }
 }
 
-export class SesAlgorithmCompatibilityRequiredError extends Error {
-  constructor(readonly reason: 'console-budget') {
-    super(`SES algorithm execution requires compatibility fallback: ${reason}.`);
-    this.name = 'SesAlgorithmCompatibilityRequiredError';
-  }
-}
-
 class SesAlgorithmUnpostedRequestError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -948,6 +942,7 @@ class SesAlgorithmDeadlineError extends Error {
 
 class SesAlgorithmWorkerLane {
   private worker: BrowserWorkerLike | null = null;
+  private workerGeneration = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly preparedSources = new Map<string, SesAlgorithmPreparedSource>();
   private readonly preparedWorkerIds = new Set<string>();
@@ -974,8 +969,12 @@ class SesAlgorithmWorkerLane {
     if (this.terminated) throw new Error('SES algorithm Worker lane is terminated.');
     if (this.worker) return this.worker;
     const worker = this.createWorker();
+    this.workerGeneration += 1;
     worker.onmessage = (event: MessageEvent) => {
       if (this.worker !== worker) return;
+      // Start evidence is a nonterminal message. The pending case still owns
+      // its original response and execution deadline.
+      if (event.data?.type === 'runtime-progress') return;
       const response = parseWorkerResponse(event.data);
       if (!response) {
         this.retire(new Error('SES algorithm Worker returned an invalid control response.'));
@@ -1047,6 +1046,12 @@ class SesAlgorithmWorkerLane {
         const retirementLeadMs = Math.min(25, Math.max(1, deadlineMs * 0.05));
         timeout = setTimeout(() => {
           if (!this.pending.has(id)) return;
+          if (this.options.debug) {
+            console.debug('[tracecode:ses-deadline]', JSON.stringify({
+              lane: this.laneIndex, generation: this.workerGeneration,
+              operation: request.type, deadlineMs, route: 'ses-compartment-pool',
+            }));
+          }
           this.retire(new SesAlgorithmDeadlineError(deadlineMs));
         }, Math.max(1, deadlineMs - retirementLeadMs));
       }
@@ -1174,7 +1179,7 @@ class SesAlgorithmWorkerLane {
             inputBatch: [inputs],
             ...(source.mode === 'trace'
               ? { traceEnabledBatch: [tracingEnabled ?? true] }
-              : {}),
+              : { reportCaseProgress: true, protocolToken: createWorkerProtocolToken() }),
           },
           signal,
           executionDeadlineMs
@@ -1346,8 +1351,9 @@ export class SesAlgorithmWorkerPool {
     }
     const results = new Array<CodeExecutionResult | ExecutionResult>(inputBatch.length);
     let nextIndex = 0;
+    let serviceFailed = false;
     const laneRuns = this.lanes.map(async (lane, laneIndex) => {
-      while (nextIndex < inputBatch.length) {
+      while (!serviceFailed && nextIndex < inputBatch.length) {
         const index = nextIndex++;
         try {
           results[index] = await lane.executeCase(
@@ -1387,6 +1393,7 @@ export class SesAlgorithmWorkerPool {
                 };
             continue;
           }
+          serviceFailed = true;
           throw error;
         }
       }
@@ -1398,11 +1405,6 @@ export class SesAlgorithmWorkerPool {
     if (failed) throw failed.reason;
     if (!hasEveryArrayIndex(results)) {
       throw new Error('SES algorithm Worker pool assembled a sparse result batch.');
-    }
-    if (results.some((result) =>
-      result.kind === 'failed' && result.error === SES_CONSOLE_COMPATIBILITY_REQUIRED
-    )) {
-      throw new SesAlgorithmCompatibilityRequiredError('console-budget');
     }
     return results;
   }
