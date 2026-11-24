@@ -337,6 +337,34 @@ public:
   },
 ];
 
+// The natural-shape proof set: correct learner solutions written the way a
+// learner would, one per affected shape and problem kind, plus controls. Each
+// must pass on every driver, Run and Submit.
+interface NaturalShapeFixture {
+  name: string;
+  shape: number | 'control';
+  kind: string;
+  code: string;
+  functionName: string;
+  executionStyle: Scenario['executionStyle'];
+  cases: Array<{ id: string; input: Record<string, unknown>; expected: unknown }>;
+  untracedOnly?: string;
+}
+const NATURAL_SHAPES = JSON.parse(
+  await readFile(resolve(process.cwd(), 'tests', 'fixtures', 'cpp-natural-shapes.json'), 'utf8')
+) as { fixtures: NaturalShapeFixture[] };
+for (const fixture of NATURAL_SHAPES.fixtures) {
+  SCENARIOS.push({
+    name: `natural shape ${fixture.shape}: ${fixture.name} (${fixture.kind})`,
+    functionName: fixture.functionName,
+    executionStyle: fixture.executionStyle,
+    code: fixture.code,
+    cases: fixture.cases.map(({ input }) => input),
+    expected: fixture.cases.map(({ expected }) => expected),
+    ...(fixture.untracedOnly ? { untracedOnly: fixture.untracedOnly } : {}),
+  });
+}
+
 interface RunSummary {
   ok: boolean;
   output?: unknown;
