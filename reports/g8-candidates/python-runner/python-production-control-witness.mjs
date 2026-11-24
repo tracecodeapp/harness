@@ -2,7 +2,9 @@ const WITNESS_ERROR = 'Published Python single-worker witness differs';
 
 function phases(result) {
   const journal = result?.workerJournal ?? result;
-  return Array.isArray(journal) ? journal.filter(({ phase }) => phase === 'send') : [];
+  return Array.isArray(journal)
+    ? journal.filter(({ phase }) => phase === undefined || phase === 'send')
+    : [];
 }
 
 export function pythonProductionControlOutcome(result, role, caseCount) {

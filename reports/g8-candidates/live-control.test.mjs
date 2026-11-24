@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   liveCellScore,
+  liveCellScoreWithControls,
   liveControlVersions,
   liveRoundOrder,
 } from './live-control.mjs';
@@ -21,7 +22,7 @@ test('scores candidate against same-window control at five and ten percent', () 
     { n: 20, median: 100, p90: 200 },
     { n: 20, median: 101, p90: 198 },
   );
-  assert.equal(score.control.valid, true);
+  assert.equal(score.controls[0].valid, true);
   assert.deepEqual(score.thresholds, { median: 105, p90: 220.00000000000003 });
   assert.equal(score.pass, true);
 });
@@ -32,6 +33,21 @@ test('invalidates a cell when the live control drifts over ten percent', () => {
     { n: 20, median: 111, p90: 200 },
     { n: 20, median: 100, p90: 200 },
   );
-  assert.equal(score.control.valid, false);
+  assert.equal(score.controls[0].valid, false);
+  assert.equal(score.pass, false);
+});
+
+test('uses the better live control on the two Python warm Submit cells', () => {
+  const score = liveCellScoreWithControls(
+    { n: 20, median: 100, p90: 200 },
+    [
+      { version: '0.17.1', result: { n: 20, median: 102, p90: 205 },
+        frozen: { n: 20, median: 100, p90: 200 } },
+      { version: '0.20.1', result: { n: 20, median: 95, p90: 190 },
+        frozen: { n: 20, median: 96, p90: 192 } },
+    ],
+  );
+  assert.deepEqual(score.comparator, { median: 95, p90: 190 });
+  assert.deepEqual(score.thresholds, { median: 99.75, p90: 209.00000000000003 });
   assert.equal(score.pass, false);
 });

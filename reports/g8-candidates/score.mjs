@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scoreThresholds } from './score-thresholds.mjs';
-import { liveCellScore } from './live-control.mjs';
+import { liveCellScoreWithControls } from './live-control.mjs';
 
 const [archive, raw, primary] = process.argv.slice(2);
 const languages = ['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'];
@@ -99,9 +99,9 @@ function policyFor(scope, cell) {
     : cell.endsWith('/lessonContinue') ? ['concurrent'] : ['concurrent', 'concurrent-deploy'];
   return cell.endsWith('/lessonContinue') ? ['candidate-main'] : ['candidate-main', 'candidate-deploy'];
 }
-let liveControl = false;
-const summary = { incomplete: [], failed: [], escalations: [], pythonPhone: {},
-  sameWindowIncomplete: [], sameWindowFailed: [], controlInvalid: [] };
+let liveControl;
+const summary = { incomplete: [], frozenFailed: [], frozenEscalations: [], pythonPhoneFrozen: {},
+  noComparator: [], sameWindowFailed: [], controlInvalid: [] };
 for (const scope of ['desktop', 'phone', 'spot']) {
   const prefix = primary === 'python' && scope !== 'spot'
     ? (scope === 'phone' ? 'speed-phone' : 'speed-desktop-b') : 's-' + primary + '-' + scope;
@@ -109,27 +109,33 @@ for (const scope of ['desktop', 'phone', 'spot']) {
   try {
     observed = collect(raw, prefix);
     const scopeLiveControl = observed.metadata.liveControl !== undefined;
-    if (liveControl && !scopeLiveControl) throw new Error('Live-control metadata differs between scopes');
-    liveControl ||= scopeLiveControl;
+    if (liveControl !== undefined && liveControl !== scopeLiveControl) {
+      throw new Error('Live-control metadata differs between scopes');
+    }
+    liveControl = scopeLiveControl;
     const expectedCandidateVersions = primary === 'python' && scope !== 'spot'
       ? scope === 'phone' ? ['concurrent', 'sequential'] : ['concurrent', 'concurrent-deploy']
       : ['candidate-main', 'candidate-deploy'];
     if (scopeLiveControl) assert.deepEqual(observed.metadata.liveControl, {
       control: '0.17.1', candidateVersions: expectedCandidateVersions,
       alternatingOrderPerRound: true,
+      ...(primary === 'python' && scope !== 'spot' && { pythonWarmSubmitControl: '0.20.1' }),
     });
     const reference = capture[scope === 'phone' ? 2 : 0].metadata;
     for (const field of ['host', 'browser', 'fixtures', 'appRefs'])
       assert.deepEqual(observed.metadata[field], reference[field], field);
+    const liveVersions = observed.metadata.schedule.flatMap(({ versions: groupVersions }) => groupVersions)
+      .filter((version) => ['0.17.1', '0.20.1'].includes(version));
     const policyNames = [...new Set([
-      ...(scopeLiveControl ? ['0.17.1'] : []),
+      ...liveVersions,
       ...required(scope).flatMap(cell => policyFor(scope, cell)),
     ])];
     for (const policy of policyNames) {
       const pkg = observed.metadata.packages[policy];
       const tree = structuredClone(pkg.dependencies);
-      tree.version = '0.20.1';
-      assert.deepEqual(tree, reference.packages['0.20.1'].dependencies);
+      const referencePolicy = versions.includes(policy) ? policy : '0.20.1';
+      tree.version = referencePolicy;
+      assert.deepEqual(tree, reference.packages[referencePolicy].dependencies);
     }
   } catch (error) {
     console.log(JSON.stringify({ scope, unavailable: error.message }));
@@ -155,26 +161,32 @@ for (const scope of ['desktop', 'phone', 'spot']) {
         : undefined;
       const complete = result.n === 20;
       const pass = complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
-      const sameWindowControl = liveControl ? stats(observed.values.get(cell + '/0.17.1')) : undefined;
-      const sameWindowComplete = !liveControl || sameWindowControl.n === 20;
-      const sameWindow = liveControl && complete && sameWindowComplete
-        ? liveCellScore(result, sameWindowControl, history['0.17.1']) : undefined;
+      const pythonWarmSubmit = /^python\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
+      const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] : ['0.17.1'];
+      const controls = controlVersions.map((version) => ({
+        version,
+        result: stats(observed.values.get(cell + '/' + version)),
+        frozen: history[version],
+      }));
+      const sameWindowComplete = liveControl === true && controls.every(({ result: row }) => row.n === 20);
+      const sameWindow = complete && sameWindowComplete
+        ? liveCellScoreWithControls(result, controls) : undefined;
       const id = cell + '/' + policy;
       if (!complete) summary.incomplete.push(id);
-      else if (!pass && scope === 'spot') summary.escalations.push(id);
-      else if (!pass && primary === 'python' && scope === 'phone') (summary.pythonPhone[policy] ??= []).push(id);
-      else if (!pass) summary.failed.push(id);
-      if (liveControl && !sameWindowComplete) summary.sameWindowIncomplete.push(id);
-      else if (sameWindow && !sameWindow.control.valid) summary.controlInvalid.push(id);
+      else if (!pass && scope === 'spot') summary.frozenEscalations.push(id);
+      else if (!pass && primary === 'python' && scope === 'phone') {
+        (summary.pythonPhoneFrozen[policy] ??= []).push(id);
+      } else if (!pass) summary.frozenFailed.push(id);
+      if (!sameWindowComplete) summary.noComparator.push(id);
+      else if (sameWindow && sameWindow.controls.some(({ valid }) => !valid)) summary.controlInvalid.push(id);
       else if (sameWindow && !sameWindow.pass) summary.sameWindowFailed.push(id);
       console.log(JSON.stringify({ scope, cell, policy, result, cache, history,
-        thresholds, complete, pass, frozenTable: { thresholds, complete, pass },
-        ...(liveControl && { sameWindow: sameWindow ?? { complete: false, control: sameWindowControl } }),
+        frozenTable: { thresholds, complete, pass },
+        sameWindow: sameWindow ?? { complete: false, controls },
         ...(warmCsharp && { advisory: '0.17.1' }) }));
     }
   }
 }
 console.log(JSON.stringify({ summary }));
-if (summary.incomplete.length || summary.failed.length || summary.escalations.length ||
-  summary.sameWindowIncomplete.length || summary.sameWindowFailed.length || summary.controlInvalid.length ||
-  Object.keys(summary.pythonPhone).length) process.exitCode = 1;
+if (summary.incomplete.length || summary.noComparator.length || summary.sameWindowFailed.length ||
+  summary.controlInvalid.length) process.exitCode = 1;

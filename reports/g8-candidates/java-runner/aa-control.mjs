@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 
 export const aaVersions = ['0.17.1', 'release-deploy'];
 export const aaClosingVersions = ['release-deploy', '0.17.1'];
+export const aaClosingAllVersions = ['release-deploy', '0.17.1', '0.20.1'];
 export const aaLanguages = ['csharp', 'python'];
 
 export function aaControlPlan(groups) {
@@ -45,7 +46,8 @@ export function aaClosingControlPlan(groups) {
   assert.equal(selected.filter(({ language }) => language === 'csharp').length, 1);
 
   return selected
-    .map((group) => ({ ...group, versions: [...aaClosingVersions] }))
+    .map((group) => ({ ...group, versions: group.language === 'python' && group.state === 'warm'
+      ? [...aaClosingAllVersions] : [...aaClosingVersions] }))
     .sort((a, b) => {
       const stateOrder = { warm: 0, cold: 1 };
       return stateOrder[a.state] - stateOrder[b.state] ||

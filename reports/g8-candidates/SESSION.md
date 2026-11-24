@@ -20,9 +20,9 @@ and Permutations. Cold Run on both problems supplies the near-zero control and
 its second-trace receipt. This control changes no score threshold.
 
 Java's next authorized session uses registered head
-`305683221863a4e719d88c9a25d5fdb39e022109`, at
-`/root/ci/coord-artifacts/b5-java-journal-registered-30568322.tgz` with SHA-256
-`8f095ae3449e5e94575065b0d02345a9e57aebfd6acb7597b634a37464fb9bd6`.
+`74dc029d4bc47682e9279a03bf500bc3cd5095d2`, at
+`/root/ci/coord-artifacts/b5-java-admission-registered-74dc029d4bc4.tgz` with SHA-256
+`86e63eee612334f471d664940e07d864c23bd89e1ae75f6bf5e81eeb90e77e71`.
 The prior `9336c784` install remains as provenance and is not reused for timing.
 
 Python has a replacement candidate pin,
@@ -35,6 +35,14 @@ recheck and Grok read. The withdrawn `1ff364128765` and superseded
 
 ## Scope and time
 
+Each language window interleaves candidate policies with production 0.17.1 and
+alternates which side runs first per round. The gate is candidate median no
+greater than 1.05 times the same-window comparator and candidate p90 no greater
+than 1.10 times it. Python warm Submit on Binary Search and Permutations also
+interleaves 0.20.1 and uses the better live comparator. A live control drifting
+more than 10% from its frozen cell invalidates the session; the frozen score is
+reported only as a cross-check.
+
 Plan three exclusive language windows. The first Java candidate window showed
 that load pauses, not sample execution, set the deadline: its first eight groups
 spent 6.38 minutes in recorded attempts and 38.93 minutes waiting for the load
@@ -44,9 +52,9 @@ Staging and time in the host queue are outside these estimates.
 
 | Window | Work | Estimated lock time | Deadline |
 | --- | --- | ---: | ---: |
-| Java step 5 | 25 desktop endpoints, eight phone-class endpoints, five spot cells | 22–42 min | 55 min |
-| C# step 6 | 25 desktop endpoints, eight phone-class endpoints, five spot cells | 74 to 82 min | 90 min |
-| Python step 3 | 25 desktop endpoints, eight phone-class endpoints for each policy, five spot cells | 57 to 65 min | 75 min |
+| Java step 5 | full desktop, phone, lesson and live-control spot matrix | 115–130 min | 135 min proposed |
+| C# step 6 | full desktop, phone, lesson and live-control spot matrix | 115–130 min | 135 min proposed |
+| Python step 3 | full desktop, phone, lesson and live-control spot matrix | 65–80 min | 90 min proposed |
 
 Java's warm Binary Search Run is first within the Java window. Its limits are
 830.4 ms median and 944.1 ms p90. It records the worker phases from the Java

@@ -11,6 +11,7 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import {
   aaClosingControlPlan,
+  aaClosingAllVersions,
   aaClosingVersions,
   aaControlPlan,
   aaLanguages,
@@ -21,6 +22,7 @@ import { csharpProductionControlOutcome } from './csharp-production-control-witn
 import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidate-witness.mjs';
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
+import { pythonProductionControlOutcome } from '../python-runner/python-production-control-witness.mjs';
 import { liveControlVersions, liveRoundOrder } from '../live-control.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
@@ -72,7 +74,7 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const candidateVersions = ['candidate-main', 'candidate-deploy'];
-const versions = aaClosing ? aaClosingVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? liveControlVersions(candidateVersions) : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
@@ -275,8 +277,8 @@ async function openPage(context, version, url, group) {
   }, {
     language: group.language,
     stopSubmit: version === '0.20.1' || version === 'candidate-main',
-    candidate: group.language === testedLanguage &&
-      (version.startsWith('candidate-') || liveControl && version === '0.17.1'),
+    candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
+      liveControl && version === '0.17.1' && ['java', 'csharp', 'python'].includes(group.language),
   });
     return page;
   } catch (error) {
@@ -285,11 +287,13 @@ async function openPage(context, version, url, group) {
   }
 }
 
-function candidateOutcome(result, role, caseCount, caseId, version) {
+function candidateOutcome(result, role, caseCount, caseId, version, language) {
   if (liveControl && version === '0.17.1') {
-    if (testedLanguage === 'java') return javaProductionControlOutcome(result, role, caseCount, caseId);
-    if (testedLanguage === 'csharp') return csharpProductionControlOutcome(result);
-    throw new Error('Published Python live control uses the dedicated Python runner');
+    if (language === 'java') return javaProductionControlOutcome(result, role, caseCount, caseId);
+    if (language === 'csharp') return csharpProductionControlOutcome(result);
+    if (language === 'python') return pythonProductionControlOutcome(
+      result.python?.phases ?? [], role, caseCount);
+    return;
   }
   if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
   if (testedLanguage === 'csharp') return csharpCandidateOutcome(result, role, caseCount, caseId);
@@ -442,7 +446,8 @@ const report = {
   }).trim() }),
   ...(aaControl && { aaControl: { languages: aaLanguages, versions: aaVersions, interleavedPerRound: true } }),
   ...(aaClosing && { aaClosing: {
-    languages: aaLanguages, versions: aaClosingVersions, fixedOrderPerRound: true,
+    languages: aaLanguages, versions: aaClosingAllVersions, fixedOrderPerRound: true,
+    pythonWarmSubmitControl: '0.20.1',
   } }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
@@ -528,12 +533,14 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if (group.language === testedLanguage && candidate &&
-                  (version.startsWith('candidate-') || liveControl && version === '0.17.1') &&
+              if (candidate &&
+                  (version.startsWith('candidate-') && group.language === testedLanguage ||
+                    liveControl && version === '0.17.1' &&
+                      ['java', 'csharp', 'python'].includes(group.language)) &&
                   !sample.invalid && !sample.refusal) {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
-                  role === 'run' ? fixture.cases[0].id : undefined, version);
+                  role === 'run' ? fixture.cases[0].id : undefined, version, group.language);
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
@@ -544,10 +551,13 @@ try {
                   sample.refusal = refusal(sample.second);
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
-                  if (group.language === testedLanguage && candidate &&
-                      (version.startsWith('candidate-') || liveControl && version === '0.17.1') &&
+                  if (candidate &&
+                      (version.startsWith('candidate-') && group.language === testedLanguage ||
+                        liveControl && version === '0.17.1' &&
+                          ['java', 'csharp', 'python'].includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
-                    sample.invalid = candidateOutcome(sample.second, 'click', 1, fixture.cases[1].id, version);
+                    sample.invalid = candidateOutcome(sample.second, 'click', 1,
+                      fixture.cases[1].id, version, group.language);
                   }
                 }
               }

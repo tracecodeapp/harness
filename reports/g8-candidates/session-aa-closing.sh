@@ -13,7 +13,8 @@ echo "runner_source=$job_source"
 ln -sfn "$source_dir/node_modules" "$stage/node_modules"
 export GIT_DIR="$source_dir/.git"
 out="$stage/release-aa-closing"
-test -r "$out/vrelease/candidate.json" -a -r "$out/v0.17.1/candidate.json" || exit 2
+test -r "$out/vrelease/candidate.json" -a -r "$out/v0.17.1/candidate.json" \
+  -a -r "$out/v0.20.1/candidate.json" || exit 2
 status=0
 env SPEED_G8_AA_CLOSING=1 SPEED_G8_RELEASE=0.17.3 SPEED_G8_LANGUAGE=csharp SPEED_JAVA_SCOPE=desktop \
   node java-runner/run-g8.mjs "$out" run desktop-a 212026 "$max_minutes" \

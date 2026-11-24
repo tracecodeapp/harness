@@ -12,3 +12,12 @@ test -r "$control/candidate.json" -a -d "$out"
 printf '%s  %s\n' "$expected" "$control/tracecode-harness-0.17.1.tgz" | sha256sum --strict -c -
 ln -sfn ../historical/v0.17.1 "$out/v0.17.1"
 test "$(readlink -f "$out/v0.17.1")" = "$(readlink -f "$control")"
+if [[ "$language" == python ]]; then
+  submit_control="$stage/historical/v0.20.1"
+  submit_expected=e0a4c4d47b4880a49040329112fc779500b3dbeed039934873b72585eaedaf13
+  test -r "$submit_control/candidate.json"
+  printf '%s  %s\n' "$submit_expected" "$submit_control/tracecode-harness-0.20.1.tgz" |
+    sha256sum --strict -c -
+  ln -sfn ../historical/v0.20.1 "$out/v0.20.1"
+  test "$(readlink -f "$out/v0.20.1")" = "$(readlink -f "$submit_control")"
+fi

@@ -54,8 +54,9 @@ import { pythonProductionControlOutcome } from './python-production-control-witn
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
-const measuredVersions = ['0.17.1', ...candidateVersions];
-const versions = ['0.17.1', ...candidateVersions];
+const submitControlVersions = windowName === 'desktop-b' ? ['0.20.1'] : [];
+const measuredVersions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
+const versions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
 `);
 edit('assert.equal(manifest.version, version);', 'assert.equal(manifest.version, candidateInstalls[version]?.packageVersion ?? version);');
 edit("const tarball = 'tracecode-harness-' + version + '.tgz';", "const tarball = 'tracecode-harness-' + manifest.version + '.tgz';");
@@ -71,13 +72,19 @@ edit('appRef: appRefs[version], tarball,', "appRef: appRefs[version] ?? appRefs[
 edit("stopSubmit: version === '0.20.1'", "stopSubmit: version !== '0.17.1' && version !== 'concurrent-deploy'");
 edit("const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;", "const target = 20;");
 edit("const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];", "const cheapFirst = ['python'];");
-edit("versions: ['0.20.1']", "versions: ['0.20.1', 'concurrent']");
+edit('              language, cpu, problem, state, journey, target, versions,', `
+              language, cpu, problem, state, journey, target,
+              versions: language === 'python' && cpu === 1 && state === 'warm' && journey === 'submit'
+                ? ['0.17.1', ...submitControlVersions, ...candidateVersions]
+                : ['0.17.1', ...candidateVersions],`);
+edit("versions: ['0.20.1']", "versions: ['0.17.1', 'concurrent']");
 edit('        for (const [position, version] of shuffled(group.versions).entries()) {', `
           for (const [position, version] of (round % 2 === 1
             ? group.versions : [...group.versions].reverse()).entries()) {
 `);
 edit("  schema: 'tracecode.speed-baseline.v1',", `  schema: 'tracecode.speed-baseline.v1',
-  liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true },`);
+  liveControl: { control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
+    ...(windowName === 'desktop-b' && { pythonWarmSubmitControl: '0.20.1' }) },`);
 edit('  report.browser.version = browser.version();', `
   report.browser.version = browser.version();
   assert.match(report.browser.version, /^145\\./u, 'Expected frozen Chromium major 145');
@@ -179,7 +186,7 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                 const ordinary = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program-batch' && e.mode === 'code');
                 const observed = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program' && e.observation);
                 const role = group.journey === 'submit' ? 'submit' : 'run';
-                if (version === '0.17.1') {
+                if (version === '0.17.1' || version === '0.20.1') {
                   sample.invalid = pythonProductionControlOutcome(
                     { workerJournal: commands },
                     role,

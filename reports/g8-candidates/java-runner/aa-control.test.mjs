@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   aaClosingControlPlan,
+  aaClosingAllVersions,
   aaClosingVersions,
   aaControlPlan,
   aaVersions,
@@ -67,8 +68,12 @@ test('closing control swaps release first and selects only the unresolved cells'
     ['csharp', 'permutations', 'cold', 'run'],
     ['python', 'permutations', 'cold', 'run'],
   ]);
-  for (const group of plan) assert.deepEqual(group.versions, aaClosingVersions);
+  for (const group of plan) assert.deepEqual(group.versions,
+    group.language === 'python' && group.state === 'warm'
+      ? aaClosingAllVersions : aaClosingVersions);
+  assert.equal(plan.filter(({ versions }) => versions.includes('0.20.1')).length, 2);
   assert.deepEqual(aaClosingVersions, ['release-deploy', '0.17.1']);
+  assert.deepEqual(aaClosingAllVersions, ['release-deploy', '0.17.1', '0.20.1']);
 });
 
 test('closing control rejects a missing unresolved cell', () => {

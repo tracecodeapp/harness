@@ -3,12 +3,15 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { metricEndpoints, relative, sampleCounts, stats } from './aa-score-lib.mjs';
+import { liveCellScoreWithControls } from './live-control.mjs';
 
 const [archive, raw, mode = 'full'] = process.argv.slice(2);
 assert.ok(archive && raw);
 assert.ok(['full', 'closing'].includes(mode));
 const closing = mode === 'closing';
-const versions = closing ? ['release-deploy', '0.17.1'] : ['0.17.1', 'release-deploy'];
+const versions = closing
+  ? ['release-deploy', '0.17.1', '0.20.1']
+  : ['0.17.1', 'release-deploy'];
 
 const baselineReceipt = readFileSync(new URL('./baseline-results.sha256', import.meta.url), 'utf8')
   .trim().split('\n').map((line) => line.split(/\s+/, 2));
@@ -55,12 +58,14 @@ function collect(folder, prefix) {
 
 const desktopA = collect(archive, 'speed-desktop-a-with-topup');
 const desktopB = collect(archive, 'speed-desktop-b');
-const summary = { incomplete: [] };
+const summary = { incomplete: [], noComparator: [], controlInvalid: [], sameWindowFailed: [],
+  frozenFailed: [] };
 
 const observed = collect(raw, closing ? 'aa-release-closing' : 'aa-release');
 if (closing) {
   assert.deepEqual(observed.metadata.aaClosing, {
     languages: ['csharp', 'python'], versions, fixedOrderPerRound: true,
+    pythonWarmSubmitControl: '0.20.1',
   });
   assert.ok(observed.samples.every(({ position, version }) =>
     position === versions.indexOf(version)), 'Closing order must stay fixed in every round');
@@ -73,6 +78,8 @@ assert.equal(observed.metadata.releaseVersion, '0.17.3');
 assert.deepEqual(Object.keys(observed.metadata.packages), versions);
 assert.deepEqual(observed.metadata.packages['0.17.1'].dependencies,
   desktopA.metadata.packages['0.17.1'].dependencies);
+if (closing) assert.deepEqual(observed.metadata.packages['0.20.1'].dependencies,
+  desktopA.metadata.packages['0.20.1'].dependencies);
 const releaseTree = structuredClone(observed.metadata.packages['release-deploy'].dependencies);
 releaseTree.version = '0.17.1';
 assert.deepEqual(releaseTree, desktopA.metadata.packages['0.17.1'].dependencies);
@@ -95,18 +102,40 @@ for (const language of ['csharp', 'python']) {
       const cell = key(group, endpoint);
       const frozen = stats(frozenCapture.values.get(cell + '/0.17.1'));
       const today = stats(observed.values.get(cell + '/0.17.1'));
+      const today20 = stats(observed.values.get(cell + '/0.20.1'));
       const release = stats(observed.values.get(cell + '/release-deploy'));
-      const complete = today.n === 20 && release.n === 20;
+      const pythonWarmSubmit = closing && language === 'python' && group.state === 'warm' &&
+        group.journey === 'submit';
+      const controls = [
+        { version: '0.17.1', result: today, frozen },
+        ...(pythonWarmSubmit ? [{
+          version: '0.20.1', result: today20,
+          frozen: stats(frozenCapture.values.get(cell + '/0.20.1')),
+        }] : []),
+      ];
+      const complete = release.n === 20;
+      const comparatorComplete = controls.every(({ result }) => result.n === 20);
+      const sameWindow = complete && comparatorComplete
+        ? liveCellScoreWithControls(release, controls) : undefined;
+      const frozenTable = {
+        thresholds: { median: frozen.median, p90: frozen.p90 * 1.10 },
+        pass: complete && release.median <= frozen.median && release.p90 <= frozen.p90 * 1.10,
+      };
       if (!complete) summary.incomplete.push(cell);
+      if (!comparatorComplete) summary.noComparator.push(cell);
+      else if (sameWindow.controls.some(({ valid }) => !valid)) summary.controlInvalid.push(cell);
+      else if (!sameWindow.pass) summary.sameWindowFailed.push(cell);
+      if (!frozenTable.pass) summary.frozenFailed.push(cell);
       console.log(JSON.stringify({
         language,
         cell,
         frozen,
         today,
+        ...(pythonWarmSubmit && { today20 }),
         release,
         todayVsFrozen: relative(today, frozen),
         releaseVsToday: relative(release, today),
-        ...(closing && { distribution: Object.fromEntries(versions.map((version) => [version,
+        ...(closing && { distribution: Object.fromEntries(group.versions.map((version) => [version,
           observed.samples.filter((sample) => sample.groupIndex ===
             observed.metadata.schedule.indexOf(group) && sample.version === version && sample.kept)
             .map((sample) => ({
@@ -116,11 +145,13 @@ for (const language of ['csharp', 'python']) {
               compileCacheHit: sample.initial?.evaluation?.compile?.compileCacheHit,
               artifactCacheHit: sample.initial?.evaluation?.compile?.artifactCacheHit,
             }))])) }),
-        complete,
+        sameWindow: sameWindow ?? { complete: false, controls },
+        frozenTable,
       }));
     }
   }
 }
 
 console.log(JSON.stringify({ summary }));
-if (summary.incomplete.length) process.exitCode = 1;
+if (summary.incomplete.length || summary.noComparator.length || summary.controlInvalid.length ||
+  summary.sameWindowFailed.length) process.exitCode = 1;
