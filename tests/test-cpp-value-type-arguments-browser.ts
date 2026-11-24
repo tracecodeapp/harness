@@ -231,10 +231,23 @@ const SCENARIOS: Scenario[] = [
     functionName: 'solve',
     executionStyle: 'solution-method',
     code: method('nofit',
-      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(long) : kind("long") {} };',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} };',
       'std::string solve(std::vector<Kind> values)', KINDS),
     cases: [{ values: [3000000000] }],
     expected: [{ error: "TraceCode cannot build C++ type 'Kind' from an integer argument: none of its integer constructors can hold the value." }],
+  },
+  {
+    // On wasm32 long is 32 bits, so 3000000000 is a long long literal, and
+    // Kind(int) and Kind(long) are equally good conversions from it, as the
+    // compiler would say for Kind(3000000000).
+    name: 'past long on wasm32, int and long constructors are equally good matches',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    code: method('pastlong',
+      'struct Kind { std::string kind; Kind(int) : kind("int") {} Kind(long) : kind("long") {} };',
+      'std::string solve(std::vector<Kind> values)', KINDS),
+    cases: [{ values: [3000000000] }],
+    expected: [{ error: "TraceCode cannot build C++ type 'Kind' from an integer argument: its constructors taking int and long are equally good matches." }],
   },
   {
     name: 'int and long constructors keep INT_MIN and INT_MAX on int',
