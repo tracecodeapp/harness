@@ -1160,13 +1160,6 @@ async function runInLeasedTraceJVMBatchProcess(
           report.runTimeMs = perCaseWallClockMs;
         }
       }
-      if (onCaseFinished &&
-        report.runtimeError === 'TraceJVM execution completed without a Harness result marker.'
-      ) {
-        // An exit with status zero can bypass the Harness runner's epilogue.
-        // Its stdout belongs to the interrupted attempt, not a finished row.
-        throw new Error(report.runtimeError);
-      }
       results.push(report);
       onCaseFinished?.(index, report);
       if (

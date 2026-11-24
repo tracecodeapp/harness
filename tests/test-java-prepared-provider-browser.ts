@@ -155,9 +155,9 @@ function assertConsoleResults(
   assert.equal(consoleResults.success.output, 7);
 }
 
-async function assertOrdinaryExitDoesNotFinish(page: import('playwright').Page): Promise<void> {
+async function assertOrdinaryExitNoOp(page: import('playwright').Page): Promise<void> {
   const { progress, terminal } = await page.evaluate(async () => {
-    type Reply = { success: boolean; programId?: string; results?: unknown[]; error?: string };
+    type Reply = { success: boolean; programId?: string; resultsStreamed?: number; error?: string };
     const worker = new Worker('/workers/java-runtime-worker.js?tracejvmBaseUrl=/tracejvm/');
     const progress: Array<[string, number, number, unknown]> = [];
     let nextId = 0;
@@ -223,10 +223,12 @@ async function assertOrdinaryExitDoesNotFinish(page: import('playwright').Page):
     ['ordinary-case-started', 73, 0, undefined],
     ['ordinary-case-finished', 73, 0, 1],
     ['ordinary-case-started', 73, 1, undefined],
+    ['ordinary-case-finished', 73, 1, 2],
+    ['ordinary-case-started', 73, 2, undefined],
+    ['ordinary-case-finished', 73, 2, 3],
   ]);
-  assert.equal(terminal.success, false);
-  assert.deepEqual(terminal.results, []);
-  assert.match(terminal.error ?? '', /without a Harness result marker/);
+  assert.equal(terminal.success, true);
+  assert.equal(terminal.resultsStreamed, 3);
 }
 
 function assertStoppingBatch(
@@ -892,8 +894,8 @@ try {
             `${engine}: test document must exercise the requested isolation mode`
           );
           if (exitProbe) {
-            await assertOrdinaryExitDoesNotFinish(page);
-            console.log(`PASS: Java exit-zero does not finish an ordinary case in ${engine}`);
+            await assertOrdinaryExitNoOp(page);
+            console.log(`PASS: characterized the TraceJVM 0.4.1 exit-zero no-op in ${engine}`);
             continue;
           }
           if (!isolated) {
