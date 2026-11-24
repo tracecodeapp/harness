@@ -213,36 +213,85 @@ export async function assertCSharpObservationBoundary(
   fault: boolean
 ): Promise<void> {
   const NativeWorker = globalThis.Worker;
-  const starts: Array<{ workerId: number; type: string; mode: string; inputs: unknown }> = [];
+  type Command = {
+    workerId: number;
+    type: string;
+    mode: string;
+    inputs: unknown;
+    attemptToken?: string;
+    started: number[];
+    terminal?: {
+      startedCaseIndexes?: number[];
+      observation?: {
+        attemptToken?: string;
+        recorderCompleted?: boolean;
+        encodeFailed?: boolean;
+        cut?: string;
+        attemptedEvents?: number;
+      };
+    };
+  };
+  type Mark = {
+    phase: string;
+    evaluationId: string;
+    workspaceDigest: string;
+    generation: number;
+    caseId?: string;
+    attemptToken?: string;
+  };
+  const starts: Command[] = [];
+  const journal: Mark[] = [];
+  const bridge = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
   let nextWorkerId = 0;
   let injected = false;
   globalThis.Worker = class extends NativeWorker {
     constructor(url: string | URL, options?: WorkerOptions) {
       super(url, options);
       const workerId = ++nextWorkerId;
+      const pending = new Map<string, { command: Command; protocolToken: string }>();
       const post = this.postMessage.bind(this);
       this.postMessage = ((message, transfer) => {
-        const { prepared, inputs } = message?.payload ?? {};
+        const { prepared, inputs, observation } = message?.payload ?? {};
         if (prepared?.functionName === 'solve' && message.type.startsWith('execute-prepared-')) {
-          starts.push({ workerId, type: message.type, mode: prepared.mode, inputs });
+          const command: Command = {
+            workerId, type: message.type, mode: prepared.mode, inputs,
+            attemptToken: observation?.attemptToken, started: [],
+          };
+          starts.push(command);
+          pending.set(message.id, { command, protocolToken: message.protocolToken });
         }
         post(message, transfer as Transferable[]);
       }) as typeof this.postMessage;
-      this.addEventListener('message', ({ data }) => {
-        if (data?.type === 'execute-prepared-trace' && data.payload?.encoderInjectionAck === true) {
-          injected = true;
+      this.addEventListener('message', (event) => {
+        const message = event.data;
+        const request = pending.get(message?.id);
+        if (!event.isTrusted || !request?.protocolToken ||
+            message.protocolToken !== request.protocolToken) return;
+        const reply = message.payload;
+        if (message.type === 'runtime-progress' && reply?.stage === 'ordinary-case-started') {
+          request.command.started.push(reply.detail?.caseIndex);
+        }
+        if (message.type === request.command.type) {
+          pending.delete(message.id);
+          request.command.terminal = reply;
+          if (reply?.encoderInjectionAck === true) injected = true;
         }
       });
     }
   };
 
   try {
+    Object.defineProperty(window, bridge, {
+      configurable: true,
+      value: { onEvent: (mark: Mark) => journal.push(mark) },
+    });
     const host = createBrowserJudgeHost({
       providers: ['csharp'],
       assetBaseUrl: '/workers',
       assets: { csharpWorker, csharpRunnerAssetBaseUrl },
       safeExecution: { workerLifecycle: 'warm-and-retire' },
     });
+    Reflect.deleteProperty(window, bridge);
     try {
       await host.warmLanguage('csharp');
       const makeBundle = (source: string, trace: boolean, maxTraceBytes?: number) =>
@@ -278,6 +327,7 @@ export async function assertCSharpObservationBoundary(
 
       async function run(source: string, maxTraceBytes?: number) {
         const before = starts.length;
+        const markFrom = journal.length;
         const bundle = await makeBundle(source, true, maxTraceBytes);
         const result = await host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
         const { evaluation, executionId } = result;
@@ -297,11 +347,51 @@ export async function assertCSharpObservationBoundary(
               gradeStarts.some((entry) => entry.workerId === observerStarts[0]?.workerId)) {
             throw new Error(`C# used the wrong artifact or worker: ${JSON.stringify(starts.slice(before))}`);
           }
+          for (const command of gradeStarts) {
+            if (JSON.stringify(command.started) !== '[0]' ||
+                JSON.stringify(command.terminal?.startedCaseIndexes) !== '[0]') {
+              throw new Error(`C# grade lacks an authenticated start and terminal: ${JSON.stringify(command)}`);
+            }
+          }
+          const attestation = observerStarts[0]?.terminal?.observation;
+          const attachment = selected.attachment;
+          if (!attestation || !attestation.attemptToken ||
+              attestation.attemptToken !== observerStarts[0]?.attemptToken ||
+              (attachment.status === 'refused'
+                ? attachment.reason !== 'observer-encode' || attestation.encodeFailed !== true
+                : attestation.recorderCompleted !== true ||
+                  (attachment.status === 'truncated' &&
+                    (attestation.cut !== attachment.reason || attestation.attemptedEvents !== attachment.attemptedEvents)))) {
+            throw new Error(`C# observer lacks an authenticated recorder reply: ${JSON.stringify(attestation)}`);
+          }
+          const initial = journal.slice(markFrom);
+          const expectedPhases = [
+            'ordinary-write-attempt', 'ordinary-write-attempt', 'ordinary-commit',
+            'attachment-bind', 'public-resolve',
+          ];
+          const publication = initial.filter(({ phase }) => expectedPhases.includes(phase));
+          if (publication.map(({ phase }) => phase).join() !== expectedPhases.join() ||
+              publication.slice(0, 2).map(({ caseId }) => caseId).join() !== 'A,B' ||
+              publication[3]?.caseId !== 'A' ||
+              publication[3]?.attemptToken !== attestation.attemptToken ||
+              initial.some((mark) => mark.evaluationId !== attachment.evaluationId ||
+                mark.workspaceDigest !== attachment.workspaceDigest || mark.generation !== attachment.generation)) {
+            throw new Error(`C# receipt journal does not bind the worker reply: ${JSON.stringify(initial)}`);
+          }
+          const redrawMarkFrom = journal.length;
           const beforeRedraw = starts.length;
           const redraw = await host.execute({ executionId, tracing: { caseIds: ['A'] } });
           if (starts.length !== beforeRedraw || redraw.evaluation.cases[0]?.value !== 7 ||
               redraw.evaluation.cases[0]?.attachment !== selected.attachment) {
             throw new Error('C# redraw changed the verdict or dispatched learner work.');
+          }
+          const redrawMarks = journal.slice(redrawMarkFrom);
+          const cache = redrawMarks[0];
+          if (redrawMarks.map(({ phase }) => phase).join() !== 'observation-cache-hit,public-resolve' ||
+              cache?.caseId !== 'A' || cache.attemptToken !== attestation.attemptToken ||
+              cache.evaluationId !== attachment.evaluationId || cache.workspaceDigest !== attachment.workspaceDigest ||
+              cache.generation !== attachment.generation) {
+            throw new Error(`C# redraw did not cite the original observer reply: ${JSON.stringify(redrawMarks)}`);
           }
           if (selected.attachment.status === 'refused') {
             const presentation = judgeCaseExecutionOutcome(selected, { language: 'csharp', trace: true });
@@ -348,6 +438,7 @@ export async function assertCSharpObservationBoundary(
       await host.dispose();
     }
   } finally {
+    Reflect.deleteProperty(window, bridge);
     globalThis.Worker = NativeWorker;
   }
 }
