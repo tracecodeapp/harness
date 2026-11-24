@@ -73,6 +73,24 @@ test('accepts the host journal response receipt and rejects missing or wrong rep
     'run', 10), 'Published Python single-worker witness differs');
 });
 
+test('accepts the captured phone repeat after the primer worker is replaced', () => {
+  const journal = [
+    { worker: 1, phase: 'worker-terminated', at: 1503.5 },
+    { worker: 2, phase: 'worker-created', at: 1505.6 },
+    { worker: 2, role: 'legacy-trace', type: 'prepare-program', mode: 'trace',
+      tier: 'algorithm-fast', receivedAt: 1951.9, responseType: 'prepare-result' },
+    { worker: 2, role: 'legacy-trace', type: 'execute-prepared-program-batch', mode: 'trace',
+      tier: 'algorithm-fast', cases: 10, receivedAt: 2069.3, responseType: 'execute-result' },
+  ];
+  assert.equal(pythonProductionControlOutcome({ workerJournal: journal }, 'run', 10), undefined);
+
+  const learnerRestart = [...journal,
+    { worker: 3, role: 'legacy-trace', type: 'execute-prepared-program', mode: 'trace',
+      tier: 'algorithm-fast', receivedAt: 2070, responseType: 'execute-result' }];
+  assert.equal(pythonProductionControlOutcome({ workerJournal: learnerRestart }, 'run', 10),
+    'Published Python single-worker witness differs');
+});
+
 test('accepts published legacy single and batch continuations on the original worker', () => {
   const click = { worker: 7, role: 'legacy-trace', type: 'execute-prepared-program',
     mode: 'trace', tier: 'algorithm-fast', received: 20 };

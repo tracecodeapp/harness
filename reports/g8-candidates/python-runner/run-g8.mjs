@@ -7,10 +7,12 @@ import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 const checkOnly = process.argv.includes('--check');
-const [baselineArg, outArg, window, configArg, seed = '0212026', minutes = '90'] = process.argv.slice(2).filter((arg) => arg !== '--check');
+const inventoryOnly = process.argv.includes('--inventory');
+const [baselineArg, outArg, window, configArg, seed = '0212026', minutes = '90'] = process.argv.slice(2)
+  .filter((arg) => !['--check', '--inventory'].includes(arg));
 assert.ok(baselineArg && outArg && configArg && ['phone', 'desktop-b'].includes(window),
   'Usage: run.mjs <frozen baseline directory> <staged out directory> phone|desktop-b <candidate manifest> [seed] [minutes]');
-if (!checkOnly) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'An exclusive build-host window is required');
+if (!checkOnly && !inventoryOnly) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'An exclusive build-host window is required');
 assert.equal(process.env.SPEED_GROUP_SELECTOR, undefined);
 const baseline = resolve(baselineArg);
 const out = resolve(outArg);
@@ -59,6 +61,9 @@ import {
   pythonWarmAttemptPlan,
   pythonWarmMetricName,
 } from './python-warm-policy.mjs';`);
+edit("import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';", `import { pythonProductionControlOutcome } from './python-production-control-witness.mjs';
+import { createUncapturedShapeGuard, measurementShapeKey } from './measurement-shapes.mjs';
+import { capturedShapeKeys } from './shape-captures.mjs';`);
 edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
@@ -276,7 +281,8 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                 const ordinary = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program-batch' && e.mode === 'code');
                 const observed = commands.filter(e => e.phase === 'send' && e.type === 'execute-prepared-program' && e.observation);
                 const role = group.journey === 'submit' ? 'submit' : 'run';
-                if (version === '0.17.1' || version === '0.20.1') {
+                const productionControl = version === '0.17.1' || version === '0.20.1';
+                if (productionControl) {
                   sample.invalid = pythonProductionControlOutcome(
                     { workerJournal: commands },
                     role,
@@ -290,9 +296,12 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                     role === 'run' || version !== 'concurrent-deploy',
                   );
                 }
-                if (!sample.invalid && ordinary.length !== 1) sample.invalid = 'Expected one ordinary batch';
-                else if (!sample.invalid && group.journey === 'submit' && observed.length) sample.invalid = 'Submit launched an observer';
-                else if (!sample.invalid && group.journey !== 'submit') {
+                // The published releases use the legacy-trace role. Their complete
+                // one-worker prepare+batch shape is validated above; the checks
+                // below describe only the 0.21 ordinary/observer protocol.
+                if (!sample.invalid && !productionControl && ordinary.length !== 1) sample.invalid = 'Expected one ordinary batch';
+                else if (!sample.invalid && !productionControl && group.journey === 'submit' && observed.length) sample.invalid = 'Submit launched an observer';
+                else if (!sample.invalid && !productionControl && group.journey !== 'submit') {
                   const ordinaryDone = ordinary[0].receivedAt;
                   const observerPrep = commands.find(e => e.phase === 'send' && e.type === 'prepare-program' && e.observation);
                   const first = observed[0];
@@ -311,6 +320,27 @@ edit("flatMap((c) => [c.failure, c.traceUnavailable])",
      "flatMap((c) => [c.failure, c.traceUnavailable, c.attachment?.status === 'refused' ? 'Observation refused: ' + c.attachment.reason : undefined])");
 edit("if (sample.refusal) throw new Error(sample.refusal);",
      "if (sample.refusal && /login|sign in|unauthoriz|access denied/i.test(sample.refusal)) throw new Error(sample.refusal);");
+edit(`if (groupSelector !== undefined) {
+  assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
+}`, `if (groupSelector !== undefined) {
+  assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
+}
+const uncapturedShapeGuard = createUncapturedShapeGuard(
+  windowName === 'desktop-b' ? 'desktop' : windowName, capturedShapeKeys);
+if (process.env.SPEED_G8_INVENTORY_ONLY === '1') {
+  const scope = windowName === 'desktop-b' ? 'desktop' : windowName;
+  const shapes = schedule.flatMap((group) => group.versions.map((version) => ({
+    key: measurementShapeKey(scope, group, version), scope, group, version,
+  })));
+  console.log(JSON.stringify({ scope, shapes }, null, 2));
+  process.exit(0);
+}`);
+edit("          await appendFile(samplesPath, JSON.stringify(sample) + '\\n');", `          await appendFile(samplesPath, JSON.stringify(sample) + '\\n');
+          const shapeReceipt = uncapturedShapeGuard.observe(group, version, sample);
+          if (shapeReceipt.action === 'fail-fast') {
+            throw new Error(\`Uncaptured shape rejected its first completed attempt: \${shapeReceipt.key}: \` +
+              (sample.invalid ?? sample.refusal));
+          }`);
 
 const stage = await mkdtemp(join(process.cwd(), '.speed-b3-python-'));
 try {
@@ -323,6 +353,10 @@ try {
     join(stage, 'python-production-control-witness.mjs'));
   await cp(new URL('../python-warm-policy.mjs', import.meta.url),
     join(stage, 'python-warm-policy.mjs'));
+  await cp(new URL('../measurement-shapes.mjs', import.meta.url),
+    join(stage, 'measurement-shapes.mjs'));
+  await cp(new URL('../shape-captures.mjs', import.meta.url),
+    join(stage, 'shape-captures.mjs'));
 
   const entry = join(stage, 'entry.ts');
   const entrySource = await readFile(entry, 'utf8');
@@ -333,7 +367,10 @@ try {
   const wrapper = join(stage, 'run.mjs');
   await writeFile(wrapper, source);
   const args = checkOnly ? ['--check', wrapper] : [wrapper, out, 'run', window, seed, minutes];
-  const child = spawnSync(process.execPath, args, { stdio: 'inherit' });
+  const child = spawnSync(process.execPath, args, {
+    stdio: 'inherit',
+    env: inventoryOnly ? { ...process.env, SPEED_G8_INVENTORY_ONLY: '1' } : process.env,
+  });
   if (child.error) throw child.error;
   process.exitCode = child.status ?? 1;
 } finally {

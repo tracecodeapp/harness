@@ -65,6 +65,11 @@ import {
   submitAaVersions,
 } from '../submit-aa.mjs';
 import { javaClosingPlan } from '../java-closing.mjs';
+import {
+  createUncapturedShapeGuard,
+  measurementShapeKey,
+} from '../measurement-shapes.mjs';
+import { capturedShapeKeys } from '../shape-captures.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -552,6 +557,16 @@ const schedule = groupSelector === undefined ? fullSchedule : fullSchedule.filte
 if (groupSelector !== undefined) {
   assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
 }
+const uncapturedShapeGuard = createUncapturedShapeGuard(candidateScope ?? windowName,
+  capturedShapeKeys);
+if (process.env.SPEED_G8_INVENTORY_ONLY === '1') {
+  const scope = candidateScope ?? windowName;
+  const shapes = schedule.flatMap((group) => group.versions.map((version) => ({
+    key: measurementShapeKey(scope, group, version), scope, group, version,
+  })));
+  console.log(JSON.stringify({ scope, shapes }, null, 2));
+  process.exit(0);
+}
 const report = {
   schema: 'tracecode.speed-baseline.v1',
   mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
@@ -812,6 +827,11 @@ try {
           if (sample.invalid || sample.refusal) count.invalid++;
           else if (!sample.excluded) count.kept++;
           await appendFile(samplesPath, JSON.stringify(sample) + '\n');
+          const shapeReceipt = uncapturedShapeGuard.observe(group, version, sample);
+          if (shapeReceipt.action === 'fail-fast') {
+            throw new Error(`Uncaptured shape rejected its first completed attempt: ${shapeReceipt.key}: ` +
+              (sample.invalid ?? sample.refusal));
+          }
           const submitPreflight = submitAfterRunPreflightAction(
             capturedSubmitAfterRun, group, sample);
           if (submitPreflight === 'reject') {
