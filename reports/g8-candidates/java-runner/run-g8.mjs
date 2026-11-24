@@ -23,7 +23,7 @@ import { javaCandidateCacheReceipt, javaCandidateOutcome } from './java-candidat
 import { javaProductionControlOutcome } from './java-production-control-witness.mjs';
 import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from '../python-runner/python-candidate-witness.mjs';
 import { pythonProductionControlOutcome } from '../python-runner/python-production-control-witness.mjs';
-import { liveControlVersions, liveRoundOrder } from '../live-control.mjs';
+import { liveControlVersions, liveLessonVersions, liveRoundOrder } from '../live-control.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -383,7 +383,8 @@ function plan() {
         }
         if (state === 'warm' && !phoneSubset && !releaseVersion) {
           groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target,
-            versions: releaseVersion ? ['release-deploy'] : candidate ? ['candidate-main'] : ['0.20.1'] });
+            versions: liveControl ? liveLessonVersions(candidateVersions) : releaseVersion
+              ? ['release-deploy'] : candidate ? ['candidate-main'] : ['0.20.1'] });
         }
       }
     }

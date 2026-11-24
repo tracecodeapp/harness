@@ -9,6 +9,11 @@ export function liveControlVersions(candidateVersions) {
   return [liveControlVersion, ...candidateVersions];
 }
 
+export function liveLessonVersions(candidateVersions) {
+  assert.ok(candidateVersions.length > 0);
+  return liveControlVersions([candidateVersions[0]]);
+}
+
 export function liveRoundOrder(versions, round) {
   assert.equal(versions[0], liveControlVersion);
   assert.ok(Number.isSafeInteger(round) && round > 0);

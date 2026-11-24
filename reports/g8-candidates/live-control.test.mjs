@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   liveCellScore,
   liveCellScoreWithControls,
+  liveLessonVersions,
   liveControlVersions,
   liveRoundOrder,
 } from './live-control.mjs';
@@ -14,6 +15,11 @@ test('alternates the production control from first to last every round', () => {
     ['0.17.1', 'candidate-main', 'candidate-deploy']);
   assert.deepEqual(liveRoundOrder(versions, 2),
     ['candidate-deploy', 'candidate-main', '0.17.1']);
+});
+
+test('lesson keeps the live control and preview candidate only', () => {
+  assert.deepEqual(liveLessonVersions(['candidate-main', 'candidate-deploy']),
+    ['0.17.1', 'candidate-main']);
 });
 
 test('scores candidate against same-window control at five and ten percent', () => {
