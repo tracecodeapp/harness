@@ -388,8 +388,8 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
     ...(context.csharpPromotedExecutionType && {
       promotedExecutionType: context.csharpPromotedExecutionType,
       promotedPrepareRole: context.csharpPromotedPrepareRole,
-      allowColdCompilerInitialization: true,
     }),
+    ...(context.allowColdCompilerInitialization && { allowColdCompilerInitialization: true }),
     ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
     ...(previousObserverArtifactKey && { previousObserverArtifactKey }),
   } : undefined;
@@ -825,19 +825,25 @@ try {
                   sample.trustedCsharpArtifactKey,
                   group.language === 'csharp' ? sample.prime ?? sample.setupRun : undefined, {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
-                      (group.csharpWarmMode === csharpWarmModes.repeatRun || group.state === 'cold'),
+                      (group.csharpWarmMode === csharpWarmModes.repeatRun ||
+                        group.state === 'cold' ||
+                        group.state === 'switched' && group.journey === 'run'),
                     csharpPromotedExecutionType: group.language === 'csharp' &&
-                      group.state === 'cold'
+                      (group.state === 'cold' ||
+                        group.state === 'switched' && group.journey === 'run')
                       ? group.journey === 'submit' || version.startsWith('candidate-')
                         ? 'execute-prepared-code'
                         : 'execute-prepared-trace'
                       : undefined,
                     csharpPromotedPrepareRole: group.language === 'csharp' &&
-                      group.state === 'cold'
+                      (group.state === 'cold' ||
+                        group.state === 'switched' && group.journey === 'run')
                       ? group.journey === 'submit' || version.startsWith('candidate-')
                         ? 'ordinary'
                         : 'observer'
                       : undefined,
+                    allowColdCompilerInitialization: group.language === 'csharp' &&
+                      group.state === 'cold',
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
                       (group.csharpWarmMode === csharpWarmModes.submitAfterRun ||
                         group.state === 'switched' && group.journey === 'submit'),
