@@ -50,7 +50,11 @@ function edit(before, after) {
   source = source.replace(before, () => after);
 }
 edit("import { chromium } from 'playwright';", `import { chromium } from 'playwright';
-import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';`);
+import {
+  pythonCandidateCacheReceipt,
+  pythonCandidateOutcome,
+  pythonCandidateRequiresStopping,
+} from './python-candidate-witness.mjs';`);
 edit("import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';", `import { pythonCandidateCacheReceipt, pythonCandidateOutcome } from './python-candidate-witness.mjs';
 import {
   pythonProductionControlOutcome,
@@ -319,7 +323,7 @@ edit('              if (group.continuation && !sample.invalid && !sample.refusal
                     { workerJournal: commands },
                     role,
                     fixture.cases.length,
-                    role === 'run' || version !== 'concurrent-deploy',
+                    pythonCandidateRequiresStopping(role),
                   );
                 }
                 // The published releases use the legacy-trace role. Their complete

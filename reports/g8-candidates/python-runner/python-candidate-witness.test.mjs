@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   pythonCandidateCacheReceipt,
   pythonCandidateOutcome,
+  pythonCandidateRequiresStopping,
 } from './python-candidate-witness.mjs';
 
 function random(seed) {
@@ -127,6 +128,13 @@ test('submit has no observer and deploy submit may use the baseline non-stopping
   assert.equal(pythonCandidateOutcome({ python: { phases } }, 'submit', 10, false), undefined);
   assert.equal(pythonCandidateOutcome({ python: { phases } }, 'submit', 10, true),
     'Python worker, batch or observer witness differs');
+});
+
+test('only Run requires the #77 stopping batch evidence', () => {
+  assert.equal(pythonCandidateRequiresStopping('run'), true);
+  assert.equal(pythonCandidateRequiresStopping('submit'), false);
+  assert.equal(pythonCandidateRequiresStopping('click'), false);
+  assert.throws(() => pythonCandidateRequiresStopping('other'), /Unknown Python role/);
 });
 
 test('click carries only one observer execution', () => {

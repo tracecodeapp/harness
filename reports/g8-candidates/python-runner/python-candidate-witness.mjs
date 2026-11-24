@@ -35,6 +35,13 @@ export function pythonCandidateCacheReceipt(result) {
   ]));
 }
 
+export function pythonCandidateRequiresStopping(role) {
+  if (!['run', 'submit', 'click'].includes(role)) throw new Error('Unknown Python role: ' + role);
+  // Run's algorithm-fast batch is the #77 stopping path. Submit evaluates the
+  // full batch and does not carry stopAtFirstRunaway in the product journal.
+  return role === 'run';
+}
+
 export function pythonCandidateOutcome(result, role, caseCount, requireStopping) {
   const journal = phases(result);
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
