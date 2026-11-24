@@ -7,6 +7,13 @@ function phases(result) {
     : [];
 }
 
+function completed(command) {
+  if (Number.isFinite(command.received)) return true;
+  if (!Number.isFinite(command.receivedAt)) return false;
+  const expected = command.type === 'prepare-program' ? 'prepare-result' : 'execute-result';
+  return command.responseType === expected;
+}
+
 export function pythonProductionControlWorker(result) {
   const workers = new Set(phases(result).filter(({ type }) =>
     ['prepare-program', 'execute-prepared-program-batch', 'execute-prepared-program'].includes(type))
@@ -34,7 +41,7 @@ export function pythonProductionControlOutcome(result, role, caseCount, expected
             batches[0].tier === 'algorithm-fast' ||
           batches.length === 0 && singles.length === 1 && singles[0].tier === 'algorithm-fast')
         : false;
-    const complete = used.every(({ received }) => Number.isFinite(received));
+    const complete = used.every(completed);
     const onlyLegacyCommands = journal.filter(({ type }) =>
       ['prepare-program', 'execute-prepared-program-batch', 'execute-prepared-program'].includes(type))
       .every(({ role: phaseRole }) => phaseRole === 'legacy-trace');

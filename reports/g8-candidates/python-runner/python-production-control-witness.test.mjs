@@ -60,6 +60,19 @@ test('accepts the published legacy trace batch and rejects legacy per-case resta
     'Published Python single-worker witness differs');
 });
 
+test('accepts the host journal response receipt and rejects missing or wrong replies', () => {
+  const prepared = { worker: 1, role: 'legacy-trace', type: 'prepare-program',
+    mode: 'trace', tier: 'algorithm-fast', receivedAt: 1553.3, responseType: 'prepare-result' };
+  const batch = { worker: 1, role: 'legacy-trace', type: 'execute-prepared-program-batch',
+    mode: 'trace', tier: 'algorithm-fast', cases: 10, receivedAt: 1700.4,
+    responseType: 'execute-result' };
+  assert.equal(pythonProductionControlOutcome([prepared, batch], 'run', 10), undefined);
+  assert.equal(pythonProductionControlOutcome([{ ...prepared, responseType: 'execute-result' }, batch],
+    'run', 10), 'Published Python single-worker witness differs');
+  assert.equal(pythonProductionControlOutcome([prepared, { ...batch, receivedAt: undefined }],
+    'run', 10), 'Published Python single-worker witness differs');
+});
+
 test('accepts published legacy single and batch continuations on the original worker', () => {
   const click = { worker: 7, role: 'legacy-trace', type: 'execute-prepared-program',
     mode: 'trace', tier: 'algorithm-fast', received: 20 };
