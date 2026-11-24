@@ -49,10 +49,10 @@ export function csharpCandidateCacheReceipt(result, trustedArtifactKey) {
 }
 
 export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey,
-  replenishmentOptions) {
+  witnessOptions) {
   const journal = phases(result);
   const replenishment = csharpReplenishmentOutcome(
-    journal, trustedArtifactKey, replenishmentOptions);
+    journal, trustedArtifactKey, witnessOptions);
   if (replenishment.error) return replenishment.error;
   const ordinaryPrepares = journal.filter(({ role: phaseRole, type }) =>
     phaseRole === 'ordinary' && type === 'prepare-program');
@@ -88,6 +88,10 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedA
       ordinaryDisposals.length <= 1 &&
       ordinaryDisposals.every(({ artifactKey }) => artifactKey === ordinaryKey);
   const observerKey = observerPrepares[0]?.artifactKey;
+  const allowedObserverDisposalKeys = new Set([
+    observerKey,
+    witnessOptions?.previousObserverArtifactKey,
+  ].filter((value) => typeof value === 'string' && value.length > 0));
   const observerValid = observerPrepares.length === expectedObserverPrepares &&
     observerPrepares.every(({ mode, artifactKey }) =>
       mode === 'trace' && typeof artifactKey === 'string' && artifactKey.length > 0) &&
@@ -101,7 +105,7 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedA
       (phase.timings === undefined ||
         phase.timings.executionRealm === 'retained-worker-collectible-context')) &&
     observerDisposals.length <= 1 &&
-    observerDisposals.every(({ artifactKey }) => artifactKey === observerKey);
+    observerDisposals.every(({ artifactKey }) => allowedObserverDisposalKeys.has(artifactKey));
   const ordinaryWorkers = workerSet(ordinaryExecutions);
   const observerWorkers = workerSet(observerExecutions);
   const distinct = !ordinaryWorkers.size || !observerWorkers.size ||

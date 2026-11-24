@@ -377,9 +377,16 @@ async function openPage(context, version, url, group) {
 
 function candidateOutcome(result, role, caseCount, caseId, version, language, trustedArtifactKey,
   priorResult, context = {}) {
+  const priorCsharpObserverKeys = new Set((priorResult?.csharp?.phases ?? [])
+    .filter(({ role: phaseRole, type, artifactKey }) => phaseRole === 'observer' &&
+      type === 'prepare-program' && typeof artifactKey === 'string' && artifactKey.length > 0)
+    .map(({ artifactKey }) => artifactKey));
+  const previousObserverArtifactKey = priorCsharpObserverKeys.size === 1
+    ? [...priorCsharpObserverKeys][0] : undefined;
   const replenishmentOptions = language === 'csharp' ? {
     ...(context.allowCsharpTrustedPromotion && { caseCount }),
     ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
+    ...(previousObserverArtifactKey && { previousObserverArtifactKey }),
   } : undefined;
   const selectedReplenishmentOptions = replenishmentOptions &&
     Object.keys(replenishmentOptions).length > 0 ? replenishmentOptions : undefined;
@@ -800,7 +807,8 @@ try {
                 const role = group.journey === 'submit' ? 'submit' : 'run';
                 sample.invalid = candidateOutcome(sample.initial, role, fixture.cases.length,
                   role === 'run' ? fixture.cases[0].id : undefined, version, group.language,
-                  sample.trustedCsharpArtifactKey, undefined, {
+                  sample.trustedCsharpArtifactKey,
+                  group.language === 'csharp' ? sample.prime : undefined, {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
                       group.csharpWarmMode === csharpWarmModes.repeatRun,
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&

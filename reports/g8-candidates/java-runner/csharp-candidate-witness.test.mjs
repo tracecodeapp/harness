@@ -289,3 +289,36 @@ test('pending trusted prime is scoped to an explicit Submit-after-Run allowance'
     allowPendingTrustedPrime: true,
   }), /trusted standby|assembly, reset/);
 });
+
+test('a primer observer disposal is accepted only by its exact prior artifact', () => {
+  const result = runResult(2, 3, 10);
+  result.csharp.phases = result.csharp.phases.filter(({ role }) => role !== 'observer');
+  result.csharp.phases.unshift({
+    worker: 1,
+    workerKind: 'compiler',
+    role: 'observer',
+    type: 'dispose-prepared-program',
+    artifactKey: 'primer-observer',
+  });
+
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10),
+    'C# assembly, reset or observer witness differs');
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10, undefined, undefined, {
+    previousObserverArtifactKey: 'primer-observer',
+  }), undefined);
+
+  result.csharp.phases[0].artifactKey = 'different-observer';
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10, undefined, undefined, {
+    previousObserverArtifactKey: 'primer-observer',
+  }), 'C# assembly, reset or observer witness differs');
+  result.csharp.phases.push({
+    worker: 1,
+    workerKind: 'compiler',
+    role: 'observer',
+    type: 'dispose-prepared-program',
+    artifactKey: 'primer-observer',
+  });
+  assert.equal(csharpCandidateOutcome(result, 'submit', 10, undefined, undefined, {
+    previousObserverArtifactKey: 'primer-observer',
+  }), 'C# assembly, reset or observer witness differs');
+});
