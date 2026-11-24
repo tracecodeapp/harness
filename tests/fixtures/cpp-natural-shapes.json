@@ -1,6 +1,6 @@
 {
  "schema": "tracecode.test.cpp-natural-shapes.v1",
- "note": "Correct learner solutions in natural C++ shapes (public fields with only an argument constructor, a nested-type field, a hand-written value type) and their controls. Cases are synthetic, not app data.",
+ "note": "Correct learner solutions in natural C++ shapes (public fields with only an argument constructor, a nested-type field, a hand-written value type) and their controls. Cases are synthetic, not app data. Each fixture records its outcome on 571139f0 (C++-identical to the step-7 pin): the compile diagnostic, a wrong answer, or a pass for the controls.",
  "fixtures": [
   {
    "name": "lru-node-argctor",
@@ -131,7 +131,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
   },
   {
    "name": "lru-node-defaultctor",
@@ -262,7 +265,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
   },
   {
    "name": "lru-node-defaultargs",
@@ -393,7 +399,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "passes": true
+   }
   },
   {
    "name": "lru-node-value-argctor",
@@ -524,7 +533,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Node'"
+   }
   },
   {
    "name": "lru-node-value-defaultctor",
@@ -655,7 +667,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "passes": true
+   }
   },
   {
    "name": "lru-public-fields-argctor",
@@ -786,7 +801,10 @@
       10
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'LRUCache'"
+   }
   },
   {
    "name": "minstack-entry-argctor",
@@ -882,7 +900,10 @@
       3
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Entry'"
+   }
   },
   {
    "name": "minstack-entry-defaultctor",
@@ -978,7 +999,10 @@
       3
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "passes": true
+   }
   },
   {
    "name": "trie-node-nested-enum",
@@ -1077,7 +1101,10 @@
       false
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "unknown type name 'Mark'"
+   }
   },
   {
    "name": "trie-node-plain",
@@ -1176,7 +1203,10 @@
       false
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "passes": true
+   }
   },
   {
    "name": "twosum-helper-argctor",
@@ -1218,7 +1248,10 @@
       2
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "passes": true
+   }
   },
   {
    "name": "currency-s1",
@@ -1279,7 +1312,10 @@
      },
      "expected": false
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'Value'"
+   }
   },
   {
    "name": "currency-s2",
@@ -1340,7 +1376,10 @@
      },
      "expected": false
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "use of undeclared identifier 'Kind'"
+   }
   },
   {
    "name": "currency-s3",
@@ -1401,7 +1440,10 @@
      },
      "expected": false
     }
-   ]
+   ],
+   "on571139f0": {
+    "wrongAnswer": true
+   }
   },
   {
    "name": "numarray-s1",
@@ -1484,7 +1526,10 @@
      ]
     }
    ],
-   "untracedOnly": "traced vector member rewritten to tracecode::Vector, which has no (count, value) constructor (runtime header limit, also on 571139f0)"
+   "untracedOnly": "traced vector member rewritten to tracecode::Vector, which has no (count, value) constructor (runtime header limit, also on 571139f0)",
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'NumArray'"
+   }
   },
   {
    "name": "parking-lot-public-field",
@@ -1566,7 +1611,10 @@
       1
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of 'ParkingLot'"
+   }
   },
   {
    "name": "scheduler-task-nested-kind",
@@ -1635,7 +1683,10 @@
       1
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "use of undeclared identifier 'Kind'"
+   }
   },
   {
    "name": "ledger-hand-written-value",
@@ -1694,7 +1745,10 @@
       "food"
      ]
     }
-   ]
+   ],
+   "on571139f0": {
+    "compileError": "no matching constructor for initialization of"
+   }
   }
  ]
 }
