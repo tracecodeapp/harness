@@ -3024,6 +3024,7 @@ function receiptFixture(options: {
   workerAcks?: boolean;
   providerMarks?: boolean;
   certification?: 'ends-same';
+  replyOwnership?: 'transferred';
 } = {}) {
   const state = makePreparedState({
     failPreparation: options.compileFailure ?? false,
@@ -3158,6 +3159,7 @@ function receiptFixture(options: {
       observationDeadlineMs: options.deadlineMs ?? 3000,
       ...(options.overlapObservationWithInitialization ? { overlapObservationWithInitialization: true as const } : {}),
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
+      ...(options.replyOwnership ? { observationReplyOwnership: options.replyOwnership } : {}),
     },
     async prepareObservation(program: (typeof preparedDescriptors)[number]) {
       preparedDescriptors.push(program);
@@ -3296,6 +3298,45 @@ test('G5/javascript/stdout/run-first/ordinary-start-count and GA continuation or
     await f.terminateWorkers();
   }
 });
+
+for (const transferred of [false, true]) {
+  test(`the schedule adopts an observer reply in place only when its provider transfers it (transferred: ${transferred})`, async () => {
+    const replies: ObserverReply[] = [];
+    const f = receiptFixture({
+      ...(transferred ? { replyOwnership: 'transferred' as const } : {}),
+      async observe(call) {
+        const reply = recordedDrawing(call);
+        replies.push(reply);
+        return reply;
+      },
+    });
+    try {
+      const initial = await f.host.execute({
+        bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+      });
+      assert.ok(initial.executionId);
+      // The second case drawn on click takes the same publish path.
+      const clicked = await f.host.execute({ executionId: initial.executionId, tracing: { caseIds: ['B'] } });
+      const drawn = [initial.evaluation.cases[0], clicked.evaluation.cases[0]];
+      assert.equal(replies.length, 2);
+      for (const [index, row] of drawn.entries()) {
+        const reply = replies[index]!;
+        const attachment = row?.attachment;
+        assert.equal(attachment?.status, 'drawn');
+        assert.ok(reply.status === 'drawn');
+        assert.equal(attachment.trace === reply.trace, transferred);
+        assert.deepEqual(attachment.trace, reply.trace);
+        assert.equal(Object.isFrozen(attachment.trace.events[0]), true);
+        assert.equal(Object.isFrozen(reply.trace), transferred);
+        assert.equal(row?.value, row?.caseId, 'poisoned reply fields never reach the row');
+      }
+      await f.host.disposeExecution(initial.executionId);
+    } finally {
+      f.host.dispose();
+      await f.terminateWorkers();
+    }
+  });
+}
 
 for (const observerFirst of [true, false]) {
   test(`migrated scheduler binds after both branches finish (observer first: ${observerFirst})`, { timeout: 5000 }, async () => {

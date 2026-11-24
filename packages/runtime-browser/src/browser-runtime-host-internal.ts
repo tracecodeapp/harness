@@ -80,6 +80,13 @@ export interface JudgeReceiptProvider {
     /** Native stopping batches can acknowledge admission before delivering rows. */
     readonly stoppingBatchAdmission?: 'worker-start';
     readonly nonStoppingBatchAdmission?: 'worker-start';
+    /**
+     * Each observe() reply is a graph built for that call (decoded from the
+     * worker message, parsed or normalized) that the adapter never retains,
+     * reuses or mutates once it resolves. The receipt then freezes the reply
+     * in place instead of copying it. Declare it only for an audited adapter.
+     */
+    readonly observationReplyOwnership?: 'transferred';
   };
   prepareObservation(
     program: JudgeObservationProgram,

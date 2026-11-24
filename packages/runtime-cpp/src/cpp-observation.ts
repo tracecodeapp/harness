@@ -26,6 +26,8 @@ type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
 /** Internal composition supplies exactly one producer. */
 export interface CppDrawingProducer {
   readonly certification?: 'ends-same';
+  /** The producer's replies meet JudgeReceiptProvider's transferred contract. */
+  readonly replyOwnership?: 'transferred';
   prepare(call: Preparation): Promise<JudgeObservationLease>;
 }
 
@@ -56,6 +58,9 @@ export function createCppObservationRegistration(
       observationLease: 'separate' as const,
       ...deadlines,
       ...(producer.certification && { certification: producer.certification }),
+      // This wrapper builds a fresh envelope and passes the producer's trace
+      // and final state through, so it keeps the producer's ownership.
+      ...(producer.replyOwnership && { observationReplyOwnership: producer.replyOwnership }),
     },
     async prepareObservation(
       program: JudgeObservationProgram,
@@ -175,6 +180,9 @@ function legacyPrepareRefusal(status: LegacyPrepareFailure): JudgeObservationLea
 export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions): CppDrawingProducer {
   return {
     certification: 'ends-same',
+    // Each reply wraps the trace and output of one worker execution, decoded
+    // from that worker's message, on a client this attempt then retires.
+    replyOwnership: 'transferred',
     async prepare({ program, traceOptions, signal }) {
       type ObserverClient = ReturnType<LegacyCppDrawingOptions['createObserverWorkerClient']>;
       const clients = new Set<ObserverClient>();

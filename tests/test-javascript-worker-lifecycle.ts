@@ -11,6 +11,7 @@ import {
   createBrowserRuntimeProviderRegistry,
 } from '../packages/runtime-browser/src';
 import {
+  getBrowserRuntimeHostJudgeReceiptProvider,
   getBrowserRuntimeHostPreparedProvider,
 } from '../packages/runtime-browser/src/browser-runtime-host-internal';
 import {
@@ -695,6 +696,16 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
   });
 
   try {
+    // Each observation reply is the decoded message of an executor worker
+    // created for that attempt and terminated after it, so the receipt may
+    // adopt it in place.
+    for (const language of ['javascript', 'typescript'] as const) {
+      assert.equal(
+        getBrowserRuntimeHostJudgeReceiptProvider(host, language)?.capabilities.observationReplyOwnership,
+        'transferred',
+        `${language} observation replies are transferred to the receipt`
+      );
+    }
     await executeHostProgram(host, 'javascript', 1);
     const staleProvider = getBrowserRuntimeHostPreparedProvider(
       host,

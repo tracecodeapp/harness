@@ -11,6 +11,7 @@ import {
   type CSharpPreparedRunnerTier,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
 import type { BrowserRuntimeProviderContext } from '../packages/runtime-browser/src/runtime-provider-registry';
+import type { BrowserRuntimeJudgeReceiptLease } from '../packages/runtime-browser/src/browser-runtime-host-internal';
 import { getLanguageRuntimeProfile } from '../packages/runtime-browser/src/runtime-profiles';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
@@ -963,6 +964,13 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
   assertCondition(
     MockCSharpWorker.instances.length === 0,
     'Creating a C# provider must not warm compiler or runner capacity before host prewarm'
+  );
+  // observePrepared builds each reply from one decoded runner message, so the
+  // receipt may adopt it in place.
+  assertCondition(
+    (lease as BrowserRuntimeJudgeReceiptLease).judgeReceiptProviders?.get('csharp')
+      ?.capabilities.observationReplyOwnership === 'transferred',
+    'C# observation replies are transferred to the receipt'
   );
   const provider = lease.preparedProviders.get('csharp');
   assertCondition(provider, 'C# provider lease should expose prepared execution');

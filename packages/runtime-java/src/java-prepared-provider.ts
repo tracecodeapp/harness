@@ -567,6 +567,9 @@ export function createJavaJudgeReceiptProvider(
       overlapObservationWithInitialization: true,
       stoppingBatchAdmission: 'worker-start',
       nonStoppingBatchAdmission: 'worker-start',
+      // decodeJavaObservation parses each reply from the worker's event
+      // strings and keeps no reference.
+      observationReplyOwnership: 'transferred',
     },
     async prepareObservation(program, signal, traceOptions) {
       signal.throwIfAborted();

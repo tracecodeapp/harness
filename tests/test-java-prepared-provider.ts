@@ -346,6 +346,8 @@ test('Java observer compile failure cannot block or rejudge the ordinary batch',
     createWorkerClient: () => [ordinary, observer][workers++]!.client,
   });
   const registration = createJavaJudgeReceiptProvider(provider, 'test-build');
+  // Each observation reply is decoded fresh from the worker's event strings.
+  assert.equal(registration.capabilities.observationReplyOwnership, 'transferred');
   const program = {
     code: 'class Solution { int value(int value) { return value; } }',
     functionName: 'value',

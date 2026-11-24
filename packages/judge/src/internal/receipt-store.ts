@@ -80,33 +80,43 @@ function isTrace(value: unknown): value is RuntimeTrace {
     && nonnegativeInteger(value.traceStepCount);
 }
 
-function refuse(reason: Refusal): Extract<Drawing, { status: 'refused' }> {
-  return { status: 'refused', reason };
+function refuse(reason: Refusal): Frozen<Extract<Drawing, { status: 'refused' }>> {
+  return Object.freeze({ status: 'refused', reason });
 }
 
-function readDrawing(message: unknown): Drawing {
+/** Makes one reply value the receipt's own: a frozen copy, or the value itself frozen in place. */
+type Own = <T>(value: T) => Frozen<T>;
+
+/**
+ * Builds the receipt's own envelope. Each envelope field is read once, and the
+ * trace is owned before it is checked, so the checks read the graph the
+ * receipt keeps.
+ */
+function readDrawing(message: unknown, own: Own): Frozen<Drawing> {
   if (!isRecord(message)) return refuse('observer-protocol');
-  const { status, reason, trace, attemptedEvents } = message;
+  const { status, reason, trace: reply, attemptedEvents } = message;
   // Only the receipt owner knows whether the ordinary case ran.
   if (status === 'refused' && typeof reason === 'string'
     && reason !== 'case-not-run' && Object.hasOwn(refusals, reason)) {
     return refuse(reason as Refusal);
   }
-  if (status === 'drawn' && isTrace(trace)) {
-    return { status, trace };
+  const cut = status === 'truncated' && typeof reason === 'string' && Object.hasOwn(cuts, reason)
+    ? reason as Cut
+    : undefined;
+  if (status !== 'drawn' && !cut) return refuse('observer-protocol');
+  const trace = own(reply) as unknown;
+  if (!isTrace(trace)) return refuse('observer-protocol');
+  if (!cut) return Object.freeze({ status: 'drawn', trace });
+  if (cut === 'observer-deadline' && trace.events.length === 0) {
+    return refuse('observer-timeout');
   }
-  if (status === 'truncated' && typeof reason === 'string' && Object.hasOwn(cuts, reason) && isTrace(trace)) {
-    if (reason === 'observer-deadline' && trace.events.length === 0) {
-      return refuse('observer-timeout');
-    }
-    if (nonnegativeInteger(attemptedEvents) && attemptedEvents > 0 && attemptedEvents >= trace.events.length) {
-      return { status, reason: reason as Cut, trace, attemptedEvents };
-    }
+  if (nonnegativeInteger(attemptedEvents) && attemptedEvents > 0 && attemptedEvents >= trace.events.length) {
+    return Object.freeze({ status: 'truncated', reason: cut, trace, attemptedEvents });
   }
   return refuse('observer-protocol');
 }
 
-function readFinalState(message: unknown): ObservationFinalState | undefined {
+function readFinalState(message: unknown, own: Own): Frozen<ObservationFinalState> | undefined {
   if (!isRecord(message)) return;
   const finalState = message.finalState;
   if (!isRecord(finalState)) return;
@@ -116,13 +126,14 @@ function readFinalState(message: unknown): ObservationFinalState | undefined {
     case 'compile-failed':
     case 'trapped':
     case 'timed-out':
-      return { status, console };
-    case 'completed':
+      return Object.freeze({ status, console });
+    case 'completed': {
       if (!isRecord(value) || typeof value.present !== 'boolean') return;
-      return {
+      return Object.freeze({
         status, console,
-        value: value.present ? { present: true, value: value.value } : { present: false },
-      };
+        value: Object.freeze(value.present ? { present: true, value: own(value.value) } : { present: false }),
+      });
+    }
   }
 }
 
@@ -171,6 +182,82 @@ function snapshot<T>(value: T, omitRootKeys?: ReadonlySet<string>): Frozen<T> {
   }
   return root as Frozen<T>;
 }
+
+const notOwned = Symbol('not exclusively owned');
+
+/**
+ * Takes ownership of a graph a trusted adapter transferred: one that it built
+ * for this reply and never retains, reuses or mutates. Each node is checked as
+ * snapshot() checks it, then frozen in place, so no node is copied.
+ *
+ * Every node is frozen before its properties are read. A data property of a
+ * frozen object can no longer change, and the proxy invariants hold even an
+ * exotic object to the frozen values it reports. A node that was already
+ * non-extensible was frozen by someone else, for example an earlier receipt
+ * or a producer cache, so this receipt cannot own it exclusively. The value
+ * that reaches such a node is copied instead.
+ *
+ * One adoption serves one reply, so a node shared by the trace and the final
+ * state is adopted once.
+ */
+class Adoption {
+  readonly #owned = new Set<object>();
+
+  readonly own: Own = <T>(value: T): Frozen<T> => {
+    try {
+      return this.#adopt(value);
+    } catch (error) {
+      if (error === notOwned) return snapshot(value);
+      throw error;
+    }
+  };
+
+  #adopt<T>(value: T): Frozen<T> {
+    const owned = this.#owned;
+    const adopted: object[] = [];
+    const visit = (node: unknown): void => {
+      if (typeof node === 'function' || typeof node === 'symbol') {
+        throw new TypeError('Judge receipt payload must be portable data.');
+      }
+      if (node === null || typeof node !== 'object' || owned.has(node)) return;
+      if (!Object.isExtensible(node)) throw notOwned;
+      const prototype = Object.getPrototypeOf(node);
+      if (prototype !== null && prototype !== Object.prototype && prototype !== Array.prototype) {
+        throw new TypeError('Judge receipt payload must contain only plain records and arrays.');
+      }
+      owned.add(node);
+      adopted.push(node);
+      Object.freeze(node);
+    };
+    try {
+      visit(value);
+      for (let index = 0; index < adopted.length; index += 1) {
+        const node = adopted[index]!;
+        const array = Array.isArray(node);
+        for (const key of Reflect.ownKeys(node)) {
+          const descriptor = Reflect.getOwnPropertyDescriptor(node, key)!;
+          if (typeof key !== 'string' || !('value' in descriptor)) {
+            throw new TypeError('Judge receipt payload must contain only data properties.');
+          }
+          if (!array || key !== 'length') visit(descriptor.value);
+        }
+      }
+    } catch (error) {
+      // These nodes are frozen but not all checked. A later value in this
+      // reply that reaches one must treat it as not owned.
+      for (const node of adopted) owned.delete(node);
+      throw error;
+    }
+    return value as Frozen<T>;
+  }
+}
+
+/**
+ * Who owns the reply passed to publishDrawing. 'borrowed' replies are copied.
+ * A 'transferred' reply is one the adapter built for this call and will never
+ * retain, reuse or mutate; the store adopts it in place (see Adoption).
+ */
+export type DrawingOwnership = 'borrowed' | 'transferred';
 
 const observationFields = new Set(['trace', 'attachment']);
 
@@ -313,23 +400,29 @@ export class VerdictReceiptStore {
     if (entry?.attempt === attempt) this.#attempts.delete(attempt.binding);
   }
 
-  publishDrawing(attempt: ObservationAttempt, replyBinding: Binding, message: unknown): boolean {
+  publishDrawing(
+    attempt: ObservationAttempt,
+    replyBinding: Binding,
+    message: unknown,
+    ownership: DrawingOwnership = 'borrowed',
+  ): boolean {
     const entry = this.#attempts.get(attempt.binding);
     if (this.#disposed || entry?.attempt !== attempt || entry.candidate
       || !matches(attempt.binding, replyBinding)) {
       return false;
     }
 
+    const own: Own = ownership === 'transferred' ? new Adoption().own : snapshot;
     let drawing: Frozen<Drawing>;
     try {
-      drawing = snapshot(readDrawing(message));
+      drawing = readDrawing(message, own);
     } catch {
-      drawing = Object.freeze(refuse('observer-protocol'));
+      drawing = refuse('observer-protocol');
     }
     let finalState: Frozen<ObservationFinalState> | undefined;
     if (this.#certification) {
       try {
-        finalState = snapshot(readFinalState(message));
+        finalState = readFinalState(message, own);
       } catch {
         // Malformed evidence cannot certify a drawing or affect the grade.
       }

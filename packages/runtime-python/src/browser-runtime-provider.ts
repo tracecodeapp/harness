@@ -141,6 +141,9 @@ export function createPythonBrowserRuntimeProvider(
           observationPrepareDeadlineMs: 30_000,
           stoppingBatchAdmission: 'worker-start',
           nonStoppingBatchAdmission: 'worker-start',
+          // certifyPythonDrawing returns the trace normalizePythonRuntimeTrace
+          // has just rebuilt from the worker reply, and keeps no reference.
+          observationReplyOwnership: 'transferred',
         },
         prepareObservation: (program, signal, traceOptions) =>
           preparedProvider.prepareObservation(program, signal, traceOptions),

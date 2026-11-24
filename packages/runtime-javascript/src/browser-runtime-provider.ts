@@ -92,6 +92,10 @@ export function createJavaScriptBrowserRuntimeProvider(
           algorithmBundlesOnly: true,
           observationLease: 'separate',
           observationDeadlineMs: 20_000,
+          // certifyObservation returns the trace decoded from the reply of an
+          // executor worker created for this attempt and terminated after it.
+          // Nothing keeps or reuses that reply.
+          observationReplyOwnership: 'transferred',
         },
         prepareObservation: (program, signal, options) =>
           worker.prepareObservation(getJudgeOrdinaryPreparationKey(program), options, signal),
