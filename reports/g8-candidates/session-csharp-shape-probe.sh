@@ -36,7 +36,7 @@ trap 'on_stop INT 130' INT
 trap 'on_stop HUP 129' HUP
 
 status=0
-g8_start_run_group "$prefix" /root/ci/bin/heavy "${command[@]}"
+g8_start_run_group "$prefix" /root/ci/bin/heavy-exclusive "${command[@]}"
 wait "$G8_RUN_PID" || status=$?
 g8_stop_and_verify "$G8_RUN_PGID" "$prefix" "C# probe exit $status"
 trap - TERM INT HUP
