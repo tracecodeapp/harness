@@ -1,0 +1,41 @@
+{
+  "schema": "tracecode.speed-host-check-references.v1",
+  "date": "2026-11-24",
+  "rows": [
+    {
+      "cell": "python/1/binary-search/warm/submitVerdicts",
+      "version": "0.17.1",
+      "oldReference": { "n": 20, "median": 221.35000014305115, "p90": 319 },
+      "newReference": { "n": 20, "median": 150.09999990463257, "p90": 330.2000002861023 },
+      "reason": "The frozen Python warm Submit cell is bimodal and position-dependent."
+    },
+    {
+      "cell": "python/1/binary-search/warm/submitVerdicts",
+      "version": "0.20.1",
+      "oldReference": { "n": 20, "median": 116.55000019073486, "p90": 320.80000019073486 },
+      "newReference": { "n": 20, "median": 244.45000004768372, "p90": 333.30000019073486 },
+      "reason": "The frozen Python warm Submit cell is bimodal and position-dependent."
+    },
+    {
+      "cell": "python/1/permutations/warm/submitVerdicts",
+      "version": "0.17.1",
+      "oldReference": { "n": 20, "median": 212.44999980926514, "p90": 345.80000019073486 },
+      "newReference": { "n": 20, "median": 169.44999980926514, "p90": 329.30000019073486 },
+      "reason": "The frozen Python warm Submit cell is bimodal and position-dependent."
+    },
+    {
+      "cell": "python/1/permutations/warm/submitVerdicts",
+      "version": "0.20.1",
+      "oldReference": { "n": 20, "median": 142.80000019073486, "p90": 346.7999997138977 },
+      "newReference": { "n": 20, "median": 254.50000023841858, "p90": 339.19999980926514 },
+      "reason": "The frozen Python warm Submit cell is bimodal and position-dependent."
+    },
+    {
+      "cell": "java/1/permutations/warm/submitVerdicts",
+      "version": "0.17.1",
+      "oldReference": { "n": 12, "median": 439.59999990463257, "p90": 521.1000003814697 },
+      "newReference": { "n": 20, "median": 416.39999985694885, "p90": 438.80000019073486 },
+      "reason": "Same-window 0.17.1 p90 drifted -15.9% from the frozen reference on 2026-11-24."
+    }
+  ]
+}
