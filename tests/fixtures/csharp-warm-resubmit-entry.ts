@@ -52,7 +52,7 @@ export async function assertCSharpWarmResubmit(csharpWorker?: string): Promise<v
       const pending = new Map<string, WorkerCommand>();
       this.addEventListener('message', ({ data }) => {
         const command = pending.get(data?.id);
-        if (!command) return;
+        if (!command || (data.type !== command.type && data.type !== 'error')) return;
         pending.delete(data.id);
         command.success = data.payload?.success ??
           (data.payload?.observationStatus === 'drawn' || data.payload?.observationStatus === 'truncated');
