@@ -972,6 +972,12 @@ async function testDisposedProviderDoesNotRecreateRunner(): Promise<void> {
       ?.capabilities.observationReplyOwnership === 'transferred',
     'C# observation replies are transferred to the receipt'
   );
+  // The events are the runner message's structured clone, spread by createTrace.
+  assertCondition(
+    (lease as BrowserRuntimeJudgeReceiptLease).judgeReceiptProviders?.get('csharp')
+      ?.capabilities.observationReplyProvenance === 'structured-clone',
+    'C# observation replies have structured-clone provenance'
+  );
   const provider = lease.preparedProviders.get('csharp');
   assertCondition(provider, 'C# provider lease should expose prepared execution');
   MockCSharpWorker.responses.push({

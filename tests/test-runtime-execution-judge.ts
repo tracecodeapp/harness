@@ -3028,6 +3028,7 @@ function receiptFixture(options: {
   providerMarks?: boolean;
   certification?: 'ends-same';
   replyOwnership?: 'transferred';
+  replyProvenance?: 'structured-clone';
 } = {}) {
   const state = makePreparedState({
     failPreparation: options.compileFailure ?? false,
@@ -3174,6 +3175,7 @@ function receiptFixture(options: {
       ...(options.overlapObservationWithInitialization ? { overlapObservationWithInitialization: true as const } : {}),
       ...(options.nativeAdmission ? { stoppingBatchAdmission: 'worker-start' as const } : {}),
       ...(options.replyOwnership ? { observationReplyOwnership: options.replyOwnership } : {}),
+      ...(options.replyProvenance ? { observationReplyProvenance: options.replyProvenance } : {}),
     },
     async prepareObservation(program: (typeof preparedDescriptors)[number]) {
       preparedDescriptors.push(program);
@@ -3345,6 +3347,58 @@ for (const transferred of [false, true]) {
         assert.equal(Object.isFrozen(attachment.trace.events[0]), true);
         assert.equal(Object.isFrozen(reply.trace), transferred);
         assert.equal(row?.value, row?.caseId, 'poisoned reply fields never reach the row');
+      }
+      await f.host.disposeExecution(initial.executionId);
+    } finally {
+      f.host.dispose();
+      await f.terminateWorkers();
+    }
+  });
+}
+
+for (const [ownership, provenance, check] of [
+  ['transferred', 'structured-clone', 'clone'],
+  ['transferred', undefined, 'full'],
+  [undefined, 'structured-clone', 'copy'],
+] as const) {
+  test(`the schedule uses the clone check only for a transferred reply of structured-clone provenance (${check})`, async () => {
+    // A non-enumerable probe tells the checks apart without timing: the full
+    // check and the copy read every own property, so they freeze it; the
+    // clone check reads enumerable keys only, which is all a clone carries.
+    const replies: ObserverReply[] = [];
+    const probes: object[] = [];
+    const f = receiptFixture({
+      ...(ownership ? { replyOwnership: ownership } : {}),
+      ...(provenance ? { replyProvenance: provenance } : {}),
+      async observe(call) {
+        const reply = recordedDrawing(call);
+        const probe = {};
+        Object.defineProperty(reply.status === 'drawn' ? reply.trace.events[0] : {}, 'probe', { value: probe });
+        probes.push(probe);
+        replies.push(reply);
+        return reply;
+      },
+    });
+    try {
+      const initial = await f.host.execute({
+        bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] },
+      });
+      assert.ok(initial.executionId);
+      const clicked = await f.host.execute({ executionId: initial.executionId, tracing: { caseIds: ['B'] } });
+      const drawn = [initial.evaluation.cases[0], clicked.evaluation.cases[0]];
+      assert.equal(replies.length, 2);
+      for (const [index, row] of drawn.entries()) {
+        const reply = replies[index]!;
+        const attachment = row?.attachment;
+        assert.equal(attachment?.status, 'drawn');
+        assert.ok(reply.status === 'drawn');
+        assert.equal(attachment.trace === reply.trace, check !== 'copy', 'adopted in place');
+        assert.deepEqual(attachment.trace, reply.trace);
+        assert.equal(Object.isFrozen(attachment.trace.events[0]), true);
+        assert.equal(Object.isFrozen(reply.trace), check !== 'copy');
+        const kept = Reflect.getOwnPropertyDescriptor(attachment.trace.events[0]!, 'probe')?.value as object;
+        assert.equal(kept === probes[index], check !== 'copy');
+        assert.equal(Object.isFrozen(kept), check !== 'clone', `${check} check selected`);
       }
       await f.host.disposeExecution(initial.executionId);
     } finally {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  createPythonBrowserRuntimeProvider,
   createPythonPreparedExecutionProvider,
   createPythonRuntimeClient,
   PythonAlgorithmFastBatchUnavailableError,
@@ -1802,3 +1803,148 @@ for (const tier of ['algorithm-fast', 'judge-compatible', 'hard-isolated'] as co
     });
   }
 }
+
+// observationReplyProvenance: 'structured-clone' says every object of a Python
+// observation reply is plain data the adapter built. certifyPythonDrawing
+// rebuilds the drawing with literals, spreads, array methods and
+// sanitizeJsonValue's null-prototype records, so that holds even for a raw
+// worker reply that no structured clone could produce.
+function launderingWorkerClient(raw: unknown, made: Set<object>): () => PythonWorkerClient {
+  return () => ({
+    async warmup() {
+      return { success: true, loadTimeMs: 1 };
+    },
+    async prepareProgram(call: RuntimeProgramPreparationCall) {
+      return {
+        success: true as const,
+        artifact: artifact(call.mode),
+        mode: call.mode,
+        consoleOutput: [],
+      };
+    },
+    async executePreparedTrace() {
+      void made;
+      return raw;
+    },
+    terminate() {},
+  }) as unknown as PythonWorkerClient;
+}
+
+function adversarialPythonTraceReply(made: Set<object>) {
+  const track = <T extends object>(value: T): T => {
+    made.add(value);
+    return value;
+  };
+  class Box {
+    inner = track({ n: 1 });
+    get computed() { return track({ computed: true }); }
+  }
+  const withAccessors = track({} as Record<string | symbol, unknown>);
+  Object.defineProperty(withAccessors, 'line', { enumerable: true, get: () => 1 });
+  Object.defineProperty(withAccessors, 'hidden', { enumerable: false, value: track({ hidden: true }) });
+  withAccessors[Symbol('s')] = track({ symbol: true });
+  const named = track([1, , 3]) as unknown[] & Record<string, unknown>;
+  named.extra = track({ named: true });
+  const proxied = new Proxy(track({ p: track([1, 2]) }), {});
+  made.add(proxied);
+  const events = track([
+    track({
+      kind: 'line', file: 'solution.py', get line() { return 1; }, frameId: 'f1',
+      sourceSpan: track({ file: 'solution.py', startLine: 1 }),
+      callStack: track([track({ function: 'solve', line: 1, args: track(new Box()) })]),
+      [Symbol('event')]: track({}),
+    }),
+    track({
+      kind: 'write', file: 'solution.py', line: 2,
+      target: track({ variable: 'value', path: track([0]), indexSources: track(['i']) }),
+      value: track({ box: track(new Box()), map: track(new Map([[1, 2]])), date: track(new Date(0)), named, withAccessors }),
+    }),
+    track({ kind: 'call', file: 'solution.py', line: 1, function: 'solve', args: proxied }),
+    track({ kind: 'return', file: 'solution.py', line: 2, value: track([withAccessors, proxied]) }),
+  ]);
+  return track({
+    success: true,
+    output: 1,
+    consoleOutput: track([]),
+    observation: track({ recorderCompleted: true, attemptedEvents: 4 }),
+    trace: track({
+      schemaVersion: 'runtime-trace-2026-04-28',
+      language: 'python',
+      runId: 'python:run',
+      events,
+      lineEventCount: 1,
+      traceStepCount: 4,
+    }),
+  });
+}
+
+test('Python observation drawings are plain data the adapter built, whatever the worker reply holds', async () => {
+  const made = new Set<object>();
+  const raw = adversarialPythonTraceReply(made);
+  const provider = createPythonPreparedExecutionProvider({ createWorkerClient: launderingWorkerClient(raw, made) });
+  try {
+    const drawing = await provider.observe({
+      program: { code: 'def solve(value):\n    return value', functionName: 'solve', executionStyle: 'function' },
+      inputs: { value: 1 },
+      attemptToken: 'attempt-1',
+    } as Parameters<typeof provider.observe>[0]);
+    assert.equal(drawing.status, 'drawn');
+    if (drawing.status !== 'drawn') return;
+    assert.equal(drawing.trace.events.length, 4);
+    const stack: unknown[] = [drawing.trace];
+    const seen = new Set<object>();
+    while (stack.length) {
+      const node = stack.pop();
+      if (node === null || typeof node !== 'object' || seen.has(node)) continue;
+      seen.add(node);
+      assert.equal(made.has(node), false, 'a node of the worker reply reached the drawing');
+      const prototype = Object.getPrototypeOf(node);
+      assert.ok(prototype === null || prototype === Object.prototype || prototype === Array.prototype);
+      const keys = Reflect.ownKeys(node);
+      const enumerable = Object.keys(node);
+      const expected = Array.isArray(node) ? [...enumerable, 'length'] : enumerable;
+      assert.deepEqual(keys, expected, 'only enumerable string keys (and an array length)');
+      for (const key of enumerable) {
+        const descriptor = Reflect.getOwnPropertyDescriptor(node, key)!;
+        assert.ok('value' in descriptor, `${key} is a data property`);
+        assert.notEqual(typeof descriptor.value, 'function');
+        assert.notEqual(typeof descriptor.value, 'symbol');
+        stack.push(descriptor.value);
+      }
+    }
+    assert.ok(seen.size > 20, `walked ${seen.size} objects`);
+  } finally {
+    provider.terminate();
+  }
+});
+
+test('the Python receipt provider transfers its replies with structured-clone provenance', () => {
+  const context = {
+    engine: 'chromium',
+    debug: false,
+    workerLifecyclePolicy: 'warm-and-retire',
+    workerFactoryFor: () => undefined,
+    manifestAssetCollection: () => undefined,
+    manifestAsset: (_language: string, key: string) => ({ url: `${key}.js` }),
+    preflight: () => async () => {},
+    assets: {
+      pythonWorker: 'python-worker.js',
+      pythonRuntime: 'python-runtime.js',
+      pythonSnippets: 'python-snippets.js',
+      runtimeManifests: {
+        python: { assets: { runtimeImage: { engine: 'chromium', snapshot: { integrity: 's' }, wasm: { integrity: 'w' } } } },
+      },
+    },
+  };
+  const lease = createPythonBrowserRuntimeProvider().create(context as never) as {
+    judgeReceiptProviders?: ReadonlyMap<string, { capabilities: Record<string, unknown> }>;
+    dispose(): void;
+  };
+  try {
+    const capabilities = lease.judgeReceiptProviders?.get('python')?.capabilities;
+    assert.equal(capabilities?.observationReplyOwnership, 'transferred');
+    assert.equal(capabilities?.observationReplyProvenance, 'structured-clone');
+  } finally {
+    lease.dispose();
+  }
+});

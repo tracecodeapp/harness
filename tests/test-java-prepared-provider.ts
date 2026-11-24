@@ -348,6 +348,8 @@ test('Java observer compile failure cannot block or rejudge the ordinary batch',
   const registration = createJavaJudgeReceiptProvider(provider, 'test-build');
   // Each observation reply is decoded fresh from the worker's event strings.
   assert.equal(registration.capabilities.observationReplyOwnership, 'transferred');
+  // Every event is JSON.parse of a worker string, then spread: plain data only.
+  assert.equal(registration.capabilities.observationReplyProvenance, 'structured-clone');
   const program = {
     code: 'class Solution { int value(int value) { return value; } }',
     functionName: 'value',

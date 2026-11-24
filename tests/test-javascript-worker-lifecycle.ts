@@ -705,6 +705,12 @@ async function exerciseSharedProviderLanguageDisposal(): Promise<void> {
         'transferred',
         `${language} observation replies are transferred to the receipt`
       );
+      // The reply is the executor's message, a structured clone.
+      assert.equal(
+        getBrowserRuntimeHostJudgeReceiptProvider(host, language)?.capabilities.observationReplyProvenance,
+        'structured-clone',
+        `${language} observation replies have structured-clone provenance`
+      );
     }
     await executeHostProgram(host, 'javascript', 1);
     const staleProvider = getBrowserRuntimeHostPreparedProvider(
