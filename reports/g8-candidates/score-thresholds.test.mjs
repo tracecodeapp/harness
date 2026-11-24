@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   expectedLiveControlMetadata,
   medianRegressionClass,
+  pairedRepeatControlScopeAllowed,
   scoreThresholds,
 } from './score-thresholds.mjs';
 
@@ -36,4 +37,11 @@ test('Python 0.20.1 Submit control is desktop-only', () => {
     .pythonWarmSubmitControl, '0.20.1');
   assert.equal(expectedLiveControlMetadata('python', 'spot', versions)
     .pythonWarmSubmitControl, undefined);
+});
+
+test('paired Python repeat controls are valid on desktop and phone only', () => {
+  assert.equal(pairedRepeatControlScopeAllowed('python', 'desktop'), true);
+  assert.equal(pairedRepeatControlScopeAllowed('python', 'phone'), true);
+  assert.equal(pairedRepeatControlScopeAllowed('python', 'spot'), false);
+  assert.equal(pairedRepeatControlScopeAllowed('java', 'phone'), false);
 });

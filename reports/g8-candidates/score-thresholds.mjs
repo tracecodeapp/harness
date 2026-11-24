@@ -25,3 +25,7 @@ export function expectedLiveControlMetadata(primary, scope, candidateVersions,
     }),
   };
 }
+
+export function pairedRepeatControlScopeAllowed(primary, scope) {
+  return primary === 'python' && (scope === 'desktop' || scope === 'phone');
+}

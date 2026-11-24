@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   expectedLiveControlMetadata,
   medianRegressionClass,
+  pairedRepeatControlScopeAllowed,
   scoreThresholds,
 } from './score-thresholds.mjs';
 import { liveCellScoreWithControls, liveObservationVersion } from './live-control.mjs';
@@ -173,7 +174,7 @@ for (const scope of ['desktop', 'phone', 'spot']) {
         }
       }
       if (pairedRepeatControls) {
-        assert.equal(scope, 'desktop');
+        assert.ok(pairedRepeatControlScopeAllowed(primary, scope));
         for (const group of observed.metadata.schedule.filter(isRepeatWarmMode)) {
           assert.ok(expectedCandidateVersions.includes(group.pairedControlFor));
           assert.deepEqual(group.versions, ['0.17.1', group.pairedControlFor]);
