@@ -72,8 +72,10 @@ interface ObservationAttempt {
   settled: boolean;
   /** `performance.now()` at `observer-start`. */
   startedAt?: number;
-  /** Observer budget set by an ordinary client-timeout, in ms from `startedAt`. */
+  /** Observer budget set by an ordinary client-timeout, in ms. */
   expiresAfterMs?: number;
+  /** `performance.now()` when that budget was set (ordinary commit or a later click). */
+  limitedAt?: number;
   expiryTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -169,15 +171,21 @@ export class JudgeObservationSchedule<Result, Expected> {
     }
   }
 
-  /** Arm or fire the ordinary-budget expiry of a pending observation attempt. */
+  /**
+   * Arm or fire the ordinary-budget expiry of a pending observation attempt.
+   * Before observer-start (preparing, or queued behind another selected
+   * case) the observer has one budget from when it was limited to start.
+   * Once started, the budget counts from its own start, never past
+   * `limitedAt + 2 × budget`. Re-armed at observer-start.
+   */
   private limitObservation(caseId: string, attempt: ObservationAttempt, budgetMs: number): void {
+    const now = globalThis.performance.now();
     attempt.expiresAfterMs = budgetMs;
-    // Not started (preparing, or queued behind another selected case): the
-    // budget runs from observer-start, unless there is no budget to wait for.
-    if (attempt.startedAt === undefined && budgetMs > 0) return;
-    const remaining = attempt.startedAt === undefined
-      ? 0
-      : attempt.startedAt + budgetMs - globalThis.performance.now();
+    attempt.limitedAt ??= now;
+    const deadline = attempt.startedAt === undefined
+      ? attempt.limitedAt + budgetMs
+      : Math.min(attempt.startedAt + budgetMs, attempt.limitedAt + 2 * budgetMs);
+    const remaining = deadline - now;
     const expire = () => {
       attempt.expiryTimer = undefined;
       if (attempt.settled || attempt.expiry.signal.aborted || attempt.controller.signal.aborted) return;
