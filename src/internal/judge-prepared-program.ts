@@ -163,6 +163,8 @@ export class JudgeObservationSchedule<Result, Expected> {
     // settles as `observer-timeout`, so Run is released at the ordinary
     // deadline rather than the observer backstop.
     // A later click-to-draw on such a case gets the same budget (`attempt`).
+    // A provider that opts out keeps the observation backstop.
+    if (this.registration.capabilities.runawayObservationRelease === 'backstop') return;
     for (const row of evaluation.cases) {
       if (!stoppedByOrdinaryClock(row)) continue;
       this.clockStopped.add(row.caseId);
@@ -182,10 +184,13 @@ export class JudgeObservationSchedule<Result, Expected> {
     const now = globalThis.performance.now();
     attempt.expiresAfterMs = budgetMs;
     attempt.limitedAt ??= now;
-    const deadline = attempt.startedAt === undefined
-      ? attempt.limitedAt + budgetMs
-      : Math.min(attempt.startedAt + budgetMs, attempt.limitedAt + 2 * budgetMs);
-    const remaining = deadline - now;
+    // Subtract elapsed time from the budget rather than `now` from an
+    // absolute instant: (t + budget) - t is not always budget in floating
+    // point, which would arm the timer a hair late.
+    const sinceLimited = now - attempt.limitedAt;
+    const remaining = attempt.startedAt === undefined
+      ? budgetMs - sinceLimited
+      : Math.min(budgetMs - (now - attempt.startedAt), 2 * budgetMs - sinceLimited);
     const expire = () => {
       attempt.expiryTimer = undefined;
       if (attempt.settled || attempt.expiry.signal.aborted || attempt.controller.signal.aborted) return;

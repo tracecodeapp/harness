@@ -88,6 +88,14 @@ export interface JudgeReceiptProvider {
      * in place instead of copying it. Declare it only for an audited adapter.
      */
     readonly observationReplyOwnership?: 'transferred';
+    /**
+     * When a selected case's ordinary row commits `limit/client-timeout`.
+     * `ordinary-budget` (the default): its pending observer gets the ordinary
+     * per-case budget, then settles as `observer-timeout`, so Run is released
+     * at the ordinary deadline. `backstop`: the observer keeps running until
+     * it answers or `observationDeadlineMs` fires.
+     */
+    readonly runawayObservationRelease?: 'ordinary-budget' | 'backstop';
   };
   prepareObservation(
     program: JudgeObservationProgram,

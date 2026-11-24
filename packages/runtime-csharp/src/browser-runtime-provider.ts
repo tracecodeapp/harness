@@ -350,6 +350,10 @@ export function createCSharpBrowserRuntimeProvider(
           // are resolved in the worker, and createTrace maps them into new
           // arrays. A retained runner is reused, but no reply object is.
           observationReplyOwnership: 'transferred',
+          // The trace companion compiles inside observe(), after
+          // observer-start, so an ordinary-budget release could cut a loop
+          // prefix. Keep the backstop until the compile moves to prepare.
+          runawayObservationRelease: 'backstop',
         },
         prepareObservation: (program, signal, traceOptions) =>
           preparedProvider.prepareObservation(program, signal, traceOptions),
