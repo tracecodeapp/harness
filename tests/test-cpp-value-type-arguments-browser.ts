@@ -464,11 +464,19 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: true, ...(BROWSER_CHANNEL ? { channel: BROWSER_CHANNEL } : {}) });
   try {
     await waitForHttp(origin, 30_000);
+    // Scenarios run in chunks, each in a fresh page with its own compiler and
+    // worker clients, so one page never accumulates workers across the whole
+    // suite (the C++ worker's ready timeout is a fixed 10 s).
+    const results: Record<string, PathResults> = {};
+    const CHUNK = Number(process.env.TRACECODE_VALUE_TYPE_CHUNK ?? 10);
+    for (let offset = 0; offset < scenarios.length; offset += CHUNK) {
+    const chunk = scenarios.slice(offset, offset + CHUNK);
+    console.log(`chunk ${offset / CHUNK + 1}: ${chunk.map(({ name }) => name).join(' | ')}`);
     const page = await browser.newPage();
     page.setDefaultTimeout(600_000);
     await page.goto(origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
-    const results = await page.evaluate(`(async () => {
+    Object.assign(results, await page.evaluate(`(async () => {
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
       const { createCppPreparedExecutionProvider } = await import('/cpp-prepared-provider.js');
       const { TraceCCCompilerService } = await import('/tracecc-compiler-service.js');
@@ -496,7 +504,7 @@ async function main(): Promise<void> {
         executionTimeoutMs: 60000,
         tracingTimeoutMs: 60000,
       };
-      const scenarios = ${JSON.stringify(scenarios)};
+      const scenarios = ${JSON.stringify(chunk)};
       const traceOptions = { maxTraceSteps: 2000 };
       const summarize = (result) => {
         let raw;
@@ -583,7 +591,9 @@ async function main(): Promise<void> {
       client.terminate();
       compiler.terminate();
       return out;
-    })()`) as Record<string, PathResults>;
+    })()`) as Record<string, PathResults>);
+    await page.close();
+    }
 
     const failures: string[] = [];
     for (const scenario of scenarios) {
