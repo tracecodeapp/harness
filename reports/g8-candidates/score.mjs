@@ -105,7 +105,14 @@ function cacheStats(receipts = [], roles = ['ordinary', 'observer']) {
 }
 const capture = ['desktop-a-with-topup', 'desktop-b', 'phone'].map(w => collect(archive, 'speed-' + w));
 const archived = new Map(capture.flatMap(receipt => [...receipt.values]));
-const newDesignReferences = new Map();
+const newDesignReferenceReceipt = json(new URL(
+  './new-design-host-check-references.json', import.meta.url));
+assert.equal(newDesignReferenceReceipt.schema,
+  'tracecode.speed-new-design-host-check-references.v1');
+const newDesignReferences = new Map(newDesignReferenceReceipt.rows.map((row) => [
+  `${row.cell}/${row.version}`,
+  row.reference,
+]));
 if (['python', 'csharp'].includes(primary)) {
   const fresh = collectAaReferences(join(raw, '..', 'python-fresh-aa'), 'python-fresh-aa');
   const submit = collectAaReferences(join(raw, '..', 'submit-aa'), 'submit-aa');

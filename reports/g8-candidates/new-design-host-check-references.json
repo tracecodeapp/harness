@@ -1,0 +1,103 @@
+{
+  "schema": "tracecode.speed-new-design-host-check-references.v1",
+  "date": "2026-11-24",
+  "reason": "The fresh-page and explicit-repeat design requires host checks recorded under that design.",
+  "rows": [
+    {
+      "cell": "csharp/1/binary-search/warm/verdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 654.1500000953674, "p90": 670.3000001907349 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/firstTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 654.1500000953674, "p90": 670.3000001907349 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/secondTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 15.049999952316284, "p90": 15.899999618530273 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/repeatVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 642.4500000476837, "p90": 655.6999998092651 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/repeatFirstTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 642.4500000476837, "p90": 655.6999998092651 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/repeatSecondTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 15.650000095367432, "p90": 16.40000009536743 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/submitVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 397, "p90": 422.59999990463257 },
+      "source": "accepted C# Submit A/A"
+    },
+    {
+      "cell": "csharp/1/binary-search/warm/submitAfterRunVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 427.60000014305115, "p90": 451.2000002861023 },
+      "source": "accepted C# Submit A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/verdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 1011.25, "p90": 1054.7999997138977 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/firstTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 1011.25, "p90": 1054.7999997138977 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/secondTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 22.700000286102295, "p90": 24.300000190734863 },
+      "source": "accepted C# fresh A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/repeatVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 685.9500000476837, "p90": 709.9000000953674 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/repeatFirstTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 685.9500000476837, "p90": 709.9000000953674 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/repeatSecondTrace",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 22.549999952316284, "p90": 24.799999713897705 },
+      "source": "accepted C# repeat A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/submitVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 500.75, "p90": 518.1000003814697 },
+      "source": "accepted C# Submit A/A"
+    },
+    {
+      "cell": "csharp/1/permutations/warm/submitAfterRunVerdicts",
+      "version": "0.17.1",
+      "reference": { "n": 40, "median": 498.84999990463257, "p90": 513.5 },
+      "source": "accepted C# Submit A/A"
+    }
+  ]
+}
