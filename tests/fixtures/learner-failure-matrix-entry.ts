@@ -37,6 +37,7 @@ interface DiagnosticLike {
 const LEARNER_STAGES = new Set(['runtime', 'trace']);
 const COMPILE_STAGES = new Set([
   'compile',
+  'cpp-exceptions-unsupported',
   'driver-compile',
   'trace-driver-compile',
   'driver-link',
@@ -128,7 +129,8 @@ function conversionText(convert: () => { readonly kind: string; readonly diagnos
 function observeEvaluation(
   evaluation: Evaluation,
   language: MatrixLanguage,
-  trace: boolean
+  trace: boolean,
+  selectedCaseIds?: readonly string[],
 ): MatrixObservation[] {
   if (evaluation.status === 'compile-failed') {
     const compile = evaluation.compile;
@@ -145,20 +147,25 @@ function observeEvaluation(
       ),
     }];
   }
-  return evaluation.cases.map((testCase) => ({
-    ...observe(testCase.diagnostics, {
-      status: testCase.status,
-      timedOut: testCase.timedOut,
-      stderr: testCase.stderr,
-      value: testCase.value,
-    }),
-    origin: originText(testCase.failure) ?? 'none',
-    conversion: conversionText(() =>
-      trace
-        ? judgeCaseExecutionOutcome(testCase, { language, trace: true })
-        : judgeCaseExecutionOutcome(testCase, { language })
-    ),
-  }));
+  return evaluation.cases.map((testCase) => {
+    const traceCase = trace && (selectedCaseIds?.includes(testCase.caseId) ?? true);
+    const tracedConversion = traceCase
+      ? conversionText(() => judgeCaseExecutionOutcome(testCase, { language, trace: true }))
+      : undefined;
+    const refusedDrawing = traceCase && testCase.attachment?.status === 'refused';
+    return {
+      ...observe(testCase.diagnostics, {
+        status: testCase.status,
+        timedOut: testCase.timedOut,
+        stderr: testCase.stderr,
+        value: testCase.value,
+      }),
+      origin: originText(testCase.failure) ?? 'none',
+      conversion: (refusedDrawing ? undefined : tracedConversion) ??
+        conversionText(() => judgeCaseExecutionOutcome(testCase, { language })),
+      ...(refusedDrawing ? { drawingConversion: tracedConversion } : {}),
+    };
+  });
 }
 
 function thrown(error: unknown): MatrixObservation {
@@ -233,20 +240,22 @@ async function runMode(
       });
       return observeEvaluation(receipt.evaluation, language, trace);
     }
+    const initialCaseIds = ['case-1'];
     const initial = await host.execute({
       bundle,
       interactive: true,
-      tracing: { caseIds: ['case-1'] },
+      tracing: { caseIds: initialCaseIds },
       ...(signal ? { signal } : {}),
     });
-    const observations = observeEvaluation(initial.evaluation, language, true);
+    const observations = observeEvaluation(initial.evaluation, language, true, initialCaseIds);
     if (initial.executionId) {
       try {
+        const continuationCaseIds = ['case-2'];
         const continuation = await host.execute({
           executionId: initial.executionId,
-          tracing: { caseIds: ['case-2'] },
+          tracing: { caseIds: continuationCaseIds },
         });
-        observations.push(...observeEvaluation(continuation.evaluation, language, true));
+        observations.push(...observeEvaluation(continuation.evaluation, language, true, continuationCaseIds));
       } catch (error) {
         observations.push(thrown(error));
       } finally {

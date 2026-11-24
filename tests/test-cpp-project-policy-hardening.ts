@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
@@ -31,9 +32,10 @@ async function loadCppWorkerPolicyContext(): Promise<vm.Context> {
   const workerSource = (await readFile(join(testDirectory, '../workers/cpp/cpp-worker.js'), 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/m,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const workerLocation = new URL(pathToFileURL(join(testDirectory, '../workers/cpp/cpp-worker.js')).href);
   const context = vm.createContext({
+    classifyCppExceptionUse,
     console,
     URL,
     TextEncoder,

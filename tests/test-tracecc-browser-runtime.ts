@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import {
   mkdtemp,
   readFile,
+  rm,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -12,8 +13,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { cppExceptionOracleCases } from './fixtures/cpp-exception-cases';
 
 function assertCondition(
   condition: unknown,
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
       'packages/runtime-cpp/src/tracecc-runtime-assets.ts',
       'tracecc-runtime-assets.js',
     ],
+    ['tests/fixtures/cpp-ordinary-receipt-entry.ts', 'cpp-ordinary-receipt.js'],
   ] as const) {
     await build({
       entryPoints: [join(root, entry)],
@@ -162,13 +166,47 @@ async function main(): Promise<void> {
     page.setDefaultTimeout(180_000);
     await page.goto(origin);
     await page.evaluate('globalThis.__name = (fn) => fn');
+    const exceptionBaseline = process.env.TRACECC_EXCEPTION_BASELINE === '1';
+    const exceptionProbe = await page.evaluate(`(async () => {
+      const { probeCppExceptionPolicy } = await import('/cpp-ordinary-receipt.js');
+      return probeCppExceptionPolicy(${exceptionBaseline});
+    })()`) as Awaited<ReturnType<typeof import('./fixtures/cpp-ordinary-receipt-entry').probeCppExceptionPolicy>>;
+    console.log('C++ library trap results: ' + JSON.stringify(exceptionProbe.trapConsole));
+    if (exceptionBaseline) return;
+    if (process.env.TRACECC_EXCEPTION_SAMPLE) {
+      const { run, submit } = exceptionProbe;
+      await writeFile(process.env.TRACECC_EXCEPTION_SAMPLE, JSON.stringify({ run, submit }, null, 2) + '\n');
+    }
     const result = await page.evaluate(`(async () => {
       const NativeWorker = globalThis.Worker;
       const workerUrls = [];
+      const ordinaryStarts = [];
+      const recorderReplies = [];
       globalThis.Worker = class ObservedWorker extends NativeWorker {
+        requests = new Map();
         constructor(url, options) {
           workerUrls.push(String(url));
           super(url, options);
+          this.addEventListener('message', (event) => {
+            const { id, type, protocolToken, payload } = event.data ?? {};
+            const request = this.requests.get(id);
+            if (!event.isTrusted || !request || !protocolToken || request.protocolToken !== protocolToken) return;
+            if (type === 'runtime-progress' && payload?.stage === 'ordinary-case-started') {
+              ordinaryStarts.push({ type: request.type, mode: request.payload.mode, caseIndex: payload.detail.caseIndex });
+            }
+            if (type === request.type) {
+              if (payload?.observation) {
+                recorderReplies.push({ ...payload.observation, requestedToken: request.payload.attemptToken });
+              }
+              this.requests.delete(id);
+            }
+          });
+        }
+        postMessage(message, ...transfer) {
+          if (message.payload?.reportCaseProgress || message.payload?.attemptToken) {
+            this.requests.set(message.id, message);
+          }
+          return super.postMessage(message, ...transfer);
         }
       };
       const { CppWorkerClient } = await import('/cpp-worker-client.js');
@@ -201,6 +239,15 @@ async function main(): Promise<void> {
           },
         },
       });
+      const exceptionOracle = [];
+      for (const driverSource of ${JSON.stringify(cppExceptionOracleCases.map(({ driverSource }) => driverSource))}) {
+        const compiled = await compiler.compileTrusted({ driverSource });
+        const diagnostics = [compiled.stderr, compiled.stdout].filter(Boolean).join('\\n');
+        if (compiled.success !== true && !diagnostics.trim()) {
+          throw new Error('TraceCC oracle returned no compiler diagnostics: ' + JSON.stringify(compiled.error));
+        }
+        exceptionOracle.push(diagnostics);
+      }
       const workerOptions = {
         workerUrl: '/workers/cpp-worker.js',
         compilerWasmUrl: '/tracecc/tracecc-reactor.wasm',
@@ -564,6 +611,86 @@ async function main(): Promise<void> {
         : null;
       projectClient.terminate();
       provider.terminate();
+      const { assertCppOrdinaryReceiptPaths, assertCppProductReceiptPaths } =
+        await import('/cpp-ordinary-receipt.js');
+      const ordinaryReceiptPaths = await assertCppOrdinaryReceiptPaths(workerOptions);
+      const productReceiptPaths = await assertCppProductReceiptPaths();
+      const ackClient = new CppWorkerClient(workerOptions);
+      try {
+        // The public legacy trace binding still uses the guest's historical
+        // hard line cap. The observation-only build above is where it changed.
+        const hardBudget = await ackClient.prepareRuntimeProgram({
+          mode: 'trace',
+          code: 'class Solution { public:\\n int solve(int n) {\\n int total = 0;\\n for (int i = 0; i < 20000; ++i) {\\n total += i;\\n }\\n return n;\\n }\\n};',
+          functionName: 'solve',
+          traceOptions: { maxTraceSteps: 2, maxLineEvents: 12000, maxSingleLineHits: 1000, maxStoredEvents: 16000 },
+        });
+        if (!hardBudget.success) throw new Error('legacy budget control failed to prepare ' + JSON.stringify(hardBudget));
+        const stopped = await ackClient.executePreparedTrace(hardBudget.handle, { inputs: { n: 3 } });
+        if (stopped.kind !== 'limit' || stopped.reason !== 'single-line-limit') {
+          throw new Error('legacy budget control did not report a single-line cutoff: ' + JSON.stringify(stopped));
+        }
+        const disabled = await ackClient.prepareRuntimeProgram({
+          mode: 'trace',
+          code: 'class Solution { public:\\n int solve(int n) {\\n return n;\\n }\\n};',
+          functionName: 'solve',
+          observationOnly: true,
+        });
+        if (!disabled.success) throw new Error('recorder disable control failed to prepare');
+        const noRecorder = await ackClient.executePreparedTrace(disabled.handle, {
+          inputs: { n: 3 }, recordTrace: false, attemptToken: 'disabled-recorder',
+        });
+        if (noRecorder.observation?.recorderEnabled !== false || noRecorder.observation?.recorderCompleted ||
+            noRecorder.observation?.attemptedEvents !== 0 || noRecorder.trace.events.length !== 0) {
+          throw new Error('native recorder disable ACK was missing or invalid: ' + JSON.stringify(noRecorder));
+        }
+        const standaloneProgram = {
+          code: 'class Solution { public: int add(int a) { return a + 1; } };',
+          functionName: 'add',
+        };
+        const one = await ackClient.executeCode({ ...standaloneProgram, inputs: { a: 1 } });
+        if (one.output !== 2) throw new Error('ordinary single ACK fixture failed');
+        const standalone = await ackClient.executeCodeBatch({
+          ...standaloneProgram,
+          inputBatch: [{ a: 1 }, { a: 2 }],
+        });
+        if (standalone.results.map((row) => row.output).join(',') !== '2,3') {
+          throw new Error('ordinary batch ACK fixture failed: ' + JSON.stringify(standalone));
+        }
+        const ops = await ackClient.prepareRuntimeProgram({
+          mode: 'code',
+          executionStyle: 'ops-class',
+          code: 'struct Store {\\n Store() = default;\\n int get() { return 7; }\\n};',
+          functionName: 'Store',
+        });
+        if (!ops.success) throw new Error('prepared ops ACK fixture failed to compile: ' + JSON.stringify(ops));
+        const args = { operations: ['Store', 'get'], arguments: [[], []] };
+        const opsResults = await ackClient.executePreparedCodeBatch(ops.handle, { inputBatch: [args, args] });
+        if (JSON.stringify(opsResults.map((row) => row.output)) !== '[[null,7],[null,7]]') {
+          throw new Error('prepared ops ACK fixture failed: ' + JSON.stringify(opsResults));
+        }
+      } finally {
+        ackClient.terminate();
+      }
+      const startsFor = (command) => ordinaryStarts
+        .filter(({ type }) => type === command).map(({ caseIndex }) => caseIndex);
+      const starts = {
+        single: startsFor('compile-run'),
+        batch: startsFor('compile-run-batch'),
+        preparedBatch: startsFor('execute-prepared-runtime-program-batch'),
+      };
+      if (!starts.single.includes(0) || starts.batch.join(',') !== '0,1' ||
+          starts.preparedBatch.join(',') !== '0,1' ||
+          !ordinaryStarts.some(({ type, mode }) => type === 'execute-prepared-runtime-program' && mode === 'code') ||
+          ordinaryStarts.some(({ mode }) => mode === 'trace')) {
+        throw new Error('ordinary worker starts did not match the request modes: ' + JSON.stringify(starts));
+      }
+      if (!recorderReplies.some(({ cut, attemptedEvents }) => cut === 'byte-budget' && attemptedEvents > 0) ||
+          !recorderReplies.some(({ recorderCompleted, cut }) => recorderCompleted && !cut) ||
+          recorderReplies.some(({ attemptToken, requestedToken }) => attemptToken !== requestedToken)) {
+        throw new Error('native recorder witness did not match its observation attempt');
+      }
+
       compiler.terminate();
       const { createBrowserProjectWorkspace } =
         await import('/browser-project.js');
@@ -611,6 +738,11 @@ async function main(): Promise<void> {
         workspace.dispose();
       }
       return {
+        exceptionOracle,
+        ordinaryReceiptPaths,
+        productReceiptPaths,
+        ordinaryStartCount: ordinaryStarts.length,
+        recorderReplyCount: recorderReplies.length,
         workerUrls,
         warmMs,
         first,
@@ -660,6 +792,11 @@ async function main(): Promise<void> {
         workspaceRun,
       };
     })()`) as {
+      exceptionOracle: string[];
+      ordinaryReceiptPaths: string[];
+      productReceiptPaths: boolean;
+      ordinaryStartCount: number;
+      recorderReplyCount: number;
       workerUrls: string[];
       warmMs: number;
       first: {
@@ -735,6 +872,21 @@ async function main(): Promise<void> {
         exitCode: number;
       } | null;
     };
+    assertCondition(result.exceptionOracle.length === cppExceptionOracleCases.length, 'TraceCC oracle omitted cases');
+    const differences = [];
+    for (const [index, { source, expectedDifference }] of cppExceptionOracleCases.entries()) {
+      const diagnostics = result.exceptionOracle[index]!;
+      const clangRefuses = /cannot use '(?:throw|try|catch)' with exceptions disabled/.test(diagnostics);
+      const classifierRefuses = classifyCppExceptionUse(source).usesExceptions;
+      assertCondition(
+        (classifierRefuses !== clangRefuses) === expectedDifference,
+        `TraceCC exception policy for ${JSON.stringify(source)}: classifier=${classifierRefuses}, clang=${clangRefuses}\n${diagnostics}`,
+      );
+      if (expectedDifference) differences.push(source);
+    }
+    console.log(`C++ exception oracle: ${cppExceptionOracleCases.length} sources, lexical-policy differences: ${JSON.stringify(differences)}`);
+    console.log('C++ ordinary receipt paths: ' + result.ordinaryReceiptPaths.join(', '));
+    assertCondition(result.productReceiptPaths, 'C++ product receipt paths did not run.');
     assertCondition(
       result.first.kind === 'completed' && result.first.output === 42,
       `TraceCC first execution failed: ${JSON.stringify(result)}`
@@ -840,6 +992,7 @@ async function main(): Promise<void> {
   } finally {
     await browser.close();
     server.kill('SIGTERM');
+    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 

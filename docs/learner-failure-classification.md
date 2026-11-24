@@ -177,10 +177,11 @@ not need to rebuild a host after a learner failure; they may rebuild after a
   encoding the result also arrives through `Run`, so it is reported as the
   program's; the driver is produced by the compiler role, which this
   classification cannot change without rebuilding it.
-- C++: the toolchain builds without exceptions. A `throw` that no lowered
-  `catch` handles ends the program as an uncaught exception (`runtime`, with
-  the throw's line). WebAssembly traps (integer divide by zero, out-of-bounds
-  memory, `abort`, stack exhaustion) and non-zero exits are `runtime`.
+- C++: preparation refuses learner-written `throw`, `try`, and `catch`
+  tokens with `cpp-exceptions-unsupported` at the first token's line and
+  column. The failure stage is `compile`. Library calls that trap at runtime
+  produce a `runtime` failure and retain the output printed before the trap.
+  Other WebAssembly traps and non-zero exits are also `runtime`.
 
 ## Conformance gate
 

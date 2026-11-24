@@ -617,7 +617,7 @@ const PROGRAM_FAILURE_STAGES: ReadonlySet<string> = new Set<
 
 /**
  * A `failed` outcome is the learner's program failing at a named stage; the
- * stage is the diagnostic code. Provider failures never arrive here: they
+ * stage is the default diagnostic code. Provider failures never arrive here: they
  * reject and are reported by `providerFailure`. An outcome that arrives
  * without a valid stage (an untyped provider that broke the contract) is not
  * silently attributed to anyone: the diagnostic names the contract violation.
@@ -643,6 +643,22 @@ function failureDiagnostic(
           String(outcome.error ?? ''),
       code: PROVIDER_ERROR_CODE,
       source: runtime,
+    });
+  }
+  const detail = outcome.diagnostic;
+  if (runtime === 'cpp' && stage === 'compile' && detail && typeof detail === 'object' &&
+      'code' in detail && detail.code === 'cpp-exceptions-unsupported' &&
+      'file' in detail && typeof detail.file === 'string' &&
+      'line' in detail && typeof detail.line === 'number' &&
+      'column' in detail && typeof detail.column === 'number') {
+    return Object.freeze({
+      severity: 'error',
+      message: outcome.error,
+      code: detail.code,
+      source: runtime,
+      path: detail.file,
+      line: detail.line,
+      column: detail.column,
     });
   }
   return Object.freeze({
@@ -746,7 +762,7 @@ function outcomeFailure(
   }
   return Object.freeze({
     origin: 'program',
-    stage: diagnostic.code as JudgeProgramStage,
+    stage: outcome.diagnosticStage as JudgeProgramStage,
     message: diagnostic.message,
     ...(diagnostic.line === undefined ? {} : { line: diagnostic.line }),
   });

@@ -831,7 +831,8 @@ const CPP: readonly Draft[] = [
       '};'
     ),
     faultText: 'throw std::runtime_error',
-    expected: ['runtime'],
+    expected: ['compile'],
+    messageIncludes: ['C++ exceptions are not supported yet'],
   },
   {
     kind: 'helper-exception',
@@ -849,7 +850,8 @@ const CPP: readonly Draft[] = [
       '};'
     ),
     faultText: 'throw std::invalid_argument',
-    expected: ['runtime'],
+    expected: ['compile'],
+    messageIncludes: ['C++ exceptions are not supported yet'],
   },
   {
     // C++ checks argument counts at compile time.
@@ -1384,6 +1386,8 @@ export interface MatrixObservation {
   readonly origin?: string;
   /** What `judgeCaseExecutionOutcome` produced: completed, failed:<stage>, limit:<reason>, provider-rejected. */
   readonly conversion?: string;
+  /** The traced conversion when the row's drawing was refused. */
+  readonly drawingConversion?: string;
   /** abort-runaway: ms from the abort to the call settling, and the next run's duration. */
   readonly settledAfterAbortMs?: number;
   readonly nextRunMs?: number;

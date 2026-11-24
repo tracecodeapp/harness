@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { test } from 'node:test';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -1079,7 +1080,7 @@ async function createCppWorkerHarness() {
   const workerSource = (await readFile(CPP_WORKER_PATH, 'utf8')).replace(
     /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
     ''
-  );
+  ).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
   const compilerBundle = await import(pathToFileURL(CPP_COMPILER_BUNDLE_PATH).href);
   const readAsset = async (url: string) => {
     const pathname = String(url).replace('file://', '');
@@ -1093,6 +1094,7 @@ async function createCppWorkerHarness() {
     };
   };
   const sandbox: Record<string, unknown> = {
+    classifyCppExceptionUse,
     console,
     TextEncoder,
     TextDecoder,

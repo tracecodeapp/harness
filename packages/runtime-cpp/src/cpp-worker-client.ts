@@ -42,7 +42,7 @@ import {
   type RawExecutionBatchPayload,
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
-import type { RuntimeTrace } from '@tracecode/runtime-contracts';
+import type { Cut, RuntimeTrace } from '@tracecode/runtime-contracts';
 import type { CppCompilerIntegrityManifest } from '../../runtime-browser/src/runtime-assets';
 export type {
   CppCompilerIntegrityEntry,
@@ -50,7 +50,26 @@ export type {
 } from '../../runtime-browser/src/runtime-assets';
 
 /** Raw wire payload from the tracing commands; lifted into the outcome union here. */
-type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace };
+export interface CppRecorderEvidence {
+  readonly attemptToken: string;
+  readonly recorderEnabled: boolean;
+  readonly recorderCompleted: boolean;
+  readonly attemptedEvents: number;
+  readonly cut?: Cut;
+}
+type CppRawTraceResult = RawExecutionPayload & { trace?: RuntimeTrace; observation?: CppRecorderEvidence };
+
+interface CppBatchCompileFailure {
+  diagnosticStage?: 'compile';
+  errorLine?: number;
+  diagnostic?: unknown;
+}
+
+function cppBatchCompileFailure(result: CppBatchCompileFailure): CppBatchCompileFailure {
+  return result.diagnosticStage === 'compile'
+    ? { diagnosticStage: 'compile', errorLine: result.errorLine, diagnostic: result.diagnostic }
+    : {};
+}
 import type { RuntimeBatchCall, RuntimeCodeCall, RuntimeTraceCall, TraceExecutionOptions } from '@tracecode/runtime-contracts';
 import {
   closeKernelHttpSyncServers,
@@ -1443,7 +1462,7 @@ export class CppWorkerClient {
   }
 
   async prepareRuntimeProgram(
-    call: RuntimeProgramPreparationCall
+    call: RuntimeProgramPreparationCall & { observationOnly?: boolean }
   ): Promise<CppPreparedProgramPreparationResult> {
     const timeoutMs = this.compileTimeoutMs;
     const stage: CppClientTimeoutStage = call.mode === 'trace'
@@ -1461,6 +1480,7 @@ export class CppWorkerClient {
               functionName: call.functionName,
               executionStyle: call.executionStyle,
               traceOptions: call.traceOptions,
+              ...(call.observationOnly === true ? { observationOnly: true } : {}),
             },
             null,
             undefined,
@@ -1532,6 +1552,7 @@ export class CppWorkerClient {
               programId: handle.programId,
               mode: 'code',
               inputs: call.inputs,
+              reportCaseProgress: true,
             },
             null,
             undefined,
@@ -1582,6 +1603,7 @@ export class CppWorkerClient {
                 programId: handle.programId,
                 mode: 'code',
                 inputBatch: call.inputBatch,
+                reportCaseProgress: true,
               },
               {
                 timeoutMs: null,
@@ -1640,8 +1662,8 @@ export class CppWorkerClient {
 
   async executePreparedTrace(
     handle: CppPreparedProgramHandle,
-    call: RuntimePreparedTraceCall
-  ): Promise<ExecutionResult> {
+    call: RuntimePreparedTraceCall & { attemptToken?: string }
+  ): Promise<ExecutionResult & { observation?: CppRecorderEvidence }> {
     const wallClockMs = call.limits?.wallClockMs ?? this.tracingTimeoutMs;
     return this.runInPreparedExecutionWorker(async (lifecycleGeneration) => {
       this.assertPreparedProgramHandle(handle, 'trace');
@@ -1656,6 +1678,7 @@ export class CppWorkerClient {
               ...(call.recordTrace === undefined
                 ? {}
                 : { traceEnabled: call.recordTrace }),
+              ...(call.attemptToken === undefined ? {} : { attemptToken: call.attemptToken }),
               traceEventTransport: traceEventTransferRequest(),
             },
             null,
@@ -1671,7 +1694,7 @@ export class CppWorkerClient {
           call.signal,
           lifecycleGeneration
         );
-        return liftTraceOutcome(
+        const outcome = liftTraceOutcome(
           result,
           result.trace ??
             createEmptyRuntimeTrace('cpp', {
@@ -1680,6 +1703,10 @@ export class CppWorkerClient {
             }),
           'C++ prepared tracing failed'
         );
+        const evidence = result.observation;
+        return call.attemptToken !== undefined && evidence?.attemptToken === call.attemptToken
+          ? { ...outcome, observation: evidence }
+          : outcome;
       } catch (error) {
         if (this.isClientTimeout(error)) return this.timeoutTraceResult(error);
         throw error;
@@ -1763,7 +1790,7 @@ export class CppWorkerClient {
         const result = await this.runExecution(
           this.core.sendMessageEffect<RawExecutionPayload>(
             'compile-run',
-            { code, functionName, inputs, executionStyle },
+            { code, functionName, inputs, executionStyle, reportCaseProgress: true },
             null, // the enclosing execution deadline is the only clock
             undefined,
             undefined,
@@ -1785,14 +1812,14 @@ export class CppWorkerClient {
     });
   }
 
-  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult> {
+  async executeCodeBatch(call: RuntimeBatchCall): Promise<CodeExecutionBatchResult & CppBatchCompileFailure> {
     const { code, functionName, inputBatch, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
-          this.core.sendMessageEffect<RawExecutionBatchPayload>(
+          this.core.sendMessageEffect<RawExecutionBatchPayload & CppBatchCompileFailure>(
             'compile-run-batch',
-            { code, functionName, inputBatch, executionStyle },
+            { code, functionName, inputBatch, executionStyle, reportCaseProgress: true },
             null,
             undefined,
             undefined,
@@ -1803,7 +1830,7 @@ export class CppWorkerClient {
           signal,
           lifecycleGeneration
         );
-        return liftCodeBatchOutcome(result, 'C++ execution failed');
+        return { ...liftCodeBatchOutcome(result, 'C++ execution failed'), ...cppBatchCompileFailure(result) };
       } catch (error) {
         if (!this.isClientTimeout(error)) throw error;
         this.throwIfTimedOutCompiling(error);
@@ -1818,12 +1845,12 @@ export class CppWorkerClient {
     });
   }
 
-  async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<{ results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
+  async executeTraceBatch(call: RuntimeBatchCall & { traceOptions?: TraceExecutionOptions }): Promise<CppBatchCompileFailure & { results: ExecutionResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }> {
     const { code, functionName, inputBatch, traceOptions, executionStyle = 'solution-method', signal } = call;
     return this.runInDisposableExecutionWorker(async (lifecycleGeneration) => {
       try {
         const result = await this.runExecution(
-          this.core.sendMessageEffect<{ results?: CppRawTraceResult[]; error?: string; consoleOutput?: string[]; timings?: RuntimeExecutionTimings }>(
+          this.core.sendMessageEffect<Omit<RawExecutionBatchPayload, 'results'> & CppBatchCompileFailure & { results?: CppRawTraceResult[] }>(
             'execute-trace-batch',
             {
               code,
@@ -1844,6 +1871,7 @@ export class CppWorkerClient {
           lifecycleGeneration
         );
         return {
+          ...cppBatchCompileFailure(result),
           results: (result.results ?? []).map((entry) =>
             liftTraceOutcome(
               entry,

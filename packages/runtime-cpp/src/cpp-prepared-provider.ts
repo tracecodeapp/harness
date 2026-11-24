@@ -398,3 +398,23 @@ export function createCppPreparedExecutionProvider(
     },
   };
 }
+
+/**
+ * Private receipt-backed entry point. One code artifact and one invocation
+ * protocol serve single cases, stopping batches scheduled by Judge, and ops.
+ * Only the separate observation registration ever requests a trace build.
+ */
+export function createCppOrdinaryExecutionProvider(
+  options: CppPreparedExecutionProviderOptions
+): CppPreparedExecutionProviderController {
+  const provider = createCppPreparedExecutionProvider(options);
+  return {
+    ...provider,
+    prepareProgram({ mode, code, functionName, executionStyle, signal }) {
+      if (mode !== 'code') {
+        throw new TypeError('C++ ordinary preparation requires code mode.');
+      }
+      return provider.prepareProgram({ mode, code, functionName, executionStyle, signal });
+    },
+  };
+}

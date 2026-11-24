@@ -339,11 +339,14 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
     // The Judge layer must state the same origin, and the exported conversion
     // must produce the matching outcome, so a consumer only forwards.
     if (observation.status !== 'host-rejected') {
+      const stage = observation.code === 'cpp-exceptions-unsupported'
+        ? 'compile'
+        : observation.code;
       const expectedJudge =
         observation.class === 'completed'
           ? { origin: 'none', conversion: 'completed' }
           : observation.class === 'compile' || observation.class === 'runtime'
-            ? { origin: `program:${observation.code}`, conversion: `failed:${observation.code}` }
+            ? { origin: `program:${stage}`, conversion: `failed:${stage}` }
             : observation.class === 'limit'
               ? { origin: `limit:${observation.reason}`, conversion: `limit:${observation.reason}` }
               : observation.class === 'provider'
@@ -360,6 +363,9 @@ function judgeCell(spec: MatrixCellSpec, result: MatrixCellResult): CellVerdict 
               `disagree with ${observation.class}${observation.code ? ` (${observation.code})` : ''}`
           );
         }
+      }
+      if (observation.drawingConversion !== undefined && observation.drawingConversion !== 'trace-refused') {
+        failures.set('judge', `A refused drawing converted to ${observation.drawingConversion}`);
       }
     }
   }

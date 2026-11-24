@@ -1,0 +1,212 @@
+--- a/benchmarks/speed-baseline-021/run.mjs
++++ b/benchmarks/speed-baseline-021/run.mjs
+@@ -22,6 +22,19 @@
+ const seed = Number(seedArg);
+ const runMinutes = Number(minuteArg);
+ const groupSelector = process.env.SPEED_GROUP_SELECTOR;
++const candidatePath = process.env.SPEED_CPP_CANDIDATE;
++const candidate = candidatePath ? JSON.parse(await readFile(candidatePath, 'utf8')) : undefined;
++const candidateVersion = '0.21-candidate';
++const speedTier = process.env.SPEED_CPP_TIER;
++if (candidate) {
++  assert.equal(mode, 'run');
++  assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1');
++  assert.ok(['cpp', 'spot'].includes(speedTier));
++  assert.ok(speedTier === 'spot' ? windowName === 'desktop-a' : ['desktop-b', 'phone'].includes(windowName));
++  assert.ok(['concurrent', 'sequential'].includes(candidate.policy));
++  assert.match(candidate.head, /^[0-9a-f]{40}$/);
++  assert.ok(!groupSelector);
++}
+ assert.ok(mode === 'smoke' || Object.hasOwn(windowLanguages, windowName));
+ assert.ok(Number.isSafeInteger(seed) && Number.isFinite(runMinutes) && runMinutes > 0);
+ assert.ok(
+@@ -36,7 +49,7 @@
+   '0.17.1': '083bf3f4aec34a353dd6da749d691ca29ed601e8',
+   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
+ };
+-const versions = Object.keys(appRefs);
++const versions = candidate ? [candidateVersion] : Object.keys(appRefs);
+ const appLockIntegrity = {
+   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
+   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
+@@ -157,22 +170,25 @@
+ }
+
+ async function prepareVersion(version) {
+-  const root = join(out, 'v' + version);
++  const isCandidate = version === candidateVersion;
++  const root = isCandidate ? resolve(candidate.root) : join(out, 'v' + version);
+   const harness = join(root, 'package');
+   const site = join(root, 'site');
+   const manifest = await json(join(harness, 'package.json'));
+-  assert.equal(manifest.version, version);
+-  const tarball = 'tracecode-harness-' + version + '.tgz';
++  assert.equal(manifest.version, isCandidate ? candidate.packageVersion : version);
++  const tarball = isCandidate ? candidate.tarball : 'tracecode-harness-' + version + '.tgz';
+   const tarballBytes = await readFile(join(root, tarball));
+   const integrity = 'sha512-' + createHash('sha512').update(tarballBytes).digest('base64');
+-  assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
++  if (isCandidate) assert.equal(sha256(tarballBytes), candidate.tarballSha256);
++  else assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
+   const dependencyFile = join(root, 'dependencies.json');
+   const dependencyBytes = await readFile(dependencyFile);
+   const dependenciesSha256 = sha256(dependencyBytes);
+-  assert.equal(dependenciesSha256, frozenDependencyHashes[version], `Installed dependency tree differs from the frozen tree for Harness ${version}`);
++  assert.equal(dependenciesSha256, (isCandidate ? candidate.dependenciesSha256 : frozenDependencyHashes[version]), `Installed dependency tree differs from the frozen tree for Harness ${version}`);
+   const dependencyLockSha256 = sha256(await readFile(join(harness, 'package-lock.json')));
+   const expectedLock = new URL(`./dependency-locks/${version}.package-lock.json`, import.meta.url);
+-  assert.equal(dependencyLockSha256, sha256(await readFile(expectedLock)), `Install lock differs from the frozen lock for Harness ${version}`);
++  assert.equal(dependencyLockSha256, isCandidate ? candidate.dependencyLockSha256 : sha256(await readFile(expectedLock)),
++    `Install lock differs from the frozen lock for Harness ${version}`);
+   const shim = join(harness, 'dist', 'zlib-browser-shim.js');
+   await build({
+     entryPoints: ['benchmarks/speed-baseline-021/entry.ts'],
+@@ -191,7 +207,7 @@
+   });
+   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
+   const metadata = {
+-    appRef: appRefs[version], tarball, integrity, sha256: sha256(tarballBytes),
++    appRef: appRefs[isCandidate ? '0.20.1' : version], tarball, integrity, sha256: sha256(tarballBytes),
+     dependencyLockSha256, dependenciesSha256,
+     dependencies: JSON.parse(dependencyBytes.toString('utf8')),
+   };
+@@ -221,7 +237,7 @@
+     await page.evaluate(async ({ language, stopSubmit }) => {
+       const { createSession } = await import('/entry.mjs');
+       window.bench = createSession(language, stopSubmit);
+-    }, { language: group.language, stopSubmit: version === '0.20.1' });
++    }, { language: group.language, stopSubmit: version !== '0.17.1' });
+     return page;
+   } catch (error) {
+     await page.close().catch(() => {});
+@@ -241,6 +257,8 @@
+ function refusal(result) {
+   if (!result) return;
+   const { evaluation } = result;
++  const refused = evaluation?.cases?.find((c) => c.attachmentStatus === 'refused');
++  if (refused) return refused.attachmentReason ?? 'refused attachment';
+   const issues = [
+     result.error, result.warm?.error, evaluation?.compileFailure,
+     ...(evaluation?.cases ?? []).flatMap((c) => [c.failure, c.traceUnavailable]),
+@@ -283,7 +301,9 @@
+ function plan() {
+   const groups = [];
+   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
+-  const cheapFirst = mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
++  const cheapFirst = candidate
++    ? speedTier === 'spot' ? windowLanguages.phone.filter((lang) => lang !== 'cpp') : ['cpp']
++    : mode === 'smoke' ? windowLanguages.phone : windowLanguages[windowName];
+   for (const language of cheapFirst) {
+     for (const cpu of cpuRates) {
+       const target = mode === 'smoke' ? 1 : cpu === 4 || language === 'java' ? 12 : 20;
+@@ -291,14 +311,15 @@
+       for (const state of phoneSubset ? ['warm', 'cold'] : ['warm', 'cold', 'switched']) {
+         for (const journey of phoneSubset ? ['run'] : ['submit', 'run']) {
+           for (const problem of problemIds) {
++            if (candidate && speedTier === 'spot' && (state !== 'warm' || problem !== 'binary-search')) continue;
+             groups.push({
+               language, cpu, problem, state, journey, target, versions,
+-              continuation: journey === 'run' && !phoneSubset,
++              continuation: journey === 'run' && !phoneSubset && speedTier !== 'spot',
+             });
+           }
+         }
+-        if (state === 'warm' && !phoneSubset) {
+-          groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target, versions: ['0.20.1'] });
++        if (state === 'warm' && !phoneSubset && speedTier !== 'spot') {
++          groups.push({ language, cpu, problem: 'binary-search', state, journey: 'lesson', target, versions: candidate ? versions : ['0.20.1'] });
+         }
+       }
+     }
+@@ -348,6 +369,9 @@
+     groupSelector,
+     runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+   }),
++  ...(candidate && {
++    candidate: { head: candidate.head, policy: candidate.policy, tier: speedTier },
++  }),
+   host: { hostname: hostname(), logicalCpus: availableParallelism(), kernel: release() },
+   browser: { channel: 'chromium', crossOriginIsolated: false },
+   packages: {},
+@@ -365,6 +389,8 @@
+   }
+   browser = await chromium.launch({ channel: 'chromium', headless: true });
+   report.browser.version = browser.version();
++  if (candidate) assert.match(report.browser.version, /^145\./, 'Chromium 145 required');
++
+   await save();
+   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
+     [version, await browser.newContext()])));
+@@ -374,14 +400,20 @@
+     const fixture = fixtures.data[group.problem][group.language];
+     const otherProblem = problemIds.find((id) => id !== group.problem);
+     const otherFixture = fixtures.data[otherProblem][group.language];
+-    const counts = Object.fromEntries(group.versions.map((version) => [version, { kept: 0, invalid: 0 }]));
++    const independentVerdicts = candidate && speedTier === 'cpp' && group.journey === 'run';
++    const counts = Object.fromEntries(group.versions.map((version) => [
++      version, { kept: 0, invalid: 0, verdicts: 0, invalidVerdicts: 0 },
++    ]));
++    const needsSample = (count) =>
++      (count.kept < target && count.invalid < maxInvalid) ||
++      (independentVerdicts && count.verdicts < target && count.invalidVerdicts < maxInvalid);
+     const warmPages = new Map();
+     const groupStarted = Date.now();
+     try {
+-      for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
++      for (let round = 1; group.versions.some((v) => needsSample(counts[v])); round++) {
+         for (const [position, version] of shuffled(group.versions).entries()) {
+           const count = counts[version];
+-          if (count.kept >= target || count.invalid >= maxInvalid) continue;
++          if (!needsSample(count)) continue;
+           await waitForQuiet();
+           const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };
+           delete sample.versions;
+@@ -413,6 +445,11 @@
+               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
+               sample.refusal = refusal(sample.initial);
+               sample.invalid = outcome(sample.initial, fixture.cases.map((c) => c.id));
++              if (independentVerdicts && !sample.invalid && count.verdicts < target) {
++                // This is the public joined response clock even when the
++                // selected drawing was refused or the next click failed.
++                sample.ordinaryKept = true;
++              }
+               if (group.journey === 'submit' && !sample.invalid && sample.initial.verdict !== 'passed') {
+                 sample.invalid = 'Unexpected Submit verdict: ' + JSON.stringify(sample.initial.verdict);
+               }
+@@ -444,18 +481,20 @@
+
+           sample.wallMs = Date.now() - attemptStarted;
+           sample.metrics = addressedBySample(sample);
+-          sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal;
+-          if (sample.invalid || sample.refusal) count.invalid++;
+-          else if (!sample.excluded) count.kept++;
++          sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal && count.kept < target;
++          if (sample.kept) count.kept++;
++          else if (sample.invalid || sample.refusal) count.invalid++;
++          if (sample.ordinaryKept) count.verdicts++;
++          else if (independentVerdicts && !sample.excluded && count.verdicts < target) count.invalidVerdicts++;
+           await appendFile(samplesPath, JSON.stringify(sample) + '\n');
+-          if (sample.refusal) throw new Error(sample.refusal);
++          if (sample.refusal && !candidate) throw new Error(sample.refusal);
+           if (sample.invalid) console.error('Invalid sample', version, JSON.stringify(group), sample.invalid);
+         }
+       }
+     } finally {
+       await Promise.all([...warmPages.values()].map((page) => page.close().catch(() => {})));
+     }
+-    if (Object.values(counts).some((c) => c.kept < target)) complete = false;
++    if (Object.values(counts).some((c) => c.kept < target || (independentVerdicts && c.verdicts < target))) complete = false;
+     console.log(JSON.stringify({ groupIndex, ...group, counts, wallMs: Date.now() - groupStarted }));
+   }
+   report.complete = complete;
+--- a/benchmarks/speed-baseline-021/entry.ts
++++ b/benchmarks/speed-baseline-021/entry.ts
+@@ -45,6 +45,8 @@
+       verdict: c.verdict?.kind,
+       traceEvents: Array.isArray(c.trace?.events) ? c.trace.events.length : 0,
+       traceUnavailable: c.traceUnavailable,
++      attachmentStatus: c.attachment?.status,
++      attachmentReason: c.attachment?.reason,
+       traceExitReason: c.trace?.exitReason,
+       timing: c.timings,
+       failure: c.failure,

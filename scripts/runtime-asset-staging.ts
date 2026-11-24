@@ -73,6 +73,7 @@ export const ASSET_COPY_PLAN: readonly AssetCopyPlanEntry[] = [
   },
   { source: ['workers', 'csharp', 'csharp-worker.js'], target: ['csharp-worker.js'], languages: ['csharp'] },
   { source: ['workers', 'cpp', 'cpp-worker.js'], target: ['cpp-worker.js'], languages: ['cpp'] },
+  { source: ['workers', 'cpp', 'cpp-exceptions.js'], target: ['cpp-exceptions.js'], languages: ['cpp'] },
   // The C++ project worker is the same script under a second name.
   { source: ['workers', 'cpp', 'cpp-worker.js'], target: ['project-cpp-worker.js'], languages: ['cpp'] },
   { source: ['workers', 'cpp', 'tracecode_runtime.hpp'], target: ['cpp', 'tracecode_runtime.hpp'], languages: ['cpp'] },

@@ -1,5 +1,7 @@
 #!/usr/bin/env npx tsx
 
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
+import { cppExceptionPositives, cppExceptionNegatives, mixedExceptionSource } from './fixtures/cpp-exception-cases';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
@@ -12,8 +14,9 @@ const sharedKernelPolicySource = (await readFile('workers/shared/runtime-kernel-
 const workerSource = (await readFile('workers/cpp/cpp-worker.js', 'utf8')).replace(
   /^import\s*\{[\s\S]*?\}\s*from\s*['"]\.\/shared\/runtime-kernel-policy\.js['"];\s*/,
   ''
-);
+).replace(/^import \{ classifyCppExceptionUse \} from '\.\/cpp-exceptions\.js';\s*/m, '');
 const sandbox: Record<string, unknown> = {
+  classifyCppExceptionUse,
   console,
   TextEncoder,
   TextDecoder,
@@ -46,7 +49,13 @@ const isRuntimeDeviceNamespacePath = isRuntimeKernelDeviceNamespacePath;
 const isRuntimeProcPath = isRuntimeKernelProcPath;
 ${workerSource}
 globalThis.__tracecodeCppRewriter = {
+  handleCompileRun,
+  handleCompileRunBatch,
+  handleExecuteWithTracing,
+  handleExecuteTraceBatch,
+  handlePrepareRuntimeProgram,
   buildBatchDriverSource,
+  finalizePreparedObservation,
   buildDriverSource,
   buildOpsClassDriverSource,
   buildPreparedOpsClassDriverSource,
@@ -58,6 +67,14 @@ globalThis.__tracecodeCppRewriter = {
 );
 
 const rewriter = sandbox.__tracecodeCppRewriter as {
+  handleCompileRun: (call: object) => Promise<Record<string, unknown>>;
+  handleExecuteWithTracing: (call: object) => Promise<Record<string, unknown>>;
+  handleCompileRunBatch: (call: object) => Promise<Record<string, unknown>>;
+  handleExecuteTraceBatch: (call: object) => Promise<Record<string, unknown>>;
+  handlePrepareRuntimeProgram: (call: object) => Promise<Record<string, unknown>>;
+  finalizePreparedObservation: (
+    parsed: Record<string, unknown>, prepared: Record<string, unknown>, attemptToken: string
+  ) => { trace: { events: unknown[] }; observation: { cut?: string; attemptedEvents: number } };
   buildBatchDriverSource: (
     source: string,
     functionName: string,
@@ -84,6 +101,34 @@ const rewriter = sandbox.__tracecodeCppRewriter as {
   instrumentCppSourceForTracing: (source: string, functionName: string) => string;
   parseCppFunctionSignatures: (source: string) => Array<{ name: string; line: number }>;
 };
+
+for (const [source, token, line, column] of cppExceptionPositives) {
+  const classification = classifyCppExceptionUse(source);
+  const match = classification.usesExceptions ? classification.firstToken : undefined;
+  assertCondition(
+    match?.token === token && match.line === line && match.column === column,
+    `C++ exception token/location for ${JSON.stringify(source)}: ${JSON.stringify(match)}`,
+  );
+}
+for (const source of cppExceptionNegatives) {
+  assertCondition(!classifyCppExceptionUse(source).usesExceptions, `False C++ exception refusal: ${source}`);
+}
+for (const [handler, payload] of [
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'code' }],
+  [rewriter.handlePrepareRuntimeProgram, { mode: 'trace' }],
+  [rewriter.handleCompileRun, {}],
+  [rewriter.handleExecuteWithTracing, {}],
+  [rewriter.handleCompileRunBatch, { inputBatch: [{}, {}] }],
+  [rewriter.handleExecuteTraceBatch, { inputBatch: [{}, {}] }],
+] as const) {
+  const result = await handler({ ...payload, code: mixedExceptionSource, functionName: 'solve' });
+  const diagnostic = result.diagnostic as { code?: string; line?: number; column?: number } | undefined;
+  assertCondition(result.success === false && result.error === 'C++ exceptions are not supported yet' &&
+    result.diagnosticStage === 'compile' && result.errorLine === 4 &&
+    diagnostic?.code === 'cpp-exceptions-unsupported' && diagnostic.line === 4 && diagnostic.column === 16 &&
+    (!('results' in result) || JSON.stringify(result.results) === '[]'),
+  `C++ exception prepare result: ${JSON.stringify(result)}`);
+}
 
 const source = [
   'class Solution {',
@@ -330,21 +375,6 @@ assertCondition(
   controlDriver.includes('tracecode::with_trace_line(6') && controlDriver.includes('tracecode::with_trace_line(7'),
   'control conditions should evaluate under the control header source line'
 );
-
-const exceptionSource = [
-  'class Solution {',
-  'public:',
-  '  int safe(int value) {',
-  '    if (value < 0) throw std::runtime_error("negative");',
-  '    return value;',
-  '  }',
-  '};',
-].join('\n');
-const exceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 }, { tracing: true });
-const nonTracingExceptionDriver = rewriter.buildDriverSource(exceptionSource, 'safe', { value: -1 });
-assertCondition(exceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'lowered throw should emit native exception events when tracing');
-assertCondition(exceptionDriver.includes('"negative"'), 'lowered throw should preserve common literal exception messages');
-assertCondition(!nonTracingExceptionDriver.includes('tracecode::emit_serialized_exception_event('), 'non-tracing lowered throws should not emit trace markers');
 
 const fieldSource = [
   'struct Node { unordered_map<string, int> children; };',
@@ -732,3 +762,16 @@ assertCondition(
 );
 
 console.log('PASS: C++ rewriter source snapshots');
+
+
+const nativeBudget = rewriter.finalizePreparedObservation({
+  foundResult: true,
+  traceStatus: { traceLimitExceeded: true, timeoutReason: 'single-line-limit', droppedEventCount: 4 },
+  events: [
+    { kind: 'call', function: '__tracecode_batch_case', line: 1, args: { index: 0 } },
+    { kind: 'line', line: 2 },
+  ],
+}, { inputMode: 'named-batch', source: '', traceOptions: { maxTraceBytes: 1 } }, 'budget-test');
+assertCondition(nativeBudget.observation.cut === 'byte-budget' &&
+  nativeBudget.observation.attemptedEvents === 5 && nativeBudget.trace.events.length === 0,
+'Byte retention must retain an empty prefix with a positive native attempt count.');
