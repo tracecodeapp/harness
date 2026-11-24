@@ -828,13 +828,15 @@ try {
                       (group.csharpWarmMode === csharpWarmModes.repeatRun || group.state === 'cold'),
                     csharpPromotedExecutionType: group.language === 'csharp' &&
                       group.state === 'cold'
-                      ? group.journey === 'submit'
+                      ? group.journey === 'submit' || version.startsWith('candidate-')
                         ? 'execute-prepared-code'
                         : 'execute-prepared-trace'
                       : undefined,
                     csharpPromotedPrepareRole: group.language === 'csharp' &&
                       group.state === 'cold'
-                      ? group.journey === 'submit' ? 'ordinary' : 'observer'
+                      ? group.journey === 'submit' || version.startsWith('candidate-')
+                        ? 'ordinary'
+                        : 'observer'
                       : undefined,
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&
                       group.csharpWarmMode === csharpWarmModes.submitAfterRun,
