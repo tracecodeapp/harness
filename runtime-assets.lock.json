@@ -3,22 +3,22 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.ad0e232fc37fab352a665f6b5e168df09604f5eba8a5320d8a19ea4af7e6c2d3"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.a3cc68eb2c60f8d66782f037aadc8d4c34e825b7ea0436e6c2470425e6677397"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "ad0e232fc37fab352a665f6b5e168df09604f5eba8a5320d8a19ea4af7e6c2d3",
-  "totalPackagedRuntimeBytes": 152611502,
+  "packageTreeSha256": "a3cc68eb2c60f8d66782f037aadc8d4c34e825b7ea0436e6c2470425e6677397",
+  "totalPackagedRuntimeBytes": 152612203,
   "components": {
     "cpp": {
-      "releaseId": "cpp+sha256.e5ca19f2b9d84ca01f67f0bd66158ec4a7253208dba89fec99311aa24f495622",
-      "treeSha256": "e5ca19f2b9d84ca01f67f0bd66158ec4a7253208dba89fec99311aa24f495622",
-      "totalBytes": 907640,
+      "releaseId": "cpp+sha256.f6803c9f03a159191328bca57c53c94e19f1fbd1054180605508d9a235189811",
+      "treeSha256": "f6803c9f03a159191328bca57c53c94e19f1fbd1054180605508d9a235189811",
+      "totalBytes": 908341,
       "files": [
         {
           "path": "workers/cpp/cpp-exceptions.js",
-          "size": 3433,
-          "sha256": "bd842e2c1c6d99286b3fcacb3d5c769223e9b02d1c02903fa7b7d7a2feb9115e",
-          "integrity": "sha256-vYQuLBxtmShrP8rLPVx2kiPpsC0cApA/p7fXov65EV4=",
+          "size": 4134,
+          "sha256": "8b3332b5f23cbd54ad867af1de2bfd46ee7200ad9fda406aaa9b5497e60b7859",
+          "integrity": "sha256-izMytfI8vVSthnrx3iv9Ru5yAK2f2kBqqptUl+YLeFk=",
           "mediaType": "text/javascript"
         },
         {
@@ -2262,11 +2262,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 608,
-    "bytes": 428447803,
+    "bytes": 428448504,
     "byClass": {
       "locked": {
         "files": 349,
-        "bytes": 425733267
+        "bytes": 425733968
       },
       "alias": {
         "files": 1,
@@ -2300,7 +2300,7 @@
       {
         "path": "cpp-exceptions.js",
         "files": 1,
-        "bytes": 3433
+        "bytes": 4134
       },
       {
         "path": "cpp-worker.js",

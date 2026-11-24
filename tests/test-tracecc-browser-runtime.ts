@@ -13,8 +13,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { cppExceptionOracleCases } from './fixtures/cpp-exception-cases';
 
 function assertCondition(
   condition: unknown,
@@ -237,6 +239,15 @@ async function main(): Promise<void> {
           },
         },
       });
+      const exceptionOracle = [];
+      for (const driverSource of ${JSON.stringify(cppExceptionOracleCases.map(({ driverSource }) => driverSource))}) {
+        const compiled = await compiler.compileTrusted({ driverSource });
+        const diagnostics = [compiled.stderr, compiled.stdout].filter(Boolean).join('\\n');
+        if (compiled.success !== true && !diagnostics.trim()) {
+          throw new Error('TraceCC oracle returned no compiler diagnostics: ' + JSON.stringify(compiled.error));
+        }
+        exceptionOracle.push(diagnostics);
+      }
       const workerOptions = {
         workerUrl: '/workers/cpp-worker.js',
         compilerWasmUrl: '/tracecc/tracecc-reactor.wasm',
@@ -727,6 +738,7 @@ async function main(): Promise<void> {
         workspace.dispose();
       }
       return {
+        exceptionOracle,
         ordinaryReceiptPaths,
         productReceiptPaths,
         ordinaryStartCount: ordinaryStarts.length,
@@ -780,6 +792,7 @@ async function main(): Promise<void> {
         workspaceRun,
       };
     })()`) as {
+      exceptionOracle: string[];
       ordinaryReceiptPaths: string[];
       productReceiptPaths: boolean;
       ordinaryStartCount: number;
@@ -859,6 +872,19 @@ async function main(): Promise<void> {
         exitCode: number;
       } | null;
     };
+    assertCondition(result.exceptionOracle.length === cppExceptionOracleCases.length, 'TraceCC oracle omitted cases');
+    const differences = [];
+    for (const [index, { source, expectedDifference }] of cppExceptionOracleCases.entries()) {
+      const diagnostics = result.exceptionOracle[index]!;
+      const clangRefuses = /cannot use '(?:throw|try|catch)' with exceptions disabled/.test(diagnostics);
+      const classifierRefuses = classifyCppExceptionUse(source).usesExceptions;
+      assertCondition(
+        (classifierRefuses !== clangRefuses) === expectedDifference,
+        `TraceCC exception policy for ${JSON.stringify(source)}: classifier=${classifierRefuses}, clang=${clangRefuses}\n${diagnostics}`,
+      );
+      if (expectedDifference) differences.push(source);
+    }
+    console.log(`C++ exception oracle: ${cppExceptionOracleCases.length} sources, lexical-policy differences: ${JSON.stringify(differences)}`);
     console.log('C++ ordinary receipt paths: ' + result.ordinaryReceiptPaths.join(', '));
     assertCondition(result.productReceiptPaths, 'C++ product receipt paths did not run.');
     assertCondition(

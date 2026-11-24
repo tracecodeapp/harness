@@ -2,7 +2,8 @@
 // comments, literals, identifiers, and header names. No macro expansion.
 const CPP_UNIVERSAL_CHARACTER = String.raw`\\(?:u(?:[\da-fA-F]{4}|\{[\da-fA-F]+\})|U[\da-fA-F]{8}|N\{[^{}\r\n]+\})`;
 const CPP_IDENTIFIER = String.raw`(?:[$_\p{ID_Start}]|${CPP_UNIVERSAL_CHARACTER})(?:[$\p{ID_Continue}]|${CPP_UNIVERSAL_CHARACTER})*`;
-const CPP_RAW_STRING_START = String.raw`(?:u8|[uUL])?R"([^ ()\\\t\v\f\r\n]{0,16})\(`;
+const CPP_RAW_STRING_START = String.raw`(?:u8|[uUL])?R"`;
+const CPP_RAW_STRING_DELIMITER = String.raw`([^ ()\\\t\v\f\r\n]{0,16})\(`;
 const CPP_QUOTED_LITERAL = String.raw`(?:u8|[uUL])?(?:"(?:\\[^\r\n]|[^"\\\r\n])*(?:"|(?=\r?$|\r))|'(?:\\[^\r\n]|[^'\\\r\n])*(?:'|(?=\r?$|\r)))`;
 const CPP_NUMBER = String.raw`(?:[0-9]|\.[0-9])(?:[eEpP][+-]|'[$\p{ID_Continue}]|[.$\p{ID_Continue}])*`;
 const CPP_DIRECTIVE_SPACE = String.raw`(?:[\t\v\f ]|/\*(?:[^*\r\n]|\*(?!/))*\*/)*`;
@@ -30,12 +31,21 @@ export function classifyCppExceptionUse(source) {
   const tokens = new RegExp([
     CPP_HEADER_NAME,
     String.raw`//[^\r\n]*|/\*[\s\S]*?(?:\*/|(?![\s\S]))`,
-    CPP_RAW_STRING_START,
+    `(${CPP_RAW_STRING_START})`,
     CPP_QUOTED_LITERAL + `(?:${CPP_IDENTIFIER})?`,
     CPP_NUMBER,
     CPP_IDENTIFIER,
   ].join('|'), 'gmu');
   const literalSuffix = new RegExp(CPP_IDENTIFIER, 'uy');
+  const rawDelimiter = new RegExp(CPP_RAW_STRING_DELIMITER, 'y');
+  const rawStringEnd = (input, start) => {
+    rawDelimiter.lastIndex = start;
+    const opening = rawDelimiter.exec(input);
+    if (opening === null) return undefined;
+    const marker = `)${opening[1]}"`;
+    const end = input.indexOf(marker, rawDelimiter.lastIndex);
+    return end === -1 ? -1 : end + marker.length;
+  };
   const physicalOffset = (index) => {
     let offset = index;
     for (const splice of splices) {
@@ -46,18 +56,25 @@ export function classifyCppExceptionUse(source) {
   };
 
   for (let match; (match = tokens.exec(text)) !== null;) {
-    const [token, delimiter] = match;
-    if (delimiter !== undefined) {
-      const endMarker = `)${delimiter}"`;
-      const firstEnd = text.indexOf(endMarker, tokens.lastIndex);
-      if (firstEnd === -1) break;
-      // A splice inside valid raw-string content can resemble a closer.
-      // Prefer a physical closer and recover at a spliced one if necessary.
-      let end = firstEnd;
-      while (end !== -1 && splices.some(({ offset }) => end < offset && offset < end + endMarker.length)) {
-        end = text.indexOf(endMarker, end + 1);
+    const [token, rawStart] = match;
+    if (rawStart !== undefined) {
+      // Phase 2 splices inside a raw literal are reverted. Its delimiter
+      // and contents must be scanned in the original learner source.
+      const end = rawStringEnd(source, physicalOffset(tokens.lastIndex - 1) + 1);
+      if (end === undefined) {
+        // Like Clang's recovery from a malformed, spliced opening delimiter,
+        // skip the candidate literal and continue looking for later tokens.
+        const recovered = rawStringEnd(text, tokens.lastIndex);
+        if (recovered === undefined || recovered === -1) break;
+        tokens.lastIndex = recovered;
+      } else {
+        if (end === -1) break;
+        tokens.lastIndex = end;
+        for (const splice of splices) {
+          if (splice.offset >= tokens.lastIndex) break;
+          tokens.lastIndex -= splice.length;
+        }
       }
-      tokens.lastIndex = (end === -1 ? firstEnd : end) + endMarker.length;
       literalSuffix.lastIndex = tokens.lastIndex;
       if (literalSuffix.test(text)) tokens.lastIndex = literalSuffix.lastIndex;
     } else if (token === 'throw' || token === 'try' || token === 'catch') {
