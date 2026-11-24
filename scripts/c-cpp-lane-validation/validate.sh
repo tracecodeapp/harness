@@ -3,7 +3,9 @@
 #
 #   1. regenerate both runtime asset locks (scope 1 head, then the provisional
 #      judged-output cap restacked on it) as deterministic commits;
-#   2. the C++ browser suites, with the natural-shape proof set and the A' tests;
+#   2. the C++ browser suites, with the natural-shape proof set and the A' tests,
+#      and the natural shapes on the five Judge paths (pass here, documented
+#      failure on 571139f0);
 #   3. pack the scope-1 pin, and capture the A' refusal sample from it;
 #   4. GA C++ and GB C++ on the pin and, for the delta, on the step-7 pin
 #      (main 571139f0's C++ worker and provider are byte-identical to step 7);
@@ -78,7 +80,7 @@ preflight() {
   printf '%s  %s\n' "$app_manifest_sha" "$app_manifest" | sha256sum --check
   [ "$(cat "$mux/mux.sha")" = "$mux_sha" ]
   printf '%s  %s\n' "$base_pin_sha" "$base_pin" | sha256sum --check
-  for commit in "$ga_gate" "$gb_gate" "$base_subject" "${cap_commits[@]}"; do git cat-file -e "$commit^{commit}"; done
+  for commit in "$ga_gate" "$gb_gate" "$base_subject" 571139f0b7d4f2b1fc31c02594c94fda542603ca "${cap_commits[@]}"; do git cat-file -e "$commit^{commit}"; done
   git rev-parse HEAD > "$out/head.txt"
 }
 
@@ -144,6 +146,17 @@ gb() {
   ls "$out/evidence/gb-$name"/gb-*.json
 }
 
+natural_shapes_baseline() {
+  set -e
+  git worktree add -q --detach "$out/main-571139f0" 571139f0b7d4f2b1fc31c02594c94fda542603ca
+  cp tests/test-cpp-natural-shapes-judge-browser.ts "$out/main-571139f0/tests/"
+  cp tests/fixtures/cpp-natural-shapes-judge-entry.ts tests/fixtures/cpp-natural-shapes.json "$out/main-571139f0/tests/fixtures/"
+  cd "$out/main-571139f0"
+  corepack pnpm install --frozen-lockfile --prefer-offline
+  TRACECODE_NATURAL_SHAPES_EXPECT=571139f0 TRACECODE_NATURAL_SHAPES_REPORT="$out/evidence/natural-shapes-571139f0.json" \
+    corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-natural-shapes-judge-browser.ts
+}
+
 pack() {
   set -e
   corepack pnpm materialize:csharp-role-assets
@@ -192,6 +205,11 @@ step delete-alias-browser tsx tests/test-cpp-ops-class-delete-alias-browser.ts
 step cpp-browser-worker corepack pnpm run test:cpp-browser-worker
 step cpp-public-surface corepack pnpm run test:cpp-public-surface
 step cpp-prepared-lifecycle corepack pnpm run test:cpp-prepared-lifecycle
+# Natural learner shapes on the five Judge paths: pass at the lane head, and the
+# documented failure on 571139f0 (same test and fixtures, that tree's code).
+step natural-shapes-judge env TRACECODE_NATURAL_SHAPES_REPORT="$out/evidence/natural-shapes-lane.json" \
+  corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-natural-shapes-judge-browser.ts
+step natural-shapes-judge-571139f0 natural_shapes_baseline
 # The provisional cap at its own lock commit.
 if [ -f "$out/lock-cap.sha" ]; then
   step cap-judged-output-browser bash -c "cd '$out/cap' && corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-judged-output-limit-browser.ts"
