@@ -61,6 +61,23 @@ const CSHARP_PREPARATION_PROVIDER_ERRORS = new Set([
   'C# preparation did not produce a reusable compiled artifact.',
 ]);
 
+/**
+ * An observer runner started when its observation lease is prepared. It has
+ * run nothing but the trusted prime, and only this lease can take it.
+ */
+export interface CSharpPrestartedRunner {
+  /** Settles, never rejecting, once the runner is primed or has been retired. */
+  readonly ready: Promise<void>;
+  /**
+   * After `ready`: the primed runner, if it is still live provider capacity.
+   * Ownership moves to the caller, who releases it like a created observer
+   * runner. Otherwise the runner is retired and this returns undefined.
+   */
+  take(): CSharpWorkerClient | undefined;
+  /** Retire the runner if it was never taken. */
+  cancel(): void;
+}
+
 export interface CSharpPreparedWorkerAuthority {
   readonly compiler: CSharpWorkerClient;
   readonly batchConcurrency: number;
@@ -68,7 +85,27 @@ export interface CSharpPreparedWorkerAuthority {
   createRunner(tier: CSharpPreparedRunnerTier): CSharpWorkerClient;
   releaseRunner(runner: CSharpWorkerClient): void;
   createObserverRunner?(): CSharpWorkerClient;
+  prestartObserverRunner?(): CSharpPrestartedRunner;
   releaseObserverRunner?(runner: CSharpWorkerClient): void;
+}
+
+/** Wait for a promise that never rejects, or reject with the signal's reason. */
+function untilSettledOrAborted(
+  promise: Promise<void>,
+  signal: AbortSignal
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const abort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    void promise.then(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    });
+  });
 }
 
 export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecutionProvider {
@@ -242,6 +279,23 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       runner.terminate();
       authority?.releaseObserverRunner?.(runner);
     };
+    // Boot and prime this lease's own runner now, so .NET has loaded by the
+    // time the companion compile returns. The first observe() takes it.
+    let prestarted = authority?.prestartObserverRunner?.();
+    const takePrestarted = async (
+      signal: AbortSignal
+    ): Promise<CSharpWorkerClient | undefined> => {
+      const start = prestarted;
+      prestarted = undefined;
+      if (!start) return undefined;
+      try {
+        await untilSettledOrAborted(start.ready, signal);
+      } catch (error) {
+        start.cancel();
+        throw error;
+      }
+      return start.take();
+    };
 
     // The façade can acquire this lease before Roslyn has started on a cold
     // host. Submit the companion to the shared compiler only after Judge
@@ -265,13 +319,19 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         artifact = await (companion ??= prepareCompanion());
       } catch {
         signal.throwIfAborted();
+        prestarted?.cancel();
+        prestarted = undefined;
         return { status: 'refused', reason: 'observer-prepare' };
       }
       signal.throwIfAborted();
-      if (!artifact) return { status: 'refused', reason: 'observer-prepare' };
+      if (!artifact) {
+        prestarted?.cancel();
+        prestarted = undefined;
+        return { status: 'refused', reason: 'observer-prepare' };
+      }
 
       const fast = artifact.preparedRunnerTier === 'algorithm-fast';
-      const runner = retainedRunner ?? create();
+      const runner = retainedRunner ?? await takePrestarted(signal) ?? create();
       try {
         const drawing = await runner.observePrepared(artifact, {
           ...call,
@@ -301,6 +361,8 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
       },
       dispose() {
         if (disposal) return disposal;
+        prestarted?.cancel();
+        prestarted = undefined;
         lifetime.abort();
         disposal = tail.then(async () => {
           if (retainedRunner) release(retainedRunner);
