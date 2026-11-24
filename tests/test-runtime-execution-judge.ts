@@ -3029,6 +3029,8 @@ function receiptFixture(options: {
   certification?: 'ends-same';
   replyOwnership?: 'transferred';
   replyProvenance?: 'structured-clone';
+  /** The JS/TS registration flag that kept createJudge on the legacy path through step 7. */
+  algorithmBundlesOnly?: boolean;
 } = {}) {
   const state = makePreparedState({
     failPreparation: options.compileFailure ?? false,
@@ -3169,6 +3171,7 @@ function receiptFixture(options: {
     capabilities: {
       observationLease: 'separate' as const,
       certification: options.certification,
+      ...(options.algorithmBundlesOnly ? { algorithmBundlesOnly: true as const } : {}),
       observationDeadlineMs: options.deadlineMs ?? 3000,
       ...(options.prepareDeadlineMs ? { observationPrepareDeadlineMs: options.prepareDeadlineMs } : {}),
       ...(options.runawayRelease ? { runawayObservationRelease: options.runawayRelease } : {}),
@@ -4866,4 +4869,254 @@ test('runaway-release: the expiry fires at exactly one budget whatever performan
     prepared.resolve();
     f.host.dispose();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Step 8: direct-entry ledger. Every direct, prepared, singleton and batch
+// caller grades from the ordinary owner; observation only draws.
+// ---------------------------------------------------------------------------
+
+const LEGACY_REFUSAL_PROPERTIES = ['untracedRunNeeded', 'traceUnavailable', 'traceUnavailableRun'] as const;
+
+function traceBinding(overrides: Partial<RuntimeJudgeBinding> = {}): RuntimeJudgeBinding {
+  return {
+    sourcePath: '/workspace/solution.fake',
+    trace: true,
+    functionName: 'solve',
+    executionStyle: 'function',
+    ...overrides,
+  } as RuntimeJudgeBinding;
+}
+
+function withDirectJudge<A>(
+  host: { createJudge: ReturnType<typeof createBrowserJudgeHostFromRuntimeHost>['createJudge'] },
+  binding: RuntimeJudgeBinding,
+  use: (judge: Effect.Effect.Success<ReturnType<ReturnType<typeof createBrowserJudgeHostFromRuntimeHost>['createJudge']>>) =>
+    Effect.Effect<A, unknown>
+): Promise<A> {
+  return Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const judge = yield* host.createJudge({ language: RUNTIME, binding });
+    return yield* use(judge);
+  })) as Effect.Effect<A, never>);
+}
+
+function assertOrdinaryOnlyLedger(
+  entry: string,
+  f: ReturnType<typeof receiptFixture>,
+  evaluation: { readonly cases: readonly JudgeCaseResult<unknown, unknown>[] },
+  expected: { readonly graded: readonly string[]; readonly observed: readonly string[] },
+  acknowledgements: readonly { readonly role: string; readonly caseId: string; readonly worker: number }[] =
+    f.acknowledgements
+): void {
+  assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code'], `${entry}: one ordinary prepare`);
+  assert.equal(f.state.prepareCalls[0]?.traceOptions, undefined, `${entry}: no trace option reaches ordinary prepare`);
+  assert.equal(f.state.traceCalls.length, 0, `${entry}: no traced execution`);
+  const ordinary = acknowledgements.filter(({ role }) => role === 'ordinary');
+  const observed = acknowledgements.filter(({ role }) => role === 'observation');
+  assert.deepEqual(ordinary.map(({ caseId }) => caseId), expected.graded, `${entry}: one ordinary worker ACK per graded case`);
+  assert.deepEqual(
+    [...observed.map(({ caseId }) => caseId)].sort(),
+    [...expected.observed].sort(),
+    `${entry}: observer ACKs only for selected cases`
+  );
+  if (ordinary.length > 0 && observed.length > 0) {
+    assert.notEqual(ordinary[0]?.worker, observed[0]?.worker, `${entry}: observation uses its own lease`);
+  }
+  for (const row of evaluation.cases) {
+    assert.equal(row.value, row.caseId, `${entry}/${row.caseId}: value from the ordinary ACK`);
+    assert.equal(row.stdout, `stdout:${row.caseId}\n`, `${entry}/${row.caseId}: console from the ordinary ACK`);
+    assert.equal(row.verdict.kind, 'passed', `${entry}/${row.caseId}: ordinary verdict`);
+    for (const property of LEGACY_REFUSAL_PROPERTIES) {
+      assert.equal(Object.hasOwn(row, property), false, `${entry}/${row.caseId}: no ${property}`);
+    }
+    assert.equal(
+      row.diagnostics.some(({ code }) => code === TRACE_UNAVAILABLE_CODE), false,
+      `${entry}/${row.caseId}: no trace-unavailable diagnostic`
+    );
+    if (expected.observed.includes(row.caseId)) {
+      assert.equal(row.attachment?.status, 'drawn', `${entry}/${row.caseId}: selected row carries its drawing`);
+      assert.equal(row.trace, row.attachment?.status === 'drawn' ? row.attachment.trace : undefined);
+    } else {
+      assert.equal(Object.hasOwn(row, 'attachment'), false, `${entry}/${row.caseId}: unselected row has no attachment`);
+      assert.equal(Object.hasOwn(row, 'trace'), false, `${entry}/${row.caseId}: unselected row has no trace`);
+    }
+  }
+}
+
+const ledgerCases = (labels: readonly string[]) =>
+  labels.map((label) => ({ id: label, input: { label }, expected: label }));
+
+for (const entry of [
+  { id: 'evaluate/trace-binding/default-selection', cases: ['A', 'B', 'C'], tracing: undefined, observed: ['A', 'B', 'C'] },
+  { id: 'evaluate/trace-binding/explicit-selection', cases: ['A', 'B', 'C'], tracing: ['B'], observed: ['B'] },
+  { id: 'evaluate/trace-binding/empty-selection', cases: ['A', 'B'], tracing: [], observed: [] },
+  { id: 'evaluate/trace-binding/singleton', cases: ['A'], tracing: undefined, observed: ['A'] },
+  { id: 'evaluate/trace-binding/singleton-unselected', cases: ['A'], tracing: [], observed: [] },
+] as const) {
+  test(`B8 ledger: createJudge ${entry.id} grades from ordinary-only worker ACKs`, async () => {
+    const f = receiptFixture({ workerAcks: true });
+    try {
+      const plan = makePlan(ledgerCases(entry.cases));
+      const evaluation = await withDirectJudge(f.host, traceBinding(), (judge) =>
+        judge.evaluate<FakeInput>(plan, entry.tracing === undefined ? {} : { tracing: { caseIds: entry.tracing } }));
+      assert.equal(evaluation.status, 'completed');
+      assert.deepEqual(evaluation.cases.map(({ caseId }) => caseId), entry.cases);
+      assertOrdinaryOnlyLedger(entry.id, f, evaluation, { graded: entry.cases, observed: entry.observed });
+    } finally {
+      f.host.dispose();
+      await f.terminateWorkers();
+    }
+  });
+}
+
+test('B8 ledger: observer-only options on a direct trace binding reach only the observer', async () => {
+  const f = receiptFixture({ workerAcks: true });
+  try {
+    const evaluation = await withDirectJudge(f.host, traceBinding({ traceOptions: { maxTraceBytes: 1024 } }), (judge) =>
+      judge.evaluate<FakeInput>(makePlan(ledgerCases(['A', 'B'])), { tracing: { caseIds: ['A'] } }));
+    assertOrdinaryOnlyLedger('evaluate/observer-options', f, evaluation, { graded: ['A', 'B'], observed: ['A'] });
+    assert.equal(f.observerCalls[0]?.traceOptions?.maxTraceBytes, 1024);
+  } finally {
+    f.host.dispose();
+    await f.terminateWorkers();
+  }
+});
+
+test('B8 ledger: createJudge evaluate with a code binding observes nothing and grades ordinarily', async () => {
+  const f = receiptFixture({ workerAcks: true });
+  try {
+    const evaluation = await withDirectJudge(f.host, codeBinding(), (judge) =>
+      judge.evaluate<FakeInput>(makePlan(ledgerCases(['A', 'B'])), { tracing: { caseIds: ['A'] } }));
+    assertOrdinaryOnlyLedger('evaluate/code-binding', f, evaluation, { graded: ['A', 'B'], observed: [] });
+  } finally {
+    f.host.dispose();
+    await f.terminateWorkers();
+  }
+});
+
+test('B8 ledger: createJudge execute, continuation and evaluateAlgorithm share the ordinary owner', async () => {
+  const f = receiptFixture({ workerAcks: true });
+  try {
+    const plan = makePlan(ledgerCases(['A', 'B']));
+    let initialAcks: typeof f.acknowledgements = [];
+    const { initial, continued } = await withDirectJudge(f.host, traceBinding(), (judge) => Effect.gen(function* () {
+      const initial = yield* judge.execute<FakeInput>({ plan, interactive: true, tracing: { caseIds: ['A'] } });
+      initialAcks = [...f.acknowledgements];
+      const continued = yield* judge.execute({ executionId: initial.executionId!, tracing: { caseIds: ['B'] } });
+      yield* judge.disposeExecution(initial.executionId!);
+      return { initial, continued };
+    }));
+    assert.ok(initial.executionId);
+    assertOrdinaryOnlyLedger('execute/interactive', f, initial.evaluation, { graded: ['A', 'B'], observed: ['A'] }, initialAcks);
+    assert.equal(continued.evaluation.cases[0]?.attachment?.status, 'drawn');
+    assert.deepEqual(
+      f.acknowledgements.filter(({ role }) => role === 'ordinary').map(({ caseId }) => caseId),
+      ['A', 'B'],
+      'continuation: zero ordinary ACKs'
+    );
+    assert.deepEqual(f.acknowledgements.filter(({ role }) => role === 'observation').map(({ caseId }) => caseId), ['A', 'B']);
+  } finally {
+    f.host.dispose();
+    await f.terminateWorkers();
+  }
+  const g = receiptFixture({ workerAcks: true });
+  try {
+    const bundle = await receiptBundle(ledgerCases(['A', 'B']));
+    const receipt = await withDirectJudge(g.host, codeBinding(), (judge) => judge.evaluateAlgorithm(bundle));
+    assert.equal(receipt.verdict, 'passed');
+    assertOrdinaryOnlyLedger('evaluateAlgorithm/trace-bundle', g, receipt.evaluation as never, { graded: ['A', 'B'], observed: ['A', 'B'] });
+  } finally {
+    g.host.dispose();
+    await g.terminateWorkers();
+  }
+});
+
+test('B8 ledger: a JS/TS-style registration grades every createJudge entry from the ordinary owner', async () => {
+  const f = receiptFixture({ workerAcks: true, algorithmBundlesOnly: true });
+  try {
+    const plan = makePlan(ledgerCases(['A', 'B']));
+    let initialAcks: typeof f.acknowledgements = [];
+    const initial = await withDirectJudge(f.host, traceBinding(), (judge) => Effect.gen(function* () {
+      const initial = yield* judge.execute<FakeInput>({ plan, interactive: true, tracing: { caseIds: ['A'] } });
+      initialAcks = [...f.acknowledgements];
+      yield* judge.execute({ executionId: initial.executionId!, tracing: { caseIds: ['B'] } });
+      return initial;
+    }));
+    assertOrdinaryOnlyLedger('js-ts/execute/interactive', f, initial.evaluation, { graded: ['A', 'B'], observed: ['A'] }, initialAcks);
+    assert.deepEqual(f.acknowledgements.filter(({ role }) => role === 'ordinary').map(({ caseId }) => caseId), ['A', 'B']);
+  } finally {
+    f.host.dispose();
+    await f.terminateWorkers();
+  }
+  const g = receiptFixture({ workerAcks: true, algorithmBundlesOnly: true });
+  try {
+    const receipt = await withDirectJudge(g.host, traceBinding(), (judge) =>
+      Effect.flatMap(Effect.promise(() => receiptBundle(ledgerCases(['A', 'B']))), (bundle) => judge.evaluateAlgorithm(bundle)));
+    assertOrdinaryOnlyLedger('js-ts/evaluateAlgorithm', g, receipt.evaluation as never, { graded: ['A', 'B'], observed: ['A', 'B'] });
+  } finally {
+    g.host.dispose();
+    await g.terminateWorkers();
+  }
+});
+
+test('B8 ledger: createJudge evaluate stops at the first runaway from ordinary rows only', async () => {
+  const f = receiptFixture();
+  try {
+    const plan = makePlan([
+      { id: 'A', input: { label: 'A' }, expected: 'A' },
+      { id: 'B', input: { label: 'B', mode: 'limit' }, expected: 'B' },
+      { id: 'C', input: { label: 'C' }, expected: 'C' },
+    ]);
+    const evaluation = await withDirectJudge(f.host, traceBinding(), (judge) =>
+      judge.evaluate<FakeInput>(plan, { stopAtFirstRunaway: true }));
+    assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.equal(f.state.traceCalls.length, 0);
+    assert.deepEqual(f.ordinaryStarts, ['A', 'B']);
+    const [a, b, c] = evaluation.cases;
+    assert.equal(a?.value, 'A');
+    assert.equal(b?.failure?.origin, 'limit');
+    assert.equal(c?.status, 'not-run');
+    assert.equal(c?.attachment?.status === 'refused' && c.attachment.reason, 'case-not-run');
+    assert.deepEqual(f.observerCalls.map(({ inputs }) => inputs.label).sort(), ['A', 'B']);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('B8 ledger: a host without an observation registration still grades only from the ordinary owner', async () => {
+  const state = makePreparedState();
+  const host = createBrowserJudgeHostFromRuntimeHost(browserHostFor(preparedProvider(state)));
+  try {
+    const plan = makePlan(ledgerCases(['A', 'B']));
+    const evaluation = await withDirectJudge(host, traceBinding(), (judge) => judge.evaluate<FakeInput>(plan));
+    assert.deepEqual(state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.equal(state.traceCalls.length, 0);
+    assert.deepEqual(state.codeCalls.map(({ inputs }) => inputs.label), ['A', 'B']);
+    for (const row of evaluation.cases) {
+      assert.equal(row.value, row.caseId);
+      assert.equal(row.attachment?.status === 'refused' && row.attachment.reason, 'recorder-unavailable');
+      assert.equal(Object.hasOwn(row, 'trace'), false);
+    }
+    const run = await host.execute({ bundle: await receiptBundle(ledgerCases(['A'])), tracing: { caseIds: ['A'] } });
+    assert.deepEqual(state.prepareCalls.map(({ mode }) => mode), ['code', 'code']);
+    assert.equal(state.traceCalls.length, 0);
+    assert.equal(run.evaluation.cases[0]?.attachment?.status === 'refused' && run.evaluation.cases[0].attachment.reason,
+      'recorder-unavailable');
+  } finally {
+    host.dispose();
+  }
+});
+
+test('B8 ledger: the prepared registry accepts only ordinary programs and has no traced executor', async () => {
+  const state = makePreparedState();
+  const registry = new RuntimePreparedProgramRegistry(preparedProvider(state));
+  registry.begin('trace');
+  await assert.rejects(
+    registry.prepare('trace', { mode: 'trace', code: SOURCE, functionName: 'solve' }),
+    /ordinary|code/iu
+  );
+  assert.equal(state.prepareCalls.length, 0, 'a traced preparation never reaches the provider');
+  const surface = registry as unknown as Record<string, unknown>;
+  assert.equal(surface.executeTrace, undefined);
+  assert.equal(surface.executeTraceBatch, undefined);
 });
