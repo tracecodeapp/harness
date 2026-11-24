@@ -121,8 +121,7 @@ function publish(
   binding: Binding = a
 ): Attachment {
   const attempt = store.beginObservation(binding.caseId);
-  // The ownership type widens with the implementation; the tests come first.
-  assert.equal(store.publishDrawing(attempt, binding, message, ownership as never), true);
+  assert.equal(store.publishDrawing(attempt, binding, message, ownership), true);
   return store.projectEvaluation([binding.caseId], [binding.caseId]).cases[0]!.attachment!;
 }
 
@@ -488,7 +487,7 @@ test('clone-provenance finalState evidence is adopted with the trace and certifi
       })());
       const shared = message.finalState.value.value;
       const attempt = store.beginObservation('A');
-      const publishNow = () => assert.equal(store.publishDrawing(attempt, a, message, ownership as never), true);
+      const publishNow = () => assert.equal(store.publishDrawing(attempt, a, message, ownership), true);
       if (observeFirst) {
         publishNow();
         const mutate = () => { shared[0] = 999; };

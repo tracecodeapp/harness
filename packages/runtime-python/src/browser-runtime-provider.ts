@@ -144,6 +144,10 @@ export function createPythonBrowserRuntimeProvider(
           // certifyPythonDrawing returns the trace normalizePythonRuntimeTrace
           // has just rebuilt from the worker reply, and keeps no reference.
           observationReplyOwnership: 'transferred',
+          // Every object of that trace is built by the normalizer itself:
+          // literals, spreads, slices and sanitizeJsonValue's null-prototype
+          // records, never a worker object, accessor or hidden key.
+          observationReplyProvenance: 'structured-clone',
         },
         prepareObservation: (program, signal, traceOptions) =>
           preparedProvider.prepareObservation(program, signal, traceOptions),

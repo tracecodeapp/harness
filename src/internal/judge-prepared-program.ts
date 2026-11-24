@@ -32,7 +32,7 @@ import { bindJudgeOrdinaryPreparation } from '../../packages/runtime-browser/src
 import type { JudgeAlgorithmBundle, JudgeAlgorithmReceipt } from '../../packages/judge/src/algorithm-model';
 import type { Binding } from '../../packages/judge/src/internal/receipt-types';
 import type { JudgeEvaluationResult } from '../../packages/judge/src/model';
-import { VerdictReceiptStore } from '../../packages/judge/src/internal/receipt-store';
+import { VerdictReceiptStore, type DrawingOwnership } from '../../packages/judge/src/internal/receipt-store';
 
 import type { JudgeTestBridge } from './judge-test-bridge';
 
@@ -290,6 +290,13 @@ export class JudgeObservationSchedule<Result, Expected> {
     });
   }
 
+  /** How the receipt owns this provider's replies: copied, or adopted with the full or the clone check. */
+  private replyOwnership(): DrawingOwnership {
+    const { observationReplyOwnership, observationReplyProvenance } = this.registration.capabilities;
+    if (observationReplyOwnership !== 'transferred') return 'borrowed';
+    return observationReplyProvenance === 'structured-clone' ? 'transferred-clone' : 'transferred';
+  }
+
   private attempt(caseId: string): ObservationAttempt {
     const existing = this.attempts.get(caseId);
     if (existing) return existing;
@@ -307,12 +314,7 @@ export class JudgeObservationSchedule<Result, Expected> {
       clearTimeout(attempt.expiryTimer);
       attempt.expiryTimer = undefined;
       if (this.attempts.get(caseId) === attempt && !attempt.controller.signal.aborted) {
-        this.receipt.publishDrawing(
-          attempt.token,
-          attempt.token.binding,
-          drawing,
-          this.registration.capabilities.observationReplyOwnership ?? 'borrowed'
-        );
+        this.receipt.publishDrawing(attempt.token, attempt.token.binding, drawing, this.replyOwnership());
       }
     });
     if (this.clockStopped.has(caseId)) this.limitObservation(caseId, attempt, this.ordinaryClockMs);

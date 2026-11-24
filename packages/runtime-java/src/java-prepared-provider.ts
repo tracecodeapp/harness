@@ -570,6 +570,9 @@ export function createJavaJudgeReceiptProvider(
       // decodeJavaObservation parses each reply from the worker's event
       // strings and keeps no reference.
       observationReplyOwnership: 'transferred',
+      // Each event is JSON.parse of a worker string; the adapter only spreads
+      // and shallow-copies those records.
+      observationReplyProvenance: 'structured-clone',
     },
     async prepareObservation(program, signal, traceOptions) {
       signal.throwIfAborted();
