@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  addCsharpFreshSubmitControl,
   csharpWarmAttemptPlan,
   csharpWarmMetricName,
   csharpWarmModes,
@@ -31,6 +32,30 @@ test('C# Submit-after-Run has exactly one Run primer and no hidden control', () 
   ]);
   assert.deepEqual(csharpWarmAttemptPlan(expanded[1]), { freshPage: true, primeJourney: 'run' });
   assert.equal(csharpWarmMetricName(expanded[1], 'submitVerdicts'), 'submitAfterRunVerdicts');
+});
+
+test('0.20.1 is added only to fresh C# warm Submit', () => {
+  const expanded = expandCsharpWarmGroups([
+    group('submit'),
+    group('run'),
+    { ...group('submit'), state: 'cold' },
+  ], { submitAfterRun: true });
+  const controlled = addCsharpFreshSubmitControl(expanded, true);
+  assert.deepEqual(controlled.map(({ csharpWarmMode, state, journey, versions }) => ({
+    csharpWarmMode, state, journey, versions,
+  })), [
+    { csharpWarmMode: csharpWarmModes.fresh, state: 'warm', journey: 'submit',
+      versions: ['0.17.1', '0.20.1', 'candidate-deploy'] },
+    { csharpWarmMode: csharpWarmModes.submitAfterRun, state: 'warm', journey: 'submit',
+      versions: ['0.17.1', 'candidate-deploy'] },
+    { csharpWarmMode: csharpWarmModes.fresh, state: 'warm', journey: 'run',
+      versions: ['0.17.1', 'candidate-deploy'] },
+    { csharpWarmMode: csharpWarmModes.repeatRun, state: 'warm', journey: 'run',
+      versions: ['0.17.1', 'candidate-deploy'] },
+    { csharpWarmMode: undefined, state: 'cold', journey: 'submit',
+      versions: ['0.17.1', 'candidate-deploy'] },
+  ]);
+  assert.equal(addCsharpFreshSubmitControl(expanded, false), expanded);
 });
 
 test('C# isolated attempt warms and optionally primes once, then closes once', async () => {
@@ -70,6 +95,7 @@ test('trusted standby evidence is required only on witness-validated C# paths', 
     fixedWarmWitness: false, liveControl: true, ...overrides,
   });
   assert.equal(required({ version: '0.17.1' }), true);
+  assert.equal(required({ version: '0.20.1' }), true);
   assert.equal(required({ testedLanguage: 'csharp' }), true);
   assert.equal(required({ version: 'release-deploy', fixedWarmWitness: true }), true);
   assert.equal(required(), false, 'a Java candidate C# spot policy has no C# candidate witness');

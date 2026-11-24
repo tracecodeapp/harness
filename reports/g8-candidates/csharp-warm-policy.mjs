@@ -12,7 +12,7 @@ export function requiresTrustedCsharpWarmArtifact({
   if (language !== 'csharp') return false;
   return fixedWarmWitness ||
     version.startsWith('candidate-') && testedLanguage === 'csharp' ||
-    liveControl && version === '0.17.1';
+    liveControl && ['0.17.1', '0.20.1'].includes(version);
 }
 
 export function csharpWarmAttemptPlan(group) {
@@ -43,6 +43,19 @@ export function expandCsharpWarmGroups(groups, { submitAfterRun = false } = {}) 
       fresh,
       { ...group, csharpWarmMode: csharpWarmModes.submitAfterRun },
     ];
+  });
+}
+
+export function addCsharpFreshSubmitControl(groups, enabled) {
+  if (!enabled) return groups;
+  return groups.map((group) => {
+    if (group.language !== 'csharp' || group.state !== 'warm' ||
+        group.journey !== 'submit' || group.csharpWarmMode !== csharpWarmModes.fresh) {
+      return group;
+    }
+    assert.equal(group.versions[0], '0.17.1');
+    assert.ok(!group.versions.includes('0.20.1'));
+    return { ...group, versions: ['0.17.1', '0.20.1', ...group.versions.slice(1)] };
   });
 }
 

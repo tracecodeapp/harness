@@ -38,7 +38,11 @@ import { releasePythonWarmPlan } from '../release-python-warm.mjs';
 import {
   pythonWarmModes,
 } from '../python-warm-policy.mjs';
-import { csharpWarmModes, requiresTrustedCsharpWarmArtifact } from '../csharp-warm-policy.mjs';
+import {
+  addCsharpFreshSubmitControl,
+  csharpWarmModes,
+  requiresTrustedCsharpWarmArtifact,
+} from '../csharp-warm-policy.mjs';
 import {
   expandWarmRepeatGroups,
   isSubmitAfterRunWarmMode,
@@ -71,6 +75,7 @@ import {
   selectShapeProbeSchedule,
 } from '../measurement-shapes.mjs';
 import { capturedShapeKeys } from '../shape-captures.mjs';
+import { csharpMeasurementPlan } from '../csharp-measurement-plan.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -97,6 +102,7 @@ const submitAa = process.env.SPEED_SUBMIT_AA === '1';
 const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
 const javaClosingPhase = process.env.SPEED_JAVA_CLOSING_PHASE;
 const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
+const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -112,7 +118,7 @@ assert.ok(!liveControl || pythonLocalDiagnostic ||
   'Live control cannot be combined with another special measurement mode');
 assert.ok(!releasePythonWarm || releaseVersion === '0.17.3',
   'The Python warm closing session requires the pinned 0.17.3 release');
-const staged = candidateScope ? await jsonCandidate() : undefined;
+const staged = candidateScope ? inventoryOnly ? {} : await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
 assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
 assert.ok(!javaClosing || liveControl && candidate && testedLanguage === 'java' &&
@@ -145,8 +151,14 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const candidateVersions = ['candidate-main', 'candidate-deploy'];
+const csharpWarmSubmitControl = liveControl && testedLanguage === 'csharp' &&
+  candidateScope === 'desktop';
+const isLiveWitnessControl = (version, language) => liveControl &&
+  (version === '0.17.1' || csharpWarmSubmitControl && language === 'csharp' &&
+    version === '0.20.1');
 const versions = submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
-  ? liveControl ? liveControlVersions(candidateVersions) : candidateVersions : Object.keys(appRefs);
+  ? liveControl ? [...liveControlVersions(candidateVersions),
+      ...(csharpWarmSubmitControl ? ['0.20.1'] : [])] : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
   '0.17.1': 'sha512-iteoJHC4riHGt+EGrMsl1Kb0TbkC1WJiaA+hIoggm6hyxQBFnk8zuCY+6qFG9iPijfLpwR8fb5IwQOm5IZKtcQ==',
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
@@ -351,7 +363,8 @@ async function openPage(context, version, url, group) {
     language: group.language,
     stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main',
     candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
-      liveControl && version === '0.17.1' && ['java', 'csharp', 'python'].includes(group.language) ||
+      isLiveWitnessControl(version, group.language) &&
+        ['java', 'csharp', 'python'].includes(group.language) ||
       fixedWarmWitness && repeatPenaltyLanguages.includes(group.language),
     candidateRuntime: version.startsWith('candidate-') && group.language === testedLanguage,
   });
@@ -377,7 +390,7 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
       priorResult === undefined ? undefined :
         pythonProductionControlWorker(priorResult.python?.phases ?? []));
   }
-  if (liveControl && version === '0.17.1') {
+  if (isLiveWitnessControl(version, language)) {
     if (language === 'java') return javaProductionControlOutcome(result, role, caseCount);
     if (language === 'csharp') return csharpProductionControlOutcome(result, trustedArtifactKey);
     if (language === 'python') return pythonProductionControlOutcome(
@@ -466,7 +479,12 @@ function plan() {
   if (releasePythonWarm) return prioritizeSubmitAfterRunPreflights(expandWarmRepeatGroups(
     structuredClone(releasePythonWarmPlan), { submitAfterRun: true }), ['python', 'csharp']);
   if (referenceRerecord) return structuredClone(referenceRerecordPlan);
+  if (candidate && liveControl && testedLanguage === 'csharp') {
+    return structuredClone(csharpMeasurementPlan(candidateScope, candidateVersions));
+  }
   const groups = [];
+  const defaultVersions = csharpWarmSubmitControl
+    ? versions.filter((version) => version !== '0.20.1') : versions;
   const cpuRates = mode === 'smoke' ? [1, 4] : [selectedCpu];
   const spotExcluded = releaseVersion ? new Set(['csharp', 'python']) : new Set([testedLanguage]);
   const cheapFirst = aaControl || aaClosing ? aaLanguages : candidateScope === 'spot' ? windowLanguages.phone.filter((lang) => !spotExcluded.has(lang)) :
@@ -479,7 +497,7 @@ function plan() {
         for (const journey of phoneSubset ? ['run'] : ['submit', 'run']) {
           for (const problem of problemIds) {
             groups.push({
-              language, cpu, problem, state, journey, target, versions,
+              language, cpu, problem, state, journey, target, versions: defaultVersions,
               continuation: journey === 'run' && !phoneSubset,
             });
           }
@@ -517,7 +535,9 @@ function plan() {
       ? pairRepeatGroups(
           expandWarmRepeatGroups(scheduledGroups, { submitAfterRun: true }), candidateVersions)
       : scheduledGroups;
-    return expandedGroups.sort((a, b) =>
+    const controlledGroups = addCsharpFreshSubmitControl(expandedGroups,
+      csharpWarmSubmitControl);
+    return controlledGroups.sort((a, b) =>
       Number(isSubmitAfterRunWarmMode(b) && b.problem === 'binary-search') -
         Number(isSubmitAfterRunWarmMode(a) && a.problem === 'binary-search') ||
       Number(decide(b)) - Number(decide(a)) || expectedGroupSeconds(a) - expectedGroupSeconds(b));
@@ -566,7 +586,7 @@ if (groupSelector !== undefined) {
 }
 const uncapturedShapeGuard = createUncapturedShapeGuard(candidateScope ?? windowName,
   capturedShapeKeys);
-if (process.env.SPEED_G8_INVENTORY_ONLY === '1') {
+if (inventoryOnly) {
   const scope = candidateScope ?? windowName;
   const shapes = schedule.flatMap((group) => group.versions.map((version) => ({
     key: measurementShapeKey(scope, group, version), scope, group, version,
@@ -620,6 +640,7 @@ const report = {
       { pairedRepeatControls: true }),
     ...(testedLanguage === 'python' && candidateScope !== 'spot' &&
       { pythonWarmSubmitControl: '0.20.1' }),
+    ...(csharpWarmSubmitControl && { csharpWarmSubmitControl: '0.20.1' }),
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,
@@ -716,7 +737,8 @@ try {
                   if (primeRefusal || primeError) throw new Error(primeRefusal ?? primeError);
                   if ((candidate || fixedWarmWitness) &&
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
-                        liveControl && version === '0.17.1' && repeatPenaltyLanguages.includes(group.language) ||
+                        isLiveWitnessControl(version, group.language) &&
+                          repeatPenaltyLanguages.includes(group.language) ||
                         fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {
                     sample.primeInvalid = candidateOutcome(prime, 'run', fixture.cases.length,
                       fixture.cases[0].id, version, group.language, sample.trustedCsharpArtifactKey);
@@ -767,7 +789,7 @@ try {
               }
               if ((candidate || fixedWarmWitness) &&
                   (version.startsWith('candidate-') && group.language === testedLanguage ||
-                    liveControl && version === '0.17.1' &&
+                    isLiveWitnessControl(version, group.language) &&
                       ['java', 'csharp', 'python'].includes(group.language) ||
                     fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
                   !sample.invalid && !sample.refusal) {
@@ -792,7 +814,7 @@ try {
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
                   if ((candidate || fixedWarmWitness) &&
                       (version.startsWith('candidate-') && group.language === testedLanguage ||
-                        liveControl && version === '0.17.1' &&
+                        isLiveWitnessControl(version, group.language) &&
                           ['java', 'csharp', 'python'].includes(group.language) ||
                         fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
                       !sample.invalid && !sample.refusal) {
@@ -819,7 +841,7 @@ try {
           }
 
           if ((group.language === testedLanguage && candidate && version.startsWith('candidate-')) ||
-              (liveControl && version === '0.17.1' &&
+              (isLiveWitnessControl(version, group.language) &&
                 ['java', 'csharp', 'python'].includes(group.language)) ||
               (fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {
             sample.cache = {

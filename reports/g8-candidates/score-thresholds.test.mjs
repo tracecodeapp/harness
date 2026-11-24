@@ -39,9 +39,21 @@ test('Python 0.20.1 Submit control is desktop-only', () => {
     .pythonWarmSubmitControl, undefined);
 });
 
+test('C# 0.20.1 Submit control is desktop-only', () => {
+  const versions = ['candidate-main', 'candidate-deploy'];
+  assert.equal(expectedLiveControlMetadata('csharp', 'desktop', versions)
+    .csharpWarmSubmitControl, '0.20.1');
+  assert.equal(expectedLiveControlMetadata('csharp', 'phone', versions)
+    .csharpWarmSubmitControl, undefined);
+  assert.equal(expectedLiveControlMetadata('csharp', 'spot', versions)
+    .csharpWarmSubmitControl, undefined);
+});
+
 test('paired Python repeat controls are valid on desktop and phone only', () => {
   assert.equal(pairedRepeatControlScopeAllowed('python', 'desktop'), true);
   assert.equal(pairedRepeatControlScopeAllowed('python', 'phone'), true);
   assert.equal(pairedRepeatControlScopeAllowed('python', 'spot'), false);
   assert.equal(pairedRepeatControlScopeAllowed('java', 'phone'), false);
+  assert.equal(pairedRepeatControlScopeAllowed('csharp', 'desktop'), true);
+  assert.equal(pairedRepeatControlScopeAllowed('csharp', 'phone'), false);
 });

@@ -227,7 +227,8 @@ for (const scope of ['desktop', 'phone', 'spot']) {
         : complete && result.median <= thresholds.median && result.p90 <= thresholds.p90;
       const pythonWarmSubmit = /^python\/1\/(binary-search|permutations)\/warm\/submitVerdicts$/.test(cell);
       const unstablePythonSubmit = primary === 'python' && pythonWarmSubmit;
-      const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] : ['0.17.1'];
+      const controlVersions = pythonWarmSubmit ? ['0.17.1', '0.20.1'] :
+        warmCsharp ? ['0.20.1'] : ['0.17.1'];
       const controls = controlVersions.map((version) => ({
         version,
         result: stats(observed.values.get(cell + '/' +
@@ -266,10 +267,15 @@ for (const scope of ['desktop', 'phone', 'spot']) {
           summary.recordedFiveToTen.push({ id, medianRatio: regression.ratio });
         }
       }
+      const advisory = warmCsharp ? {
+        version: '0.17.1',
+        result: stats(observed.values.get(cell + '/0.17.1')),
+        frozen: history['0.17.1'],
+      } : undefined;
       console.log(JSON.stringify({ scope, cell, policy, result, cache, history,
         frozenTable: repeatCell ? { notApplicable: true, complete } : { thresholds, complete, pass },
         sameWindow: sameWindow ?? { complete: false, controls },
-        ...(warmCsharp && { advisory: '0.17.1' }) }));
+        ...(advisory && { advisory }) }));
     }
   }
 }

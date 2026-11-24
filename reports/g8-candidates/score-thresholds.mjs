@@ -23,9 +23,13 @@ export function expectedLiveControlMetadata(primary, scope, candidateVersions,
     ...(primary === 'python' && scope === 'desktop' && {
       pythonWarmSubmitControl: '0.20.1',
     }),
+    ...(primary === 'csharp' && scope === 'desktop' && {
+      csharpWarmSubmitControl: '0.20.1',
+    }),
   };
 }
 
 export function pairedRepeatControlScopeAllowed(primary, scope) {
-  return primary === 'python' && (scope === 'desktop' || scope === 'phone');
+  return primary === 'python' && (scope === 'desktop' || scope === 'phone') ||
+    primary === 'csharp' && scope === 'desktop';
 }
