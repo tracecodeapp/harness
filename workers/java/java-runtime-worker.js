@@ -1056,6 +1056,7 @@ async function runInLeasedTraceJVMBatchProcess(
     reuseProcess,
     stopAtFirstRunaway,
     onCaseAdmitted,
+    onCaseFinished,
     reportRun,
     retainLocalObserverProcess,
   }
@@ -1160,6 +1161,7 @@ async function runInLeasedTraceJVMBatchProcess(
         }
       }
       results.push(report);
+      onCaseFinished?.(index, report);
       if (
         stopAtFirstRunaway && !report.success &&
         ['client-timeout', 'line-limit', 'single-line-limit'].includes(report.timeoutReason)
@@ -2061,6 +2063,9 @@ async function traceJVMRunPreparedRuntimeProgramBatch(
         fallbackArgs: observerOnly ? undefined : cleanArgs,
         onCaseAdmitted: batchRole === 'ordinary'
           ? (index) => self.TraceCodeJavaPreparedCaseAdmitted?.(index, Number(observationOptions))
+          : undefined,
+        onCaseFinished: batchRole === 'ordinary'
+          ? (index, report) => self.TraceCodeJavaPreparedCaseFinished?.(index, Number(observationOptions), report)
           : undefined,
         reuseProcess,
         retainLocalObserverProcess,

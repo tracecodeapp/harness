@@ -58,7 +58,7 @@ test('observer export requires the matching recorder frame and retains an empty 
   assert.equal(valid.events.length, 0);
 });
 
-function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', observeTwice = false } = {}) {
+function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', observeTwice = false, admissionId = 73 } = {}) {
   const calls = [];
   const timers = new Map();
   let nextTimer = 0;
@@ -109,7 +109,9 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
       program: {}, executions: 0, algorithmIsolationProfile: { tier: profile },
     });
     self.TraceCodeActiveKernelRequestId = 'request';
-    self.TraceCodeJavaPreparedCaseAdmitted = (index) => record('admit', index);
+    self.TraceCodeJavaPreparedCaseAdmitted = (index, id) => record('admit', index, id);
+    self.TraceCodeJavaPreparedCaseFinished = (index, id, report) =>
+      record('finish', index, id, report.output ?? report.timeoutReason);
     if (observeTwice) {
       (async () => {
         const observe = async (caseId) => JSON.parse(await traceJVMRunPreparedRuntimeProgramBatch(
@@ -125,11 +127,11 @@ function testBatch(run, { stop = true, mode = '', profile = 'algorithm-fast', ob
     traceJVMRunPreparedRuntimeProgramBatch(
       'p', 'Traced', '1', '[{"caseId":"first"},{"caseId":"second"},{"caseId":"suffix"}]',
       '500', '', '', mode === 'ordinary' ? '[false,false,false]' : '[false,true,false]',
-      'Clean', String(stop), mode
+      'Clean', String(stop), mode, String(admissionId)
     );
     }
   `, {
-    self, client, stop, mode, profile, observeTwice, record: (...event) => calls.push(event), URL, TextDecoder, Uint8Array, atob,
+    self, client, stop, mode, profile, observeTwice, admissionId, record: (...event) => calls.push(event), URL, TextDecoder, Uint8Array, atob,
     performance: { now: () => now },
     setTimeout(callback, delay) {
       const id = ++nextTimer;
@@ -174,8 +176,9 @@ test('ordinary admission precedes each start and excludes a stopped suffix', asy
   assert.equal(report.runnerProcessCount, 1);
   assert.equal(report.results[1].timeoutReason, 'client-timeout');
   assert.deepEqual(calls, [
-    ['admit', 0], ['run', 1, 'first', 'Clean'], ['reset'],
-    ['admit', 1], ['run', 1, 'second', 'Clean'], ['dispose', 1], ['close'],
+    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['finish', 0, 73, 'first'], ['reset'],
+    ['admit', 1, 73], ['run', 1, 'second', 'Clean'], ['dispose', 1],
+    ['finish', 1, 73, 'client-timeout'], ['close'],
   ]);
 });
 
@@ -250,3 +253,44 @@ test('a nonstopping batch drains a cancelled case and isolates a tainted runner'
     ['run', 3, 'suffix', 'Clean'], ['dispose', 3], ['close'],
   ]);
 });
+
+test('ordinary batch keeps its admission id across compatibility JVM replacements', async () => {
+  const { calls, result } = testBatch(({ caseId }) => completed(output(caseId)), {
+    mode: 'ordinary', profile: 'compatibility', stop: false,
+  });
+  assert.equal((await result).runnerProcessCount, 3);
+  assert.deepEqual(calls, [
+    ['admit', 0, 73], ['run', 1, 'first', 'Clean'], ['dispose', 1], ['finish', 0, 73, 'first'], ['reset'],
+    ['admit', 1, 73], ['run', 2, 'second', 'Clean'], ['dispose', 2], ['finish', 1, 73, 'second'], ['reset'],
+    ['admit', 2, 73], ['run', 3, 'suffix', 'Clean'], ['dispose', 3], ['finish', 2, 73, 'suffix'], ['close'],
+  ]);
+});
+
+for (const stop of [false, true]) {
+  test(`a marker-less JVM exit is a learner runtime failure and grades the suffix (stop=${stop})`, async () => {
+    const { calls, result } = testBatch(({ caseId }) => completed(
+      caseId === 'second' ? 'printed before JVM exit' : output(caseId === 'first' ? 1 : 3)
+    ), { mode: 'ordinary', profile: 'compatibility', stop });
+    const batch = await result;
+    const presentationWorker = readFileSync(new URL('../workers/java/java-worker.js', import.meta.url), 'utf8');
+    const rows = JSON.parse(runInNewContext(presentationWorker + `
+      JSON.stringify(reports.map((report) => preparedJavaResultFromReport(
+        { mode: 'code' }, report, 0, 0
+      )))
+    `, { self: workerGlobal(), URL, queueMicrotask, reports: batch.results }));
+    assert.equal(batch.success, false);
+    assert.deepEqual(rows.map(({ success, output }) => [success, output]), [
+      [true, 1], [false, null], [true, 3],
+    ]);
+    assert.equal(rows[1].diagnosticStage, 'runtime');
+    assert.match(rows[1].error, /without a Harness result marker/);
+    assert.deepEqual(rows[1].consoleOutput, ['printed before JVM exit']);
+    assert.equal(rows[1].timeoutReason, undefined);
+    assert.deepEqual(rows[2].consoleOutput, []);
+    assert.deepEqual(calls.filter(([event]) => event === 'run'), [
+      ['run', 1, 'first', 'Clean'],
+      ['run', 2, 'second', 'Clean'],
+      ['run', 3, 'suffix', 'Clean'],
+    ]);
+  });
+}

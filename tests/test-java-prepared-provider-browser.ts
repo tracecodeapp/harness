@@ -155,6 +155,82 @@ function assertConsoleResults(
   assert.equal(consoleResults.success.output, 7);
 }
 
+async function assertOrdinaryExitNoOp(page: import('playwright').Page): Promise<void> {
+  const { progress, terminal } = await page.evaluate(async () => {
+    type Reply = { success: boolean; programId?: string; resultsStreamed?: number; error?: string };
+    const worker = new Worker('/workers/java-runtime-worker.js?tracejvmBaseUrl=/tracejvm/');
+    const progress: Array<[string, number, number, unknown]> = [];
+    let nextId = 0;
+    const ready = new Promise<void>((resolve) => worker.addEventListener('message', ({ data }) => {
+      if (data.type === 'worker-ready') resolve();
+    }));
+    // Method shorthand keeps tsx's function-name helper out of page.evaluate.
+    const protocol = {
+      request(type: string, payload: object): Promise<Reply> {
+        const id = String(++nextId);
+        const protocolToken = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+          const listeners = {
+            message({ data }: MessageEvent) {
+              if (data.id !== id || data.protocolToken !== protocolToken) return;
+              if (data.type === 'runtime-progress') {
+                const { stage, detail } = data.payload;
+                if (stage === 'ordinary-case-started' || stage === 'ordinary-case-finished') {
+                  progress.push([stage, detail.admissionId, detail.caseIndex, detail.result?.output]);
+                }
+                return;
+              }
+              worker.removeEventListener('message', listeners.message);
+              worker.removeEventListener('error', reject);
+              if (data.type === 'error') reject(new Error(data.payload.error));
+              else resolve(data.payload);
+            },
+          };
+          worker.addEventListener('message', listeners.message);
+          worker.addEventListener('error', reject, { once: true });
+          worker.postMessage({ id, protocolToken, type, payload });
+        });
+      },
+    };
+    try {
+      await ready;
+      await protocol.request('init', {});
+      const prepared = await protocol.request('prepare-runtime-program', {
+        mode: 'code', functionName: 'solve', executionStyle: 'solution-method',
+        code: `class Solution {
+          public int solve(int n) {
+            if (n == 2) {
+              System.out.println("before exit");
+              System.exit(0);
+            }
+            return n;
+          }
+        }`,
+      });
+      if (!prepared.success || !prepared.programId) throw new Error(prepared.error);
+      const terminal = await protocol.request('execute-prepared-runtime-program-batch', {
+        programId: prepared.programId,
+        admissionId: 73,
+        inputBatch: [{ n: 1 }, { n: 2 }, { n: 3 }],
+        perCaseWallClockMs: 10_000,
+      });
+      return { progress, terminal };
+    } finally {
+      worker.terminate();
+    }
+  });
+  assert.deepEqual(progress, [
+    ['ordinary-case-started', 73, 0, undefined],
+    ['ordinary-case-finished', 73, 0, 1],
+    ['ordinary-case-started', 73, 1, undefined],
+    ['ordinary-case-finished', 73, 1, 2],
+    ['ordinary-case-started', 73, 2, undefined],
+    ['ordinary-case-finished', 73, 2, 3],
+  ]);
+  assert.equal(terminal.success, true);
+  assert.equal(terminal.resultsStreamed, 3);
+}
+
 function assertStoppingBatch(
   result: Awaited<ReturnType<typeof globalThis.javaStoppingBatchProbe>>,
   engine: BrowserEngine,
@@ -803,7 +879,9 @@ try {
       if (!browserType) throw new Error(`Unknown browser engine: ${engine}`);
       const stoppingOnly = process.env.TRACECODE_JAVA_STOPPING_ONLY === '1';
       const journalOnly = process.env.TRACECODE_JAVA_JOURNAL_ONLY === '1';
-      const isolationModes = stoppingOnly || journalOnly ? [false] : engine === 'chromium' ? [true, false] : [true];
+      const exitProbe = process.env.TRACECODE_JAVA_EXIT_PROBE === '1';
+      const isolationModes = stoppingOnly || journalOnly || exitProbe
+        ? [false] : engine === 'chromium' ? [true, false] : [true];
       for (const isolated of isolationModes) {
         const browser = await browserType.launch({ headless: true });
         try {
@@ -823,6 +901,11 @@ try {
             isolated,
             `${engine}: test document must exercise the requested isolation mode`
           );
+          if (exitProbe) {
+            await assertOrdinaryExitNoOp(page);
+            console.log(`PASS: characterized the TraceJVM 0.4.1 exit-zero no-op in ${engine}`);
+            continue;
+          }
           if (!isolated) {
             await page.goto(`${origin}?isolated=false&stopping`);
             const proof = await page.evaluate(() => globalThis.javaJournalProbe());

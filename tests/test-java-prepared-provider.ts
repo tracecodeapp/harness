@@ -2,6 +2,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { createAlgorithmJudgeBundle } from '../src/judge';
+import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
+import { createBrowserRuntimeHost } from '../packages/runtime-browser/src/browser-runtime-host';
+import { createBrowserRuntimeProviderRegistry } from '../packages/runtime-browser/src/runtime-provider-registry';
 import {
   createEmptyRuntimeTrace,
   isRuntimeProviderError,
@@ -12,6 +16,7 @@ import {
 } from '../packages/runtime-contracts/src/index';
 import {
   ExecutionTimeoutError,
+  InterruptedCodeBatchError,
   type WorkerSessionCore,
 } from '../packages/runtime-browser/src/internal';
 import {
@@ -1174,14 +1179,26 @@ test('Java code and trace batches preserve guest limits and reserve transport ti
           const request = message as { id: string; type: string; protocolToken: string; payload: { perCaseWallClockMs: number } };
           const batch = request.type === 'execute-prepared-runtime-program-batch';
           if (batch) guestLimits.push(request.payload.perCaseWallClockMs);
+          const results = [
+            { success: false, error: 'guest timed out', timeoutReason: 'client-timeout', trace: { events: [] }, sourceText: '' },
+            { success: true, output: 1, trace: { events: [] }, sourceText: '' },
+          ];
+          const admissionId = (request.payload as { admissionId?: number }).admissionId;
+          if (batch && admissionId !== undefined) queueMicrotask(() => {
+            for (const [caseIndex, result] of results.entries()) {
+              for (const stage of ['ordinary-case-started', 'ordinary-case-finished']) {
+                worker.onmessage?.({ data: {
+                  id: request.id, protocolToken: request.protocolToken, type: 'runtime-progress',
+                  payload: { stage, detail: { admissionId, caseIndex, result } },
+                } } as MessageEvent);
+              }
+            }
+          });
           queueMicrotask(() => worker.onmessage?.({ data: {
             id: request.id, protocolToken: request.protocolToken, type: 'result',
             payload: batch ? {
               success: true,
-              results: [
-                { success: false, error: 'guest timed out', timeoutReason: 'client-timeout', trace: { events: [] }, sourceText: '' },
-                { success: true, output: 1, trace: { events: [] }, sourceText: '' },
-              ],
+              results,
             } : { success: true, loadTimeMs: 0 },
           } } as MessageEvent));
         },
@@ -1216,3 +1233,226 @@ test('Java code and trace batches preserve guest limits and reserve transport ti
     client.terminate();
   }
 });
+
+type ScriptedBatch = {
+  start(index: number): void;
+  finish(index: number, result: object, admissionId?: number): void;
+  terminal(payload: object): void;
+  crash(): void;
+};
+
+function scriptedJavaBatch() {
+  const commands: ReturnType<typeof deferred<ScriptedBatch>>[] = [];
+  const client = new JavaWorkerClient({
+    workerUrl: '/workers/java-worker.js',
+    debug: false,
+    workerFactory: () => {
+      const worker: BrowserWorkerLike = {
+        onmessage: null,
+        onerror: null,
+        terminate() {},
+        postMessage(message) {
+          const { id, type, protocolToken, payload } = message as {
+            id: string; type: string; protocolToken: string; payload: { admissionId: number };
+          };
+          // Retain the listeners to model events already queued at teardown.
+          const onmessage = worker.onmessage;
+          const onerror = worker.onerror;
+          const post = (type: string, payload: object) => onmessage?.({ data: {
+            id, type, protocolToken, payload,
+          } } as MessageEvent);
+          if (type === 'execute-prepared-runtime-program-batch') {
+            const progress = (stage: string, detail: object) => post('runtime-progress', { stage, detail });
+            commands.shift()!.resolve({
+              start: (caseIndex) => progress('ordinary-case-started', { caseIndex, admissionId: payload.admissionId }),
+              finish: (caseIndex, result, admissionId = payload.admissionId) =>
+                progress('ordinary-case-finished', { caseIndex, admissionId, result }),
+              terminal: (payload) => post(type, payload),
+              crash: () => onerror?.({ message: 'service loss, completion uncertain' } as ErrorEvent),
+            });
+          } else {
+            queueMicrotask(() => post(type, type === 'prepare-runtime-program' ? {
+              success: true,
+              programId: 'prepared',
+              snapshot: { schema: 'tracecode.java.prepared-program-snapshot.v1', programId: 'prepared' },
+            } : { success: true, loadTimeMs: 0 }));
+          }
+        },
+      };
+      queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+      return worker;
+    },
+  });
+  const begin = (stopAtFirstRunaway = false) => {
+    const command = deferred<ScriptedBatch>();
+    const starts: number[] = [];
+    commands.push(command);
+    const outcome = client.executePreparedCodeBatch('prepared', {
+      inputBatch: [{}, {}, {}], stopAtFirstRunaway,
+    }, (index) => starts.push(index));
+    // The test attaches its assertion after it has sent the scripted messages.
+    void outcome.catch(() => undefined);
+    return { command: command.promise, outcome, starts };
+  };
+  const waitForBatch = () => {
+    const command = deferred<ScriptedBatch>();
+    commands.push(command);
+    return command.promise;
+  };
+  return { client, begin, waitForBatch };
+}
+
+const finishedA = { success: true, output: { answer: 7 }, consoleOutput: ['A printed'] };
+const finishedB = { success: true, output: 8, consoleOutput: [] };
+const runaway = { success: false, error: 'guest ran out of time', timeoutReason: 'client-timeout', consoleOutput: [] };
+
+for (const failure of ['deadline', 'crash', 'failed-terminal'] as const) {
+  test(`Java ordinary batch keeps A after ${failure} during B`, { timeout: 5_000 }, async (t) => {
+    const { client, begin } = scriptedJavaBatch();
+    t.after(() => client.terminate());
+    if (failure === 'deadline') {
+      const core = (client as unknown as { core: WorkerSessionCore }).core;
+      const withDeadline = core.withExecutionDeadline.bind(core);
+      core.withExecutionDeadline = (effect) => withDeadline(effect, 75);
+    }
+    const first = begin();
+    const old = await first.command;
+    old.start(0);
+    old.finish(0, finishedA);
+    old.start(1);
+    if (failure === 'crash') old.crash();
+    if (failure === 'failed-terminal') {
+      old.terminal({ success: false, results: [], error: 'service loss, completion uncertain' });
+    }
+    let prefix: InterruptedCodeBatchError['prefix'] | undefined;
+    await assert.rejects(first.outcome, (error) => {
+      assert(error instanceof InterruptedCodeBatchError);
+      assert.match(error.message, failure === 'deadline' ? /transport deadline/ : /service loss, completion uncertain/);
+      prefix = error.prefix;
+      assert.deepEqual(prefix.map((row) => [row.kind, completedOutput(row), row.consoleOutput]),
+        [['completed', { answer: 7 }, ['A printed']]]);
+      return true;
+    });
+    assert.deepEqual(first.starts, [0, 1]);
+    if (failure !== 'failed-terminal') {
+      const next = begin(true);
+      const current = await next.command;
+      old.finish(1, finishedB);
+      old.finish(0, finishedA);
+      old.terminal({ success: true, results: [finishedA, finishedB, finishedB] });
+      assert.equal(prefix?.length, 1);
+      current.start(0);
+      current.finish(0, runaway);
+      current.terminal({ success: false, resultsStreamed: 1 });
+      assert.deepEqual((await next.outcome).map((row) => row.kind), ['limit']);
+      assert.deepEqual(next.starts, [0]);
+    }
+  });
+}
+
+test('Java stopping batch keeps its guest runaway even if the terminal is lost', async (t) => {
+  const { client, begin } = scriptedJavaBatch();
+  t.after(() => client.terminate());
+  const { command, outcome, starts } = begin(true);
+  const worker = await command;
+  worker.start(0);
+  worker.finish(0, finishedA);
+  worker.start(1);
+  worker.finish(1, runaway);
+  worker.crash();
+  const results = await outcome;
+  assert.deepEqual(results.map((row) => row.kind), ['completed', 'limit']);
+  assert.deepEqual(starts, [0, 1]);
+});
+
+for (const invalid of ['changed result', 'count', 'out of order', 'duplicate', 'wrong admission', 'unadmitted'] as const) {
+  test(`Java batch rejects ${invalid} as a protocol error`, async (t) => {
+    const { client, begin } = scriptedJavaBatch();
+    t.after(() => client.terminate());
+    const { command, outcome } = begin(true);
+    const worker = await command;
+    if (invalid !== 'unadmitted') worker.start(0);
+    worker.finish(invalid === 'out of order' ? 1 : 0, runaway, invalid === 'wrong admission' ? 12345 : undefined);
+    if (invalid === 'duplicate') worker.finish(0, runaway);
+    worker.terminal(invalid === 'count'
+      ? { success: false, resultsStreamed: 2 }
+      : { success: false, results: [invalid === 'changed result' ? { ...runaway, error: 'changed' } : runaway] });
+    await assert.rejects(outcome, { name: 'RuntimeProviderError', reason: 'protocol' });
+  });
+}
+
+test('Java batch waits for the terminal and accepts an exactly matching result', async (t) => {
+  const { client, begin } = scriptedJavaBatch();
+  t.after(() => client.terminate());
+  const { command, outcome } = begin(true);
+  const worker = await command;
+  let settled = false;
+  void outcome.then(() => { settled = true; }, () => { settled = true; });
+  worker.start(0);
+  worker.finish(0, runaway);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  worker.terminal({ success: false, results: [{ ...runaway }] });
+  assert.deepEqual((await outcome).map((row) => row.kind), ['limit']);
+});
+
+for (const failure of ['deadline', 'crash'] as const) {
+  test(`Java Judge publishes A and attributes unfinished rows to the provider after ${failure}`, {
+    timeout: 5_000,
+  }, async (t) => {
+    const { client, waitForBatch } = scriptedJavaBatch();
+    if (failure === 'deadline') {
+      const core = (client as unknown as { core: WorkerSessionCore }).core;
+      const withDeadline = core.withExecutionDeadline.bind(core);
+      core.withExecutionDeadline = (effect) => withDeadline(effect, 75);
+    }
+    const provider = createJavaPreparedExecutionProvider({ createWorkerClient: () => client });
+    const registration = createJavaJudgeReceiptProvider(provider, 'test-build');
+    const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+      providers: ['java'],
+      featureOverrides: { worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true },
+      providerRegistry: createBrowserRuntimeProviderRegistry([{
+        id: 'scripted-java',
+        languages: ['java'],
+        create: () => ({
+          preparedProviders: new Map([['java', provider]]),
+          judgeReceiptProviders: new Map([['java', registration]]),
+          disposeLanguage() {},
+          dispose: () => provider.dispose(),
+        }),
+      }]),
+    }));
+    t.after(() => host.dispose());
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'java-submit-transport-loss',
+      language: 'java',
+      code: 'class Solution { public int solve(int n) { return n; } }',
+      functionName: 'solve',
+      executionStyle: 'solution-method',
+      cases: ['A', 'B', 'C'].map((id, n) => ({ id, input: { n }, expected: { answer: 7 } })),
+    });
+    const command = waitForBatch();
+    const reply = host.evaluateAlgorithm({ bundle });
+    const worker = await command;
+    worker.start(0);
+    worker.finish(0, finishedA);
+    worker.start(1);
+    if (failure === 'crash') worker.crash();
+    const { evaluation, passedCount } = await reply;
+    const [a, b, c] = evaluation.cases;
+    assert.equal(passedCount, 1);
+    assert.equal(a?.caseId, 'A');
+    assert.deepEqual(a.value, { answer: 7 });
+    assert.equal(a.stdout, 'A printed\n');
+    assert.equal(a.failure, undefined);
+    assert.deepEqual([b?.caseId, c?.caseId], ['B', 'C']);
+    for (const row of [b!, c!]) {
+      assert.equal(row.failure?.origin, 'provider');
+      assert.equal(row.failure.reason, 'runtime-failure');
+      assert.match(row.failure.message ?? '', failure === 'deadline' ? /transport deadline/ : /service loss, completion uncertain/);
+      assert.equal(row.timedOut, false);
+      assert.equal(row.stdout, '');
+      assert.equal(row.stderr, '');
+    }
+  });
+}
