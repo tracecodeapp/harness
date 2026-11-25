@@ -30,11 +30,19 @@ type JudgedOutputPolicyContext = {
   readonly evaluationId: string;
 };
 
-/** The effective judged-output policy one ordinary prepare carried. */
+/**
+ * The effective judged-output policy one ordinary prepare carried. Like every
+ * journal event it may be read for the binding fields; it belongs to no
+ * case, attempt or receipt generation, so those are absent.
+ */
 export type JudgedOutputPolicyMarker = JudgedOutputPolicyContext & JudgedOutputPolicy & {
   readonly phase: 'judged-output-policy';
   readonly lowered: boolean;
   readonly at: number;
+  readonly workspaceDigest?: undefined;
+  readonly generation?: undefined;
+  readonly caseId?: undefined;
+  readonly attemptToken?: undefined;
 };
 
 export interface JudgeTestBridge {

@@ -1536,6 +1536,7 @@ function assertJavaScriptObservationProtocol(): void {
   const client = readFileSync('packages/runtime-javascript/src/javascript-worker-client.ts', 'utf8');
   const prepared = readFileSync('src/internal/judge-prepared-program.ts', 'utf8');
   const judge = readFileSync('src/internal/browser-judge.ts', 'utf8');
+  const bridge = readFileSync('src/internal/judge-test-bridge.ts', 'utf8');
 
   // Replies and progress events travel worker-to-page. The fault flag and
   // acknowledgement ride on an existing observation request and reply.
@@ -1562,6 +1563,7 @@ function assertJavaScriptObservationProtocol(): void {
     'observation-cache-hit': prepared,
     'public-resolve': judge,
     'injection-ack': prepared,
+    'judged-output-policy': bridge,
   } satisfies Record<BridgeEvent['phase'], string>;
   for (const [phase, source] of Object.entries(journal)) {
     assertCondition(source.includes(`'${phase}'`), `Missing Judge bridge journal evidence for "${phase}"`);
