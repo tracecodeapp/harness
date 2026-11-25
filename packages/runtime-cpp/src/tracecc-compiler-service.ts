@@ -573,7 +573,15 @@ implements CppTrustedCompilerService {
    */
   private ensureWorker(): Promise<BrowserWorkerLike> {
     if (!this.startup) {
-      const startup = this.startWorker(this.generation);
+      const generation = this.generation;
+      const startup = this.startWorker(generation).catch((cause: unknown) => {
+        // A failed startup ends its generation: the Worker, if one was
+        // constructed, is terminated and the next request starts afresh. The
+        // callers waiting on this startup still receive its error.
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        if (generation === this.generation) this.reset(error);
+        throw error;
+      });
       // A reset can abandon a startup nobody awaits any longer.
       void startup.catch(() => undefined);
       this.startup = startup;
@@ -675,7 +683,6 @@ implements CppTrustedCompilerService {
           ? init.error
           : 'TraceCC compiler Worker initialization failed.'
       );
-      if (generation === this.generation) this.reset(error);
       throw error;
     }
     return worker;
