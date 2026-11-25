@@ -15,7 +15,12 @@ function assertCondition(condition: unknown, message: string): asserts condition
   if (!condition) throw new Error(message);
 }
 
-const INTERNAL_ENV_LINE = /^(?:[?#$!@*-]|\d+|IFS|OPTIND|OPTARG|SHELLOPTS|BASHOPTS|OSTYPE|MACHTYPE|HOSTTYPE|PIPESTATUS(?:_\d+|__length)?|BASH_REMATCH(?:_\d+)?|__[A-Z_]+|[A-Za-z_][A-Za-z0-9_]*__length)=/m;
+// The interpreter's own names, and the storage of the arrays these tests create.
+const INTERNAL_ENV_LINE = /^(?:[?#$!@*-]|\d+|IFS|OPTIND|OPTARG|SHELLOPTS|BASHOPTS|OSTYPE|MACHTYPE|HOSTTYPE|__GETOPTS_CHARINDEX|PIPESTATUS(?:_\d+|__length)|BASH_REMATCH(?:_\d+|__length)|arr(?:_\d+|__length))=/m;
+// An associative array's storage, hidden while the interpreter that declared
+// it runs. A later line's shell no longer knows it is associative (a known
+// limit, like other declare attributes).
+const SAME_LINE_ASSOCIATIVE = /^same(?:_\w+|__length)=/m;
 
 interface Line {
   command: string;
@@ -129,6 +134,27 @@ test('$? carries the previous line\'s status, as in an interactive Bash', async 
       // An empty line runs nothing and keeps the status.
       { command: '', bash: { stdout: '', exitCode: 0 } },
       { command: 'echo $?', bash: { stdout: '1\n', exitCode: 0 } },
+      // So does a line that is only comments.
+      { command: 'false', bash: { stdout: '', exitCode: 1 } },
+      { command: '# note', bash: { stdout: '', exitCode: 0 } },
+      { command: '   # indented', bash: { stdout: '', exitCode: 0 } },
+      { command: '# one\n# two', bash: { stdout: '', exitCode: 0 } },
+      { command: 'echo $?', bash: { stdout: '1\n', exitCode: 0 } },
+      // A comment after a command is part of a command line.
+      { command: 'false # trailing', bash: { stdout: '', exitCode: 1 } },
+      { command: 'echo $?', bash: { stdout: '1\n', exitCode: 0 } },
+    ]);
+    await runLines(session, 'other statuses', [
+      { command: 'no-such-command', bash: { stdout: '', exitCode: 127 } },
+      { command: 'echo $?', bash: { stdout: '127\n', exitCode: 0 } },
+      { command: 'echo "unterminated', bash: { stdout: '', exitCode: 2 } },
+      { command: 'echo $?', bash: { stdout: '2\n', exitCode: 0 } },
+      { command: 'false && true', bash: { stdout: '', exitCode: 1 } },
+      { command: 'echo $?', bash: { stdout: '1\n', exitCode: 0 } },
+      { command: 'false || true', bash: { stdout: '', exitCode: 0 } },
+      { command: 'echo $?', bash: { stdout: '0\n', exitCode: 0 } },
+      { command: 'true | false', bash: { stdout: '', exitCode: 1 } },
+      { command: 'echo $?', bash: { stdout: '1\n', exitCode: 0 } },
     ]);
 
     // Ctrl-C: Bash reports 128 + SIGINT.
@@ -218,6 +244,33 @@ test('cd - and cd ~ move between directories as Bash does', async () => {
     ]);
     assertCondition(session.cwd === root, `compound cd should leave the terminal in the workspace: ${session.cwd}`);
 
+    // OLDPWD outside the terminal's navigation limits (here outside
+    // /home/obi) is never stored. Bash would print /home on these lines; the
+    // terminal keeps the last allowed directory instead.
+    await runLines(session, 'OLDPWD outside the limits', [
+      { command: 'cd src', bash: { stdout: '', exitCode: 0 } },
+      { command: 'cd ..', bash: { stdout: '', exitCode: 0 } },
+      // The prompt did not move: the previous allowed OLDPWD stays.
+      { command: 'OLDPWD=/home', bash: { stdout: '', exitCode: 0 } },
+      { command: 'echo "$OLDPWD"', bash: { stdout: `${root}/src\n`, exitCode: 0 } },
+      { command: 'cd - && pwd', bash: { stdout: `${root}/src\n${root}/src\n`, exitCode: 0 } },
+      // The prompt moved: the directory it left is stored.
+      { command: 'cd /home && cd ~/weather-api', bash: { stdout: '', exitCode: 0 } },
+      { command: 'pwd', bash: { stdout: `${root}\n`, exitCode: 0 } },
+      { command: 'cd -', bash: { stdout: `${root}/src\n`, exitCode: 0 } },
+      { command: 'cd ..', bash: { stdout: '', exitCode: 0 } },
+    ]);
+    assertCondition(session.cwd === root, `the terminal should be back in the workspace: ${session.cwd}`);
+    // A line that ends outside the limits runs there (as before this change)
+    // but leaves the prompt and OLDPWD where they were.
+    await runLines(session, 'final directory outside the limits', [
+      { command: 'cd /home && pwd', bash: { stdout: '/home\n', exitCode: 0 } },
+      { command: 'pwd', bash: { stdout: `${root}\n`, exitCode: 0 } },
+      { command: 'cd ..; cd ..; cd ..', bash: { stdout: '', exitCode: 0 } },
+      { command: 'pwd', bash: { stdout: `${root}\n`, exitCode: 0 } },
+      { command: 'echo "$OLDPWD"', bash: { stdout: `${root}/src\n`, exitCode: 0 } },
+    ]);
+
     // The prompt labels the home directory `~`.
     await session.run('cd ~');
     assertCondition((session.prompt.label as string) === '~', `cd ~ should label the prompt ~: ${session.prompt.text}`);
@@ -240,6 +293,10 @@ test('env and program environments hold variables, not interpreter internals', a
       'arr=(x y)',
       'declare -A map; map[k]=v',
       'export TRACE_EXPORTED=kept',
+      // Learner names that only look like array storage.
+      'arr_backup=kept',
+      'export __TRACE=1',
+      'export count__length=3',
       'false',
     ]) {
       await session.run(line);
@@ -253,8 +310,21 @@ test('env and program environments hold variables, not interpreter internals', a
         /^PATH=/m.test(env.stdout) &&
         /^USER=obi$/m.test(env.stdout) &&
         /^PWD=\/home\/obi\/weather-api$/m.test(env.stdout) &&
-        /^TRACE_EXPORTED=kept$/m.test(env.stdout),
-      `env | sort should list variables only: ${JSON.stringify(env)}`
+        /^TRACE_EXPORTED=kept$/m.test(env.stdout) &&
+        /^arr_backup=kept$/m.test(env.stdout) &&
+        /^__TRACE=1$/m.test(env.stdout) &&
+        /^count__length=3$/m.test(env.stdout),
+      `env | sort should list variables only, learner names included: ${JSON.stringify(env)}`
+    );
+    // Within one line the interpreter knows its arrays exactly, associative
+    // ones included, and its regex match.
+    const sameLine = await session.run('declare -A same; same[key]=v; same[other]=w; [[ abc =~ (b) ]]; env | sort');
+    assertCondition(
+      sameLine.exitCode === 0 &&
+        !INTERNAL_ENV_LINE.test(sameLine.stdout) &&
+        !SAME_LINE_ASSOCIATIVE.test(sameLine.stdout) &&
+        /^arr_backup=kept$/m.test(sameLine.stdout),
+      `env should hide associative-array storage and BASH_REMATCH on the same line: ${JSON.stringify(sameLine)}`
     );
     // Bash: printenv of a shell-only name prints nothing and fails.
     await runLines(session, 'printenv', [
@@ -276,7 +346,12 @@ test('env and program environments hold variables, not interpreter internals', a
     for (const programEnv of capturedEnv) {
       const lines = Object.entries(programEnv).map(([key, value]) => `${key}=${value}`).join('\n');
       assertCondition(
-        !INTERNAL_ENV_LINE.test(lines) && programEnv.TRACE_EXPORTED === 'kept' && programEnv.HOME === '/home/obi',
+        !INTERNAL_ENV_LINE.test(lines) &&
+          programEnv.TRACE_EXPORTED === 'kept' &&
+          programEnv.HOME === '/home/obi' &&
+          programEnv.arr_backup === 'kept' &&
+          programEnv.__TRACE === '1' &&
+          programEnv.count__length === '3',
         `a learner program's environment should hold variables only: ${JSON.stringify(programEnv)}`
       );
     }
