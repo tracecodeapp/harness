@@ -403,7 +403,7 @@ function checkBridge(prefix, events, graded, selected) {
     undefinedEvents.length ? counts(undefinedEvents.map((event) => event.phase)) : { phases: counts(events.map((event) => event.phase)) });
 }
 
-function checkWorkers(prefix, commands, graded, selected) {
+function checkWorkers(prefix, commands, graded, selected, language) {
   const executes = commands.filter((command) => command.kind === 'execute' && command.learner);
   const ordinary = executes.filter((command) => command.role === 'ordinary');
   const ackedOrdinaryCases = ordinary.filter((command) => command.reply?.acked).flatMap((command) => command.caseIds);
@@ -433,8 +433,16 @@ function checkWorkers(prefix, commands, graded, selected) {
   const ordinaryWorkers = new Set(ordinary.map((command) => command.worker));
   const tracedWorkers = new Set(executes.filter((command) => command.role !== 'ordinary').map((command) => command.worker));
   const shared = [...ordinaryWorkers].filter((worker) => tracedWorkers.has(worker));
-  check(`${prefix}/worker-lease-separation`, shared.length === 0,
-    { ordinaryWorkers: [...ordinaryWorkers], tracedWorkers: [...tracedWorkers], shared });
+  // Python draws sequentially on the verdict's warm worker (F2, #92): an
+  // observer may share that worker only after every ordinary execution on it.
+  const sequential = language === 'python' && shared.every((worker) => {
+    const onWorker = executes.filter((command) => command.worker === worker);
+    const lastOrdinary = Math.max(...onWorker.filter((command) => command.role === 'ordinary').map((command) => command.index));
+    return onWorker.filter((command) => command.role !== 'ordinary')
+      .every((command) => command.role === 'observer' && command.index > lastOrdinary);
+  });
+  check(`${prefix}/worker-lease-separation`, shared.length === 0 || sequential,
+    { ordinaryWorkers: [...ordinaryWorkers], tracedWorkers: [...tracedWorkers], shared, sequentialOnVerdictWorker: sequential });
 
   const uncorrelated = executes.filter((command) => !command.reply || command.reply.missing || command.reply.tokenMismatches.length > 0);
   const failedOrdinary = ordinary.filter((command) => command.reply && !command.reply.missing && !command.reply.acked);
@@ -480,7 +488,7 @@ function judgeLanguage(language, evidence, classifier = CLASSIFIERS[language], o
         const before = ledger.length;
         quiet = true;
         try {
-          checkWorkers(windowPrefix, inWindow, expectation.graded, expectation.selected);
+          checkWorkers(windowPrefix, inWindow, expectation.graded, expectation.selected, language);
         } finally {
           quiet = false;
         }
@@ -494,7 +502,7 @@ function judgeLanguage(language, evidence, classifier = CLASSIFIERS[language], o
         checkRows(windowPrefix, rows, rowGraded, expectation.selected);
       }
       checkBridge(windowPrefix, evidence.events.slice(window.events[0], window.events[1]), expectation.graded, expectation.selected);
-      checkWorkers(windowPrefix, inWindow, expectation.graded, expectation.selected);
+      checkWorkers(windowPrefix, inWindow, expectation.graded, expectation.selected, language);
     }
     if (!only && entry.name === 'execute-continuation' && entry.error === undefined) {
       check(`${prefix}/execution-id`, entry.output?.hasExecutionId === true && entry.output?.sameExecutionId === true,
