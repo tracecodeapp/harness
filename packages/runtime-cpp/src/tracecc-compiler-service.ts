@@ -140,7 +140,8 @@ function transferableProgramBuffer(value: unknown): ArrayBuffer | null {
 export class TraceCCCompilerService
 implements CppTrustedCompilerService {
   private worker: BrowserWorkerLike | null = null;
-  private readyPromise: Promise<void> | null = null;
+  private startup: Promise<BrowserWorkerLike> | null = null;
+  private abandonBoot: ((reason: Error) => void) | null = null;
   private operation: Promise<void> = Promise.resolve();
   private requestId = 0;
   private generation = 0;
@@ -169,7 +170,6 @@ implements CppTrustedCompilerService {
   async prewarmAssets(
     shard: TraceCCCompilerShard = 'narrow'
   ): Promise<void> {
-    await this.ensureWorker();
     const selected = this.options.shards[shard];
     const result = await this.send('prewarm-trusted-tracecc-assets', {
       ...this.traceccAssets(
@@ -190,7 +190,6 @@ implements CppTrustedCompilerService {
 
   async warmup(shard: TraceCCCompilerShard = 'narrow'): Promise<void> {
     await this.prewarmAssets(shard);
-    await this.ensureWorker();
     const selected = this.options.shards[shard];
     const pchPath = `/tracecc-assets/${shard}.pch`;
     const runtimeObjectPath = `/tracecc-assets/${shard}.o`;
@@ -567,27 +566,46 @@ implements CppTrustedCompilerService {
     };
   }
 
-  private async ensureWorker(): Promise<void> {
-    if (this.worker && this.readyPromise) return this.readyPromise;
+  /**
+   * The compiler Worker learns its integrity manifest only from `init`, so a
+   * request it sees first fails closed. One startup per generation covers the
+   * restart delay, the Worker boot and `init`; every request awaits it.
+   */
+  private ensureWorker(): Promise<BrowserWorkerLike> {
+    if (!this.startup) {
+      const startup = this.startWorker(this.generation);
+      // A reset can abandon a startup nobody awaits any longer.
+      void startup.catch(() => undefined);
+      this.startup = startup;
+    }
+    return this.startup;
+  }
+
+  private async startWorker(generation: number): Promise<BrowserWorkerLike> {
     const restartDelayMs = this.restartAfter - performance.now();
     if (restartDelayMs > 0) {
       await new Promise<void>((resolve) => {
         globalThis.setTimeout(resolve, restartDelayMs);
       });
     }
+    if (generation !== this.generation) {
+      throw new Error('TraceCC compiler Worker was reset while starting.');
+    }
     const workerUrl = compilerWorkerUrl(this.options.workerUrl);
     const worker = this.options.workerFactory
       ? this.options.workerFactory(workerUrl, { type: 'module' })
       : new Worker(workerUrl, { type: 'module' });
     this.worker = worker;
-    const generation = this.generation;
-    this.readyPromise = new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       const readyTimeout = globalThis.setTimeout(() => {
-        reject(new Error('TraceCC compiler Worker did not become ready.'));
-        this.reset(
-          new Error('TraceCC compiler Worker did not become ready.')
-        );
+        const error = new Error('TraceCC compiler Worker did not become ready.');
+        reject(error);
+        if (generation === this.generation) this.reset(error);
       }, this.requestTimeoutMs);
+      this.abandonBoot = (reason) => {
+        globalThis.clearTimeout(readyTimeout);
+        reject(reason);
+      };
       worker.onmessage = (event: MessageEvent) => {
         const message = event.data as {
           id?: string;
@@ -605,6 +623,7 @@ implements CppTrustedCompilerService {
         }
         if (message.type === 'worker-ready') {
           globalThis.clearTimeout(readyTimeout);
+          if (generation === this.generation) this.abandonBoot = null;
           resolve();
           return;
         }
@@ -645,8 +664,7 @@ implements CppTrustedCompilerService {
         if (generation === this.generation) this.reset(error);
       };
     });
-    await this.readyPromise;
-    const init = await this.send('init', {
+    const init = await this.post(worker, 'init', {
       assets: {
         toolchainIntegrity: this.options.compilerIntegrity,
       },
@@ -657,19 +675,28 @@ implements CppTrustedCompilerService {
           ? init.error
           : 'TraceCC compiler Worker initialization failed.'
       );
-      this.reset(error);
+      if (generation === this.generation) this.reset(error);
       throw error;
     }
+    return worker;
   }
 
   private async send(
     type: string,
     payload: unknown
   ): Promise<Record<string, unknown>> {
-    await this.ensureWorkerReadyOnly();
-    const worker = this.worker;
-    if (!worker) {
-      throw new Error('TraceCC compiler Worker is unavailable.');
+    return this.post(await this.ensureWorker(), type, payload);
+  }
+
+  private post(
+    worker: BrowserWorkerLike,
+    type: string,
+    payload: unknown
+  ): Promise<Record<string, unknown>> {
+    if (worker !== this.worker) {
+      return Promise.reject(
+        new Error('TraceCC compiler Worker is unavailable.')
+      );
     }
     const id = `tracecc-${++this.requestId}`;
     const protocolToken = createWorkerProtocolToken();
@@ -692,19 +719,15 @@ implements CppTrustedCompilerService {
     });
   }
 
-  private async ensureWorkerReadyOnly(): Promise<void> {
-    if (!this.worker || !this.readyPromise) {
-      await this.ensureWorker();
-      return;
-    }
-    await this.readyPromise;
-  }
-
   private reset(reason: Error): void {
     this.generation += 1;
     const worker = this.worker;
     this.worker = null;
-    this.readyPromise = null;
+    this.startup = null;
+    // A Worker terminated before worker-ready never sends it: release the
+    // callers waiting on that boot now instead of at its ready timeout.
+    this.abandonBoot?.(reason);
+    this.abandonBoot = null;
     this.compilesInGeneration = 0;
     this.restartAfter =
       performance.now() + (this.options.workerRestartDelayMs ?? 0);

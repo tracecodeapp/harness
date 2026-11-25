@@ -328,3 +328,40 @@ test('a Run submitted as an aborted first prepare is still starting the compiler
     globalThis.Worker = originalWorker;
   }
 });
+
+test('a reset while the compiler Worker boots releases its waiters and spares the next Worker', async () => {
+  resetFakes();
+  const service = createService();
+  try {
+    const first = service.prewarmAssets().then(
+      () => 'prewarmed',
+      (error: Error) => `rejected: ${error.message}`
+    );
+    const booting = StrictCompilerWorker.instances[0];
+    assertCondition(booting, 'the asset prewarm should start the trusted compiler Worker');
+    // A cancelled Run resets the service before this Worker ever reports ready.
+    service.terminate();
+    const outcome = await Promise.race([
+      first,
+      new Promise<string>((resolve) => setTimeout(() => resolve('still waiting'), 1_000)),
+    ]);
+    assertCondition(
+      outcome.startsWith('rejected:'),
+      `a caller waiting on a reset boot must be released, not held to the ready timeout: ${outcome}`
+    );
+    assertCondition(booting.terminated, 'the reset must terminate the booting Worker');
+
+    // The next request starts a fresh Worker that completes normally.
+    const next = service.prewarmAssets();
+    const replacement = StrictCompilerWorker.instances[1];
+    assertCondition(replacement && replacement !== booting, 'the next request should start a new Worker');
+    replacement.finishBoot();
+    await next;
+    assertCondition(
+      replacement.received.join(',') === 'init,prewarm-trusted-tracecc-assets' && !replacement.terminated,
+      `the replacement Worker must initialize, then serve: ${replacement.received.join(', ')}`
+    );
+  } finally {
+    service.terminate();
+  }
+});
