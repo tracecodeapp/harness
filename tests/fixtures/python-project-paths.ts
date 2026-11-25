@@ -738,6 +738,46 @@ export const PYTHON_PROJECT_PATH_CASES: readonly PythonProjectPathCase[] = [
       exitCode: 0,
     },
   },
+  {
+    // The rest of the runner's path wrappers, after the review recheck.
+    name: 'more failed calls on workspace paths name the learner path',
+    files: [
+      {
+        path: 'main.py',
+        contents: [
+          'import os',
+          'missing = __file__ + ".missing"',
+          'calls = [',
+          '    ("os.truncate", lambda: os.truncate(missing, 0)),',
+          '    ("os.statvfs", lambda: os.statvfs(missing)),',
+          '    ("os.symlink", lambda: os.symlink("target.txt", __file__)),',
+          '    ("__loader__.get_data", lambda: __loader__.get_data(missing)),',
+          ']',
+          'for label, call in calls:',
+          '    try:',
+          '        call()',
+          '    except OSError as error:',
+          '        print(label, type(error).__name__, error.filename, error.filename2)',
+          '',
+        ].join('\n'),
+      },
+    ],
+    cwd: '',
+    command: 'python main.py',
+    source: 'file',
+    scriptPath: 'main.py',
+    args: [],
+    expected: {
+      stdout: lines(
+        'os.truncate FileNotFoundError {root}/main.py.missing None',
+        'os.statvfs FileNotFoundError {root}/main.py.missing None',
+        'os.symlink FileExistsError target.txt {root}/main.py',
+        '__loader__.get_data FileNotFoundError {root}/main.py.missing None',
+      ),
+      stderr: '',
+      exitCode: 0,
+    },
+  },
 ];
 
 /** The output the runner must print: CPython's, except for pyodideStderr. */
