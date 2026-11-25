@@ -18,7 +18,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import { runCommand } from './example-app-smoke';
 import type { StoppingClockSample } from './fixtures/python-stopping-batch-clock-entry';
 
@@ -123,7 +123,7 @@ function assertReleasedByOrdinaryDeadline(label: string, sample: StoppingClockSa
   }
 }
 
-async function main(): Promise<void> {
+async function withPythonPage(run: (page: Page) => Promise<void>): Promise<void> {
   const root = resolve('.');
   const tempRoot = await mkdtemp(join(tmpdir(), 'tracecode-python-stopping-clock-'));
   let server: Awaited<ReturnType<typeof startServer>> | undefined;
@@ -134,7 +134,32 @@ async function main(): Promise<void> {
       // The workspace source aliases: the suite runs this before the build
       // phase, when no workspace package has a dist to resolve to.
       tsconfig: join(root, 'tsconfig.base.json'),
-      entryPoints: [join(root, 'tests/fixtures/python-stopping-batch-clock-entry.ts')],
+      stdin: {
+        resolveDir: root,
+        contents: `
+          export { runStoppingClock } from './tests/fixtures/python-stopping-batch-clock-entry.ts';
+          export { createAlgorithmJudgeBundle, createBrowserJudgeHost } from './src/judge';
+          import {
+            createPythonPreparedExecutionProvider,
+            PythonWorkerClient,
+          } from './packages/runtime-python/src/index.ts';
+          export function createProvider() {
+            const assetBase = new URL('/workers/', location.href);
+            const indexUrl = new URL('python/pyodide-0.29.3/', assetBase);
+            return createPythonPreparedExecutionProvider({
+              createWorkerClient: () => new PythonWorkerClient({
+                workerUrl: new URL('python-worker.js', assetBase).href,
+                runtimeAssets: {
+                  runtimeUrl: new URL('python/python-runtime.js', assetBase).href,
+                  snippetsUrl: new URL('generated-python-harness-snippets.js', assetBase).href,
+                  indexUrl: indexUrl.href,
+                  loaderUrl: new URL('pyodide.js', indexUrl).href,
+                },
+              }),
+            });
+          }
+        `,
+      },
       outfile: join(tempRoot, 'entry.mjs'),
       bundle: true,
       format: 'esm',
@@ -155,65 +180,7 @@ async function main(): Promise<void> {
       page.setDefaultTimeout(15 * 60_000);
       page.on('pageerror', (error) => console.error(`[pageerror] ${error.message}`));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
-      const samples = (await page.evaluate(async (options) => {
-        const moduleUrl: string = '/entry.mjs';
-        const module = await import(moduleUrl);
-        return module.runStoppingClock(options);
-      }, {
-        assetBaseUrl: '/workers',
-        caseCount: CASES,
-        wallClockMs: WALL_CLOCK_MS,
-        scenarios: [
-          { action: 'run', runawayCase: 1 },
-          { action: 'run', runawayCase: 5 },
-          { action: 'submit-stop', runawayCase: 1 },
-          { action: 'submit-stop', runawayCase: 5 },
-          // A correct program: every case's result arrives as progress.
-          { action: 'run', runawayCase: 0 },
-          { action: 'submit-stop', runawayCase: 0 },
-        ],
-      })) as StoppingClockSample[];
-      assert.equal(samples.length, 6);
-      const seenTokens = new Set<string>();
-      for (const sample of samples) {
-        const label = sample.runawayCase === 0
-          ? `${sample.action} of a correct program`
-          : `${sample.action} with case ${sample.runawayCase} looping`;
-        console.log(`${label}: verdict in ${Math.round(sample.ms)} ms`);
-        assert.equal(sample.error, undefined, `${label}: ${sample.error}`);
-        assert.equal(sample.status, 'completed', label);
-        assert.equal(sample.cases.length, CASES, label);
-        sample.cases.forEach((testCase, index) => {
-          const caseNumber = index + 1;
-          if (sample.runawayCase === 0 || caseNumber < sample.runawayCase) {
-            assert.equal(testCase.status, 'completed', `${label}: case ${caseNumber} keeps its result`);
-          } else if (caseNumber === sample.runawayCase) {
-            assert.equal(testCase.status, 'timed-out', `${label}: the looping case`);
-            assert.equal(testCase.failure?.reason, 'client-timeout', `${label}: the looping case`);
-          } else {
-            assert.equal(testCase.status, 'not-run', `${label}: case ${caseNumber}`);
-          }
-        });
-        if (sample.action === 'run') assertReleasedByOrdinaryDeadline(label, sample, seenTokens);
-        assert.equal(sample.ordinaryBatches.length, 1, `${label}: one ordinary batch`);
-        const [batch] = sample.ordinaryBatches;
-        const expectedStarts = Array.from({ length: sample.runawayCase || CASES }, (_, index) => index);
-        assert.deepEqual(batch.startedCaseIndexes, expectedStarts, `${label}: ordinary worker starts`);
-        if (sample.runawayCase === 0) {
-          assert.equal(batch.timeout, undefined, `${label}: no ordinary case was terminated`);
-          continue;
-        }
-        const { timeout } = batch;
-        assert.ok(timeout, `${label}: ordinary worker was terminated during the looping case`);
-        assert.equal(timeout.caseIndex, sample.runawayCase - 1);
-        const { beforeMs, activeMs, afterMs } = timeout;
-        console.log(`${label}: before start ${Math.round(beforeMs)} ms, active ${Math.round(activeMs)} ms, after termination ${Math.round(afterMs)} ms`);
-        assert.ok(beforeMs >= 0 && afterMs >= 0, `${label}: worker timeout falls within the public request`);
-        assert.ok(
-          activeMs >= WALL_CLOCK_MS && activeMs < WALL_CLOCK_MS + CASE_CLOCK_HEADROOM_MS + BROWSER_TIMER_SLACK_MS,
-          `${label}: active case lasted ${Math.round(activeMs)} ms for a ${WALL_CLOCK_MS} ms limit`
-        );
-      }
+      await run(page);
     } finally {
       await browser.close();
     }
@@ -223,4 +190,197 @@ async function main(): Promise<void> {
   }
 }
 
-test('Python Run stops a never-ending case on one per-case clock in a real worker', main);
+test('Python Run stops a never-ending case on one per-case clock in a real worker', async () => {
+  await withPythonPage(async (page) => {
+    const samples = (await page.evaluate(async (options) => {
+      const moduleUrl: string = '/entry.mjs';
+      const module = await import(moduleUrl);
+      return module.runStoppingClock(options);
+    }, {
+      assetBaseUrl: '/workers',
+      caseCount: CASES,
+      wallClockMs: WALL_CLOCK_MS,
+      scenarios: [
+        { action: 'run', runawayCase: 1 },
+        { action: 'run', runawayCase: 5 },
+        { action: 'submit-stop', runawayCase: 1 },
+        { action: 'submit-stop', runawayCase: 5 },
+        // A correct program: every case's result arrives as progress.
+        { action: 'run', runawayCase: 0 },
+        { action: 'submit-stop', runawayCase: 0 },
+      ],
+    })) as StoppingClockSample[];
+    assert.equal(samples.length, 6);
+    const seenTokens = new Set<string>();
+    for (const sample of samples) {
+      const label = sample.runawayCase === 0
+        ? `${sample.action} of a correct program`
+        : `${sample.action} with case ${sample.runawayCase} looping`;
+      console.log(`${label}: verdict in ${Math.round(sample.ms)} ms`);
+      assert.equal(sample.error, undefined, `${label}: ${sample.error}`);
+      assert.equal(sample.status, 'completed', label);
+      assert.equal(sample.cases.length, CASES, label);
+      sample.cases.forEach((testCase, index) => {
+        const caseNumber = index + 1;
+        if (sample.runawayCase === 0 || caseNumber < sample.runawayCase) {
+          assert.equal(testCase.status, 'completed', `${label}: case ${caseNumber} keeps its result`);
+        } else if (caseNumber === sample.runawayCase) {
+          assert.equal(testCase.status, 'timed-out', `${label}: the looping case`);
+          assert.equal(testCase.failure?.reason, 'client-timeout', `${label}: the looping case`);
+        } else {
+          assert.equal(testCase.status, 'not-run', `${label}: case ${caseNumber}`);
+        }
+      });
+      if (sample.action === 'run') assertReleasedByOrdinaryDeadline(label, sample, seenTokens);
+      assert.equal(sample.ordinaryBatches.length, 1, `${label}: one ordinary batch`);
+      const [batch] = sample.ordinaryBatches;
+      const expectedStarts = Array.from({ length: sample.runawayCase || CASES }, (_, index) => index);
+      assert.deepEqual(batch.startedCaseIndexes, expectedStarts, `${label}: ordinary worker starts`);
+      if (sample.runawayCase === 0) {
+        assert.equal(batch.timeout, undefined, `${label}: no ordinary case was terminated`);
+        continue;
+      }
+      const { timeout } = batch;
+      assert.ok(timeout, `${label}: ordinary worker was terminated during the looping case`);
+      assert.equal(timeout.caseIndex, sample.runawayCase - 1);
+      const { beforeMs, activeMs, afterMs } = timeout;
+      console.log(`${label}: before start ${Math.round(beforeMs)} ms, active ${Math.round(activeMs)} ms, after termination ${Math.round(afterMs)} ms`);
+      assert.ok(beforeMs >= 0 && afterMs >= 0, `${label}: worker timeout falls within the public request`);
+      assert.ok(
+        activeMs >= WALL_CLOCK_MS && activeMs < WALL_CLOCK_MS + CASE_CLOCK_HEADROOM_MS + BROWSER_TIMER_SLACK_MS,
+        `${label}: active case lasted ${Math.round(activeMs)} ms for a ${WALL_CLOCK_MS} ms limit`
+      );
+    }
+  });
+});
+
+test('Python ordinary batch gives only the stuck case a timeout in a real worker', async () => {
+  await withPythonPage(async (page) => {
+    const actual = await page.evaluate(async (wallClockMs) => {
+      const entryUrl = '/entry.mjs';
+      const { createProvider } = await import(entryUrl);
+      const provider = createProvider();
+      try {
+        const preparation = await provider.prepareProgram({
+          mode: 'code',
+          code: 'def solve(value):\n    if value == 0:\n        max(iter(int, 1))\n    return value',
+          functionName: 'solve',
+          executionStyle: 'function',
+        });
+        if (preparation.kind !== 'prepared') throw new Error(JSON.stringify(preparation));
+        const { program } = preparation;
+        const starts: number[] = [];
+        const rows = await program.executeBatchIsolated({
+          inputBatch: [11, 0, 33].map((value) => ({ value })),
+          limits: { wallClockMs },
+          onCaseStarted: (index: number) => starts.push(index),
+        });
+        await program.dispose();
+        return {
+          starts,
+          outcomes: rows.map((row: { kind: string; reason?: string; output?: unknown }) =>
+            row.kind === 'completed' ? row.output : row.reason ?? row.kind),
+        };
+      } finally {
+        provider.terminate();
+      }
+    }, WALL_CLOCK_MS);
+    assert.deepEqual(actual, { starts: [0, 1, 2], outcomes: [11, 'client-timeout', 33] });
+  });
+});
+
+test('Python ordinary batch matches five 7 MiB singleton results in a real worker', async () => {
+  await withPythonPage(async (page) => {
+    const actual = await page.evaluate(async () => {
+      const entryUrl = '/entry.mjs';
+      const { createProvider } = await import(entryUrl);
+      const provider = createProvider();
+      try {
+        const preparation = await provider.prepareProgram({
+          mode: 'code',
+          code: 'def solve(value):\n    return str(value) * (7 * 1024 * 1024)',
+          functionName: 'solve',
+          executionStyle: 'function',
+        });
+        if (preparation.kind !== 'prepared') throw new Error(JSON.stringify(preparation));
+        const { program } = preparation;
+        const inputBatch = [1, 2, 3, 4, 5].map((value) => ({ value }));
+        const summary = (row: { kind: string; output?: string; reason?: string; timings?: { algorithmFastBatch?: boolean } }) =>
+          row.kind === 'completed' && typeof row.output === 'string'
+            ? { size: row.output.length, first: row.output[0], last: row.output.at(-1) }
+            : { kind: row.kind, reason: row.reason };
+        const singletons = [];
+        for (const inputs of inputBatch) singletons.push(summary(await program.executeIsolated({ inputs })));
+        const batch = await program.executeBatchIsolated({ inputBatch, onCaseStarted() {} });
+        await program.dispose();
+        return {
+          singletons,
+          batch: batch.map(summary),
+          fast: batch.map((row: { timings?: { algorithmFastBatch?: boolean } }) => row.timings?.algorithmFastBatch),
+        };
+      } finally {
+        provider.terminate();
+      }
+    });
+    const expected = [1, 2, 3, 4, 5].map((value) => ({
+      size: 7 * 1024 * 1024, first: String(value), last: String(value),
+    }));
+    assert.deepEqual(actual.singletons, expected, 'every singleton fits under the per-case cap');
+    assert.deepEqual(actual.batch, expected, 'every batch row fits under the same per-case cap');
+    assert.deepEqual(actual.fast, expected.map(() => true), 'the batch used the fast driver');
+  });
+});
+
+test('Python ordinary batch bounds unbounded allocation without an explicit memory limit', async () => {
+  await withPythonPage(async (page) => {
+    const actual = await page.evaluate(async () => {
+      const entryUrl = '/entry.mjs';
+      const { createAlgorithmJudgeBundle, createBrowserJudgeHost } = await import(entryUrl);
+      const host = createBrowserJudgeHost({ assetBaseUrl: '/workers', providers: ['python'] });
+      try {
+        const bundle = await createAlgorithmJudgeBundle({
+          id: 'python-allocation-without-memory-limit',
+          language: 'python',
+          code: [
+            'def solve(value):',
+            '    if value == 0:',
+            '        blocks = []',
+            '        while True:',
+            '            blocks.append(bytearray(1024 * 1024))',
+            '    return value',
+          ].join('\n'),
+          functionName: 'solve',
+          executionStyle: 'function',
+          limits: { wallClockMs: 400 },
+          cases: [11, 0, 33].map((value) => ({ id: String(value), input: { value }, expected: value })),
+        });
+        const { evaluation } = await host.evaluateAlgorithm({ bundle });
+        return evaluation.cases.map((row: {
+          status: string;
+          failure?: { origin: string; reason?: string; stage?: string };
+          termination?: { kind: string };
+          verdict?: { kind: string };
+        }) => ({
+          status: row.status,
+          origin: row.failure?.origin,
+          reason: row.failure?.reason ?? row.failure?.stage,
+          termination: row.termination?.kind,
+          verdict: row.verdict?.kind,
+        }));
+      } finally {
+        host.dispose();
+      }
+    });
+    console.log('Allocation without maxMemoryBytes:', JSON.stringify(actual));
+    assert.equal(actual.length, 3);
+    assert.equal(actual[0]?.verdict, 'passed');
+    if (actual[1]?.origin === 'provider') {
+      assert.equal(actual[1]?.termination, 'failure');
+      assert.equal(actual[2]?.origin, 'provider');
+    } else {
+      assert.equal(actual[1]?.origin, 'limit');
+      assert.ok(['client-timeout', 'line-limit', 'single-line-limit', 'memory-limit'].includes(actual[1]?.reason));
+      assert.equal(actual[2]?.verdict, 'passed');
+    }
+  });
+});

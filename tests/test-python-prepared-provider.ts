@@ -9,9 +9,6 @@ import {
   type PythonWorkerClient,
 } from '../packages/runtime-python/src/index';
 import {
-  calculatePythonCodeBatchDeadlineMs,
-} from '../packages/runtime-python/src/python-worker-client';
-import {
   ExecutionTimeoutError,
   WorkerCrashedError,
 } from '../packages/runtime-browser/src/internal';
@@ -70,11 +67,6 @@ function deferred(): {
   });
   return { promise, resolve };
 }
-
-test('Python code-batch deadlines scale from the per-case budget', () => {
-  assert.equal(calculatePythonCodeBatchDeadlineMs(100), 30_000);
-  assert.equal(calculatePythonCodeBatchDeadlineMs(4, 25), 5_500);
-});
 
 async function waitUntil(predicate: () => boolean, message: string): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -901,95 +893,7 @@ test('Python judge-compatible batch contains worker crashes in the failing case'
   provider.terminate();
 });
 
-test('Python aggregate timeout never falls back to a second hard-isolation budget', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] });
-  const calls: Array<{ worker: number; method: string }> = [];
-  let nextWorker = 0;
-  const createWorkerClient = (): PythonWorkerClient => {
-    const worker = nextWorker++;
-    return {
-      async warmup() {
-        calls.push({ worker, method: 'warmup' });
-        return { success: true, loadTimeMs: 1 };
-      },
-      async prepareProgram(call: RuntimeProgramPreparationCall) {
-        calls.push({ worker, method: 'prepare' });
-        return {
-          success: true as const,
-          artifact: artifact(call.mode, 'algorithm-fast'),
-          mode: call.mode,
-          consoleOutput: [],
-        };
-      },
-      async executePreparedCodeBatch(
-        _handle: unknown,
-        call: { signal?: AbortSignal }
-      ): Promise<CodeExecutionBatchResult> {
-        calls.push({ worker, method: 'execute-batch' });
-        return new Promise<CodeExecutionBatchResult>((_resolve, reject) => {
-          const rejectFromAbort = () =>
-            reject(
-              call.signal?.reason ?? new DOMException('Aborted', 'AbortError')
-            );
-          if (call.signal?.aborted) {
-            rejectFromAbort();
-            return;
-          }
-          call.signal?.addEventListener('abort', rejectFromAbort, {
-            once: true,
-          });
-        });
-      },
-      async executePreparedCode(): Promise<CodeExecutionResult> {
-        calls.push({ worker, method: 'execute-code' });
-        throw new Error('Hard-isolated execution must not start');
-      },
-      terminate() {
-        calls.push({ worker, method: 'terminate' });
-      },
-    } as unknown as PythonWorkerClient;
-  };
-  const provider = createPythonPreparedExecutionProvider({ createWorkerClient });
-  const preparation = await provider.prepareProgram(preparationCall());
-  assert.equal(preparation.kind, 'prepared');
-  if (
-    preparation.kind !== 'prepared' ||
-    preparation.program.mode !== 'code' ||
-    !preparation.program.executeBatchIsolated
-  ) {
-    return;
-  }
-
-  const execution = preparation.program.executeBatchIsolated({
-    inputBatch: [{ value: 1 }, { value: 2 }],
-    limits: { wallClockMs: 1 },
-  });
-  await waitUntil(
-    () => calls.some((call) => call.method === 'execute-batch'),
-    'Fast batch execution did not start'
-  );
-  context.mock.timers.tick(calculatePythonCodeBatchDeadlineMs(2, 1));
-  // The batch running out of time is the learner's time limit on every case,
-  // never a rejection the consumer would read as a provider failure.
-  const timedOut = await execution;
-  assert.deepEqual(
-    timedOut.map((result) => result.kind === 'limit' ? result.reason : result.kind),
-    ['client-timeout', 'client-timeout']
-  );
-  assert.equal(
-    calls.filter((call) => call.method === 'execute-batch').length,
-    1
-  );
-  assert.equal(
-    calls.filter((call) => call.method === 'execute-code').length,
-    0,
-    'An aggregate timeout must not trigger compatibility execution'
-  );
-  await preparation.program.dispose();
-  provider.terminate();
-});
-
-test('Python judge-compatible batch retains one worker across the aggregate budget', async () => {
+test('Python judge-compatible batch retains one worker across a healthy batch', async () => {
   const calls: Array<{ worker: number; method: string }> = [];
   let nextWorker = 0;
   const createWorkerClient = (): PythonWorkerClient => {
