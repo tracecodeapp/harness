@@ -253,6 +253,12 @@ export interface PythonInteractiveWorker {
   readonly commands: PythonInteractiveCommand[];
 }
 
+export interface JavaScriptObserverWorker {
+  readonly created: number;
+  observations: number;
+  retired?: number;
+}
+
 export async function runBrowserAlgorithmBatch(
   assetBaseUrl: string,
   selectedLanguages: readonly BatchLanguage[] = BATCH_FIXTURES.map(
@@ -266,6 +272,9 @@ export async function runBrowserAlgorithmBatch(
 ): Promise<unknown> {
   const NativeWorker = globalThis.Worker;
   const workerUrls: string[] = [];
+  const javascriptObserverWorkers: JavaScriptObserverWorker[] = [];
+  const takeJavaScriptObservers = () => javascriptObserverWorkers.splice(0).map((worker) => ({ ...worker }));
+  let workerLifecycleEvent = 0;
   let activeWorkers = 0;
   let pythonInteractiveWorkers: Map<Worker, PythonInteractiveWorker> | undefined;
   let maximumActiveWorkers = 0;
@@ -282,6 +291,8 @@ export async function runBrowserAlgorithmBatch(
   }> = [];
   class ObservedWorker extends NativeWorker {
     private observedTerminated = false;
+    private readonly created = ++workerLifecycleEvent;
+    private javascriptObserver?: JavaScriptObserverWorker;
 
     constructor(url: string | URL, options?: WorkerOptions) {
       workerUrls.push(String(url));
@@ -326,6 +337,13 @@ export async function runBrowserAlgorithmBatch(
         },
         transferOrOptions?: StructuredSerializeOptions | Transferable[]
       ) => {
+        if (message?.type === 'observe-execution') {
+          if (!this.javascriptObserver) {
+            this.javascriptObserver = { created: this.created, observations: 0 };
+            javascriptObserverWorkers.push(this.javascriptObserver);
+          }
+          this.javascriptObserver.observations += 1;
+        }
         const command: (typeof workerCommands)[number] = {
           id: message?.id,
           type: message?.type,
@@ -357,6 +375,9 @@ export async function runBrowserAlgorithmBatch(
       if (!this.observedTerminated) {
         this.observedTerminated = true;
         activeWorkers -= 1;
+        if (this.javascriptObserver) {
+          this.javascriptObserver.retired = ++workerLifecycleEvent;
+        }
       }
       super.terminate();
     }
@@ -439,6 +460,7 @@ export async function runBrowserAlgorithmBatch(
           }
           tracePrimeMs = performance.now() - primeStartedAt;
           workerUrls.splice(0);
+          javascriptObserverWorkers.splice(0);
         }
         const cases = Array.from({ length: algorithmCaseCount }, (_, index) => ({
           id: `case-${index + 1}`,
@@ -504,6 +526,7 @@ export async function runBrowserAlgorithmBatch(
           performance.now() - backgroundStartedAt;
         const interactiveMaximumActiveWorkers = maximumActiveWorkers;
         const interactiveWorkerUrls = workerUrls.splice(0);
+        const interactiveJavaScriptObservers = takeJavaScriptObservers();
         const interactivePythonWorkers = pythonInteractiveWorkers && [...pythonInteractiveWorkers.values()];
         pythonInteractiveWorkers = undefined;
 
@@ -525,6 +548,7 @@ export async function runBrowserAlgorithmBatch(
         const plainMs = performance.now() - plainStartedAt;
         const plainMaximumActiveWorkers = maximumActiveWorkers;
         const plainWorkerUrls = workerUrls.splice(0);
+        const plainJavaScriptObservers = takeJavaScriptObservers();
 
         maximumActiveWorkers = activeWorkers;
         const traceStartedAt = performance.now();
@@ -534,6 +558,7 @@ export async function runBrowserAlgorithmBatch(
         const traceMs = performance.now() - traceStartedAt;
         const traceMaximumActiveWorkers = maximumActiveWorkers;
         const traceWorkerUrls = workerUrls.splice(0);
+        const traceJavaScriptObservers = takeJavaScriptObservers();
 
         let compatibilityIsolation:
           | ReturnType<typeof receiptSummary>
@@ -626,10 +651,12 @@ export async function runBrowserAlgorithmBatch(
           plainMs,
           plainMaximumActiveWorkers,
           plainWorkerUrls,
+          plainJavaScriptObservers,
           trace: receiptSummary(traceReceipt),
           traceMs,
           traceMaximumActiveWorkers,
           traceWorkerUrls,
+          traceJavaScriptObservers,
           interactive: {
             initialMs: interactiveInitialMs,
             compileTimings: interactive.evaluation.compile?.timings,
@@ -657,6 +684,7 @@ export async function runBrowserAlgorithmBatch(
             backgroundTraceEventCounts,
             maximumActiveWorkers: interactiveMaximumActiveWorkers,
             workerUrls: interactiveWorkerUrls,
+            javascriptObservers: interactiveJavaScriptObservers,
             pythonWorkers: interactivePythonWorkers,
           },
           ...(compatibilityIsolation
