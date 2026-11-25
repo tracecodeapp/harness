@@ -37,6 +37,17 @@ export interface PythonProjectPathCase {
   readonly pyodideStderr?: string;
   /** Standard input for the command. */
   readonly stdin?: string;
+  /**
+   * The program prints the mount's name itself, so the output must hold it,
+   * byte for byte: paths get their identity when they are made, and no text
+   * is rewritten on the way out.
+   */
+  readonly printsMountText?: boolean;
+}
+
+/** The leak check, for cases that do not print the mount's name themselves. */
+export function leaksInternalMount(entry: PythonProjectPathCase, output: string): boolean {
+  return !entry.printsMountText && output.includes(PYTHON_PROJECT_INTERNAL_MOUNT);
 }
 
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join('');
@@ -634,6 +645,95 @@ export const PYTHON_PROJECT_PATH_CASES: readonly PythonProjectPathCase[] = [
     args: [],
     expected: {
       stdout: lines('1 {root}/written.py', '22'),
+      stderr: '',
+      exitCode: 0,
+    },
+  },
+  {
+    // A learner's own text that happens to name the mount is ordinary output.
+    name: 'text naming the mount is printed unchanged',
+    files: [
+      {
+        path: 'main.py',
+        contents: [
+          'import sys',
+          'print("/tracecode_project")',
+          'print("/tracecode_project/untitled")',
+          'sys.stdout.write("/tracecode_project/untitled\\n")',
+          'sys.stderr.write("/tracecode_project/untitled\\n")',
+          'print(repr("/tracecode_project"), len("/tracecode_project/untitled"))',
+          '',
+        ].join('\n'),
+      },
+    ],
+    cwd: '',
+    command: 'python main.py',
+    source: 'file',
+    scriptPath: 'main.py',
+    args: [],
+    printsMountText: true,
+    expected: {
+      stdout: lines(
+        '/tracecode_project',
+        '/tracecode_project/untitled',
+        '/tracecode_project/untitled',
+        "'/tracecode_project' 27",
+      ),
+      stderr: lines('/tracecode_project/untitled'),
+      exitCode: 0,
+    },
+  },
+  {
+    // Paths agree when the program compares them, not only when it prints them.
+    name: 'paths compared at runtime agree',
+    files: [
+      {
+        path: 'main.py',
+        contents: [
+          'import os, sys',
+          'import helper',
+          'print(__file__ == os.path.abspath(sys.argv[0]))',
+          'print(__file__.startswith(os.getcwd()))',
+          'print(helper.__file__.startswith(os.getcwd()))',
+          'print(os.path.dirname(__file__) == sys.path[0] == os.getcwd())',
+          'print(os.path.samefile(__file__, sys.argv[0]), os.path.exists(__file__))',
+          '',
+        ].join('\n'),
+      },
+      { path: 'helper.py', contents: '' },
+    ],
+    cwd: '',
+    command: 'python main.py',
+    source: 'file',
+    scriptPath: 'main.py',
+    args: [],
+    expected: {
+      stdout: lines('True', 'True', 'True', 'True', 'True True'),
+      stderr: '',
+      exitCode: 0,
+    },
+  },
+  {
+    name: 'paths compared at runtime agree in a nested directory',
+    files: [
+      {
+        path: 'src/app/main.py',
+        contents: [
+          'import os, sys',
+          'print(__file__ == os.path.abspath(sys.argv[0]))',
+          'print(__file__.startswith(os.getcwd()))',
+          'print(os.path.relpath(__file__) == sys.argv[0])',
+          '',
+        ].join('\n'),
+      },
+    ],
+    cwd: 'src',
+    command: 'python app/main.py',
+    source: 'file',
+    scriptPath: 'src/app/main.py',
+    args: [],
+    expected: {
+      stdout: lines('True', 'True', 'True'),
       stderr: '',
       exitCode: 0,
     },

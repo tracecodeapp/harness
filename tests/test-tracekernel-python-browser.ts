@@ -9,8 +9,8 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import {
-  PYTHON_PROJECT_INTERNAL_MOUNT,
   PYTHON_PROJECT_PATH_CASES,
+  leaksInternalMount,
   pyodideExpected,
 } from './fixtures/python-project-paths';
 
@@ -852,7 +852,7 @@ async function main(): Promise<void> {
         const expected = pyodideExpected(entry, root);
         assertCondition(
           JSON.stringify(actual) === JSON.stringify(expected) &&
-            !`${run.stdout}${run.stderr}`.includes(PYTHON_PROJECT_INTERNAL_MOUNT),
+            !leaksInternalMount(entry, `${run.stdout}${run.stderr}`),
           `Python output for "${entry.name}" (${entry.command}) did not name the learner's paths:\n` +
             `actual   ${JSON.stringify(actual)}\nexpected ${JSON.stringify(expected)}`
         );

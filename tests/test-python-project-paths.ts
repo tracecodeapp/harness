@@ -17,6 +17,7 @@ import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-contr
 import {
   PYTHON_PROJECT_INTERNAL_MOUNT,
   PYTHON_PROJECT_PATH_CASES,
+  leaksInternalMount,
   pyodideExpected,
   type PythonProjectPathCase,
 } from './fixtures/python-project-paths';
@@ -120,7 +121,7 @@ for (const entry of PYTHON_PROJECT_PATH_CASES) {
     const actual = { stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
     assert.deepEqual(actual, pyodideExpected(entry, WORKSPACE_ROOT));
     assert.ok(
-      !`${result.stdout}${result.stderr}`.includes(PYTHON_PROJECT_INTERNAL_MOUNT),
+      !leaksInternalMount(entry, `${result.stdout}${result.stderr}`),
       `the internal mount leaked: ${JSON.stringify(actual)}`
     );
   });
