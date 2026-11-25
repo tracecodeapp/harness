@@ -52,29 +52,49 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   takes a `JudgeRuntimeCaseProgress` (`started` or `finished`) and returns a
   `JudgeRuntimeProgressDisposition` (`accepted`, `duplicate`, `out-of-order`,
   `unknown-case` or `fenced`). `InMemoryJudgeRuntimeControl` implements it.
-  `take` returns the accepted progress as `journal`, and publication or the
-  end of the process seals it, so a late reply from a stopped batch changes
-  nothing. A runtime cannot publish a `journal` itself.
+  `take` returns the accepted progress as `journal`. Publication, the end of
+  the process, and the process watchdog's deadline (`sealAt?`, which the
+  TraceKernel Judge port sets) seal it, so progress reported by a batch that
+  was stopped is refused. A runtime cannot publish a `journal` itself.
 - `InterruptedCodeBatchError` takes an optional third argument,
   `{ interruption, interruptedIndex }`: what interrupted the batch
-  (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and
-  which entry was running. The unfinished cases' provider failure says which.
+  (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and,
+  when the provider knows, which entry was running. The unfinished cases'
+  provider failure says what interrupted the batch.
 
 ### Changed
 
 - **A batch that ends without per-case results keeps what finished.** When a
   batch watchdog stops a provider batch, the provider fails it, or it ends
-  without its terminal reply, every case that had finished keeps its own
-  result, unchanged. Every other case is the provider's failure (`origin:
-  'provider'`), and a case that had started says its completion is uncertain.
-  In a stopping batch, the cases after a finished runaway stay `not-run`.
+  without a valid terminal reply, every case whose finish was journalled
+  keeps its own result, unchanged. Every other case is the provider's
+  failure (`origin: 'provider'`), never a time limit or a verdict:
+  - a case whose start was journalled says `The case had started, and its
+    completion is uncertain.`;
+  - in a batch that journals every start, a case with no journalled start says
+    `As far as the runtime reported, the case had not started.`;
+  - in a stopping batch, every case after a journalled runaway stays
+    `not-run`.
   - **Breaking, low-level:** a batch watchdog with `timeoutRole: 'limit'` no
     longer reports `client-timeout` on every case of the batch. A batch-wide
     clock is not any one case's time limit, so each unfinished case is the
     provider's failure. A single case's own watchdog is unchanged.
-  - In the browser Judge, Python and Java keep that prefix once their
-    providers forward per-case finishes. Other languages report every case
-    as the provider's failure, as before.
+  - A terminal batch that lists too few cases, beside journalled progress, is
+    the provider's `protocol` failure and keeps the journalled finishes. Without
+    journalled progress it is still a `JudgeInfrastructureError`.
+  - Browser Judge, by language:
+    - **Run in JavaScript, TypeScript, C# and C++** sends one call per case, so
+      the Judge journals each case itself. If the worker is lost or the
+      watchdog stops the run, the cases that finished keep their results.
+      Before, every case was the provider's failure.
+    - **Submit in JavaScript, TypeScript, C# and C++** runs one batch that
+      reports no per-case finishes. A lost or stopped batch still fails every
+      case as the provider's failure, as before.
+    - **Python and Java** run Run and Submit as one batch, and their providers
+      don't report finishes as they happen yet. When the Python worker is
+      lost, the cases it had finished keep their results, as before. A Java
+      batch that is lost, and a Python or Java batch the watchdog stops, still
+      fail every case as the provider's failure.
 
 - **Every Judge entry grades from the ordinary program.** `createJudge(...)`
   `evaluate`, `execute` (one-shot, interactive and continuation) and
