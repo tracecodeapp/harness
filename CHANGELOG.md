@@ -94,10 +94,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
       reports no per-case finishes. A lost or stopped batch still fails every
       case as the provider's failure, as before.
     - **Python and Java** run Run and Submit as one batch, and their providers
-      don't report finishes as they happen yet. When the Python worker is
-      lost, the cases it had finished keep their results, as before. A Java
-      batch that is lost, and a Python or Java batch the watchdog stops, still
-      fail every case as the provider's failure.
+      report each finished case as it happens. When the worker is lost or the
+      watchdog stops the batch, every case whose finish was reported before
+      the stop keeps its result. The case running at the stop is the
+      provider's failure, and later cases say they had not started.
 
 - **Every Judge entry grades from the ordinary program.** `createJudge(...)`
   `evaluate`, `execute` (one-shot, interactive and continuation) and
