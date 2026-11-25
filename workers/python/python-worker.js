@@ -5039,6 +5039,7 @@ import io
 import importlib
 import importlib.machinery
 import importlib.util
+import inspect
 import json
 import linecache
 import math
@@ -5051,6 +5052,7 @@ import sys
 import tokenize
 import traceback
 import types
+import zipimport
 from js import self as _js_self
 
 _request = json.loads(${JSON.stringify(requestJson)})
@@ -8932,14 +8934,21 @@ _project_loader_details = (
 )
 
 class _ProjectFileFinder(importlib.machinery.FileFinder):
-    # Finds modules in a workspace directory on the mount; their specs carry
-    # the learner's paths.
+    # Finds modules in a workspace directory on the mount; its path and the
+    # specs it returns are the learner's paths.
     def __init__(self, path):
         super().__init__(path, *_project_loader_details)
-        self._learner_path = _virtual_workspace_path(path)
+        self._real_path = path
+        self.path = _virtual_workspace_path(path)
 
     def find_spec(self, fullname, target=None):
-        _spec = super().find_spec(fullname, target)
+        # FileFinder lists and stats self.path, so it reads the mount here.
+        _learner_path = self.path
+        self.path = self._real_path
+        try:
+            _spec = super().find_spec(fullname, target)
+        finally:
+            self.path = _learner_path
         if _spec is None:
             return None
         if isinstance(_spec.loader, (_ProjectSourceLoader, _ProjectSourcelessLoader)):
@@ -8951,8 +8960,79 @@ class _ProjectFileFinder(importlib.machinery.FileFinder):
             ]
         return _spec
 
-    def __repr__(self):
-        return f"FileFinder({self._learner_path!r})"
+# The names CPython shows for its own loaders and finder.
+for _project_import_class, _project_import_name in (
+    (_ProjectSourceLoader, "SourceFileLoader"),
+    (_ProjectSourcelessLoader, "SourcelessFileLoader"),
+    (_ProjectFileFinder, "FileFinder"),
+):
+    _project_import_class.__name__ = _project_import_name
+    _project_import_class.__qualname__ = _project_import_name
+    _project_import_class.__module__ = "_frozen_importlib_external"
+
+def _learner_os_error(_error):
+    # An OSError from a call on a mapped workspace path names the learner's path.
+    for _attribute in ("filename", "filename2"):
+        _value = getattr(_error, _attribute, None)
+        if isinstance(_value, bytes):
+            _value_text = os.fsdecode(_value)
+            if os.path.isabs(_value_text):
+                setattr(_error, _attribute, os.fsencode(_virtual_workspace_path(_value_text)))
+        elif isinstance(_value, str) and os.path.isabs(_value):
+            setattr(_error, _attribute, _virtual_workspace_path(_value))
+    return _error
+
+def _name_file_as_opened(_handle, _name):
+    # open() and FileIO report the name they were given, not the mount path.
+    _raw = getattr(_handle, "buffer", _handle)
+    _raw = getattr(_raw, "raw", _raw)
+    try:
+        _raw.name = _name
+    except Exception:
+        pass
+
+_OriginalFileIO = io.FileIO
+
+class _ProjectFileIOType(type):
+    # Files opened by open() are still io.FileIO instances.
+    def __instancecheck__(cls, _instance):
+        return isinstance(_instance, _OriginalFileIO)
+
+    def __subclasscheck__(cls, _subclass):
+        return issubclass(_subclass, _OriginalFileIO)
+
+class _ProjectFileIO(_OriginalFileIO, metaclass=_ProjectFileIOType):
+    def __init__(self, file, mode="r", closefd=True, opener=None):
+        _mapped = _map_workspace_path(file)
+        try:
+            super().__init__(_mapped, mode, closefd, opener)
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
+        if _mapped is not file:
+            self.name = file
+
+_ProjectFileIO.__name__ = "FileIO"
+_ProjectFileIO.__qualname__ = "FileIO"
+_ProjectFileIO.__module__ = "_io"
+
+# The frame that starts the learner's program; stacks shown to the learner end there.
+_learner_entry_frame = None
+
+def _is_runner_frame(_frame):
+    return _frame.f_globals is _project_runner_globals
+
+def _learner_stack_frames(_frame):
+    # Innermost first: the learner's frames from _frame out to the program's
+    # start, without this runner's frames or the runpy frames that start it.
+    _frames = []
+    while _frame is not None and _frame is not _learner_entry_frame:
+        if not _is_runner_frame(_frame):
+            _frames.append(_frame)
+        _frame = _frame.f_back
+    while _frames and _frames[-1].f_globals is runpy.__dict__:
+        _frames.pop()
+    return _frames
 
 def _install_virtual_workspace_paths():
     _original_open = builtins.open
@@ -8976,6 +9056,14 @@ def _install_virtual_workspace_paths():
     _original_io_module_open_code = _io.open_code
     _original_tokenize_open = tokenize.open
     _original_isdir = os.path.isdir
+    _original_file_io = io.FileIO
+    _original_walk_stack = traceback.walk_stack
+    _original_walk_tb = traceback.walk_tb
+    _original_walk_tb_positions = getattr(traceback, "_walk_tb_with_full_positions", None)
+    _original_getouterframes = inspect.getouterframes
+    _original_getinnerframes = inspect.getinnerframes
+    import bdb
+    _original_get_stack = bdb.Bdb.get_stack
     _open_file_descriptors = {}
     _workspace_file_descriptors = {}
     _device_file_descriptors = {}
@@ -9021,14 +9109,24 @@ def _install_virtual_workspace_paths():
                 raise OSError("Kernel proc path is read-only: " + _path)
             raise FileNotFoundError(_path)
         _mapped_path = _map_workspace_path(_file)
-        _handle = _original_open(_mapped_path, *args, **kwargs)
+        try:
+            _handle = _original_open(_mapped_path, *args, **kwargs)
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
+        if _mapped_path is not _file:
+            _name_file_as_opened(_handle, _file)
         return _TraceProjectFile(_handle, _absolute_mapped_path(_mapped_path), _is_mutating_file_mode(_mode))
 
     def _patched_getcwd():
         return _virtual_workspace_path(_original_getcwd())
 
     def _patched_chdir(_path):
-        return _original_chdir(_map_workspace_path(_path))
+        try:
+            return _original_chdir(_map_workspace_path(_path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
     def _patched_os_open(_path, _flags, *args, **kwargs):
         nonlocal _next_virtual_fd
@@ -9068,7 +9166,11 @@ def _install_virtual_workspace_paths():
             raise FileNotFoundError(_path_text)
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
-        _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
+        try:
+            _fd = _original_os_open(_mapped_path, _flags, *args, **kwargs)
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
         if _absolute_path:
             _workspace_file_descriptors[_fd] = _absolute_path
             if _is_mutating_fd_flags(_flags):
@@ -9404,7 +9506,11 @@ def _install_virtual_workspace_paths():
                     raise OSError("Unsupported proc operation: " + _name)
             _mapped_path = _map_workspace_path(_path)
             _absolute_path = _absolute_mapped_path(_mapped_path)
-            _result = _original(_mapped_path, *args, **kwargs)
+            try:
+                _result = _original(_mapped_path, *args, **kwargs)
+            except OSError as _error:
+                _learner_os_error(_error)
+                raise
             if _name == "readlink":
                 return _project_symlink_target_for_absolute(_absolute_path, _result)
             if _name == "realpath":
@@ -9459,7 +9565,11 @@ def _install_virtual_workspace_paths():
             _source_relative = _project_relative_path_from_absolute(_absolute_src) if _absolute_src else None
             _destination_relative = _project_relative_path_from_absolute(_absolute_dst) if _absolute_dst else None
             _source_link_target = _remembered_symlink_targets.get(_source_relative) if _source_relative else None
-            _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
+            try:
+                _result = _original(_mapped_src, _mapped_dst, *args, **kwargs)
+            except OSError as _error:
+                _learner_os_error(_error)
+                raise
             if _name in ("rename", "replace"):
                 if _src_is_symlink:
                     if _source_relative:
@@ -9496,10 +9606,53 @@ def _install_virtual_workspace_paths():
         _patch_one(os.path, _name)
 
     def _patched_open_code(_path):
-        return _original_open_code(_map_workspace_path(_path))
+        try:
+            return _original_open_code(_map_workspace_path(_path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
     def _patched_tokenize_open(_filename):
-        return _original_tokenize_open(_map_workspace_path(_filename))
+        try:
+            return _original_tokenize_open(_map_workspace_path(_filename))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
+
+    # Stacks the learner can print or walk start at their script, as in CPython.
+    def _patched_walk_stack(_frame):
+        if _frame is None:
+            _frame = sys._getframe().f_back
+        for _learner_frame in _learner_stack_frames(_frame):
+            yield _learner_frame, _learner_frame.f_lineno
+
+    def _patched_walk_tb(_traceback):
+        return _original_walk_tb(_learner_traceback(_traceback))
+
+    def _patched_walk_tb_positions(_traceback):
+        return _original_walk_tb_positions(_learner_traceback(_traceback))
+
+    def _patched_getouterframes(_frame, context=1):
+        _kept = {id(_learner_frame) for _learner_frame in _learner_stack_frames(_frame)}
+        return [_info for _info in _original_getouterframes(_frame, context) if id(_info.frame) in _kept]
+
+    def _patched_getinnerframes(_traceback, context=1):
+        return _original_getinnerframes(_learner_traceback(_traceback), context)
+
+    def _patched_get_stack(self, _frame, _traceback):
+        _stack, _index = _original_get_stack(self, _frame, _traceback)
+        _current = _stack[_index][0] if 0 <= _index < len(_stack) else None
+        _kept_ids = {id(_learner_frame) for _learner_frame in _learner_stack_frames(_frame)}
+        _tb_frames = set()
+        while _traceback is not None:
+            _tb_frames.add(id(_traceback.tb_frame))
+            _traceback = _traceback.tb_next
+        _kept = [
+            _entry for _entry in _stack
+            if id(_entry[0]) in _kept_ids or (id(_entry[0]) in _tb_frames and not _is_runner_frame(_entry[0]))
+        ]
+        _indexes = [_position for _position, _entry in enumerate(_kept) if _entry[0] is _current]
+        return _kept, (_indexes[0] if _indexes else max(0, len(_kept) - 1))
 
     def _project_path_hook(_path):
         _real_path = _map_workspace_path(_path) if isinstance(_path, str) else None
@@ -9519,6 +9672,14 @@ def _install_virtual_workspace_paths():
     io.open_code = _patched_open_code
     _io.open_code = _patched_open_code
     tokenize.open = _patched_tokenize_open
+    io.FileIO = _ProjectFileIO
+    traceback.walk_stack = _patched_walk_stack
+    traceback.walk_tb = _patched_walk_tb
+    if _original_walk_tb_positions is not None:
+        traceback._walk_tb_with_full_positions = _patched_walk_tb_positions
+    inspect.getouterframes = _patched_getouterframes
+    inspect.getinnerframes = _patched_getinnerframes
+    bdb.Bdb.get_stack = _patched_get_stack
     sys.path_hooks.insert(0, _project_path_hook)
 
     os.environ["PWD"] = _patched_getcwd()
@@ -9529,6 +9690,14 @@ def _install_virtual_workspace_paths():
         io.open_code = _original_open_code
         _io.open_code = _original_io_module_open_code
         tokenize.open = _original_tokenize_open
+        io.FileIO = _original_file_io
+        traceback.walk_stack = _original_walk_stack
+        traceback.walk_tb = _original_walk_tb
+        if _original_walk_tb_positions is not None:
+            traceback._walk_tb_with_full_positions = _original_walk_tb_positions
+        inspect.getouterframes = _original_getouterframes
+        inspect.getinnerframes = _original_getinnerframes
+        bdb.Bdb.get_stack = _original_get_stack
         builtins.open = _original_open
         io.open = _original_io_open
         os.getcwd = _original_getcwd
@@ -9590,29 +9759,48 @@ def _project_argv():
     return [_script_path] + _args
 
 def _run_project_main_file(_real_path):
-    # runpy.run_path(path, run_name="__main__") for a workspace file, except
-    # that __file__ and the code's filename are the learner's path, and
-    # sys.argv[0] stays as typed.
+    # What CPython does for python <file>: __file__, the code's filename and
+    # __loader__ use the learner's path, __spec__ and __package__ are None,
+    # and sys.argv[0] stays as typed.
+    global _learner_entry_frame
     import pkgutil
+    _learner_entry_frame = sys._getframe()
     _learner_path = _virtual_workspace_path(_real_path)
-    _importer = pkgutil.get_importer(_real_path)
-    if isinstance(_importer, _ProjectFileFinder):
+    if os.path.isdir(_real_path):
         runpy.run_path(_learner_path, run_name="__main__")
         return
-    if _importer is not None:
+    try:
+        zipimport.zipimporter(_real_path)
+    except zipimport.ZipImportError:
+        pass
+    else:
         runpy.run_path(_real_path, run_name="__main__")
         return
-    with io.open_code(_real_path) as _handle:
-        _code = pkgutil.read_code(_handle)
-    if _code is None:
+    try:
         with io.open_code(_real_path) as _handle:
-            _code = compile(_handle.read(), _learner_path, "exec", dont_inherit=True)
+            _code = pkgutil.read_code(_handle)
+            if _code is None:
+                _handle.seek(0)
+                _source = _handle.read()
+    except OSError as _error:
+        _detail = (
+            "[Errno 2] No such file or directory"
+            if isinstance(_error, FileNotFoundError)
+            else f"[Errno {_error.errno}] {_error.strerror}"
+        )
+        _stderr.write(f"python3: can't open file {_learner_path!r}: {_detail}\\n")
+        raise SystemExit(2)
+    if _code is None:
+        _loader = _ProjectSourceLoader("__main__", _real_path)
+        _code = compile(_source, _learner_path, "exec", dont_inherit=True)
+    else:
+        _loader = _ProjectSourcelessLoader("__main__", _real_path)
     _main_module = types.ModuleType("__main__")
     _main_module.__dict__.update({
         "__file__": _learner_path,
         "__cached__": None,
-        "__loader__": None,
-        "__package__": "",
+        "__loader__": _loader,
+        "__package__": None,
         "__spec__": None,
     })
     _missing = object()
@@ -9680,6 +9868,10 @@ try:
     for _index, _path_entry in enumerate(_project_pythonpath_entries()):
         if _path_entry not in sys.path:
             sys.path.insert(_index + 1, _path_entry)
+    if _source in ("file", "module"):
+        # CPython's sys.path has no '' for python <file> or python -m; an ''
+        # entry would cache an import finder under the mount's path.
+        sys.path[:] = [_entry for _entry in sys.path if _entry != ""]
     _script_absolute_path = _project_script_absolute_path() if _source == "file" else _script_path
     if _source == "file":
         _script_dir = _virtual_workspace_path(os.path.dirname(os.path.abspath(_script_absolute_path)))
@@ -9695,6 +9887,11 @@ try:
     sys.__stderr__ = _stderr
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
         try:
+            # Setup imports may have cached finders under the mount's path.
+            for _cache_path in list(sys.path_importer_cache.keys()):
+                if isinstance(_cache_path, str) and (_cache_path == _root or _cache_path.startswith(_root + os.sep)):
+                    sys.path_importer_cache.pop(_cache_path, None)
+            _learner_entry_frame = sys._getframe()
             if _source == "file":
                 _run_project_main_file(_script_absolute_path)
             elif _source == "module":
@@ -9715,6 +9912,7 @@ try:
             _print_learner_exception(_stderr)
             _exit_code = 1
 finally:
+    _learner_entry_frame = None
     _restore_tracekernel_select_module()
     _restore_tracekernel_socket_module()
     _restore_tracekernel_pipe_module()

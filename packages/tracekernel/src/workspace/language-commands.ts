@@ -720,7 +720,8 @@ export function createPythonProjectCommands(
       if (!(await ctx.fs.exists(absolutePath))) {
         return {
           stdout: '',
-          stderr: `python3: can't open file '${parsedScript.scriptFile}': [Errno 2] No such file or directory\n`,
+          // As CPython: the absolute path the learner's shell resolved.
+          stderr: `python3: can't open file '${absolutePath}': [Errno 2] No such file or directory\n`,
           exitCode: 2,
         };
       }
