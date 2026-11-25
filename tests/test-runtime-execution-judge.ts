@@ -6,6 +6,10 @@ import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
 import {
+  InMemoryJudgeRuntimeControl,
+  type JudgeEvaluationResult,
+} from '../packages/judge/src/index';
+import {
   createAlgorithmJudgeBundle,
   isRuntimeProviderError,
   judgeCaseExecutionOutcome,
@@ -5206,8 +5210,10 @@ function scriptedBatchFixture(options: {
     if (options.crashBefore === label) throw new InterruptedCodeBatchError(outcomes, lost());
     starts.push(label);
     if (options.skipStart !== label) progress.onCaseStarted?.(index);
+    // Only the running case reacts to an abort.
+    let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_, reject) => {
-      signal?.addEventListener('abort', () => {
+      onAbort = () => {
         if (options.onAbort === 'report-finish') progress.onCaseFinished?.(index, runaway(label));
         if (options.onAbort === 'interrupted') {
           reject(new InterruptedCodeBatchError(
@@ -5217,13 +5223,15 @@ function scriptedBatchFixture(options: {
           ));
           return;
         }
-        reject(abortError(signal));
-      }, { once: true });
+        reject(abortError(signal!));
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
     aborted.catch(() => undefined);
     at(reached, label, () => controlled()).resolve(undefined);
     const step = await Promise.race([at(releases, label, () => controlled<ScriptedStep>()).promise, aborted]);
     if (step === 'hang') await aborted;
+    signal?.removeEventListener('abort', onAbort!);
     if (step === 'crash') throw new InterruptedCodeBatchError(outcomes, lost());
     const result = step === 'runaway' ? runaway(label) : finished(label);
     if (options.forwardFinishes !== false) progress.onCaseFinished?.(index, result);
@@ -5321,7 +5329,8 @@ function serviceCutFailures(
   rows: readonly DWatchRow[],
   starts: readonly string[],
   uncertain: string[],
-  notStarted: string[] = rows.slice(1).map(({ caseId }) => caseId).filter((id) => !uncertain.includes(id))
+  notStarted: string[] = rows.slice(1).map(({ caseId }) => caseId).filter((id) => !uncertain.includes(id)),
+  reason: 'runtime-failure' | 'protocol' = 'runtime-failure'
 ): string[] {
   const failures: string[] = [];
   const [a, ...suffix] = rows;
@@ -5333,14 +5342,15 @@ function serviceCutFailures(
     const id = row.caseId;
     if (row.status !== 'runtime-error') failures.push(`${id}/status`);
     if (row.failure?.origin !== 'provider') failures.push(`${id}/origin`);
-    if (row.failure?.origin === 'provider' && row.failure.reason !== 'runtime-failure') failures.push(`${id}/reason`);
+    if (row.failure?.origin === 'provider' && row.failure.reason !== reason) failures.push(`${id}/reason`);
     if (row.timedOut || row.notRun || row.verdict.kind !== 'not-evaluated' || Object.hasOwn(row, 'value')) {
       failures.push(`${id}/no-learner-outcome`);
     }
     if (/completion is uncertain/u.test(row.failure?.message ?? '') !== uncertain.includes(id)) {
       failures.push(`${id}/completion-uncertain`);
     }
-    if (/The case had not started\./u.test(row.failure?.message ?? '') !== notStarted.includes(id)) {
+    if (/As far as the runtime reported, the case had not started\./u.test(row.failure?.message ?? '') !==
+      notStarted.includes(id)) {
       failures.push(`${id}/not-started`);
     }
     const error = row.diagnostics.find((diagnostic) => diagnostic.severity === 'error');
@@ -5422,7 +5432,7 @@ test('D-WATCH loss during B: A stands, B is a service loss with uncertain comple
   const receipt = await pending;
   const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
   assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
-  assert.match(rows[1]!.failure!.message, /worker was lost/u);
+  assert.match(rows[1]!.failure!.message, /worker was lost during the batch\. scripted worker lost\. The case had started/u);
   f.deliverLate(1, 'B');
   f.deliverLate(0, 'A');
   const rejected = bridgeEvents.filter((event) => event.phase === 'ordinary-case-rejected') as Array<Record<string, unknown>>;
@@ -5516,7 +5526,7 @@ test('D-WATCH seeded controls: the service-cut oracle bites on a replaced A reco
     diagnostics: [{ severity: 'error', code: 'runtime-provider-error', message }],
   }) as unknown as DWatchRow;
   const b = providerRow('B', 'lost. The case had started, and its completion is uncertain.');
-  const c = providerRow('C', 'lost. The case had not started.');
+  const c = providerRow('C', 'lost. As far as the runtime reported, the case had not started.');
   assert.deepEqual(serviceCutFailures([a, b, c], ['A', 'B'], ['B']), [], 'the unmutated subject passes');
   // Mutant 1: replace A's committed record with B's timeout on transport failure.
   const timedOutA = {
@@ -5526,4 +5536,187 @@ test('D-WATCH seeded controls: the service-cut oracle bites on a replaced A reco
   assert.ok(serviceCutFailures([timedOutA, b, c], ['A', 'B'], ['B']).includes('A/status'));
   // Mutant 2: restart A in a fresh generation but restore its original value.
   assert.deepEqual(serviceCutFailures([a, b, c], ['A', 'B', 'A'], ['B']), ['A/ordinary-start-count']);
+});
+
+// --- Review round (Grok, Opus on db346ebb) --------------------------------
+
+function rowsOf(receipt: { evaluation: JudgeEvaluationResult }): readonly DWatchRow[] {
+  return receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+}
+
+function rejections(events: readonly { phase: string }[]) {
+  return (events.filter(({ phase }) => phase === 'ordinary-case-rejected') as unknown as Array<Record<string, unknown>>)
+    .map(({ caseId, reason, progress }) => [caseId, reason, progress]);
+}
+
+test('D-WATCH review: when the deadline wins, an authenticated prefix the provider surfaces afterwards is kept', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture({ forwardFinishes: false, onAbort: 'interrupted' });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  // A finished before B started, so its prefix entry is genuine.
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  const deadline = bridgeEvents.find((event) => event.phase === 'service-deadline') as Record<string, unknown>;
+  assert.equal(deadline.cause, 'injected');
+});
+
+test('D-WATCH review: a prefix entry for the case the deadline interrupted is fenced, not graded', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture({ forwardFinishes: false, onAbort: 'interrupted', fabricate: true });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.deepEqual(rejections(bridgeEvents), [['B', 'fenced', 'finished']]);
+});
+
+test('D-WATCH review: a finish a provider reports from its abort handler after the injected deadline is fenced', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture({ onAbort: 'report-finish' });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: true });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.deepEqual(rejections(bridgeEvents), [['B', 'fenced', 'finished']]);
+});
+
+test('D-WATCH review: the real backstop fences a finish reported during the kill (both stop settings)', { timeout: 60000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bridgeEvents: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => bridgeEvents.push(event) });
+  const run = async (stop: boolean) => {
+    const f = scriptedBatchFixture({ lifecycleAllowanceMs: 1, onAbort: 'report-finish' });
+    t.after(() => f.host.dispose());
+    const bundle = await receiptBundle(undefined, { wallClockMs: 50 });
+    const pending = f.host.evaluateAlgorithm({ bundle, stopAtFirstRunaway: stop });
+    await f.reached('A');
+    f.release('A', 'finish');
+    await f.reached('B');
+    f.release('B', 'hang');
+    return { rows: rowsOf(await pending), f };
+  };
+  const [keep, stopped] = await Promise.all([run(false), run(true)]);
+  for (const { rows, f } of [keep, stopped]) {
+    // B's teardown client-timeout is no learner limit, and C is no stopped suffix.
+    assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+    const deadline = f.events.find(({ phase }) => phase === 'service-deadline');
+    assert.equal(deadline?.cause, 'backstop');
+    assert.equal(deadline?.accepted, 1);
+  }
+  assert.equal(rejections(bridgeEvents).filter(([caseId, reason]) => caseId === 'B' && reason === 'fenced').length, 2);
+});
+
+test('D-WATCH review: a worker lost between cases claims no start for the next case', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  const f = scriptedBatchFixture({ crashBefore: 'B' });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  assert.deepEqual(serviceCutFailures(rows, f.starts, []), []);
+});
+
+test('D-WATCH review: a first finish without its start is refused in a batch that acknowledges starts', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture({ skipStart: 'A' });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  assert.equal(rows[0]?.failure?.origin, 'provider', 'A has no accepted start, so its finish is not graded');
+  assert.deepEqual(rejections(bridgeEvents), [['A', 'out-of-order', 'finished']]);
+});
+
+test('D-WATCH review: a streamed finish stands against a different terminal reply, which is marked rejected', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'none', progress: 'finished' });
+  const f = scriptedBatchFixture({ replyOutput: { A: 'forged' } });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  for (const label of ['A', 'B', 'C']) {
+    await f.reached(label);
+    f.release(label, 'finish');
+  }
+  const rows = rowsOf(await pending);
+  assert.deepEqual(rows.map((row) => row.value), ['A', 'B', 'C']);
+  assert.deepEqual(rejections(bridgeEvents), [['A', 'duplicate', 'finished']]);
+});
+
+test('D-WATCH review: Run sent one call per case (JS/TS, C#, C++) keeps its prefix when the worker is lost', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  const f = scriptedBatchFixture({ nativeStop: false, acks: false });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: true });
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'crash');
+  const rows = rowsOf(await pending);
+  // The coordinator sent each case itself, so it knows B started and C did not.
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.equal(f.signals.length, 2, 'one provider call per case, none for C');
+});
+
+test('D-WATCH review: a native batch without start acknowledgements keeps its prefix and claims nothing about starts', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  const f = scriptedBatchFixture({ acks: false, forwardFinishes: false });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'crash');
+  const rows = rowsOf(await pending);
+  assert.deepEqual(serviceCutFailures(rows, f.starts, [], []), []);
+});
+
+test('D-WATCH review: without a native batch, the per-entry calls keep the finished prefix', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  const f = scriptedBatchFixture({ native: false });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'crash');
+  const rows = rowsOf(await pending);
+  assert.deepEqual(serviceCutFailures(rows, f.starts.filter((label) => label !== 'C'), ['B']), []);
+  assert.match(rows[1]!.failure!.message, /scripted worker lost\. The case had started/u);
+});
+
+test('D-WATCH review: a custom control port that records asynchronously keeps the provider\'s interrupted prefix', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  class AsyncRecordControl extends InMemoryJudgeRuntimeControl {
+    override record(invocationId: string, progress: Parameters<InMemoryJudgeRuntimeControl['record']>[1]) {
+      return Effect.promise(() => Promise.resolve()).pipe(Effect.andThen(super.record(invocationId, progress)));
+    }
+  }
+  const f = scriptedBatchFixture({ forwardFinishes: false });
+  const host = browserHostFor(f.provider);
+  t.after(() => host.dispose());
+  const pending = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const judge = yield* createBrowserRuntimeJudge({
+      host, language: RUNTIME, binding: codeBinding(), runtimeControl: new AsyncRecordControl(),
+    });
+    return yield* judge.evaluate<FakeInput>(makePlan(['A', 'B', 'C'].map((label) => ({
+      id: label, input: { label }, expected: label,
+    }))));
+  })));
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'crash');
+  const evaluation = await pending;
+  const rows = evaluation.status === 'completed' ? evaluation.cases : [];
+  assert.equal(rows[0]?.status, 'completed');
+  assert.equal(rows[0]?.value, 'A');
+  assert.equal(rows[1]?.failure?.origin, 'provider');
 });
