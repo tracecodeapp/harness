@@ -88,6 +88,7 @@ import type {
   RuntimeProjectLiveIoController,
 } from '@tracecode/runtime-contracts';
 import type { TraceKernelFileSystemMutation } from '..';
+import type { ShellOutputRoutes } from './shell-output';
 import type {
   CppProjectCommandRunner,
   CSharpProjectCommandRunner,
@@ -206,6 +207,10 @@ export interface RuntimeFileSystemSyscallEvent {
 export interface RuntimeCommandExecutionContext {
   /** Child events are already applied/journaled; publish through the owning shell once. */
   parentEventContext?: RuntimeCommandExecutionContext;
+  /** Where this child's stdout and stderr reach `parentEventContext`'s output; absent means unchanged. */
+  outputRoutes?: ShellOutputRoutes;
+  /** Live output in write order, kept while both streams share one sink. */
+  mergedOutputTranscript?: { stream: RuntimeCommandEventStream; data: string }[];
   readonly eventHandler?: RuntimeCommandEventHandler;
   readonly actor: RuntimeWorkspaceActor;
   readonly process: {
