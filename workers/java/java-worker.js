@@ -466,6 +466,19 @@ self.TraceCodeJavaPreparedCaseAdmitted = (index, admissionId) => {
   admission.startedCaseIndexes.push(index);
 };
 
+self.TraceCodeJavaPreparedCaseFinished = (index, admissionId, report) => {
+  const id = self.TraceCodeActiveKernelRequestId;
+  const admission = activePreparedBatchAdmission;
+  if (!admission || admission.id !== id || admission.admissionId !== admissionId ||
+    !activeProtocolTokens.has(id)) return;
+  const result = preparedJavaBatchCaseResult(admission.program, report);
+  postMessageResponse({
+    id,
+    type: 'runtime-progress',
+    payload: { stage: 'ordinary-case-finished', detail: { caseIndex: index, admissionId, result } },
+  });
+};
+
 function javaHttpBase64FromString(value) {
   const bytes = javaHttpEncodeUtf8(String(value ?? ''));
   let binary = '';
@@ -8082,25 +8095,13 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
   }
   const libraryCallEnd = performance.now();
   const rawResults = Array.isArray(report.results) ? report.results : [];
-  const results = rawResults.map((entry) => {
+  const results = reportAdmission ? undefined : rawResults.map((entry) => {
     if (observerOnly) {
       return preparedJavaObservationResult(
         entry, program, maxTraceBytes, report.runnerProcessCount, payload.attemptToken
       );
     }
-    const executionTimeMs =
-      (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0);
-    const result = preparedJavaResultFromReport(
-      program,
-      {
-        ...entry,
-        algorithmIsolationProfile:
-          report.algorithmIsolationProfile ??
-          program.algorithmIsolationProfile,
-      },
-      executionTimeMs,
-      0
-    );
+    const result = preparedJavaBatchCaseResult(program, entry, report.algorithmIsolationProfile);
     return program.mode === 'trace'
       ? {
           ...result,
@@ -8109,15 +8110,17 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
         }
       : result;
   });
-  if (results[0]?.timings) {
+  if (results?.[0]?.timings) {
     results[0].timings.runnerProcessCount =
       report.runnerProcessCount ?? 0;
     if (report.runnerReused === true) results[0].timings.runnerReused = true;
   }
   return {
     success:
-      report.success === true && results.length === inputBatch.length,
-    results,
+      report.success === true && rawResults.length === inputBatch.length,
+    ...(reportAdmission
+      ? { resultsStreamed: rawResults.length }
+      : { results }),
     executionTimeMs: performance.now() - totalStart,
     timings: {
       hostCallMs: libraryCallEnd - libraryCallStart,
@@ -8133,8 +8136,18 @@ async function executePreparedJavaRuntimeProgramBatch(payload) {
       ),
       compileCacheHit: true,
       artifactCacheHit: true,
+      ...(reportAdmission ? { runnerProcessCount: report.runnerProcessCount ?? 0 } : {}),
     },
   };
+}
+
+function preparedJavaBatchCaseResult(program, entry, profile = program.algorithmIsolationProfile) {
+  return preparedJavaResultFromReport(
+    program,
+    { ...entry, algorithmIsolationProfile: profile },
+    (entry.classLoadTimeMs ?? 0) + (entry.runTimeMs ?? 0),
+    0
+  );
 }
 
 function preparedJavaObservationResult(entry, program, maxTraceBytes, runnerProcessCount, attemptToken) {
@@ -8451,7 +8464,12 @@ self.onmessage = (event) => {
         // Only starts actually posted for this command enter the attestation.
         const admission = message.type === 'execute-prepared-runtime-program-batch' &&
           preparedProgramMode === 'code' && Number.isSafeInteger(message.payload?.admissionId)
-          ? { id: message.id, admissionId: message.payload.admissionId, startedCaseIndexes: [] }
+          ? {
+              id: message.id,
+              admissionId: message.payload.admissionId,
+              program: preparedJavaRuntimePrograms.get(String(message.payload.programId)),
+              startedCaseIndexes: [],
+            }
           : undefined;
         self.TraceCodeActiveKernelRequestId = message.id;
         activePreparedBatchAdmission = admission;

@@ -34,6 +34,37 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   Other unmarked warnings, and any unmarked warning on a failed or limited
   case, are not.
 
+### Changed
+
+- **Every Judge entry grades from the ordinary program.** `createJudge(...)`
+  `evaluate`, `execute` (one-shot, interactive and continuation) and
+  `evaluateAlgorithm` now use the same owner as `BrowserJudgeHost.execute`
+  and `evaluateAlgorithm`, in every language. That includes JavaScript and
+  TypeScript, whose `createJudge` judges stayed on the earlier path until now.
+  A binding with `trace: true` no longer runs a traced program to grade; it
+  only selects which committed rows a separate observer draws. Value, console,
+  failure, verdict and compile decision always come from the ordinary run.
+  - `evaluate(plan)` on a trace binding draws every case when `tracing` is
+    omitted (as before) and none when it is `{ caseIds: [] }`. Selected rows
+    carry `attachment` (`drawn`, `truncated` or `refused`). `trace` is set only
+    for `drawn` or `truncated`, to the attachment's trace.
+  - A traced row no longer gets trace-budget warning diagnostics, and an
+    untraceable case is no longer a provider failure with code
+    `trace-unavailable`. Its attachment is refused instead, and the ordinary
+    result stands. Stored 0.20.x rows still decode as before.
+  - Observation options such as `maxTraceBytes` are checked by name when the
+    Judge is created. Whether the language's observer supports one is decided
+    when drawing, so an unsupported one refuses the drawing instead of
+    rejecting `createJudge`.
+  - A direct `evaluate` runs its cases as one ordinary batch, the prepared
+    Submit executor, so its rows share one batch session. A provider without
+    native batches that rejects one case fails that batch. A host with no
+    observer for a language still grades and refuses each requested drawing
+    with `recorder-unavailable`.
+  - **BREAKING (low-level):** `JudgeRuntimeInvocationInput.recordTrace` and
+    its batch-case counterpart are removed. `evaluateJudgePlan` validates
+    `tracing` but never asks a runtime to record.
+
 ### Fixed
 
 - A warm C# runner no longer reports a correct untraced case as

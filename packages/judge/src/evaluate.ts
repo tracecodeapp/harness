@@ -367,8 +367,7 @@ function runCase<Snapshot, Input, Expected, Result>(
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
   testCase: JudgeEvaluationPlan<Input, Expected>['cases'][number],
-  comparator: JudgeComparator<Input, Expected, Result>,
-  recordTrace?: boolean
+  comparator: JudgeComparator<Input, Expected, Result>
 ): Effect.Effect<JudgeCaseResult<Result, Expected>, JudgeInfrastructureError> {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -395,7 +394,6 @@ function runCase<Snapshot, Input, Expected, Result>(
           planId: plan.id,
           caseId: testCase.id,
           value: testCase.input,
-          ...(recordTrace === undefined ? {} : { recordTrace }),
         }
       );
       return caseResult<Input, Expected, Result>(
@@ -444,8 +442,7 @@ function runCasesUntilRunaway<Snapshot, Input, Expected, Result>(
   port: JudgeKernelPort<Snapshot>,
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
-  comparator: JudgeComparator<Input, Expected, Result>,
-  traceCaseIds?: ReadonlySet<string>
+  comparator: JudgeComparator<Input, Expected, Result>
 ): Effect.Effect<readonly JudgeCaseResult<Result, Expected>[], JudgeInfrastructureError> {
   return Effect.gen(function* () {
     const results: JudgeCaseResult<Result, Expected>[] = [];
@@ -473,8 +470,7 @@ function runCasesUntilRunaway<Snapshot, Input, Expected, Result>(
         plan,
         snapshot,
         testCase,
-        comparator,
-        traceCaseIds?.has(testCase.id)
+        comparator
       );
       results.push(result);
       const limit = runawayLimitOf(result as JudgeCaseResult<unknown, unknown>);
@@ -489,7 +485,6 @@ function runBatch<Snapshot, Input, Expected, Result>(
   plan: JudgeEvaluationPlan<Input, Expected>,
   snapshot: Snapshot,
   comparator: JudgeComparator<Input, Expected, Result>,
-  traceCaseIds?: ReadonlySet<string>,
   stopAtFirstRunaway = false
 ): Effect.Effect<
   readonly JudgeCaseResult<Result, Expected>[],
@@ -517,9 +512,6 @@ function runBatch<Snapshot, Input, Expected, Result>(
             plan.cases.map((testCase) => Object.freeze({
               caseId: testCase.id,
               value: testCase.input,
-              ...(traceCaseIds === undefined
-                ? {}
-                : { recordTrace: traceCaseIds.has(testCase.id) }),
             }))
           ),
         }
@@ -698,14 +690,15 @@ export function evaluatePreparedJudgePlan<
     const comparator =
       options.comparator ??
       structuralJsonComparator as JudgeComparator<Input, Expected, Result>;
-    const traceCaseIds = yield* validateTraceSelection(plan, options.tracing);
+    // A selection is validated, never sent: runtimes grade, they do not
+    // record. Drawings come from a separate observer bound to these rows.
+    yield* validateTraceSelection(plan, options.tracing);
     const cases = plan.isolation?.mode === 'provider-isolated-batch'
       ? yield* runBatch<Snapshot, Input, Expected, Result>(
           port,
           plan,
           build.snapshot,
           comparator,
-          traceCaseIds,
           options.stopAtFirstRunaway === true
         )
       : options.stopAtFirstRunaway === true
@@ -713,8 +706,7 @@ export function evaluatePreparedJudgePlan<
             port,
             plan,
             build.snapshot,
-            comparator,
-            traceCaseIds
+            comparator
           )
         : yield* Effect.forEach(
             plan.cases,
@@ -724,8 +716,7 @@ export function evaluatePreparedJudgePlan<
                 plan,
                 build.snapshot!,
                 testCase,
-                comparator,
-                traceCaseIds?.has(testCase.id)
+                comparator
               ),
             {
               concurrency: plan.isolation?.maxConcurrency ?? 1,

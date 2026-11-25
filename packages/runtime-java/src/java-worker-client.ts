@@ -50,8 +50,10 @@ import { logRuntimeDiagnostic } from '@tracecode/runtime-browser/internal';
 import { restoreTransferredTraceEvents, traceEventTransferRequest } from '@tracecode/runtime-browser/internal';
 import { isDevEnvironment } from '@tracecode/runtime-browser/internal';
 import {
+  InterruptedCodeBatchError,
   isExecutionTimeoutError,
   WorkerCrashedError,
+  WorkerReportedError,
   WorkerStartupError,
   WorkerReadyTimeoutError,
   WorkerRequestTimeoutError,
@@ -253,10 +255,11 @@ interface JavaWorkerCodeResult {
 
 interface JavaWorkerPreparedBatchResult<Result> {
   success: boolean;
-  results: Result[];
+  results?: Result[];
+  resultsStreamed?: number;
   error?: string;
   executionTimeMs?: number;
-  timings?: RuntimeExecutionTimings;
+  timings?: RuntimeExecutionTimings & { runnerProcessCount?: number };
 }
 
 interface JavaWorkerRawPreparedTraceBatchItem
@@ -329,6 +332,86 @@ function javaPreparedExecutionMetadata(
 export type JavaWorkerPreparedCodeResult =
   CodeExecutionResult & JavaWorkerPreparedExecutionMetadata;
 
+type JavaBatchCaseReport = Pick<JavaWorkerCodeResult, 'success' | 'timeoutReason' | 'timings'>;
+
+function isJavaBatchRunaway(entry: JavaBatchCaseReport): boolean {
+  return !entry.success && (
+    entry.timeoutReason === 'client-timeout' ||
+    entry.timeoutReason === 'line-limit' ||
+    entry.timeoutReason === 'single-line-limit'
+  );
+}
+
+function javaBatchProtocolError(message: string): RuntimeProviderError {
+  return new RuntimeProviderError(message, { reason: 'protocol' });
+}
+
+// Ordinary result fields are scalars, arrays, or plain objects produced from
+// the runner's JSON report. The optional full terminal must agree field for field.
+function sameJavaBatchValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object' ||
+    Object.getPrototypeOf(left) !== Object.getPrototypeOf(right)) return false;
+  if (Array.isArray(left) && left.length !== (right as unknown[]).length) return false;
+  const rightFields = right as Record<string, unknown>;
+  const fields = Object.entries(left);
+  return fields.length === Object.keys(rightFields).length && fields.every(([key, value]) =>
+    Object.hasOwn(rightFields, key) && sameJavaBatchValue(value, rightFields[key])
+  );
+}
+
+function javaPreparedCodeOutcome(entry: JavaWorkerCodeResult): JavaWorkerPreparedCodeResult {
+  return {
+    ...liftCodeOutcome(entry, 'Java prepared execution failed'),
+    ...javaPreparedExecutionMetadata(entry),
+  };
+}
+
+class JavaCodeBatchProgress {
+  readonly reports: JavaWorkerCodeResult[] = [];
+  readonly outcomes: JavaWorkerPreparedCodeResult[] = [];
+  private running: number | undefined;
+  stopped = false;
+
+  constructor(
+    readonly admissionId: number,
+    private readonly call: RuntimePreparedCodeBatchCall,
+    private readonly onCaseAdmitted?: (index: number) => void
+  ) {}
+
+  receive(payload: unknown): void {
+    if (this.call.signal?.aborted) return;
+    const progress = payload as {
+      stage?: string;
+      detail?: { admissionId?: number; caseIndex?: number; result?: JavaWorkerCodeResult };
+    } | undefined;
+    const started = progress?.stage === 'ordinary-case-started';
+    if (!started && progress?.stage !== 'ordinary-case-finished') return;
+    const { admissionId, caseIndex, result } = progress.detail ?? {};
+    if (admissionId !== this.admissionId || this.stopped ||
+      caseIndex !== this.reports.length || caseIndex >= this.call.inputBatch.length
+    ) {
+      throw javaBatchProtocolError('Java prepared batch returned invalid case progress.');
+    }
+    if (started) {
+      if (this.running !== undefined) {
+        throw javaBatchProtocolError('Java prepared batch started a case more than once.');
+      }
+      this.running = caseIndex;
+      this.onCaseAdmitted?.(caseIndex);
+      return;
+    }
+    if (this.running !== caseIndex || typeof result?.success !== 'boolean') {
+      throw javaBatchProtocolError('Java prepared batch finished a case without a matching start and result.');
+    }
+    const outcome = javaPreparedCodeOutcome(result);
+    this.reports.push(result);
+    this.outcomes.push(outcome);
+    this.running = undefined;
+    this.stopped = this.call.stopAtFirstRunaway === true && isJavaBatchRunaway(result);
+  }
+}
+
 export type JavaWorkerPreparedTraceResult =
   JavaWorkerTraceResult & JavaWorkerPreparedExecutionMetadata;
 
@@ -370,7 +453,7 @@ export class JavaWorkerClient {
   private readonly core: WorkerSessionCore;
   private readonly artifactCache: HostArtifactCache;
   private nextAdmissionId = 0;
-  private readonly admissionCallbacks = new Map<number, (index: number) => void>();
+  private readonly codeBatchProgress = new Map<string, Pick<JavaCodeBatchProgress, 'receive'>>();
 
   constructor(private readonly options: JavaWorkerClientOptions) {
     if (
@@ -402,15 +485,10 @@ export class JavaWorkerClient {
       },
       onCommandMessage: (commandId, type, payload, pending) => {
         if (type === 'runtime-progress') {
-          const progress = payload as {
-            stage?: string;
-            detail?: { admissionId?: number; caseIndex?: number };
-          } | undefined;
-          if (progress?.stage === 'ordinary-case-started') {
-            const { admissionId, caseIndex } = progress.detail ?? {};
-            if (typeof admissionId === 'number' && typeof caseIndex === 'number') {
-              this.admissionCallbacks.get(admissionId)?.(caseIndex);
-            }
+          try {
+            this.codeBatchProgress.get(commandId)?.receive(payload);
+          } catch (error) {
+            this.core.closeSession(error instanceof Error ? error : new Error(String(error)));
           }
           return true;
         }
@@ -943,17 +1021,19 @@ export class JavaWorkerClient {
   }
 
   private async executePreparedBatch<
-    Raw extends Pick<JavaWorkerCodeResult, 'success' | 'timeoutReason'>,
+    Raw extends JavaBatchCaseReport,
     Result
   >(
     programId: string,
     call: RuntimePreparedCodeBatchCall,
     perCaseWallClockMs: number,
     options: Record<string, unknown>,
-    decode: (entry: Raw, index: number) => Result
+    decode: (entry: Raw, index: number) => Result,
+    stream?: { receive(payload: unknown): void; readonly reports: readonly Raw[] }
   ): Promise<readonly Result[]> {
     if (call.inputBatch.length === 0) return [];
     const kernelProcess = await createJavaKernelProcess();
+    let commandId: string | undefined;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
         this.core.withExecutionDeadline(
@@ -966,7 +1046,14 @@ export class JavaWorkerClient {
               stopAtFirstRunaway: call.stopAtFirstRunaway === true,
               ...options,
             },
-            { timeoutMs: null, kernelSyscalls: kernelProcess.bridge }
+            {
+              timeoutMs: null,
+              kernelSyscalls: kernelProcess.bridge,
+              onRequestRegistered: stream && ((id) => {
+                commandId = id;
+                this.codeBatchProgress.set(id, stream);
+              }),
+            }
           ),
           javaBatchTransportDeadlineMs(
             perCaseWallClockMs, call.inputBatch.length, INIT_TIMEOUT_MS
@@ -976,7 +1063,34 @@ export class JavaWorkerClient {
     );
     try {
       const reply = await this.core.runClientEffect(program, call.signal);
-      const results = reply?.results;
+      let results = reply?.results;
+      if (stream) {
+        if (typeof reply?.success !== 'boolean') {
+          throw javaBatchProtocolError('Java prepared batch returned an invalid terminal reply.');
+        }
+        if (reply.success === false && typeof reply.error === 'string' &&
+          Array.isArray(results) && results.length === 0 && reply.resultsStreamed === undefined
+        ) {
+          throw new RuntimeProviderError(reply.error);
+        }
+        const matches = reply.resultsStreamed === undefined
+          ? Array.isArray(results) && sameJavaBatchValue(results, stream.reports)
+          : results === undefined && reply.resultsStreamed === stream.reports.length;
+        if (!matches) {
+          throw javaBatchProtocolError('Java prepared batch terminal did not match its streamed results.');
+        }
+        results = stream.reports.slice();
+        // Runner count is known only at the terminal. Keep the historical
+        // placement of this batch-wide diagnostic on the first decoded row.
+        const first = results[0];
+        const runnerProcessCount = reply.timings?.runnerProcessCount;
+        if (first?.timings && runnerProcessCount !== undefined) {
+          results[0] = {
+            ...first,
+            timings: { ...first.timings, runnerProcessCount },
+          };
+        }
+      }
       if (
         !Array.isArray(results) ||
         results.some((entry) => typeof entry?.success !== 'boolean')
@@ -989,11 +1103,7 @@ export class JavaWorkerClient {
         throw new RuntimeProviderError(reply.error);
       }
       const runawayIndex = call.stopAtFirstRunaway
-        ? results.findIndex((entry) => !entry.success && (
-            entry.timeoutReason === 'client-timeout' ||
-            entry.timeoutReason === 'line-limit' ||
-            entry.timeoutReason === 'single-line-limit'
-          ))
+        ? results.findIndex(isJavaBatchRunaway)
         : -1;
       if (
         results.length > call.inputBatch.length ||
@@ -1018,36 +1128,49 @@ export class JavaWorkerClient {
         );
       }
       throw error;
+    } finally {
+      if (commandId !== undefined) this.codeBatchProgress.delete(commandId);
     }
   }
 
-  executePreparedCodeBatch(
+  async executePreparedCodeBatch(
     programId: string,
     call: RuntimePreparedCodeBatchCall,
     onCaseAdmitted?: (index: number) => void
   ): Promise<readonly JavaWorkerPreparedCodeResult[]> {
-    const admissionId = onCaseAdmitted ? ++this.nextAdmissionId : undefined;
-    if (admissionId !== undefined) {
-      let expectedIndex = 0;
-      this.admissionCallbacks.set(admissionId, (index) => {
-        if (!call.signal?.aborted && index === expectedIndex && index < call.inputBatch.length) {
-          expectedIndex += 1;
-          onCaseAdmitted?.(index);
-        }
-      });
+    const admissionId = ++this.nextAdmissionId;
+    const progress = new JavaCodeBatchProgress(admissionId, call, onCaseAdmitted);
+    try {
+      return await this.executePreparedBatch<JavaWorkerCodeResult, JavaWorkerPreparedCodeResult>(
+        programId,
+        call,
+        call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS,
+        { admissionId },
+        javaPreparedCodeOutcome,
+        progress
+      );
+    } catch (error) {
+      if (call.signal?.aborted) throw error;
+      const cause = error instanceof WorkerCrashedError || error instanceof WorkerReportedError ||
+        error instanceof WorkerTerminatedError
+        ? new RuntimeProviderError(error.message, { cause: error })
+        : error;
+      if (!(cause instanceof RuntimeProviderError) || cause.reason === 'protocol') throw cause;
+      if (progress.stopped) return progress.outcomes;
+      if (progress.outcomes.length === 0) throw cause;
+      // InterruptedCodeBatchError takes a worker-loss cause. Keep the original
+      // failure in the chain when the loss was detected by the deadline or reply.
+      const loss = error instanceof WorkerCrashedError ? error : Object.assign(
+        new WorkerCrashedError({
+          workerMessage: cause.message,
+          filename: undefined,
+          lineno: undefined,
+          colno: undefined,
+        }),
+        { cause }
+      );
+      throw new InterruptedCodeBatchError(progress.outcomes, loss);
     }
-    return this.executePreparedBatch<JavaWorkerCodeResult, JavaWorkerPreparedCodeResult>(
-      programId,
-      call,
-      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS,
-      admissionId === undefined ? {} : { admissionId },
-      (entry) => ({
-        ...liftCodeOutcome(entry, 'Java prepared execution failed'),
-        ...javaPreparedExecutionMetadata(entry),
-      })
-    ).finally(() => {
-      if (admissionId !== undefined) this.admissionCallbacks.delete(admissionId);
-    });
   }
 
   async observePreparedProgram(
