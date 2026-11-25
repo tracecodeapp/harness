@@ -4997,3 +4997,128 @@ test('B8 ledger: the prepared registry accepts only ordinary programs and has no
   assert.equal(surface.executeTrace, undefined);
   assert.equal(surface.executeTraceBatch, undefined);
 });
+
+// C-SEAM: the judged-output policy reaches the ordinary prepare call only
+// through the composition, and the trusted page bridge can only lower it.
+const JS_JUDGED_DEFAULT = { maxBytes: 8_388_608, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64 };
+
+function preparedPolicy(call: RuntimeProgramPreparationCall | undefined): unknown {
+  return (call as { judgedOutputPolicy?: unknown } | undefined)?.judgedOutputPolicy;
+}
+
+test('judged-output policy: the ordinary prepare carries the product default, traced binding included', async () => {
+  const code = makeState();
+  await evaluate(code, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
+  assert.deepEqual(code.prepareCalls.map(({ mode }) => mode), ['code']);
+  assert.deepEqual(preparedPolicy(code.prepareCalls[0]), JS_JUDGED_DEFAULT);
+  assert.equal(Object.isFrozen(preparedPolicy(code.prepareCalls[0])), true);
+
+  // Since step 8 a traced binding still prepares only the ordinary program;
+  // drawings come from the observer port, which never carries the policy.
+  const traced = makeState();
+  await evaluate(traced, makePlan([{ id: 't', input: { label: 't' }, expected: 't' }]), codeBinding({ trace: true }));
+  assert.deepEqual(traced.prepareCalls.map(({ mode }) => mode), ['code']);
+  assert.deepEqual(preparedPolicy(traced.prepareCalls[0]), JS_JUDGED_DEFAULT);
+});
+
+test('judged-output policy: a binding cannot supply or raise it', async () => {
+  const state = makeState();
+  const forged = { maxBytes: 1e12, maxItems: 1e12, maxNodes: 1e12, maxDepth: 1e6 };
+  await evaluate(
+    state,
+    makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]),
+    codeBinding({ judgedOutputPolicy: forged } as unknown as Partial<RuntimeJudgeBinding>)
+  );
+  assert.deepEqual(preparedPolicy(state.prepareCalls[0]), JS_JUDGED_DEFAULT);
+});
+
+test('judged-output policy: the receipt path prepares with it and the observer never sees it', async () => {
+  const f = receiptFixture();
+  try {
+    await f.host.execute({ bundle: await receiptBundle(), interactive: true, tracing: { caseIds: ['A'] } });
+    assert.deepEqual(f.state.prepareCalls.map(({ mode }) => mode), ['code']);
+    assert.deepEqual(preparedPolicy(f.state.prepareCalls[0]), JS_JUDGED_DEFAULT);
+    assert.equal(f.observerCalls.length > 0, true);
+    for (const call of f.observerCalls) {
+      assert.equal(JSON.stringify(call).includes('judgedOutputPolicy'), false);
+      assert.equal('judgedOutputPolicy' in call.program, false);
+    }
+    assert.equal('judgedOutputPolicy' in (f.preparedDescriptors[0] ?? {}), false);
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('judged-output policy: the trusted bridge lowers fields, never raises them, and marks the effective cap', async (t) => {
+  const events: TestBridgeEvent[] = [];
+  const contexts: unknown[] = [];
+  let lower: unknown = { maxBytes: 1024 };
+  installJudgeTestGlobals(t)({
+    onEvent: (event) => events.push(event),
+    judgedOutputPolicy: (context) => {
+      contexts.push(context);
+      if (lower === 'throw') throw new Error('hook failure');
+      return lower as never;
+    },
+  });
+  const run = async () => {
+    const state = makeState();
+    events.length = 0;
+    await evaluate(state, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
+    return preparedPolicy(state.prepareCalls[0]);
+  };
+
+  assert.deepEqual(await run(), { ...JS_JUDGED_DEFAULT, maxBytes: 1024 });
+  const markers = events.filter(({ phase }) => phase === 'judged-output-policy');
+  assert.equal(markers.length, 1);
+  const marker = markers[0] as Record<string, unknown>;
+  assert.equal(Object.isFrozen(marker), true);
+  assert.deepEqual({ ...marker, at: 0, evaluationId: 'id' }, {
+    phase: 'judged-output-policy', language: 'javascript', evaluationId: 'id',
+    ...JS_JUDGED_DEFAULT, maxBytes: 1024, lowered: true, at: 0,
+  });
+  assert.equal(typeof marker.evaluationId, 'string');
+  assert.deepEqual(contexts.at(-1), { language: 'javascript', evaluationId: marker.evaluationId });
+
+  // Higher, negative, fractional, non-number and accessor values keep the default.
+  lower = {
+    maxBytes: JS_JUDGED_DEFAULT.maxBytes + 1, maxItems: -1, maxNodes: 1.5, maxDepth: '1',
+  };
+  assert.deepEqual(await run(), JS_JUDGED_DEFAULT);
+  assert.equal((events.find(({ phase }) => phase === 'judged-output-policy') as { lowered?: boolean }).lowered, false);
+  let getterRan = false;
+  lower = { get maxBytes() { getterRan = true; return 1; } };
+  assert.deepEqual(await run(), JS_JUDGED_DEFAULT);
+  assert.equal(getterRan, false);
+  lower = { maxDepth: 0, maxItems: 3 };
+  assert.deepEqual(await run(), { ...JS_JUDGED_DEFAULT, maxDepth: 0, maxItems: 3 });
+  lower = 'throw';
+  assert.deepEqual(await run(), JS_JUDGED_DEFAULT);
+  lower = undefined;
+  assert.deepEqual(await run(), JS_JUDGED_DEFAULT);
+});
+
+test('judged-output policy: a bridge without the hook sees no new marker', async (t) => {
+  const events: TestBridgeEvent[] = [];
+  installJudgeTestGlobals(t)({ onEvent: (event) => events.push(event) });
+  const state = makeState();
+  await evaluate(state, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
+  assert.deepEqual(preparedPolicy(state.prepareCalls[0]), JS_JUDGED_DEFAULT);
+  assert.equal(events.some(({ phase }) => phase === 'judged-output-policy'), false);
+});
+
+test('judged-output policy: an enumerable or worker-realm bridge cannot lower it', async (t) => {
+  const hook = () => ({ maxBytes: 1 });
+  const install = installJudgeTestGlobals(t);
+  install({ onEvent: () => {}, judgedOutputPolicy: hook }, true);
+  const enumerable = makeState();
+  await evaluate(enumerable, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
+  assert.deepEqual(preparedPolicy(enumerable.prepareCalls[0]), JS_JUDGED_DEFAULT);
+});
+
+test('judged-output policy: a worker realm never reads the bridge', async (t) => {
+  installJudgeTestGlobals(t, false)({ onEvent: () => {}, judgedOutputPolicy: () => ({ maxBytes: 1 }) });
+  const state = makeState();
+  await evaluate(state, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
+  assert.deepEqual(preparedPolicy(state.prepareCalls[0]), JS_JUDGED_DEFAULT);
+});

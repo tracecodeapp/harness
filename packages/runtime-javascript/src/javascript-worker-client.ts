@@ -56,6 +56,10 @@ import {
 } from '@tracecode/runtime-browser/internal';
 import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
 import type { JudgeObservationLease } from '../../runtime-browser/src/browser-runtime-host-internal';
+import type {
+  JudgedOutputPolicy,
+  JudgedPreparationCall,
+} from '../../runtime-contracts/src/judged-output-policy';
 import { createJavaScriptPreparedProgram } from './javascript-prepared-program';
 import type {
   SesAlgorithmWorkerPool,
@@ -928,6 +932,9 @@ export class JavaScriptWorkerClient {
     this.assertActive();
     const generation = this.generation;
     const startedAt = performanceNow();
+    const judgedOutputPolicy = call.mode === 'code'
+      ? judgedOutputPolicySnapshot((call as JudgedPreparationCall).judgedOutputPolicy)
+      : undefined;
     const preparation = Object.freeze({
       mode: call.mode,
       code: call.code,
@@ -936,6 +943,7 @@ export class JavaScriptWorkerClient {
       ...(call.traceOptions
         ? { traceOptions: Object.freeze({ ...call.traceOptions }) }
         : {}),
+      ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
     });
 
     const trusted = (async (): Promise<PreparedExecutionReply> => {
@@ -1038,6 +1046,9 @@ export class JavaScriptWorkerClient {
           requiredModules,
           inputArguments: prepared.inputArguments,
           materializers: prepared.materializers,
+          ...(preparation.judgedOutputPolicy
+            ? { judgedOutputPolicy: preparation.judgedOutputPolicy }
+            : {}),
         };
         // Legacy direct trace callers still receive a traced result. The receipt
         // path prepares in code mode and observes from a separate lease.
@@ -1318,6 +1329,7 @@ export class JavaScriptWorkerClient {
       readonly code: string;
       readonly functionName: string | null;
       readonly executionStyle: JavaScriptExecutionStyle;
+      readonly judgedOutputPolicy?: JudgedOutputPolicy;
     },
     preparedExecution: unknown,
     call: RuntimePreparedCodeCall,
@@ -1343,6 +1355,7 @@ export class JavaScriptWorkerClient {
       readonly code: string;
       readonly functionName: string | null;
       readonly executionStyle: JavaScriptExecutionStyle;
+      readonly judgedOutputPolicy?: JudgedOutputPolicy;
     },
     preparedExecution: unknown,
     call: RuntimePreparedCodeCall
@@ -1362,6 +1375,9 @@ export class JavaScriptWorkerClient {
             language,
             preparedExecution,
             reportCaseProgress: true,
+            ...(preparation.judgedOutputPolicy
+              ? { judgedOutputPolicy: preparation.judgedOutputPolicy }
+              : {}),
           }
         ),
         wallClockMs,
@@ -1487,6 +1503,7 @@ export class JavaScriptWorkerClient {
       readonly code: string;
       readonly functionName: string | null;
       readonly executionStyle: JavaScriptExecutionStyle;
+      readonly judgedOutputPolicy?: JudgedOutputPolicy;
     },
     preparedExecution: unknown,
     call: RuntimePreparedCodeBatchCall,
@@ -1739,4 +1756,21 @@ export class JavaScriptWorkerClient {
     this.sesAlgorithmPool?.terminate();
     this.executionTail = Promise.resolve();
   }
+}
+
+/**
+ * The judged-output policy as this client forwards it: the four bounds, each
+ * a non-negative safe integer, or none. Only the Judge composition sets it.
+ */
+function judgedOutputPolicySnapshot(policy: unknown): JudgedOutputPolicy | undefined {
+  if (policy === undefined) return undefined;
+  const record = policy as Partial<Record<keyof JudgedOutputPolicy, unknown>> | null;
+  const bounds = record && typeof record === 'object'
+    ? [record.maxBytes, record.maxItems, record.maxNodes, record.maxDepth]
+    : [];
+  if (bounds.length !== 4 || !bounds.every((bound) => Number.isSafeInteger(bound) && (bound as number) >= 0)) {
+    throw new TypeError('JavaScript preparation received an invalid judged-output policy.');
+  }
+  const [maxBytes, maxItems, maxNodes, maxDepth] = bounds as number[];
+  return Object.freeze({ maxBytes: maxBytes!, maxItems: maxItems!, maxNodes: maxNodes!, maxDepth: maxDepth! });
 }

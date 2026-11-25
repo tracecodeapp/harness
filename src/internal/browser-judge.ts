@@ -106,7 +106,15 @@ import {
   RuntimePreparedProgramRegistry,
   judgeAbortError,
 } from './judge-prepared-program';
-import { readJudgeTestBridge, type JudgeTestBridge } from './judge-test-bridge';
+import {
+  judgedOutputPolicyForPrepare,
+  readJudgeTestBridge,
+  type JudgeTestBridge,
+} from './judge-test-bridge';
+import type {
+  JudgedOutputPolicy,
+  JudgedPreparationCall,
+} from '../../packages/runtime-contracts/src/judged-output-policy';
 import {
   createBrowserProjectJudge,
   type BrowserProjectJudge,
@@ -217,6 +225,8 @@ interface RuntimeJudgeProviderOptions {
   readonly runtime: string;
   readonly provider: RuntimePreparedExecutionProvider;
   readonly runtimeControl: JudgeRuntimeControlPort;
+  /** The judged-output policy for one evaluation's ordinary prepare. */
+  readonly judgedOutputPolicy?: (evaluationId: string) => JudgedOutputPolicy | undefined;
 }
 
 interface CreateRuntimeJudgeOptions {
@@ -859,11 +869,18 @@ function prepareProviderProgram(
   return Effect.gen(function* () {
     const binding = options.binding;
     const code = yield* readSubmissionSource(context, binding.sourcePath);
-    const prepareCall: Omit<RuntimeProgramPreparationCall, 'signal'> = {
+    // Only the composition sets the judged-output policy, on the ordinary
+    // prepare. The call is assembled field by field, so nothing in the
+    // binding or the request can supply or raise it.
+    const judgedOutputPolicy = invocation.evaluationId
+      ? options.judgedOutputPolicy?.(invocation.evaluationId)
+      : undefined;
+    const prepareCall: Omit<JudgedPreparationCall, 'signal'> = {
       mode: 'code',
       code,
       functionName: binding.functionName ?? '',
       executionStyle: binding.executionStyle,
+      ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
     };
     if (concurrentInitialization) {
       const ordinaryReady = yield* Effect.fork(concurrentInitialization);
@@ -1954,10 +1971,13 @@ function createRuntimeJudge(
   }
   const runtimeControl =
     options.runtimeControl ?? new InMemoryJudgeRuntimeControl();
+  const testBridge = options.testBridge;
   const bridge = makeRuntimeJudgeProvider({
     runtime: options.runtime,
     provider: options.provider,
     runtimeControl,
+    judgedOutputPolicy: (evaluationId) =>
+      judgedOutputPolicyForPrepare(options.runtime as Language, evaluationId, testBridge),
   });
   return makeTraceKernelHost({
     providers: [bridge.runtimeProvider],

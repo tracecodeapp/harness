@@ -7,6 +7,7 @@ import type {
   RuntimeTrace,
   RuntimeTraceOptions,
 } from '@tracecode/runtime-contracts';
+import type { JudgedOutputPolicy } from '../../runtime-contracts/src/judged-output-policy';
 import type {
   BrowserWorkerFactory,
   BrowserWorkerLike,
@@ -44,6 +45,8 @@ export interface SesAlgorithmPreparedSource {
     readonly endLine: number;
   };
   readonly traceOptions?: RuntimeTraceOptions;
+  /** Code mode only: the judged-output policy the composition sent. */
+  readonly judgedOutputPolicy?: JudgedOutputPolicy;
 }
 
 export interface SesAlgorithmWorkerPoolOptions {
@@ -860,6 +863,11 @@ function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPrepare
   if (!supportsSesTraceOptions(source.traceOptions)) {
     throw new TypeError('SES trace preparation has invalid trace options.');
   }
+  if (source.judgedOutputPolicy !== undefined && (
+    source.mode !== 'code' || !isJudgedOutputPolicy(source.judgedOutputPolicy)
+  )) {
+    throw new TypeError('SES algorithm preparation has an invalid judged-output policy.');
+  }
   assertCoordinatorCompatibleSelector(source.functionName, source.executionStyle);
   const modules = new Set<string>();
   for (const specifier of source.requiredModules) {
@@ -907,7 +915,25 @@ function snapshotSource(source: SesAlgorithmPreparedSource): SesAlgorithmPrepare
     ...(source.traceOptions
       ? { traceOptions: Object.freeze({ ...source.traceOptions }) }
       : {}),
+    ...(source.judgedOutputPolicy
+      ? {
+          judgedOutputPolicy: Object.freeze({
+            maxBytes: source.judgedOutputPolicy.maxBytes,
+            maxItems: source.judgedOutputPolicy.maxItems,
+            maxNodes: source.judgedOutputPolicy.maxNodes,
+            maxDepth: source.judgedOutputPolicy.maxDepth,
+          }),
+        }
+      : {}),
   });
+}
+
+function isJudgedOutputPolicy(value: unknown): value is JudgedOutputPolicy {
+  return isRecord(value) &&
+    hasOnlyKeys(value, ['maxBytes', 'maxItems', 'maxNodes', 'maxDepth'], []) &&
+    [value.maxBytes, value.maxItems, value.maxNodes, value.maxDepth].every(
+      (bound) => Number.isSafeInteger(bound) && (bound as number) >= 0
+    );
 }
 
 function abortError(message: string): Error {
