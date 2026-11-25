@@ -786,6 +786,141 @@ function javaFaultProgress(command, phase, caseIndex, result, admissionId = comm
   };
 }
 
+for (const language of ['java', 'python']) {
+  for (const route of ['deadline-keep', 'deadline-stop']) {
+    test(`${language} ${route} offers the watchdog only for a bound accepted A finish`, async () => {
+      const { installJournal } = await import('./gb-transport.mjs');
+      const { installJudgeBridge } = await import('./gb-probe.mjs');
+      const originalWorker = globalThis.Worker;
+      globalThis.Worker = transportFixtureWorker();
+      const spec = fixture(language, 'transport');
+      const journal = installJournal(spec);
+      const bridge = installJudgeBridge(spec, journal);
+      const api = globalThis[Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1')];
+      const sample = referenceReceipt(spec);
+      const binding = { generation: 1, evaluationId: 'evaluation', workspaceDigest: 'digest', language };
+      const dispatch = { ...binding, dispatchGeneration: 1 };
+      const a = { ...dispatch, caseId: 'A', caseIndex: 0 };
+      const context = { ...a, point: 'service', progress: 'finished' };
+      const mark = (phase, { language: eventLanguage, ...fields }) => api.onEvent({
+        phase, ...fields, ...(phase === 'injection-ack' ? { language: eventLanguage } : {}),
+      });
+      const result = { success: true, output: 11, consoleOutput: [] };
+      try {
+        journal.track(route, route);
+        bridge.track(route);
+        const worker = new Worker('fixture-worker.js');
+        const java = language === 'java';
+        const command = java ? javaFaultRequest(spec) : pythonClockCommand([11, 22, 33], 4000, 'python');
+        const progress = (phase, index, value) => java ? javaFaultProgress(command, phase, index, value) : ({
+          id: command.id, protocolToken: command.protocolToken, type: 'batch-case-progress',
+          payload: { index, phase, ...(value ? { result: value } : {}) },
+        });
+        worker.onDelivery = ({ type, payload }) => {
+          const phase = java && type === 'runtime-progress'
+            ? payload.stage.slice('ordinary-case-'.length) : payload.phase;
+          if (phase === 'started') {
+            mark('ordinary-case-started', { ...a, sequence: 1 });
+            assert.equal(api.faultAt({ ...context, progress: 'started' }), undefined);
+          } else if (phase === 'finished') {
+            assert.equal(api.faultAt(context), undefined, 'a worker finish alone cannot arm the service control');
+            mark('ordinary-case-accepted', { ...a, sequence: 2 });
+            assert.equal(api.faultAt({ ...context, dispatchGeneration: 2 }), undefined);
+            assert.equal(api.faultAt({ ...context, workspaceDigest: 'foreign' }), undefined);
+            assert.equal(api.faultAt({ ...context, caseId: 'B', caseIndex: 1 }), undefined);
+            assert.equal(api.faultAt(context), 'deadline');
+            assert.equal(api.faultAt(context), undefined);
+            mark('injection-ack', { ...binding, caseId: 'A', point: 'service', fault: 'deadline' });
+            mark('service-deadline', { ...dispatch, sequence: 2, cause: 'injected', accepted: 1 });
+          }
+        };
+        worker.postMessage(command);
+        assert.deepEqual(worker.sent, [{
+          ...command, payload: { ...command.payload, inputBatch: [{ n: 11 }] },
+        }]);
+        const start = progress('started', 0);
+        const finish = progress('finished', 0, result);
+        worker.reply(finish);
+        worker.reply(start, false);
+        worker.reply({ ...start, protocolToken: 'foreign' });
+        worker.reply(progress('started', 1));
+        worker.reply(start);
+        worker.reply({ ...finish, protocolToken: 'foreign' });
+        if (java) worker.reply(javaFaultProgress(command, 'finished', 0, result, 8));
+        worker.reply(finish);
+        worker.reply(finish);
+        worker.reply({ id: command.id, protocolToken: command.protocolToken,
+          type: java ? command.type : 'execute-result', payload: { success: true, resultsStreamed: 1 } });
+        assert.deepEqual(worker.delivered, [start, finish]);
+        assert.equal(worker.terminated, undefined, 'GB did not kill the worker or touch its clocks');
+
+        const bundleId = 'deadline-bundle';
+        Object.assign(sample.result, {
+          bundleId, workspaceDigest: binding.workspaceDigest,
+          verdict: 'indeterminate', policy: { result: 'unknown' }, passedCount: 1, totalCount: 3,
+        });
+        sample.stimulus = { bundle: { id: bundleId, workspaceDigest: binding.workspaceDigest, execution: {} },
+          stopAtFirstRunaway: route === 'deadline-stop' };
+        sample.conversions = { cases: [{ kind: 'completed', output: 11 }] };
+        for (const row of sample.result.evaluation.cases) {
+          Object.assign(row, { sessionId: 'session', pid: 1 });
+          mark('ordinary-write-attempt', { ...binding, caseId: row.caseId });
+          if (row.caseId === 'A') continue;
+          row.status = 'runtime-error';
+          row.failure = { origin: 'provider', reason: 'runtime-failure', message: 'The case did not start.' };
+          row.verdict = { kind: 'not-evaluated' };
+          delete row.value;
+          sample.conversions.cases.push({ rejected: { name: 'RuntimeProviderError' } });
+        }
+        mark('ordinary-commit', binding);
+        mark('public-resolve', binding);
+        sample.transcript = journal.since(0);
+        assert.deepEqual(sample.transcript.map(({ sequence }) => sequence),
+          sample.transcript.map((_, index) => index + 1));
+        const ledger = ledgerFor(spec, route, sample);
+        assert.equal(ledger.expected.length, 41);
+        assert.deepEqual(ledger.missing, []);
+        assert.deepEqual(ledger.receipts.filter(({ status }) => status !== 'passed'), []);
+        assert.equal(ledgerFor(spec, route, { unavailable: 'No D-WATCH journal' }).missing.length, 41);
+        const fails = (value, suffix) => {
+          assert.equal(ledgerFor(spec, route, value).receipts
+            .find(({ id }) => id.endsWith('/' + suffix))?.status, 'failed', suffix);
+        };
+        const backstop = structuredClone(sample);
+        backstop.transcript.find(({ phase }) => phase === 'service-deadline').cause = 'backstop';
+        fails(backstop, 'injection-ack');
+        const late = structuredClone(sample);
+        late.transcript.push({ ...a, request: route, kind: 'schedule', phase: 'ordinary-case-accepted',
+          sequence: 999, progressSequence: 3, caseId: 'B', caseIndex: 1 });
+        fails(late, 'B/start-proof');
+        fails(late, 'generation-fence');
+        const lost = structuredClone(sample);
+        lost.result.evaluation.cases[0].value = 0;
+        fails(lost, 'A/coordinator-commit');
+        const stale = structuredClone(sample);
+        stale.transcript.find(({ phase }) => phase === 'injection-ack').workspaceDigest = 'foreign';
+        fails(stale, 'injection-ack');
+        const replayed = structuredClone(sample);
+        replayed.transcript.push({ request: route, kind: 'ordinary-dispatch', generation: 2, rows: ['A'] });
+        fails(replayed, 'A/ordinary-start-count');
+        fails(replayed, 'generation-fence');
+        const rejected = structuredClone(sample);
+        const rejection = { ...dispatch, request: route, kind: 'schedule', phase: 'ordinary-case-rejected',
+          sequence: 999, caseId: 'B', caseIndex: 1, progress: 'started', reason: 'fenced' };
+        rejected.transcript.push(rejection);
+        assert.equal(ledgerFor(spec, route, rejected).receipts
+          .find(({ id }) => id.endsWith('/generation-fence'))?.status, 'passed');
+        rejection.reason = 'duplicate';
+        fails(rejected, 'generation-fence');
+      } finally {
+        bridge.restore();
+        journal.restore();
+        globalThis.Worker = originalWorker;
+      }
+    });
+  }
+}
+
 test('Java loss transport forwards only bound starts and finishes and translates the next slice', async () => {
   const { installJournal } = await import('./gb-transport.mjs');
   const { Worker: originalWorker, ErrorEvent: originalErrorEvent } = globalThis;

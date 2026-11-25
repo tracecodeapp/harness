@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import { schedulerInjection } from './gb-probe.mjs';
+import { schedulerInjection, serviceDeadlineRoute } from './gb-probe.mjs';
 import { pythonClockRoute } from './gb-python-clock.mjs';
 
 const healthyChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics', 'conversion'];
@@ -604,6 +604,111 @@ function checkPythonClock(fixture, route, sample, published, wire, assert) {
   { a, aFinish, commits, writes, resolves });
 }
 
+function checkServiceDeadline(fixture, sample, published, wire, assert) {
+  const events = (kind) => wire.filter((event) => event.kind === kind);
+  const marks = events('schedule').filter(({ language }) => language === undefined || language === fixture.language);
+  const phase = (name) => marks.filter(({ phase }) => phase === name);
+  const releases = events('deadline-release');
+  const dispatches = events('ordinary-dispatch');
+  const workerDispatches = events('dispatch').filter(({ mode }) => mode !== 'trace');
+  const workerStarts = events('deadline-worker-start');
+  const workerFinishes = events('deadline-worker-finish');
+  const starts = phase('ordinary-case-started');
+  const accepts = phase('ordinary-case-accepted');
+  const offers = events('service-deadline-offer');
+  const acks = phase('injection-ack').filter(({ point }) => point === 'service');
+  const deadlines = phase('service-deadline');
+  const [release] = releases;
+  const [workerStart] = workerStarts;
+  const [workerFinish] = workerFinishes;
+  const [start] = starts;
+  const [accepted] = accepts;
+  const [offer] = offers;
+  const [ack] = acks;
+  const [deadline] = deadlines;
+  const ids = fixture.cases.map(({ id }) => id);
+  const sameWorker = (event) => event && release && release.commandId === event.commandId &&
+    release.generation === event.generation;
+  const scoped = (event) => event && accepted && scopeMatches(accepted, event);
+  const sameDispatch = (event) => scoped(event) && event.dispatchGeneration === accepted.dispatchGeneration;
+  const isA = (event, index) => event?.caseId === 'A' && event[index] === 0;
+  const scopedBatch = releases.length === 1 && dispatches.length === 1 && workerDispatches.length === 1 &&
+    sameWorker(dispatches[0]) && dispatches[0].sequence + 1 === workerDispatches[0].sequence &&
+    dispatches[0].reportsStarts === true && isDeepStrictEqual(dispatches[0].rows, ids) &&
+    dispatches[0].sequence < release.sequence && isDeepStrictEqual(release.rows, ['A']) &&
+    isDeepStrictEqual(release.held, ids.slice(1));
+  const sawAStart = workerStarts.length === 1 && sameWorker(workerStart) && isA(workerStart, 'index') &&
+    starts.length === 1 && isA(start, 'caseIndex') && workerStart.sequence < start.sequence;
+  const sawAFinish = workerFinishes.length === 1 && sameWorker(workerFinish) &&
+    isA(workerFinish, 'index') && workerStart?.sequence < workerFinish.sequence &&
+    workerFinish.result?.success === true &&
+    isDeepStrictEqual(workerFinish.result.output, fixture.cases[0].actual) &&
+    isDeepStrictEqual(workerFinish.result.consoleOutput, []);
+  const acceptedA = accepts.length === 1 && isA(accepted, 'caseIndex') && accepted.dispatchGeneration === 1 &&
+    accepted.workspaceDigest === sample.stimulus?.bundle.workspaceDigest &&
+    typeof accepted.evaluationId === 'string' && accepted.evaluationId.length > 0 &&
+    Number.isSafeInteger(start?.progressSequence) && start.progressSequence > 0 &&
+    Number.isSafeInteger(accepted.progressSequence) && start.progressSequence < accepted.progressSequence &&
+    sameDispatch(start) && sawAFinish && start.sequence < workerFinish.sequence &&
+    workerFinish.sequence < accepted.sequence;
+  const witnessedDeadline = scopedBatch && sawAStart && acceptedA &&
+    offers.length === 1 && sameDispatch(offer) && isA(offer, 'caseIndex') &&
+    offer.progress === 'finished' && offer.point === 'service' &&
+    offer.workerGeneration === release.generation && offer.commandId === release.commandId &&
+    offer.acceptedSequence === accepted.progressSequence && accepted.sequence < offer.sequence &&
+    acks.length === 1 && scoped(ack) && ack.language === fixture.language && ack.fault === 'deadline' && ack.caseId === 'A' &&
+    offer.sequence < ack.sequence && deadlines.length === 1 && sameDispatch(deadline) &&
+    deadline.cause === 'injected' && deadline.accepted === 1 && ack.sequence < deadline.sequence &&
+    Number.isSafeInteger(deadline.progressSequence) && deadline.progressSequence >= accepted.progressSequence &&
+    events('deadline-terminal').every(({ held }) => held === true) &&
+    !events('production-timers-fired').length && !events('injection').length;
+  assert('injection-ack', witnessedDeadline, { starts, accepts, offers, acks, deadlines, workerFinishes });
+  assert('A/start-proof', scopedBatch && sawAStart, { releases, dispatches, workerStarts, starts });
+  assert('A/ordinary-start-count', scopedBatch && sawAStart, { releases, dispatches, workerStarts, starts });
+  if (workerFinishes.length) assert('A/worker-finish', sawAFinish, workerFinishes);
+  if (releases.length) {
+    for (const id of ids.slice(1)) {
+      const escaped = [...workerStarts, ...starts, ...accepts].filter(({ caseId }) => caseId === id);
+      assert(`${id}/start-proof`, scopedBatch && escaped.length === 0, { releases, dispatches, escaped });
+    }
+  }
+  if (deadlines.length) {
+    const rejects = phase('ordinary-case-rejected');
+    assert('generation-fence', witnessedDeadline && rejects.every((event) => sameDispatch(event) &&
+      (event.sequence < deadline.sequence || event.reason === 'fenced')),
+    { releases, dispatches, starts, accepts, deadlines, rejects });
+  }
+
+  const commits = phase('ordinary-commit');
+  const resolves = phase('public-resolve');
+  const writes = phase('ordinary-write-attempt');
+  const [commit] = commits;
+  if (!commits.length && !resolves.length) return;
+  const stored = witnessedDeadline && commits.length === 1 && scoped(commit) &&
+    commit.workspaceDigest === sample.result?.workspaceDigest && deadline.sequence < commit.sequence &&
+    resolves.length === 1 && scoped(resolves[0]) && commit.sequence < resolves[0].sequence &&
+    isDeepStrictEqual(writes.map(({ caseId }) => caseId), ids) &&
+    writes.every((event) => scoped(event) && event.origin !== 'observer' &&
+      deadline.sequence < event.sequence && event.sequence < commit.sequence);
+  const a = published.find(({ caseId }) => caseId === 'A');
+  assert('A/coordinator-commit', stored && a?.status === 'completed' &&
+    isDeepStrictEqual(a.value, workerFinish.result.output) &&
+    a.verdict?.kind === fixture.cases[0].grade && a.stdout === fixture.cases[0].stdout &&
+    a.stderr === '' && a.termination?.kind === 'exit' && a.termination.exitCode === 0 &&
+    a.timedOut === false && a.failure === undefined, { a, accepted, commit, resolves, writes });
+  const suffix = ids.slice(1).map((id) => published.find(({ caseId }) => caseId === id));
+  const conversions = sample.conversions?.cases;
+  if (conversions) {
+    assert('suffix/storage', stored && suffix.every((row) => row?.failure?.origin === 'provider' &&
+      row.failure.reason === 'runtime-failure' && row.verdict?.kind === 'not-evaluated' &&
+      /did not start|didn't start|never started|had not started|was not started|not yet started/iu
+        .test(row.failure.message ?? '') &&
+      row.timedOut === false && row.notRun === undefined && !Object.hasOwn(row, 'value') &&
+      conversions[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError'),
+    { suffix, deadline, commits, writes });
+  }
+}
+
 function check(fixture, route, sample, assert) {
   const rows = selectedRows(fixture, route);
   const receipt = sample.result;
@@ -658,7 +763,8 @@ function check(fixture, route, sample, assert) {
   const javaTransport = fixture.language === 'java' && fixture.name === 'transport' &&
     wire.some(({ kind, request }) => kind === 'java-release' && request === route);
   const pythonClock = pythonTransportClock(fixture, route);
-  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock
+  const serviceDeadline = serviceDeadlineRoute(fixture, route);
+  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock && !serviceDeadline
     ? completeOrdinaryStarts(wire.filter(({ request }) => request === route)) : undefined;
   for (const expected of rows) {
     const row = published.find(({ caseId }) => caseId === expected.id);
@@ -702,7 +808,9 @@ function check(fixture, route, sample, assert) {
     }
   }
 
-  if (pythonClock) {
+  if (serviceDeadline) {
+    checkServiceDeadline(fixture, sample, published, wire.filter(({ request }) => request === route), assert);
+  } else if (pythonClock) {
     checkPythonClock(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
   } else if (javaTransport) {
     checkJavaTransport(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);

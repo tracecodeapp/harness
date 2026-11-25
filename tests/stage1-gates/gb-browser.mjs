@@ -6,7 +6,7 @@ import {
   judgeCompileExecutionOutcome,
 } from '@tracecode/harness/judge';
 import { installJournal } from './gb-transport.mjs';
-import { installJudgeBridge, schedulerInjection } from './gb-probe.mjs';
+import { installJudgeBridge, schedulerInjection, serviceDeadlineRoute } from './gb-probe.mjs';
 import { restoreTransferredTraceEvents } from '../../packages/runtime-browser/src/trace-event-transport.ts';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../packages/runtime-contracts/src/trace-adapters/java.ts';
 
@@ -123,7 +123,7 @@ export async function runFixture(fixture, options, onReceipt) {
       try {
         if (mux && typeof globalThis.gbRunMux !== 'function') {
           record = { unavailable: 'The staged pinned mux adapter was unavailable' };
-        } else if (faultFixture && route.startsWith('deadline-')) {
+        } else if (faultFixture && route.startsWith('deadline-') && !serviceDeadlineRoute(fixture, route)) {
           record = { unavailable: 'Requires an ordinary commit barrier and a coordinator service-deadline ACK' };
         } else if (continuation && !executionId) {
           record = { unavailable: 'The first Run returned no continuation handle', retainedCompile };
@@ -220,6 +220,11 @@ export async function runFixture(fixture, options, onReceipt) {
       const transcript = journal.since(from);
       if (schedulerFault && !transcript.some(({ kind, request }) => kind === 'schedule' && request === route)) {
         record = { unavailable: 'The installed Judge did not emit the trusted schedule journal' };
+      }
+      if (serviceDeadlineRoute(fixture, route) && !transcript.some(({ kind, phase, request }) =>
+        request === route && kind === 'schedule' &&
+        (phase?.startsWith('ordinary-case-') || phase === 'service-deadline'))) {
+        record = { ...record, unavailable: 'The installed Judge did not emit the D-WATCH progress journal' };
       }
       if ((usesRetainedHost || continuation) && record.result?.evaluation) {
         retainedEvidence.push(...transcript.filter(({ kind, request }) =>

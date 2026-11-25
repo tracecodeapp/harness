@@ -1,4 +1,5 @@
 import { createPythonClock } from './gb-python-clock.mjs';
+import { serviceDeadlineRoute } from './gb-probe.mjs';
 
 function recorderEvents(payload) {
   const events = payload.trace?.events;
@@ -42,6 +43,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   let fault;
   let injected = false;
   let javaTimeoutWire;
+  let serviceFinish;
   const scheduled = new Map();
   const pythonClock = fixture.language === 'python' && fixture.name === 'transport'
     ? createPythonClock({ record, nativeSetTimeout, nativeClearTimeout }) : undefined;
@@ -137,10 +139,23 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
           super.postMessage(message, ...transfer);
           return;
         }
-        const pythonBatch = fixture.language === 'python' && message.type === 'execute-prepared-program-batch' &&
-          mode === 'code' && payload.artifact?.isolationProfile?.tier === 'algorithm-fast';
+        const pythonPrepared = fixture.language === 'python' && message.type === 'execute-prepared-program-batch' &&
+          mode === 'code';
+        const pythonBatch = pythonPrepared && payload.artifact?.isolationProfile?.tier === 'algorithm-fast';
         const javaBatch = fixture.language === 'java' && !javaObserver &&
           message.type === 'execute-prepared-runtime-program-batch';
+        if (serviceDeadlineRoute(fixture, request) && !injected && inPlanOrder && (pythonPrepared || javaBatch)) {
+          const command = { request, generation: this.#generation, commandId: message.id };
+          wire.serviceDeadline = { command };
+          injected = true;
+          record('deadline-release', { ...command, rows: [rows[0]], held: rows.slice(1) });
+          // Keep the client and Judge's original batch. Only the worker gets
+          // A, so B cannot enter before the synchronous service control.
+          super.postMessage({
+            ...message, payload: { ...payload, inputBatch: [inputs[0]] },
+          }, ...transfer);
+          return;
+        }
         const javaSupported = javaBatch && (fault?.startsWith('cut-') ||
           fault?.startsWith('during-') || fault === 'timeout-fanout');
         if (fault && !injected && rows.length === 3 && (pythonBatch || javaSupported)) {
@@ -223,6 +238,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       for (const wire of this.#wire.values()) {
         if (wire.java) wire.closed = true;
         if (wire.pythonClock) pythonClock.retire(wire.pythonClock);
+        if (wire.serviceDeadline) wire.serviceDeadline.closed = true;
       }
       this.#judgeWire.clear();
       super.terminate();
@@ -390,10 +406,56 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       }
     }
 
+    #readServiceDeadline(event, wire) {
+      const { id, type, payload, protocolToken } = event.data;
+      const state = wire.serviceDeadline;
+      const java = fixture.language === 'java';
+      const progress = java ? javaCaseProgress(type, payload) : type === 'batch-case-progress';
+      const terminal = type === wire.message.type || type === 'execute-result' || type === 'error';
+      if (!progress && !terminal) return;
+      const command = this.#judgeWire.get(id);
+      if (state.closed || !event.isTrusted || !command || command.token !== protocolToken) {
+        event.stopImmediatePropagation();
+        return;
+      }
+      if (!progress) {
+        // Legacy pins have no service control. Let the real singleton terminal
+        // settle that request, then report the route as unwitnessed.
+        record('deadline-terminal', { ...state.command, held: state.sealed === true });
+        if (state.sealed) event.stopImmediatePropagation();
+        state.closed = true;
+        return;
+      }
+      event.stopImmediatePropagation();
+      const detail = java ? payload.detail : payload;
+      const phase = java ? payload.stage.slice('ordinary-case-'.length) : payload?.phase;
+      const index = java ? detail?.caseIndex : detail?.index;
+      if (index !== 0 || (java && (command.admissionId === undefined || detail.admissionId !== command.admissionId)) ||
+          (phase === 'started' ? state.started : phase !== 'finished' || !state.started ||
+            state.finished || typeof detail.result?.success !== 'boolean')) return;
+      state.started = true;
+      state.finished = phase === 'finished';
+      const delivery = { ...state.command, caseId: wire.rows[0], index };
+      record(state.finished ? 'deadline-worker-finish' : 'deadline-worker-start',
+        state.finished ? { ...delivery, result: detail.result } : delivery);
+      if (state.finished) serviceFinish = { delivery, state };
+      this.#forwardingProgress = true;
+      try {
+        this.dispatchEvent(new MessageEvent('message', { data: event.data }));
+      } finally {
+        this.#forwardingProgress = false;
+        serviceFinish = undefined;
+      }
+    }
+
     #read(event) {
       if (this.#forwardingProgress) return;
       const { id, type, payload } = event.data ?? {};
       const wire = this.#wire.get(id);
+      if (wire?.serviceDeadline) {
+        this.#readServiceDeadline(event, wire);
+        return;
+      }
       if (wire?.pythonClock) {
         pythonClock.receive(wire.pythonClock, event, (data) => {
           this.#forwardingProgress = true;
@@ -469,6 +531,18 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   return {
     record(kind, fields) {
       record(kind, { ...fields, request });
+      if (!serviceFinish) return;
+      if (kind === 'service-deadline-offer') serviceFinish.state.offer = fields;
+      const offer = serviceFinish.state.offer;
+      if (offer && kind === 'schedule' && fields.phase === 'service-deadline' && fields.cause === 'injected' &&
+          (fields.language === undefined || fields.language === offer.language) &&
+          ['evaluationId', 'workspaceDigest', 'generation', 'dispatchGeneration']
+            .every((key) => fields[key] === offer[key])) {
+        serviceFinish.state.sealed = true;
+      }
+    },
+    serviceFinish() {
+      return serviceFinish?.delivery;
     },
     track(route, injectedFault) {
       request = route;
