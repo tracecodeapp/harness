@@ -338,7 +338,7 @@ for (const mode of ['code', 'trace'] as const) {
   }
 }
 
-test('Python non-stopping batch keeps one request and its whole-batch results', async () => {
+test('Python non-stopping batch streams every result in one healthy request', async () => {
   const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
   const { provider, program } = await preparedProgram('code', -1, log);
   const results = await program.executeBatchIsolated!({
@@ -348,7 +348,7 @@ test('Python non-stopping batch keeps one request and its whole-batch results', 
   assert.equal(results.length, CASES);
   assert.ok(results.every((result, index) => result.kind === 'completed' && result.output === index + 1));
   assert.equal(log.batchRequests.length, 1);
-  assert.equal(log.batchRequests[0]!.reportCaseProgress, undefined, 'Submit does not ask for case progress');
+  assert.equal(log.batchRequests[0]!.reportCaseProgress, true, 'Submit needs progress even without a caller callback');
   await program.dispose();
   provider.terminate();
 });
