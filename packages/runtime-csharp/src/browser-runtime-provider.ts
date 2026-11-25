@@ -11,7 +11,10 @@ import type {
   BrowserRuntimeJudgeReceiptLease,
   JudgeReceiptProvider,
 } from '../../runtime-browser/src/browser-runtime-host-internal';
-import { createCSharpRuntimeClient } from './csharp-runtime-client';
+import {
+  createCSharpRuntimeClient,
+  type CSharpPrestartedRunner,
+} from './csharp-runtime-client';
 import {
   CSharpWorkerClient,
   type CSharpPreparedRunnerTier,
@@ -201,32 +204,28 @@ export function createCSharpBrowserRuntimeProvider(
         runner.terminate();
         scheduleStandbyRetry(epoch);
       };
-      const warmStandbyRunner = async (
+      /**
+       * Load .NET on a runner that has run nothing yet, then run the
+       * compiler's trusted prepared artifact on it. Rejects when the trusted
+       * prime runs and fails: such a runner must never become learner-bearing.
+       */
+      const primeRunner = async (
         runner: CSharpWorkerClient,
-        epoch: number
-      ): Promise<void> => {
+        stillWanted: () => boolean
+      ): Promise<'primed' | 'runtime-warm' | 'abandoned'> => {
         await runner.warmup();
         // Ask the compiler client for its current warmup promise for every
-        // replacement. CSharpWorkerClient clears a failed memo, so a transient
+        // runner. CSharpWorkerClient clears a failed memo, so a transient
         // compiler failure must not remain sticky for the whole provider.
         const compilerReady = await compiler.warmup().then(
           (ready) => ready,
           () => undefined
         );
-        if (!compilerReady) {
-          // Compiler priming is an optimization for background replacement.
-          // Explicit authority warmup separately awaits and reports compiler
-          // failure, while this runtime-warm runner remains safe to lease.
-          publishWarmedRunner(runner);
-          return;
-        }
-        if (
-          disposed ||
-          epoch !== capacityEpoch ||
-          warmingRunner !== runner
-        ) {
-          return;
-        }
+        // Compiler priming is an optimization. Explicit authority warmup
+        // separately awaits and reports compiler failure, while this
+        // runtime-warm runner, which has run nothing, remains safe to lease.
+        if (!compilerReady) return 'runtime-warm';
+        if (!stillWanted()) return 'abandoned';
         const artifact = compilerReady.trustedPreparedArtifact;
         if (!artifact) {
           throw new Error(
@@ -237,9 +236,19 @@ export function createCSharpBrowserRuntimeProvider(
           inputs: { a: 1, b: 2 },
         });
         if (result.kind !== 'completed' || result.output !== 3) {
-          throw new Error('C# standby runner trusted prime failed.');
+          throw new Error('C# runner trusted prime failed.');
         }
-        publishWarmedRunner(runner);
+        return 'primed';
+      };
+      const warmStandbyRunner = async (
+        runner: CSharpWorkerClient,
+        epoch: number
+      ): Promise<void> => {
+        const warmed = await primeRunner(
+          runner,
+          () => !disposed && epoch === capacityEpoch && warmingRunner === runner
+        );
+        if (warmed !== 'abandoned') publishWarmedRunner(runner);
       };
       ensureStandbyRunner = (): Promise<void> => {
         if (disposed) {
@@ -294,6 +303,45 @@ export function createCSharpBrowserRuntimeProvider(
           return runner;
         },
         createObserverRunner: createRunnerClient,
+        prestartObserverRunner(): CSharpPrestartedRunner {
+          // A new worker of its own: never the page standby, never a runner
+          // another lease has used (B-DESIGN step 6). It loads .NET and runs
+          // the same trusted prime as the standby while the ordinary and
+          // companion compiles run, and stays unpublished.
+          const runner = createRunnerClient();
+          const epoch = capacityEpoch;
+          let state: 'priming' | 'ready' | 'taken' | 'retired' = 'priming';
+          const live = (): boolean =>
+            !disposed && epoch === capacityEpoch && activeRunners.has(runner);
+          const retire = (): void => {
+            if (state === 'taken' || state === 'retired') return;
+            state = 'retired';
+            activeRunners.delete(runner);
+            runner.terminate();
+          };
+          const ready = primeRunner(runner, () => state === 'priming' && live())
+            .then(
+              (warmed) => {
+                if (warmed === 'abandoned') retire();
+                else if (state === 'priming') state = 'ready';
+              },
+              // A runner that attempted and failed its prime (or lost its
+              // runtime load) is never learner-bearing.
+              () => retire()
+            );
+          return {
+            ready,
+            take(): CSharpWorkerClient | undefined {
+              if (state !== 'ready' || !live()) {
+                retire();
+                return undefined;
+              }
+              state = 'taken';
+              return runner;
+            },
+            cancel: retire,
+          };
+        },
         releaseObserverRunner(runner: CSharpWorkerClient): void {
           activeRunners.delete(runner);
         },
