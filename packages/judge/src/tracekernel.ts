@@ -102,6 +102,9 @@ class TraceKernelJudgeProcess implements JudgeKernelProcess {
             ...(controlOutput?.failure
               ? { failure: controlOutput.failure }
               : {}),
+            ...(controlOutput?.journal
+              ? { journal: controlOutput.journal }
+              : {}),
             timedOut:
               this.timeoutDeadlineAt !== undefined &&
               snapshot.termination?.kind === 'signal' &&

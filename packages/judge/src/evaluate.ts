@@ -27,6 +27,7 @@ import type {
   JudgeKernelProcess,
   JudgeKernelProcessOutcome,
   JudgeKernelSession,
+  JudgeRuntimeBatchCaseOutput,
   JudgeRuntimeInvocationInput,
 } from './port';
 import { validateJudgePlan } from './validate';
@@ -516,40 +517,24 @@ function runBatch<Snapshot, Input, Expected, Result>(
           ),
         }
       );
-      if (!outcome.batch && outcome.timedOut) {
-        // The batch watchdog fired before the runtime published per-case
-        // outcomes: every case in the batch ran out of time.
-        return Object.freeze(plan.cases.map((testCase) =>
-          caseResult<Input, Expected, Result>(
-            plan.id,
-            testCase,
-            {
-              ...outcome,
-              diagnostics: Object.freeze([WATCHDOG_TIMEOUT_DIAGNOSTIC]),
-            },
-            plan.structuredResult ?? 'required',
-            comparator
-          )
-        ));
-      }
-      if (
-        !outcome.batch &&
-        (outcome.backstopTimedOut || outcome.failure?.origin === 'provider')
-      ) {
-        // The provider failed before it published any case: the backstop
-        // stopped a runtime that did not honour its own limits, or the
-        // provider rejected the batch (a stalled worker, a broken result
-        // protocol). Each case is the provider's failure. No time limit is
-        // fabricated, and nothing is claimed about which case was running.
-        return Object.freeze(plan.cases.map((testCase) =>
-          caseResult<Input, Expected, Result>(
-            plan.id,
-            testCase,
-            outcome,
-            plan.structuredResult ?? 'required',
-            comparator
-          )
-        ));
+      if (!outcome.batch && (
+        outcome.timedOut ||
+        outcome.backstopTimedOut ||
+        outcome.failure?.origin === 'provider' ||
+        (outcome.journal?.finished.length ?? 0) > 0
+      )) {
+        // The batch ended without per-case outcomes: a watchdog stopped it,
+        // the provider failed it, or it ended without its terminal reply.
+        // A batch-wide clock is the service's, never a case's own time
+        // limit, so no time limit is fabricated. Each finish the control
+        // port accepted is published unchanged; every other case is the
+        // provider's failure.
+        return serviceStoppedBatch<Input, Expected, Result>(
+          plan,
+          outcome,
+          comparator,
+          stopAtFirstRunaway
+        );
       }
       if (!outcome.batch) {
         // Neither per-case outcomes nor a provider failure: a malformed runtime.
@@ -577,49 +562,181 @@ function runBatch<Snapshot, Input, Expected, Result>(
             `The runtime batch omitted case ${JSON.stringify(omitted.id)}.`,
         }));
       }
-      return Object.freeze(plan.cases.map((testCase) => {
-        const item = byId.get(testCase.id)!;
-        if (item.notRun) {
-          return notRunResult<Result, Expected>(testCase, item.notRun, {
-            sessionId: outcome.sessionId,
-            pid: outcome.pid,
-            termination: item.termination,
-            stdout: item.stdout,
-            stderr: item.stderr,
-            diagnostics: Object.freeze([...(item.diagnostics ?? [])]),
-            timedOut: false,
-            ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }),
-            ...(outcome.endedAt === undefined ? {} : { endedAt: outcome.endedAt }),
-          });
-        }
-        return caseResult<Input, Expected, Result>(
-          plan.id,
+      return Object.freeze(plan.cases.map((testCase) =>
+        batchItemResult<Input, Expected, Result>(
+          plan,
           testCase,
-          {
-            sessionId: outcome.sessionId,
-            pid: outcome.pid,
-            termination: item.termination,
-            stdout: item.stdout,
-            stderr: item.stderr,
-            diagnostics: item.diagnostics,
-            timings: item.timings,
-            ...(Object.prototype.hasOwnProperty.call(item, 'value')
-              ? { structuredResult: item.value }
-              : {}),
-            ...(Object.prototype.hasOwnProperty.call(item, 'trace')
-              ? { trace: item.trace }
-              : {}),
-            timedOut: item.timedOut,
-            ...(item.failure ? { failure: item.failure } : {}),
-            startedAt: outcome.startedAt,
-            endedAt: outcome.endedAt,
-          },
-          plan.structuredResult ?? 'required',
+          outcome,
+          byId.get(testCase.id)!,
           comparator
-        );
-      }));
+        )
+      ));
     })
   );
+}
+
+/** One per-case batch outcome as a case result. */
+function batchItemResult<Input, Expected, Result>(
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  testCase: JudgeEvaluationPlan<Input, Expected>['cases'][number],
+  outcome: JudgeKernelProcessOutcome,
+  item: JudgeRuntimeBatchCaseOutput,
+  comparator: JudgeComparator<Input, Expected, Result>
+): JudgeCaseResult<Result, Expected> {
+  if (item.notRun) {
+    return notRunResult<Result, Expected>(testCase, item.notRun, {
+      sessionId: outcome.sessionId,
+      pid: outcome.pid,
+      termination: item.termination,
+      stdout: item.stdout,
+      stderr: item.stderr,
+      diagnostics: Object.freeze([...(item.diagnostics ?? [])]),
+      timedOut: false,
+      ...(outcome.startedAt === undefined ? {} : { startedAt: outcome.startedAt }),
+      ...(outcome.endedAt === undefined ? {} : { endedAt: outcome.endedAt }),
+    });
+  }
+  return caseResult<Input, Expected, Result>(
+    plan.id,
+    testCase,
+    {
+      sessionId: outcome.sessionId,
+      pid: outcome.pid,
+      termination: item.termination,
+      stdout: item.stdout,
+      stderr: item.stderr,
+      diagnostics: item.diagnostics,
+      timings: item.timings,
+      ...(Object.prototype.hasOwnProperty.call(item, 'value')
+        ? { structuredResult: item.value }
+        : {}),
+      ...(Object.prototype.hasOwnProperty.call(item, 'trace')
+        ? { trace: item.trace }
+        : {}),
+      timedOut: item.timedOut,
+      ...(item.failure ? { failure: item.failure } : {}),
+      startedAt: outcome.startedAt,
+      endedAt: outcome.endedAt,
+    },
+    plan.structuredResult ?? 'required',
+    comparator
+  );
+}
+
+const COMPLETION_UNCERTAIN =
+  'The case had started, and its completion is uncertain.';
+
+const UNFINISHED_BATCH_MESSAGE =
+  'The runtime batch ended without its result.';
+
+/**
+ * The provider's failure for an unpublished batch: the failure it
+ * published, the watchdog that stopped it, or a batch that ended without
+ * its terminal reply.
+ */
+function unfinishedBatchFailure(outcome: JudgeKernelProcessOutcome): JudgeKernelProcessOutcome {
+  if (outcome.failure?.origin === 'provider') return outcome;
+  if (outcome.timedOut || outcome.backstopTimedOut) return backstopTimeoutOutcome(outcome);
+  return Object.freeze({
+    ...outcome,
+    diagnostics: Object.freeze([Object.freeze({
+      severity: 'error' as const,
+      code: 'runtime-provider-error',
+      message: UNFINISHED_BATCH_MESSAGE,
+    })]),
+    failure: Object.freeze({
+      origin: 'provider' as const,
+      reason: 'protocol' as const,
+      message: UNFINISHED_BATCH_MESSAGE,
+    }),
+  });
+}
+
+/**
+ * Rows for a batch that ended without per-case outcomes. Every accepted
+ * finish stands as delivered. In a stopping batch, the cases after an
+ * accepted runaway were never going to run, so they stay not-run. Every
+ * other case is the provider's failure, never a limit or a verdict; one
+ * whose start was accepted says its completion is uncertain.
+ */
+function serviceStoppedBatch<Input, Expected, Result>(
+  plan: JudgeEvaluationPlan<Input, Expected>,
+  outcome: JudgeKernelProcessOutcome,
+  comparator: JudgeComparator<Input, Expected, Result>,
+  stopAtFirstRunaway: boolean
+): readonly JudgeCaseResult<Result, Expected>[] {
+  const failed = unfinishedBatchFailure(outcome);
+  const failure = failed.failure as Extract<JudgeFailure, { origin: 'provider' }>;
+  const finished = new Map(
+    (outcome.journal?.finished ?? []).map((item) => [item.caseId, item])
+  );
+  const started = new Set(outcome.journal?.started ?? []);
+  const rows: JudgeCaseResult<Result, Expected>[] = [];
+  let stoppedBy: Omit<JudgeNotRun, 'reason'> | undefined;
+  for (const testCase of plan.cases) {
+    const item = finished.get(testCase.id);
+    if (stoppedBy && !item) {
+      rows.push(notRunResult<Result, Expected>(
+        testCase as JudgeCasePlan<unknown, Expected>,
+        { reason: 'run-stopped-after-limit', ...stoppedBy },
+        {
+          sessionId: outcome.sessionId,
+          pid: outcome.pid,
+          termination: Object.freeze({ kind: 'exit' as const, exitCode: 0 }),
+          stdout: '',
+          stderr: '',
+          diagnostics: Object.freeze([]),
+          timedOut: false,
+        }
+      ));
+      continue;
+    }
+    if (item) {
+      const row = batchItemResult<Input, Expected, Result>(plan, testCase, outcome, item, comparator);
+      rows.push(row);
+      const limit = runawayLimitOf(row as JudgeCaseResult<unknown, unknown>);
+      if (stopAtFirstRunaway && limit && !stoppedBy) stoppedBy = { stoppedByCaseId: testCase.id, limit };
+      continue;
+    }
+    const message = started.has(testCase.id)
+      ? `${failure.message} ${COMPLETION_UNCERTAIN}`
+      : failure.message;
+    const errorDiagnostic = (failed.diagnostics ?? []).find((diagnostic) => diagnostic.severity === 'error');
+    const {
+      structuredResult: _value,
+      trace: _trace,
+      batch: _batch,
+      journal: _journal,
+      ...process
+    } = failed;
+    rows.push(caseResult<Input, Expected, Result>(
+      plan.id,
+      testCase,
+      {
+        ...process,
+        // A case that did not finish ran no learner verdict, whatever exit
+        // status the process reported.
+        termination: process.termination.kind === 'exit' && process.termination.exitCode === 0
+          ? Object.freeze({ kind: 'failure' as const, exitCode: 1, message })
+          : process.termination,
+        // Only what the case published belongs to it. A case without an
+        // accepted finish published nothing.
+        ...(finished.size > 0 ? { stdout: '', stderr: '' } : {}),
+        timedOut: false,
+        diagnostics: Object.freeze([
+          ...(failed.diagnostics ?? []).filter((diagnostic) => diagnostic.severity !== 'error'),
+          Object.freeze({
+            ...(errorDiagnostic ?? { severity: 'error' as const, code: 'runtime-provider-error' }),
+            message,
+          }),
+        ]),
+        failure: Object.freeze({ ...failure, message }),
+      },
+      plan.structuredResult ?? 'required',
+      comparator
+    ));
+  }
+  return Object.freeze(rows);
 }
 
 export function evaluateJudgePlan<
