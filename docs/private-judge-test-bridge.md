@@ -39,3 +39,19 @@ For an accepted injection, `onEvent` receives `phase: 'injection-ack'` with the 
 | `encode` | `encode` | Replace a drawable reply at the observation return boundary with `observer-encode`. An existing refusal cannot ACK this injection. |
 
 Except for the worker-confirmed `no-recorder` control, these ACKs attest scheduler-boundary faults. Use provider-side evidence for claims about a language's own encoder or worker fault handling.
+
+## Judged-output policy
+
+Every ordinary (code-mode) prepare for JavaScript, TypeScript, Java, C# and C++ carries the product's judged-output policy: `maxBytes` (UTF-8 bytes of the answer's compact JSON), `maxItems` (entries in any one container), `maxNodes` (JSON values in the answer) and `maxDepth` (container nesting). An answer over a bound, or one with a cycle, is the case's typed `serialization-limit`, with no value. Python has no policy in this release. The contract is in `packages/runtime-contracts/src/judged-output-policy.ts`.
+
+A bridge may lower the policy with an optional third callback:
+
+```js
+judgedOutputPolicy({ language, evaluationId }) {
+  return language === 'javascript' ? { maxBytes: 1024 } : undefined;
+},
+```
+
+- The host calls it synchronously, once per ordinary prepare, in the page.
+- A returned field is used only if it is a non-negative safe integer below the product default. Higher, fractional, negative, non-number and accessor values keep the default, and so does an error thrown by the callback. The callback can't raise a bound.
+- A bridge that installs this callback also receives `onEvent({ phase: 'judged-output-policy', language, evaluationId, maxBytes, maxItems, maxNodes, maxDepth, lowered, at })` on each such prepare, before the provider prepares. This marker carries the effective policy that was sent. Bridges without the callback see no new event.
