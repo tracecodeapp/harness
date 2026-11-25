@@ -1303,7 +1303,7 @@ function interruptedCodeBatchOutcome(
       reason: 'protocol',
     }));
   }
-  const unavailable = providerFailure(runtime, interruptedCodeBatchMessage(error));
+  const unavailable = interruptedFailure(runtime, error);
   const batch = Object.freeze(cases.map(({ caseId }, index) => {
     const outcome = error.prefix[index];
     if (outcome) return batchCaseOutput(caseId, mappedCodeOutcome(runtime, outcome));
@@ -1314,6 +1314,19 @@ function interruptedCodeBatchOutcome(
     output: Object.freeze({ batch }),
     process: Object.freeze({ exitCode: 0, stdout: '', stderr: '' }),
   }));
+}
+
+/**
+ * The provider failure for the cases an interrupted batch did not finish. It
+ * keeps the interruption's own reason: a malformed reply is `protocol`.
+ */
+function interruptedFailure(runtime: string, error: InterruptedCodeBatchError): MappedRuntimeOutcome {
+  return providerFailure(
+    runtime,
+    interruptedCodeBatchMessage(error),
+    PROVIDER_ERROR_CODE,
+    error.reason === 'protocol' ? 'protocol' : 'runtime-failure'
+  );
 }
 
 function keepInterruptedPrefix(
@@ -1429,7 +1442,7 @@ function stoppedBatchOutcome(
   journal.reconcile(reply);
   // A control port that cannot record keeps no journal: publish the prefix itself.
   if (!journal.recording) return interruptedCodeBatchOutcome(runtime, cases, reply);
-  return Effect.succeed(providerFailure(runtime, interruptedCodeBatchMessage(reply)));
+  return Effect.succeed(interruptedFailure(runtime, reply));
 }
 
 function executePreparedProviderBatch(
@@ -1626,7 +1639,7 @@ function executeProviderBatchUntilRunaway(
           ));
         }
         if (finished) journal.reconcile(reply, index);
-        return providerFailure(options.runtime, interruptedCodeBatchMessage(reply));
+        return interruptedFailure(options.runtime, reply);
       }
       const outcomes = journal.settle(reply, index);
       const outcome = outcomes[0];
