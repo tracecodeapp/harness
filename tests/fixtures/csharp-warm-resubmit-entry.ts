@@ -514,6 +514,29 @@ export async function probeCSharpJudgedOutputs(
     return next;
   }
 
+  const boxCode = `public class Box {
+    public int n;
+    public Box next { get; set; }
+  }
+  public class Solution {
+    public Box solve(int length, bool cycle) {
+      var head = new Box { n = 0 };
+      var tail = head;
+      for (int n = 1; n < length; n++) {
+        tail.next = new Box { n = n };
+        tail = tail.next;
+      }
+      if (cycle) tail.next = head;
+      return head;
+    }
+  }`;
+
+  function boxes(length: number, end: unknown = null) {
+    let next = end;
+    for (let n = length - 1; n > 0; n--) next = { n, next };
+    return { n: 0, next };
+  }
+
   try {
     await check('G6 graph output', 'public class Solution { public TreeNode solve(TreeNode root) => root; }',
       (result) => {
@@ -621,9 +644,68 @@ export async function probeCSharpJudgedOutputs(
         equals(result.kind, 'failed');
         if (result.kind === 'failed') equals(result.diagnosticStage, 'runtime');
       }, { n: 0 });
-    await check('compatibility output depth is a typed limit',
-      'public class Box { public Box next; } public class Solution { public object solve() { var box = new Box(); for (int i = 0; i < 70; i++) box = new Box { next = box }; return box; } }',
-      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'));
+    for (const length of [64, 65]) {
+      await check(`compatibility ${length}-node chain completes`, boxCode, (result) => {
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        equals(result.output, boxes(length));
+      }, { length, cycle: false });
+    }
+    await check('compatibility 64-node cycle emits a reference', boxCode, (result) => {
+      if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+      const root = result.output as { __id__?: string };
+      if (!root.__id__) throw new Error('Expected a reference ID for the root.');
+      equals(root, { ...boxes(64, { __ref__: root.__id__ }), __id__: root.__id__ });
+    }, { length: 64, cycle: true });
+    await check('compatibility 66-node chain hits the output depth limit', boxCode,
+      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
+      { length: 66, cycle: false });
+
+    const general = new CSharpWorkerClient({
+      workerUrl, runtimeRole: 'general', assetBaseUrl: '/workers/vendor/csharp',
+    });
+    const depthCall = {
+      code: boxCode, functionName: 'solve', executionStyle: 'solution-method' as const,
+      inputs: { length: 66, cycle: false },
+    };
+    const generalChecks = [
+      ['general ordinary 66-node chain hits the output depth limit', async () => {
+        const result = await general.executeCode(depthCall);
+        equals(result.kind, 'limit');
+        if (result.kind === 'limit') equals(result.reason, 'serialization-limit');
+      }],
+      ['general prepared 66-node chain hits the output depth limit', async () => {
+        const prepared = await compiler.prepareProgram({ ...depthCall, mode: 'code' });
+        const { compiledArtifactKey, compiledArtifactBase64, compiledArtifactSha256,
+          preparedRunnerTier, preparedRunnerReason } = prepared;
+        if (!prepared.success || !compiledArtifactKey || !compiledArtifactBase64 || !compiledArtifactSha256 ||
+            preparedRunnerTier !== 'compatibility' || !preparedRunnerReason) {
+          throw new Error(`Expected a compatibility artifact, received ${prepared.error ?? preparedRunnerTier}.`);
+        }
+        const result = await general.executePreparedCode({
+          ...depthCall, mode: 'code', compiledArtifactKey, compiledArtifactBase64, compiledArtifactSha256,
+          preparedRunnerTier, preparedRunnerReason,
+        }, { inputs: depthCall.inputs });
+        equals(result.kind, 'limit');
+        if (result.kind === 'limit') equals(result.reason, 'serialization-limit');
+      }],
+      ['general traced 66-node chain keeps the depth sentinel', async () => {
+        const result = await general.executeWithTracing(depthCall);
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        equals(result.output, boxes(65, '<max depth>'));
+      }],
+    ] as const;
+    try {
+      for (const [name, inspect] of generalChecks) {
+        try {
+          await inspect();
+          console.log(`${name}: pass`);
+        } catch (error) {
+          failures.push(`${name}: ${String(error)}`);
+        }
+      }
+    } finally {
+      general.terminate();
+    }
     return failures;
   } finally {
     compiler.terminate();
