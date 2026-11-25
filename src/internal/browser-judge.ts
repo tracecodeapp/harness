@@ -316,6 +316,13 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
   private published = false;
   /** No further progress is accepted. */
   private sealed = false;
+  /**
+   * The case running when the journal was sealed: the last journalled start,
+   * when its finish was not journalled. (In an in-order batch a later start
+   * shows that every earlier case had finished.) A grace-prefix entry for it
+   * may have been built from the abort itself, so it is never kept.
+   */
+  private runningAtSeal: number | undefined;
   /** `service-deadline` has been marked for this dispatch. */
   private deadlineMarked = false;
   /** Every entry's start is journalled (worker ACKs, or the coordinator sends each case). */
@@ -391,7 +398,10 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
 
   /** The batch call was stopped: take no further progress. */
   seal(): void {
+    if (this.sealed) return;
     this.sealed = true;
+    const lastStart = Math.max(-1, ...this.startedEntries);
+    this.runningAtSeal = lastStart >= 0 && !this.accepted.has(lastStart) ? lastStart : undefined;
   }
 
   /** Resolves when the trusted control expires the service watchdog. */
@@ -408,8 +418,13 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
    * - Before any stop (a worker loss), it also evidences its own start.
    * - After a watchdog stop (the injected deadline or the real kill), the
    *   one keep rule applies: the entry stands only if, where this dispatch
-   *   records starts, the journal recorded that case's start. Any other
-   *   entry is fenced. The dispatch calls this only within its grace.
+   *   records starts, the journal recorded that case's start, and the case
+   *   was not the one running at the stop (the last journalled start
+   *   without a journalled finish, or the entry the provider names as
+   *   interrupted). A provider can build the running case's entry from the
+   *   abort itself, so that case keeps only a finish journalled before the
+   *   seal. Any other entry is fenced. The dispatch calls this only within
+   *   its grace.
    * An entry for a case already accepted never replaces it.
    */
   reconcile(error: InterruptedCodeBatchError, offset = 0): void {
@@ -418,7 +433,8 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
         const index = local + offset;
         if (this.accepted.has(index)) return;
         const startKnown = !this.startsAcknowledged || this.startedEntries.has(index);
-        if (this.sealed && !startKnown) {
+        const runningAtStop = this.runningAtSeal === index || error.interruptedIndex === local;
+        if (this.sealed && (!startKnown || runningAtStop)) {
           this.fenced('finished', local);
           return;
         }
@@ -451,11 +467,11 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
   /** The dispatch is about to publish its own result. */
   publishing(): void {
     this.published = true;
-    this.sealed = true;
+    this.seal();
   }
 
   processEnded(): void {
-    this.sealed = true;
+    this.seal();
     if (this.published || this.deadlineMarked) return;
     this.deadlineMarked = true;
     this.marks.serviceDeadline(this.generation, 'backstop', this.accepted.size);
@@ -468,7 +484,7 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
   }
 
   private expire(): void {
-    this.sealed = true;
+    this.seal();
     this.deadlineMarked = true;
     this.marks.serviceDeadline(this.generation, 'injected', this.accepted.size);
     this.expiry.abort();
