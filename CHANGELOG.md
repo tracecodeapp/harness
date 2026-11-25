@@ -183,7 +183,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   while the program runs: `prog | tee log` shows the output when the pipeline
   finishes, and `prog > /dev/tty` shows it once, after the program exits.
   npm with a pipe or redirect, including on its input (`echo x | npm test`,
-  `npm test < input`), no longer prints the script's output twice. Verdicts,
+  `npm test < input`), no longer prints the script's output twice. The same
+  holds after `exec > file`, `exec 2> file` or `exec 1>&2`, and inside a file
+  run with `source` or `.` or a string run with `eval`. A program started
+  from `source` or `eval` no longer ends the rest of the line. An npm
+  script's runtime error reaches the result as a direct run's does. Verdicts,
   traces and drawings are unchanged.
 - Python project commands name workspace files by the path the terminal
   shows, as CPython does for the same command in that directory. Tracebacks
