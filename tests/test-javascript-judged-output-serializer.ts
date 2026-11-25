@@ -58,6 +58,19 @@ function jsonBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value === undefined ? null : value), 'utf8');
 }
 
+/** Nesting of the language value: a container is one deeper than its parent; scalars add nothing. */
+function valueDepth(value: unknown): number {
+  if (value === null || typeof value !== 'object') return 0;
+  const children = value instanceof Map
+    ? [...value].flat()
+    : value instanceof Set
+      ? [...value]
+      : Array.isArray(value)
+        ? Array.from(value)
+        : Object.values(value);
+  return 1 + children.reduce<number>((deepest, child) => Math.max(deepest, valueDepth(child)), 0);
+}
+
 /** JSON values, the largest container and the deepest container nesting. */
 function jsonShape(value: unknown) {
   let nodes = 0;
@@ -151,13 +164,22 @@ test('a linked list of 64 nodes passes and 65 is a typed limit', () => {
   assert.deepEqual(judged(list(65)), { ok: false, limit: 'depth' });
 });
 
-test('a set or map counts its wrapper containers toward nesting', () => {
+test('nesting counts language values: a set or map counts once, not its JSON wrappers', () => {
+  // A Map is written as { __type__: 'map', entries: [[k, v]] }, three JSON
+  // containers, but it is one value deep, as the serializer (and C# and Java)
+  // have always counted it. 25 nested Maps pass on main today.
+  let map: unknown = 'leaf';
+  for (let depth = 0; depth < 25; depth += 1) map = new Map([[depth, map]]);
+  assert.equal(judged(map).ok, true);
+  let maps: unknown = 'leaf';
+  for (let depth = 0; depth < 64; depth += 1) maps = new Map([[depth, maps]]);
+  assert.equal(judged(maps).ok, true);
+  assert.deepEqual(judged(new Map([[0, maps]])), { ok: false, limit: 'depth' });
   const set = new Set([[1]]);
-  const outcome = judged(set, { maxDepth: 3 });
-  assert.equal(outcome.ok, true);
-  assert.equal(jsonShape(outcome.ok && outcome.value).depth, 3);
-  assert.deepEqual(judged(set, { maxDepth: 2 }), { ok: false, limit: 'depth' });
-  assert.deepEqual(judged(new Map([[1, [2]]]), { maxDepth: 3 }), { ok: false, limit: 'depth' });
+  assert.equal(judged(set, { maxDepth: 2 }).ok, true);
+  assert.deepEqual(judged(set, { maxDepth: 1 }), { ok: false, limit: 'depth' });
+  assert.equal(judged(new Map([[1, [2]]]), { maxDepth: 2 }).ok, true);
+  assert.deepEqual(judged(new Map([[1, [2]]]), { maxDepth: 1 }), { ok: false, limit: 'depth' });
 });
 
 test('a cycle is a typed limit; a shared child is serialized at each occurrence', () => {
@@ -313,7 +335,8 @@ test('fuzz: every bound agrees with JSON.stringify at the boundary', () => {
     check({ maxNodes: shape.nodes - 1 }, 'node', 'nodes over the bound');
     check({ maxItems: shape.items }, null, 'items at the bound');
     if (shape.items > 0) check({ maxItems: shape.items - 1 }, 'item', 'items over the bound');
-    check({ maxDepth: shape.depth }, null, 'depth at the bound');
-    if (shape.depth > 0) check({ maxDepth: shape.depth - 1 }, 'depth', 'depth over the bound');
+    const depth = valueDepth(value);
+    check({ maxDepth: depth }, null, 'depth at the bound');
+    if (depth > 0) check({ maxDepth: depth - 1 }, 'depth', 'depth over the bound');
   }
 });
