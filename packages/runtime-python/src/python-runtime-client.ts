@@ -794,6 +794,7 @@ function isPythonBatchPrefix(
 
 type PythonOrdinaryBatchCall = RuntimePreparedCodeBatchCall & {
   readonly onCaseStarted?: (index: number) => void;
+  readonly onCaseFinished?: (index: number, result: CodeExecutionResult) => void;
 };
 
 /** The verdict's worker, handed to its program's observer. */
@@ -1011,6 +1012,8 @@ class PreparedPythonProgramLifetime {
                 started = true;
                 call.onCaseStarted?.(offset + index);
               },
+              onCaseFinished: call.onCaseFinished &&
+                ((index, row) => call.onCaseFinished?.(offset + index, row)),
               ...(fast && call.stopAtFirstRunaway === true && this.observer
                 ? {
                     onCasesFinished: (rows: readonly unknown[]) => {
@@ -1125,17 +1128,21 @@ class PreparedPythonProgramLifetime {
     const results: CodeExecutionResult[] = [];
     for (const [index, inputs] of call.inputBatch.entries()) {
       if (call.stopAtFirstRunaway === true && isPythonRunawayOutcome(results[results.length - 1])) break;
+      let started = false;
       try {
-        results.push(
-          await this.executeSerial(call.signal, (client, signal) =>
-            client.executePreparedCode(this.handle, {
-              inputs,
-              signal,
-              limits: call.limits,
-              onCaseStarted: call.onCaseStarted && (() => call.onCaseStarted?.(index)),
-            })
-          )
+        const result = await this.executeSerial(call.signal, (client, signal) =>
+          client.executePreparedCode(this.handle, {
+            inputs,
+            signal,
+            limits: call.limits,
+            onCaseStarted: (call.onCaseStarted || call.onCaseFinished) && (() => {
+              started = true;
+              call.onCaseStarted?.(index);
+            }),
+          })
         );
+        results.push(result);
+        if (started && !call.signal?.aborted) call.onCaseFinished?.(index, result);
       } catch (error) {
         if (call.signal?.aborted) {
           throw abortReason(

@@ -734,6 +734,7 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
       readonly stopAtFirstRunaway?: boolean;
       readonly onCaseStarted?: (index: number) => void;
+      readonly onCaseFinished?: (index: number, result: CodeExecutionResult) => void;
       /**
        * A stopping batch's every case has finished and only its reply is
        * left. Work posted to this client now runs after the batch, because
@@ -765,7 +766,8 @@ export class PythonWorkerClient {
       call.signal,
       call.onCaseStarted,
       call.onCasesFinished,
-      call.stopAtFirstRunaway === true
+      call.stopAtFirstRunaway === true,
+      call.onCaseFinished
     );
     if (outcome.kind === 'case-timeout') {
       return {
@@ -984,7 +986,8 @@ export class PythonWorkerClient {
     signal: AbortSignal | undefined,
     onCaseStarted?: (index: number) => void,
     onCasesFinished?: (results: readonly unknown[]) => void,
-    stopAtFirstRunaway = true
+    stopAtFirstRunaway = true,
+    onCaseFinished?: (index: number, result: CodeExecutionResult) => void
   ): Promise<StoppingBatchOutcome<R>> {
     const ordinary = request.mode === 'code';
     const progress = new BatchCaseProgress(caseCount);
@@ -1027,8 +1030,27 @@ export class PythonWorkerClient {
           this.batchProgress.set(id, (message) => {
             if (expired || signal?.aborted || !progress.accept(message)) return;
             restartClock();
-            if (progress.running !== undefined) onCaseStarted?.(progress.running);
-            else if (progress.finished.length === caseCount) onCasesFinished?.(progress.finished);
+            if (progress.running !== undefined) {
+              onCaseStarted?.(progress.running);
+              return;
+            }
+            if (onCaseFinished) {
+              const index = progress.finished.length - 1;
+              let result: CodeExecutionResult;
+              try {
+                result = liftCodeOutcome(
+                  progress.finished[index] as RawExecutionPayload,
+                  'Prepared Python batch execution failed'
+                );
+              } catch (error) {
+                progress.invalid = error instanceof Error ? error : new Error(String(error));
+                return;
+              }
+              onCaseFinished(index, result);
+            }
+            if (!signal?.aborted && progress.finished.length === caseCount) {
+              onCasesFinished?.(progress.finished);
+            }
           });
         },
       }
