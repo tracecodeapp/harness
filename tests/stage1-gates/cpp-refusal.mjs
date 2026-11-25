@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 
 export const cppStep7Subject = '9b30ad9bc203ad2ba2f159d96dfaef62940262c7';
-export const cCppSubject = '46943f54e42abcd5c008ac88261446a89a3fd270';
+export const cCppSubject = '39b2119a72d5afe003dbc6d66aba19633c15292f';
+export const cCppQualificationSubject = '46943f54e42abcd5c008ac88261446a89a3fd270';
+export const cCppSubjects = new Set([cCppSubject, cCppQualificationSubject]);
 
 const exceptionRefusal = Object.freeze({
   message: 'C++ exceptions are not supported yet',
@@ -22,7 +24,7 @@ const legacySubjects = new Set([
 
 export function cppRefusalFor(fixture, subject, frozen, registeredCpp) {
   if (fixture.language !== 'cpp') return;
-  if (fixture.gate === 'G6' && fixture.name === 'cpp-delete-macro' && subject === cCppSubject) {
+  if (fixture.gate === 'G6' && fixture.name === 'cpp-delete-macro' && cCppSubjects.has(subject)) {
     return macroOperationRefusal;
   }
   if (fixture.gate === 'G1' && fixture.name === 'print-then-throw' &&

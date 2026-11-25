@@ -45,7 +45,7 @@ The C++ `print-then-throw` fixture checks the 0.21 exception refusal on step 7's
 
 Run the local oracle controls with `node --test tests/stage1-gates/ga-receipt-controls.test.mjs`.
 
-For the C-CPP pin `46943f54`, `cpp-delete-macro` checks the owner-approved A′
+For the C-CPP landing pin `39b2119a` and its qualification pin `46943f54`, `cpp-delete-macro` checks the owner-approved A′
 compile refusal on Run, Submit, mux and both C++ direct routes. The gate
 checks the typed diagnostic at the `#define`, the empty Judge case array and
 the absence of a handle or case execution. The direct batch check requires

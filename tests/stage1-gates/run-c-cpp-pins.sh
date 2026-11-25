@@ -16,11 +16,11 @@ mux_input=$(realpath "$4")
 job_root=$5
 artifact_root=/root/ci/coord-artifacts
 step7=9b30ad9bc203ad2ba2f159d96dfaef62940262c7
-c_cpp=46943f54e42abcd5c008ac88261446a89a3fd270
+c_cpp=39b2119a72d5afe003dbc6d66aba19633c15292f
 step7_tarball="$artifact_root/feat-b7-cpp-9b30ad9bc203.tgz"
-c_cpp_tarball="$artifact_root/c-cpp-46943f54.tgz"
+c_cpp_tarball="$artifact_root/c-cpp-39b2119a.tgz"
 step7_pin=562612f2b8e9240181890a0d2a3493277d725dcc9d68546fcca40e664a5300b6
-c_cpp_pin=75c96699765bc637221d47d7f0d712eb61b68f5e07ac04705d1ff67b0f2c453a
+c_cpp_pin=c6878ed12cb255b86bfb1894ba40e2abb33b02bbf9331909ef6c4c7125c5f281
 app_pin=52d79823668e5326018986bc887b58422407a48731cf0966b09e44b98e03a62f
 
 verify_pin() {

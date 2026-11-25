@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNaturalShapes } from './cpp-natural-shapes.mjs';
-import { cCppSubject, cppStep7Subject } from './cpp-refusal.mjs';
+import { cCppQualificationSubject, cCppSubject, cppStep7Subject } from './cpp-refusal.mjs';
 
 const fixed = cppNaturalShapes(cCppSubject);
 const baseline = cppNaturalShapes(cppStep7Subject);
@@ -26,6 +26,7 @@ function completed(fixture, values) {
 
 test('natural shapes plan exactly five public routes for each of the 18 fixtures on both pins', () => {
   assert.equal(fixed.length, 18);
+  assert.deepEqual(cppNaturalShapes(cCppQualificationSubject), fixed);
   assert.equal(baseline.length, 18);
   assert.equal(baseline.filter(({ naturalShape }) => naturalShape.compileError).length, 12);
   assert.equal(baseline.filter(({ naturalShape }) => naturalShape.wrongAnswer).length, 1);
