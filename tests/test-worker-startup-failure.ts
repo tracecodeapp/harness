@@ -17,6 +17,7 @@ function failingWorker(phase: 'startup' | 'init' | 'unsuccessful-init' | 'execut
     postMessage(message) {
       const { id, protocolToken, type } = message as Record<string, string>;
       if (phase === 'execution') {
+        assert.ok(type === 'execute-prepared-code' || type === 'execute-prepared-trace');
         worker.onerror?.({ message: 'same failure' } as ErrorEvent);
       } else {
         assert.ok(phase === 'init' || phase === 'unsuccessful-init');
@@ -85,7 +86,7 @@ const prepared: CSharpPreparedProgramArtifact = {
 
 for (const mode of ['code', 'trace'] as const) {
   for (const phase of ['startup', 'execution'] as const) {
-    test(`C# prepared ${mode} classifies a crash during ${phase}`, async () => {
+    test(`C# prepared ${mode} rejects a crash during ${phase}`, async () => {
       const client = new CSharpWorkerClient({
         ...workerOptions, assetBaseUrl: '/', runtimeRole: 'runner', workerFactory: () => failingWorker(phase),
       });
@@ -93,11 +94,10 @@ for (const mode of ['code', 'trace'] as const) {
         const run = mode === 'code'
           ? client.executePreparedCode(prepared, { inputs: {} })
           : client.executePreparedTrace({ ...prepared, mode }, { inputs: {} });
-        if (phase === 'startup') await assert.rejects(run, isRuntimeProviderError);
-        else {
-          const outcome = await run;
-          assert.equal(outcome.kind, 'failed');
-          assert.equal(outcome.diagnosticStage, 'runtime');
+        if (phase === 'startup') {
+          await assert.rejects(run, isRuntimeProviderError);
+        } else {
+          await assert.rejects(run, { name: 'WorkerCrashedError', message: 'same failure' });
         }
       } finally {
         client.terminate();
