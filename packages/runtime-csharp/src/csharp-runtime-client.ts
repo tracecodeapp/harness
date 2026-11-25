@@ -23,6 +23,7 @@ import type { CodeExecutionResult, ExecutionResult } from '@tracecode/runtime-co
 import { RuntimeProviderError } from '@tracecode/runtime-contracts';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
+import type { JudgedPreparationCall } from '../../runtime-contracts/src/judged-output-policy';
 import type {
   CSharpExecutionStyle,
   CSharpPreparedProgramArtifact,
@@ -485,6 +486,9 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
   async prepareProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<RuntimeProgramPreparationResult> {
+    const maxJudgedOutputBytes = call.mode === 'code'
+      ? (call as JudgedPreparationCall).judgedOutputPolicy?.maxBytes
+      : undefined;
     const preparation = await this.prepareArtifact(call);
     if (preparation.kind === 'failed') return preparation;
     let artifact: CSharpPreparedProgramArtifact | undefined = preparation.artifact;
@@ -717,7 +721,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               withOwnedPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
-                runner.executePreparedCode(preparedArtifact, forwardedCall)
+                runner.executePreparedCode(preparedArtifact, forwardedCall, maxJudgedOutputBytes)
               )
             ),
           executeBatchIsolated: (
@@ -732,7 +736,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
                     inputs,
                     signal: forwardedCall.signal,
                     limits: forwardedCall.limits,
-                  }),
+                  }, maxJudgedOutputBytes),
                 forwardedCall.signal
               )
             ),

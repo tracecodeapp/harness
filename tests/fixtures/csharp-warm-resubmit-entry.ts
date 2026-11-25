@@ -469,12 +469,16 @@ export async function probeCSharpJudgedOutputs(
     inspect: (result: Awaited<ReturnType<
       import('../../packages/runtime-contracts/src/runtime-calls').RuntimePreparedProgram['executeIsolated']
     >>) => void,
-    inputs: Record<string, unknown> = {}
+    inputs: Record<string, unknown> = {},
+    maxBytes?: number
   ) {
     const call = {
       mode: 'code' as const,
       code,
       functionName: 'solve',
+      ...(maxBytes === undefined ? {} : {
+        judgedOutputPolicy: { maxBytes, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64 },
+      }),
     };
     const prepared = await runtime.prepareProgram(call);
     if (prepared.kind !== 'prepared') {
@@ -644,6 +648,14 @@ export async function probeCSharpJudgedOutputs(
         equals(result.kind, 'failed');
         if (result.kind === 'failed') equals(result.diagnosticStage, 'runtime');
       }, { n: 0 });
+    for (const n of [64, 2_048, 400]) {
+      await check(`G6 judged UTF-8 cap (${n} characters)`,
+        "public class Solution { public string solve(int n) => new string(n == 400 ? '雪' : 'x', n); }",
+        (result) => {
+          if (n === 64) equals(result.kind === 'completed' ? result.output : result, 'x'.repeat(n));
+          else equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit');
+        }, { n }, 1_024);
+    }
     for (const length of [64, 65]) {
       await check(`compatibility ${length}-node chain completes`, boxCode, (result) => {
         if (result.kind !== 'completed') throw new Error(JSON.stringify(result));

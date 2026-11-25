@@ -153,6 +153,15 @@ export interface CSharpDiagnostic {
 export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 export type CSharpProjectCommandResult = RuntimeCommandResult;
 
+const judgedOutputEncoder = new TextEncoder();
+
+function judgedOutputByteLength(output: unknown): number {
+  const json = JSON.stringify(output, (_key, value) =>
+    value instanceof Set ? [...value] : value
+  );
+  return judgedOutputEncoder.encode(json).byteLength;
+}
+
 interface CSharpWorkerExecuteResult {
   success: boolean;
   output?: unknown;
@@ -670,7 +679,8 @@ export class CSharpWorkerClient {
 
   async executePreparedCode(
     prepared: CSharpPreparedProgramArtifact,
-    call: RuntimePreparedCodeCall
+    call: RuntimePreparedCodeCall,
+    maxJudgedOutputBytes?: number
   ): Promise<CodeExecutionResult> {
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
@@ -749,7 +759,22 @@ export class CSharpWorkerClient {
           });
         }
       }
-      return this.toCodeExecutionResult(result);
+      const outcome = this.toCodeExecutionResult(result);
+      if (
+        prepared.mode === 'code' &&
+        outcome.kind === 'completed' &&
+        maxJudgedOutputBytes !== undefined &&
+        judgedOutputByteLength(outcome.output) > maxJudgedOutputBytes
+      ) {
+        return {
+          kind: 'limit',
+          reason: 'serialization-limit',
+          error: `C# judged output exceeds ${maxJudgedOutputBytes} UTF-8 bytes.`,
+          consoleOutput: outcome.consoleOutput,
+          timings: outcome.timings,
+        };
+      }
+      return outcome;
     });
   }
 
