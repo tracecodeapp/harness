@@ -5563,10 +5563,10 @@ test('D-WATCH review: when the deadline wins, an authenticated prefix the provid
   assert.equal(deadline.cause, 'injected');
 });
 
-test('D-WATCH review 2: within the grace, the interrupted case\'s own prefix entry is kept when its start was recorded', { timeout: 10000 }, async (t) => {
-  // The rule after a watchdog stop: a result stands if its finish is
-  // authenticated (journalled before the seal, or in the provider's prefix
-  // within the grace) and, where starts are recorded, its start was.
+test('D-WATCH review: a prefix entry for the case the deadline interrupted is fenced, not graded', { timeout: 10000 }, async (t) => {
+  // B was running at the stop: its start is journalled, its finish is not.
+  // A provider can build that entry from the abort itself (here, a
+  // client-made timeout), so only a finish journalled before the seal counts.
   const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
   const f = scriptedBatchFixture({ forwardFinishes: false, onAbort: 'interrupted', fabricate: true });
   t.after(() => f.host.dispose());
@@ -5574,9 +5574,27 @@ test('D-WATCH review 2: within the grace, the interrupted case\'s own prefix ent
   await f.reached('A');
   f.release('A', 'finish');
   const rows = rowsOf(await pending);
+  // A, earlier in the prefix with its start journalled, still stands.
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.deepEqual(rejections(bridgeEvents), [['B', 'fenced', 'finished']]);
+});
+
+test('D-WATCH review: a runaway for B journalled before the seal is still kept as B\'s limit', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'finished' });
+  const f = scriptedBatchFixture({ onAbort: 'interrupted', fabricate: true });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'runaway');
+  const rows = rowsOf(await pending);
   assert.equal(rows[0]?.value, 'A');
-  assert.equal(rows[1]?.failure?.origin, 'limit', 'B\'s prefix finish is the provider\'s authenticated result');
+  assert.equal(rows[1]?.status, 'timed-out');
+  assert.equal(rows[1]?.failure?.origin, 'limit');
+  assert.equal(rows[1]?.failure?.origin === 'limit' ? rows[1].failure.reason : undefined, 'client-timeout');
   assert.equal(rows[2]?.failure?.origin, 'provider');
+  assert.match(rows[2]!.failure!.message, /had not started/u);
   assert.deepEqual(rejections(bridgeEvents), []);
 });
 
