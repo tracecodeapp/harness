@@ -8912,20 +8912,36 @@ class _ProjectSourceLoader(importlib.machinery.SourceFileLoader):
         super().__init__(fullname, _virtual_workspace_path(path))
 
     def get_data(self, path):
-        return super().get_data(_map_workspace_path(path))
+        try:
+            return super().get_data(_map_workspace_path(path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
     def path_stats(self, path):
-        return super().path_stats(_map_workspace_path(path))
+        try:
+            return super().path_stats(_map_workspace_path(path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
     def set_data(self, path, data, *, _mode=0o666):
-        return super().set_data(_map_workspace_path(path), data, _mode=_mode)
+        try:
+            return super().set_data(_map_workspace_path(path), data, _mode=_mode)
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
 class _ProjectSourcelessLoader(importlib.machinery.SourcelessFileLoader):
     def __init__(self, fullname, path):
         super().__init__(fullname, _virtual_workspace_path(path))
 
     def get_data(self, path):
-        return super().get_data(_map_workspace_path(path))
+        try:
+            return super().get_data(_map_workspace_path(path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
 _project_loader_details = (
     (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
@@ -9332,7 +9348,11 @@ def _install_virtual_workspace_paths():
         _reject_kernel_mutation(_path, "truncate")
         _mapped_path = _map_workspace_path(_path)
         _absolute_path = _absolute_mapped_path(_mapped_path)
-        _result = _original_os_truncate(_mapped_path, _length)
+        try:
+            _result = _original_os_truncate(_mapped_path, _length)
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
         _emit_file_change_for_absolute(_absolute_path)
         return _result
 
@@ -9389,7 +9409,11 @@ def _install_virtual_workspace_paths():
             if _proc_entry_kind(_proc_path) is None:
                 raise FileNotFoundError(_proc_path)
             return _virtual_statvfs_result(True)
-        return _original_os_statvfs(_map_workspace_path(_path))
+        try:
+            return _original_os_statvfs(_map_workspace_path(_path))
+        except OSError as _error:
+            _learner_os_error(_error)
+            raise
 
     builtins.open = _patched_open
     io.open = _patched_open
@@ -9550,7 +9574,14 @@ def _install_virtual_workspace_paths():
                     raise ValueError(f"Project symbolic link path must stay within the workspace: {_dst}")
                 _source_text = (os.fsdecode(os.fspath(_src)) if isinstance(_src, (str, bytes, os.PathLike)) else str(_src)).replace("\\\\", "/")
                 _internal_src = _internal_project_symlink_target(_relative_dst, _source_text)
-                _result = _original(_internal_src, _mapped_dst, *args, **kwargs)
+                try:
+                    _result = _original(_internal_src, _mapped_dst, *args, **kwargs)
+                except OSError as _error:
+                    # As CPython: the link's target as given, then its path.
+                    if _error.filename == _internal_src:
+                        _error.filename = _src
+                    _learner_os_error(_error)
+                    raise
                 _remembered_symlink_targets[_relative_dst] = _source_text
                 _emit_symlink_change_for_absolute(_absolute_dst, _source_text)
                 return _result
