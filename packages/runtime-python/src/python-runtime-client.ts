@@ -5,10 +5,7 @@ import type {
   PythonProjectCommandRequest,
   PythonWorkerClient,
 } from './python-worker-client';
-import {
-  calculatePythonCodeBatchDeadlineMs,
-  PythonAlgorithmFastBatchUnavailableError,
-} from './python-worker-client';
+import { PythonAlgorithmFastBatchUnavailableError } from './python-worker-client';
 import type {
   Cut,
   Drawing,
@@ -46,11 +43,12 @@ import {
 } from '@tracecode/runtime-contracts';
 import {
   assertRuntimeRequestSupported,
-  ExecutionTimeoutError,
+  InterruptedCodeBatchError,
   executeRuntimeRequest,
   getLanguageRuntimeProfile,
   isExecutionTimeoutError,
   isRuntimeProjectExecuteRequest,
+  WorkerCrashedError,
 } from '@tracecode/runtime-browser/internal';
 import { findJudgeOrdinaryPreparationKey } from '../../runtime-browser/src/browser-runtime-host-internal';
 
@@ -794,49 +792,6 @@ function isPythonBatchPrefix(
     isPythonRunawayOutcome(results[results.length - 1]);
 }
 
-class PythonBatchExecutionBudget {
-  private remainingMs: number;
-  private readonly timeoutError: ExecutionTimeoutError;
-
-  constructor(timeoutMs: number) {
-    this.remainingMs = timeoutMs;
-    this.timeoutError = new ExecutionTimeoutError({
-      timeoutMs,
-      runtimeLabel: 'Python batch',
-    });
-  }
-
-  async run<T>(
-    operation: (signal: AbortSignal) => Promise<T>,
-    signal?: AbortSignal
-  ): Promise<T> {
-    if (this.remainingMs <= 0) throw this.timeoutError;
-    const controller = new AbortController();
-    const unlink = linkAbortSignal(signal, controller);
-    const startedAt = globalThis.performance.now();
-    const timeout = globalThis.setTimeout(() => {
-      if (!controller.signal.aborted) controller.abort(this.timeoutError);
-    }, Math.max(1, Math.ceil(this.remainingMs)));
-    try {
-      return await raceWithAbort(
-        Promise.resolve().then(() => operation(controller.signal)),
-        controller.signal
-      );
-    } finally {
-      this.remainingMs = Math.max(
-        0,
-        this.remainingMs - (globalThis.performance.now() - startedAt)
-      );
-      globalThis.clearTimeout(timeout);
-      unlink();
-    }
-  }
-
-  isTimeout(error: unknown): boolean {
-    return error === this.timeoutError;
-  }
-}
-
 type PythonOrdinaryBatchCall = RuntimePreparedCodeBatchCall & {
   readonly onCaseStarted?: (index: number) => void;
 };
@@ -1034,86 +989,73 @@ class PreparedPythonProgramLifetime {
   private async executeVerdictBatch(
     call: PythonOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
-    const budget = new PythonBatchExecutionBudget(
-      calculatePythonCodeBatchDeadlineMs(
-        call.inputBatch.length,
-        call.limits?.wallClockMs
-      )
-    );
-    if (this.handle.artifact.mode !== 'code') {
-      return this.executeCompatibilityCodeBatch(call, budget);
+    const { artifact } = this.handle;
+    if (artifact.mode !== 'code' || artifact.isolationProfile.tier === 'hard-isolated') {
+      return this.executeCompatibilityCodeBatch(call);
     }
-    if (this.handle.artifact.isolationProfile.tier === 'hard-isolated') {
-      return this.executeCompatibilityCodeBatch(call, budget);
-    }
-    if (this.handle.artifact.isolationProfile.tier === 'judge-compatible') {
-      return this.executeSerial(call.signal, async (client, signal) => {
-        const result = await client.executePreparedCodeBatch(this.handle, {
-          ...call,
-          signal,
-        });
-        return result.results ?? [];
-      });
-    }
-    let dispatched = false;
-    const onCaseStarted = call.onCaseStarted && ((index: number) => {
-      dispatched = true;
-      call.onCaseStarted?.(index);
-    });
-    const runBatch = async (client: PythonWorkerClient, signal: AbortSignal) => {
-      const result = await client.executePreparedCodeBatch(this.handle, {
-        ...call,
-        signal,
-        onCaseStarted,
-        ...(call.stopAtFirstRunaway === true && this.observer
-          ? {
-              onCasesFinished: (rows: readonly unknown[]) => {
-                // A case that ended the runtime leaves no worker to prepare on.
-                if (!rows.some(pythonRawRowEndedRuntime)) this.queueObserverPrepare(client);
+    const fast = artifact.isolationProfile.tier === 'algorithm-fast';
+    const prefix: CodeExecutionResult[] = [];
+    while (prefix.length < call.inputBatch.length) {
+      const offset = prefix.length;
+      const inputBatch = offset === 0 ? call.inputBatch : call.inputBatch.slice(offset);
+      let started = false;
+      try {
+        const result = await this.executeSerial(
+          call.signal,
+          async (client, signal) => {
+            const batch = await client.executePreparedCodeBatch(this.handle, {
+              ...call,
+              inputBatch,
+              signal,
+              onCaseStarted: (index) => {
+                started = true;
+                call.onCaseStarted?.(offset + index);
               },
+              ...(fast && call.stopAtFirstRunaway === true && this.observer
+                ? {
+                    onCasesFinished: (rows: readonly unknown[]) => {
+                      // A case that ended the runtime leaves no worker to prepare on.
+                      if (!rows.some(pythonRawRowEndedRuntime)) this.queueObserverPrepare(client);
+                    },
+                  }
+                : {}),
+            });
+            if (!isPythonBatchPrefix(
+              batch.results, inputBatch.length, call.stopAtFirstRunaway || batch.caseTimedOut
+            )) {
+              throw new Error('Prepared Python batch returned an invalid result envelope.');
             }
-          : {}),
-      });
-      if (!isPythonBatchPrefix(result.results, call.inputBatch.length, call.stopAtFirstRunaway)) {
-        throw new Error('Prepared Python batch returned an invalid result envelope.');
-      }
-      return result.results;
-    };
-    try {
-      // A stopping batch is held to a per-case clock by the worker client,
-      // which returns the finished prefix and the case that outlived its
-      // clock; a whole-batch budget here would cut a later case short.
-      return await this.executeSerial(
-        call.signal,
-        (client, signal) =>
-          call.stopAtFirstRunaway === true
-            ? runBatch(client, signal)
-            : budget.run((budgetSignal) => runBatch(client, budgetSignal), signal),
-        undefined,
-        (worker, rows) => this.handOffVerdictWorker(worker, rows)
-      );
-    } catch (error) {
-      if (budget.isTimeout(error)) {
-        // The shared batch worker ran out of time: the batch hit the limit.
-        return call.inputBatch.map((): CodeExecutionResult => ({
-          kind: 'limit',
-          reason: 'client-timeout',
-          error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
-          consoleOutput: [],
-          timings: { artifactCacheHit: true },
-        }));
-      }
-      if (dispatched) throw error;
-      if (taggedError(error, 'WorkerCrashedError') && !call.signal?.aborted) {
-        // The shared batch worker was lost. Re-run the cases each in a fresh
-        // worker; a worker lost again rejects as the provider's failure.
-        return this.executeCompatibilityCodeBatch(call, budget);
-      }
-      if (!(error instanceof PythonAlgorithmFastBatchUnavailableError)) {
+            return { rows: batch.results, caseTimedOut: batch.caseTimedOut };
+          },
+          undefined,
+          (worker, result) => fast && !result.caseTimedOut &&
+            this.handOffVerdictWorker(worker, result.rows)
+        );
+        if (!result.caseTimedOut || call.stopAtFirstRunaway === true) {
+          return offset === 0 ? result.rows : [...prefix, ...result.rows];
+        }
+        // Only a local case timeout authorizes a new worker. Neither the
+        // completed prefix nor the case with the expired clock runs again.
+        for (const row of result.rows) prefix.push(row);
+      } catch (error) {
+        if (call.signal?.aborted) throw error;
+        if (offset > 0) {
+          if (error instanceof InterruptedCodeBatchError && error.cause instanceof WorkerCrashedError) {
+            throw new InterruptedCodeBatchError([...prefix, ...error.prefix], error.cause);
+          }
+          if (error instanceof WorkerCrashedError) {
+            throw new InterruptedCodeBatchError(prefix, error);
+          }
+        }
+        if (fast && offset === 0 && !started && (
+          taggedError(error, 'WorkerCrashedError') || error instanceof PythonAlgorithmFastBatchUnavailableError
+        )) {
+          return this.executeCompatibilityCodeBatch(call);
+        }
         throw error;
       }
-      return this.executeCompatibilityCodeBatch(call, budget);
     }
+    return prefix;
   }
 
   executeTraceBatch(
@@ -1178,8 +1120,7 @@ class PreparedPythonProgramLifetime {
   }
 
   private async executeCompatibilityCodeBatch(
-    call: PythonOrdinaryBatchCall,
-    budget: PythonBatchExecutionBudget
+    call: PythonOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     const results: CodeExecutionResult[] = [];
     for (const [index, inputs] of call.inputBatch.entries()) {
@@ -1187,37 +1128,15 @@ class PreparedPythonProgramLifetime {
       try {
         results.push(
           await this.executeSerial(call.signal, (client, signal) =>
-            budget.run(
-              (budgetSignal) =>
-                client.executePreparedCode(this.handle, {
-                  inputs,
-                  signal: budgetSignal,
-                  limits: call.limits,
-                  onCaseStarted: call.onCaseStarted && (() => call.onCaseStarted?.(index)),
-                }),
-              signal
-            )
+            client.executePreparedCode(this.handle, {
+              inputs,
+              signal,
+              limits: call.limits,
+              onCaseStarted: call.onCaseStarted && (() => call.onCaseStarted?.(index)),
+            })
           )
         );
       } catch (error) {
-        if (budget.isTimeout(error)) {
-          // The batch's time budget ran out on this case: it and every case
-          // that never got to run hit the time limit.
-          const timedOut: CodeExecutionResult = {
-            kind: 'limit',
-            reason: 'client-timeout',
-            error: 'Execution timed out. This may indicate an infinite loop or very expensive execution.',
-            consoleOutput: [],
-            timings: { artifactCacheHit: true },
-          };
-          if (call.stopAtFirstRunaway === true) {
-            // A stopping batch ends at the case the time limit stopped.
-            results.push(timedOut);
-            return results;
-          }
-          while (results.length < call.inputBatch.length) results.push(timedOut);
-          return results;
-        }
         if (call.signal?.aborted) {
           throw abortReason(
             call.signal,
