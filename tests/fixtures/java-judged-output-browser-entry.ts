@@ -58,6 +58,21 @@ class Solution {
   }
 }`;
 const method = { code, functionName: 'solve', executionStyle: 'solution-method' as const };
+// TraceJVM's eligibility scanner decodes the entire class file. Keep the
+// surrogate literals in the UTF-8 probe out of this warm-JVM control.
+const warmMethod = {
+  ...method,
+  code: `class Solution {
+    public Object solve(int n) {
+      if (n < 0) {
+        Object[] cycle = new Object[1];
+        cycle[0] = cycle;
+        return cycle;
+      }
+      return "x".repeat(n);
+    }
+  }`,
+};
 const input = (mode: string, n: number) => ({ mode, n });
 const testCase = (id: string, mode: string, n: number, expected: unknown) => ({
   id, input: input(mode, n), expected,
@@ -126,7 +141,7 @@ async function runJavaJudgedOutputPolicy() {
     {
       id: 'reference-encoded', lower: {}, cases: [
         testCase('node-cycle', 'node-cycle', 0, {
-          __type__: 'AnswerNode', __id__: 'node', val: 7, next: { __ref__: 'node' },
+          __type__: 'AnswerNode', __id__: 'node', next: { __ref__: 'node' }, val: 7,
         }),
       ],
     },
@@ -175,11 +190,11 @@ async function runJavaJudgedOutputPolicy() {
     });
     await client.disposePreparedRuntimeProgram(legacy.programId);
 
-    const call: JudgedPreparationCall = { ...method, mode: 'code', judgedOutputPolicy };
+    const call: JudgedPreparationCall = { ...warmMethod, mode: 'code', judgedOutputPolicy };
     const prepared = await client.prepareRuntimeProgram(call);
     if (!prepared.success || !prepared.programId) throw new Error(prepared.error);
     const batch = await client.executePreparedCodeBatch(prepared.programId, {
-      inputBatch: [input('cycle', 0), input('ascii', 64)],
+      inputBatch: [{ n: -1 }, { n: 64 }],
       stopAtFirstRunaway: true,
     });
     if (!prepared.snapshot) throw new Error('Missing prepared Java artifact');
@@ -187,7 +202,7 @@ async function runJavaJudgedOutputPolicy() {
     const restored = await client.restorePreparedRuntimeProgram(prepared.snapshot);
     if (!restored.success || !restored.programId) throw new Error(restored.error);
     const restoredResult = await client.executePreparedCode(restored.programId, {
-      inputs: input('ascii', 2048),
+      inputs: { n: 2048 },
     });
     await client.disposePreparedRuntimeProgram(restored.programId);
 
