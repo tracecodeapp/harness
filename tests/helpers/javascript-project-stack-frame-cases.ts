@@ -26,6 +26,12 @@ export interface StackFrameCase {
   expected: StackFrameCaseStream & { exitCode: number };
   /** Node's frames into the folder, per stream, in order. */
   node: { stdout: readonly string[]; stderr: readonly string[] };
+  /**
+   * Streams where the program prints `err.stack` text itself. Firefox and
+   * WebKit give that text their own shape (no `Error: message` line), so the
+   * browser test checks only its line numbers there.
+   */
+  programPrintsStack?: readonly ('stdout' | 'stderr')[];
 }
 
 const root = STACK_FRAME_WORKSPACE_ROOT;
@@ -156,6 +162,7 @@ export const stackFrameCases: readonly StackFrameCase[] = [
   {
     // Caught, then printed with err.stack and console.error(err).
     name: 'javascript caught error printed with err.stack and console.error',
+    programPrintsStack: ['stdout'],
     files: {
       'main.js': [
         "const { parse } = require('./lib/parser');",
@@ -294,6 +301,7 @@ export const stackFrameCases: readonly StackFrameCase[] = [
     // TypeScript in nested folders, a frame in a third module, caught and
     // printed with err.stack.
     name: 'typescript nested folders, caught err.stack',
+    programPrintsStack: ['stdout'],
     files: {
       'src/main.ts': [
         "import { placeOrder } from './services/orders';",
@@ -384,13 +392,13 @@ export const stackFrameCases: readonly StackFrameCase[] = [
     },
   },
   {
-    // Only an Error's own frames are attributed; a multi-line message, even
-    // one that looks like a frame, stays whole.
+    // Only an Error's own frames are attributed; a multi-line message stays
+    // whole, including a line that looks like a frame.
     name: 'a multi-line error message is printed whole',
     files: {
       'main.js': [
         "console.log('before');",
-        "throw new Error('first line\\n    at eval (not a frame)');",
+        "throw new Error('first line\\nsecond line of the message\\n    at eval (not a frame)');",
         '',
       ].join('\n'),
     },
@@ -401,6 +409,7 @@ export const stackFrameCases: readonly StackFrameCase[] = [
       stdout: 'before\n',
       stderr: [
         'Error: first line',
+        'second line of the message',
         '    at eval (not a frame)',
         `    at Object.<anonymous> (${root}/main.js:2:7)`,
         '',
@@ -410,6 +419,152 @@ export const stackFrameCases: readonly StackFrameCase[] = [
       stdout: [],
       stderr: [
         `    at Object.<anonymous> (${root}/main.js:2:7)`,
+      ],
+    },
+  },
+  {
+    // In an eval'd module V8 names every anonymous function `eval`, as it
+    // names the module wrapper. A method and a function that really are named
+    // `eval` keep the name; anonymous callbacks print as Node prints them.
+    name: 'functions named eval and anonymous callbacks (CommonJS)',
+    files: {
+      'main.js': [
+        'const box = {',
+        '  eval() {',
+        '    [1].forEach(() => {',
+        "      throw new Error('named eval');",
+        '    });',
+        '  },',
+        '};',
+        'try {',
+        '  box.eval();',
+        '} catch (err) {',
+        '  console.log(err);',
+        '}',
+        'function eval() {',
+        '  (function () {',
+        "    throw new TypeError('declared eval');",
+        '  })();',
+        '}',
+        'eval();',
+        '',
+      ].join('\n'),
+    },
+    command: 'node main.js',
+    nodeEntry: 'main.js',
+    expected: {
+      exitCode: 1,
+      stdout: [
+        'Error: named eval',
+        `    at ${root}/main.js:4:13`,
+        `    at Object.eval (${root}/main.js:3:9)`,
+        `    at Object.<anonymous> (${root}/main.js:9:7)`,
+        '',
+      ].join('\n'),
+      stderr: [
+        'TypeError: declared eval',
+        `    at ${root}/main.js:15:11`,
+        `    at eval (${root}/main.js:16:5)`,
+        `    at Object.<anonymous> (${root}/main.js:18:1)`,
+        '',
+      ].join('\n'),
+    },
+    node: {
+      stdout: [
+        `    at ${root}/main.js:4:13`,
+        `    at Object.eval (${root}/main.js:3:9)`,
+        `    at Object.<anonymous> (${root}/main.js:9:7)`,
+      ],
+      stderr: [
+        `    at ${root}/main.js:15:11`,
+        `    at eval (${root}/main.js:16:5)`,
+        `    at Object.<anonymous> (${root}/main.js:18:1)`,
+      ],
+    },
+  },
+  {
+    // A strict module (as TypeScript emits): an anonymous callback in a
+    // required module.
+    name: 'strict CommonJS anonymous callback in a required module',
+    files: {
+      'main.js': [
+        '"use strict";',
+        "const { checkAll } = require('./lib/check');",
+        'checkAll([1, 2]);',
+        '',
+      ].join('\n'),
+      'lib/check.js': [
+        '"use strict";',
+        'function checkAll(items) {',
+        '  return items.map(function (item) {',
+        '    if (item > 1) throw new RangeError(`bad item ${item}`);',
+        '    return item;',
+        '  });',
+        '}',
+        'exports.checkAll = checkAll;',
+        '',
+      ].join('\n'),
+    },
+    command: 'node main.js',
+    nodeEntry: 'main.js',
+    expected: {
+      exitCode: 1,
+      stdout: '',
+      stderr: [
+        'RangeError: bad item 2',
+        `    at ${root}/lib/check.js:4:25`,
+        `    at checkAll (${root}/lib/check.js:3:16)`,
+        `    at Object.<anonymous> (${root}/main.js:3:1)`,
+        '',
+      ].join('\n'),
+    },
+    node: {
+      stdout: [],
+      stderr: [
+        `    at ${root}/lib/check.js:4:25`,
+        `    at checkAll (${root}/lib/check.js:3:16)`,
+        `    at Object.<anonymous> (${root}/main.js:3:1)`,
+      ],
+    },
+  },
+  {
+    // An anonymous arrow in an ES module.
+    name: 'ES module anonymous arrow',
+    files: {
+      'main.mjs': [
+        "import { run } from './lib/helper.mjs';",
+        '',
+        'run([7]);',
+        '',
+      ].join('\n'),
+      'lib/helper.mjs': [
+        'export function run(items) {',
+        '  items.forEach((item) => {',
+        '    throw new Error(`esm anonymous ${item}`);',
+        '  });',
+        '}',
+        '',
+      ].join('\n'),
+    },
+    command: 'node main.mjs',
+    nodeEntry: 'main.mjs',
+    expected: {
+      exitCode: 1,
+      stdout: '',
+      stderr: [
+        'Error: esm anonymous 7',
+        `    at ${rootUrl}/lib/helper.mjs:3:11`,
+        `    at run (${rootUrl}/lib/helper.mjs:2:9)`,
+        `    at ${rootUrl}/main.mjs:3:1`,
+        '',
+      ].join('\n'),
+    },
+    node: {
+      stdout: [],
+      stderr: [
+        `    at ${rootUrl}/lib/helper.mjs:3:11`,
+        `    at run (${rootUrl}/lib/helper.mjs:2:9)`,
+        `    at ${rootUrl}/main.mjs:3:1`,
       ],
     },
   },

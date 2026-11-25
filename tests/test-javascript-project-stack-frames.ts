@@ -21,6 +21,10 @@ import {
   createWorkspaceStackFrames,
 } from '../packages/runtime-javascript/src/modules/stack-frames';
 import {
+  formatConsoleValues,
+  sanitizeBrowserJavaScriptStack,
+} from '../packages/runtime-javascript/src/modules/resolution';
+import {
   STACK_FRAME_WORKSPACE_ROOT,
   stackFrameCases,
   workspaceFrames,
@@ -213,6 +217,68 @@ function checkModuleCompiler(): void {
   }
 }
 
+const MULTI_LINE_MESSAGE = 'first line\nsecond line of the message';
+
+// Stacks the V8 formatter did not build keep the whole message: Firefox and
+// WebKit stacks (frames only, no `Error: message` line) and stacks from a
+// learner's own Error.prepareStackTrace.
+async function checkMessagePaths(): Promise<void> {
+  const root = STACK_FRAME_WORKSPACE_ROOT;
+  const frames = createWorkspaceStackFrames();
+  try {
+    const options = { parameters: MODULE_WRAPPER_PARAMETERS };
+    frames.compile('', `${root}/main.js`, 'commonjs', options);
+    frames.compile('', `${root}/helper.js`, 'commonjs', options);
+    const engineStack = [
+      `fail@${root}/helper.js:1:30`,
+      `@${root}/main.js:1:21`,
+      'executeModule@http://127.0.0.1:4000/workers/javascript/javascript-project-worker.js:1:1',
+      '',
+    ].join('\n');
+    const withEngineStack = () => {
+      const error = new Error(MULTI_LINE_MESSAGE);
+      Object.defineProperty(error, 'stack', { configurable: true, value: engineStack });
+      return error;
+    };
+    const header = `Error: ${MULTI_LINE_MESSAGE}`;
+
+    const uncaught = sanitizeBrowserJavaScriptStack(withEngineStack(), `${root}/main.js`, frames) as Error;
+    const expected = `${header}\nfail@${root}/helper.js:1:30\n@${root}/main.js:1:21`;
+    assertCondition(uncaught.stack === expected, `an engine-shaped stack should keep the message and workspace frames:\n${uncaught.stack}\nexpected\n${expected}`);
+
+    const printed = formatConsoleValues([withEngineStack()]);
+    assertCondition(printed.startsWith(`${header}\n`), `console.error(err) should print the whole message first: ${printed}`);
+  } finally {
+    frames.release();
+  }
+
+  // A learner's own formatter: Node prints both message lines, and so must the runner.
+  const files = {
+    'main.js': [
+      'Error.prepareStackTrace = (error, sites) => `${error}\\n` + sites.map((site) => `    at ${site}`).join("\\n");',
+      `throw new Error(${JSON.stringify(MULTI_LINE_MESSAGE)});`,
+      '',
+    ].join('\n'),
+  };
+  const testCase: StackFrameCase = {
+    name: 'learner prepareStackTrace',
+    files,
+    command: 'node main.js',
+    nodeEntry: 'main.js',
+    expected: { exitCode: 1, stdout: '', stderr: '' },
+    node: { stdout: [], stderr: [] },
+  };
+  const { result } = await runInRunner(testCase);
+  const node = await runInNode(testCase, new Map(Object.entries(files)));
+  for (const line of MULTI_LINE_MESSAGE.split('\n').map((line, index) => (index === 0 ? `Error: ${line}` : line))) {
+    assertCondition(node.stderr.split('\n').includes(line), `Node should print ${JSON.stringify(line)}: ${node.stderr}`);
+  }
+  assertCondition(
+    result.exitCode === 1 && result.stderr.startsWith(`Error: ${MULTI_LINE_MESSAGE}\n`) && result.stderr.includes(`${root}/main.js:2:`),
+    `with a learner's Error.prepareStackTrace the runner should print the whole message, then main.js frames: ${JSON.stringify(result)}`
+  );
+}
+
 async function main(): Promise<void> {
   // tsx installs its own formatter; the runner must hand it back unchanged.
   const hostPrepareStackTrace = Error.prepareStackTrace;
@@ -223,6 +289,14 @@ async function main(): Promise<void> {
   } catch (error) {
     failures.push('module compiler');
     console.log('not ok - module compiler');
+    console.log(error instanceof Error ? error.message : String(error));
+  }
+  try {
+    await checkMessagePaths();
+    console.log('ok - message paths without the V8 formatter');
+  } catch (error) {
+    failures.push('message paths without the V8 formatter');
+    console.log('not ok - message paths without the V8 formatter');
     console.log(error instanceof Error ? error.message : String(error));
   }
   for (const testCase of stackFrameCases) {

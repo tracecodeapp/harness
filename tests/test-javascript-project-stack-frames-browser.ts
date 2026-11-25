@@ -6,13 +6,14 @@
 // which checks it against real Node. TRACECODE_STACK_FRAME_ENGINES selects
 // engines (default chromium; also firefox, webkit).
 //
-// Chromium must print the expected bytes. Firefox and WebKit format stacks
-// their own way (`name@file:line:column`, no `Error: message` header, their
-// own column convention), so for them the check is the line numbers: every
-// workspace file:line they print must be one Node prints for the case, and
-// Firefox must print at least one. WebKit gives eval'd code no location, so
-// for it only the absence of a wrong line can be checked. Exit codes must
-// match in every engine; `textMatches` is reported, not required.
+// Chromium must print the expected bytes. Firefox and WebKit format frames
+// their own way (`name@file:line:column`, their own column convention), so
+// for them every workspace file:line they print must be one Node prints for
+// the case, and Firefox must print at least one; WebKit gives eval'd code no
+// location, so for it only the absence of a wrong line can be checked. Every
+// other line Node prints (messages, ordinary output) must be printed too, in
+// every engine, except in a stream where the program prints `err.stack` text
+// itself (`programPrintsStack`), which the engine shapes. Exit codes match.
 
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -134,8 +135,9 @@ function workspaceLinesMatch(
   const text = (value: string) => value
     .split('\n')
     .filter((line) => line && !/^\s*at /.test(line) && !new RegExp(LOCATION_SOURCE).test(line) && !line.includes('@'));
-  const textMatches = (['stdout', 'stderr'] as const).every((stream) =>
-    JSON.stringify(text(result[stream])) === JSON.stringify(text(testCase.expected[stream])));
+  const textMatches = (['stdout', 'stderr'] as const)
+    .filter((stream) => !testCase.programPrintsStack?.includes(stream))
+    .every((stream) => JSON.stringify(text(result[stream])) === JSON.stringify(text(testCase.expected[stream])));
   return { located: located.length, placeholders, mismatched: located.filter((entry) => !allowed.has(entry)), textMatches };
 }
 
@@ -218,7 +220,8 @@ async function main(): Promise<void> {
           const expectsLocation = fileLines(`${testCase.expected.stdout}\n${testCase.expected.stderr}`).length > 0;
           const ok = Boolean(result) && !setupFailed && result!.exitCode === testCase.expected.exitCode && (
             lineCheck
-              ? lineCheck.mismatched.length === 0 && (engine !== 'firefox' || !expectsLocation || lineCheck.located > 0)
+              ? lineCheck.mismatched.length === 0 && lineCheck.textMatches &&
+                (engine !== 'firefox' || !expectsLocation || lineCheck.located > 0)
               : result!.stdout === testCase.expected.stdout && result!.stderr === testCase.expected.stderr
           );
           if (ok) {
