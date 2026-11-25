@@ -609,6 +609,135 @@ const OUTPUT_SERIALIZATION_LIMITS = {
 let activeSerializationLimits = TRACE_SERIALIZATION_LIMITS;
 let activeSerializationBudget = null;
 
+// The judged-output policy (lane C-SEAM; harness-artifacts C-SEAM-CONTRACT.md).
+// Set only while serializeOutputValue runs with a policy: a judged answer that
+// is over a bound, or that the serializer cannot represent completely (a
+// cycle), is the case's typed serialization-limit, never a value with a
+// '<max depth>' or '<cycle>' placeholder. Trace serialization and calls
+// without a policy keep their markers.
+let activeJudgedOutput = null;
+const judgedOutputLimits = new WeakSet();
+
+function judgedOutputLimit(limit, bound) {
+  const failure = {
+    limit,
+    message: limit === 'cycle'
+      ? 'The answer contains a cycle, which a judged answer cannot represent.'
+      : `The answer is larger than the judged-output ${limit} limit (${bound}).`,
+  };
+  judgedOutputLimits.add(failure);
+  return failure;
+}
+
+function isJudgedOutputLimit(value) {
+  return value !== null && typeof value === 'object' && judgedOutputLimits.has(value);
+}
+
+function normalizeJudgedOutputPolicy(policy) {
+  if (!policy || typeof policy !== 'object') return null;
+  const bound = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : Number.POSITIVE_INFINITY);
+  return {
+    maxBytes: bound(policy.maxBytes),
+    maxItems: bound(policy.maxItems),
+    maxNodes: bound(policy.maxNodes),
+    maxDepth: bound(policy.maxDepth),
+  };
+}
+
+function cycleMarker() {
+  if (activeJudgedOutput) throw judgedOutputLimit('cycle', 0);
+  return '<cycle>';
+}
+
+// The UTF-8 length of a string's JSON text, quotes included, as the
+// well-formed JSON.stringify writes it.
+function judgedJsonStringBytes(text) {
+  let bytes = 2;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) {
+      if (code < 0x20) bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
+      else bytes += code === 0x22 || code === 0x5c ? 2 : 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 6;
+      }
+    } else {
+      bytes += code >= 0xdc00 && code <= 0xdfff ? 6 : 3;
+    }
+  }
+  return bytes;
+}
+
+// Measures a serialized judged value as its compact JSON text, iteratively and
+// without building the text. The first pass counts every value, the entries
+// of each container and its nesting exactly, and bytes with a string at its
+// code-unit length and a number at one byte. Only an answer that pass cannot
+// place on one side of maxBytes gets the exact byte pass.
+function judgedOutputExceeds(value, policy) {
+  const measure = (exact) => {
+    let values = 0;
+    let bytes = 0;
+    let stringUnits = 0;
+    let numbers = 0;
+    const stack = [value, 0];
+    while (stack.length > 0) {
+      const nesting = stack.pop();
+      const current = stack.pop();
+      values += 1;
+      if (!exact && values > policy.maxNodes) return { exceeded: 'node' };
+      if (typeof current === 'string') {
+        bytes += exact ? judgedJsonStringBytes(current) : current.length + 2;
+        stringUnits += current.length;
+      } else if (typeof current === 'number') {
+        if (!Number.isFinite(current)) bytes += 4;
+        else if (exact) bytes += String(current).length;
+        else {
+          bytes += 1;
+          numbers += 1;
+        }
+      } else if (typeof current === 'boolean') {
+        bytes += current ? 4 : 5;
+      } else if (current === null || typeof current !== 'object') {
+        // null, and an array hole or undefined element, which JSON writes as null.
+        bytes += 4;
+      } else if (Array.isArray(current)) {
+        const length = current.length;
+        if (!exact && length > policy.maxItems) return { exceeded: 'item' };
+        if (!exact && nesting + 1 > policy.maxDepth) return { exceeded: 'depth' };
+        bytes += length > 0 ? length + 1 : 2;
+        for (let index = length - 1; index >= 0; index -= 1) stack.push(current[index], nesting + 1);
+      } else {
+        let members = 0;
+        for (const key of Object.keys(current)) {
+          const child = current[key];
+          if (child === undefined) continue;
+          members += 1;
+          bytes += (exact ? judgedJsonStringBytes(key) : key.length + 2) + 1;
+          stringUnits += key.length;
+          stack.push(child, nesting + 1);
+        }
+        if (!exact && members > policy.maxItems) return { exceeded: 'item' };
+        if (!exact && nesting + 1 > policy.maxDepth) return { exceeded: 'depth' };
+        bytes += members > 0 ? members + 1 : 2;
+      }
+      if (bytes > policy.maxBytes) return { exceeded: 'byte' };
+    }
+    return { exceeded: null, bytes, stringUnits, numbers };
+  };
+  const first = measure(false);
+  if (first.exceeded) return first.exceeded;
+  // A string's code unit is at most six bytes of JSON and a number at most 25.
+  if (first.bytes + 5 * first.stringUnits + 24 * first.numbers <= policy.maxBytes) return null;
+  return measure(true).exceeded;
+}
+
 function truncationMarker(total, emitted) {
   return { __truncated__: true, remaining: Math.max(0, total - emitted) };
 }
@@ -684,7 +813,18 @@ function serializeValue(
   forcedNodeType = null,
   materializeExistingNode = false
 ) {
-  if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
+  const judged = activeJudgedOutput;
+  if (judged) {
+    // Each value but `undefined` becomes at least one JSON value, so these
+    // only refuse what the exact measure would: they bound the work and the
+    // stack before it runs.
+    if (value !== undefined && ++judged.values > judged.policy.maxNodes) {
+      throw judgedOutputLimit('node', judged.policy.maxNodes);
+    }
+    if (depth >= judged.policy.maxDepth && value !== null && typeof value === 'object') {
+      throw judgedOutputLimit('depth', judged.policy.maxDepth);
+    }
+  } else if (depth > RUNTIME_VALUE_MAX_DEPTH) return '<max depth>';
   if (value === null || value === undefined) return value;
 
   const valueType = typeof value;
@@ -707,29 +847,35 @@ function serializeValue(
     return '<function>';
   }
   if (Array.isArray(value)) {
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
     const limited = limitedEntries(value, activeSerializationLimits.maxItems);
     const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
     if (limited.remaining > 0) result.push(truncationMarker(value.length, limited.values.length));
+    // A judged answer tracks only the path from the root, so a shared child
+    // is written at each occurrence and only a cycle is refused.
+    if (judged) seen.delete(value);
     return result;
   }
   if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
-    if (value instanceof DataView) {
-      return serializeIndexedValues(value.byteLength, (index) => value.getUint8(index), depth, seen, nodeRefState);
-    }
-    return serializeIndexedValues(value.length, (index) => value[index], depth, seen, nodeRefState);
+    const result = value instanceof DataView
+      ? serializeIndexedValues(value.byteLength, (index) => value.getUint8(index), depth, seen, nodeRefState)
+      : serializeIndexedValues(value.length, (index) => value[index], depth, seen, nodeRefState);
+    if (judged) seen.delete(value);
+    return result;
   }
   if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
     const bytes = new Uint8Array(value);
-    return serializeIndexedValues(bytes.byteLength, (index) => bytes[index], depth, seen, nodeRefState);
+    const result = serializeIndexedValues(bytes.byteLength, (index) => bytes[index], depth, seen, nodeRefState);
+    if (judged) seen.delete(value);
+    return result;
   }
   if (value instanceof Set) {
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
     let limited;
     try {
@@ -749,10 +895,11 @@ function serializeValue(
       result.__truncated__ = true;
       result.remaining = remaining;
     }
+    if (judged) seen.delete(value);
     return result;
   }
   if (value instanceof Map) {
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
     let limited;
     try {
@@ -775,6 +922,7 @@ function serializeValue(
       result.__truncated__ = true;
       result.remaining = remaining;
     }
+    if (judged) seen.delete(value);
     return result;
   }
   if (valueType === 'object') {
@@ -865,7 +1013,7 @@ function serializeValue(
       return out;
     }
 
-    if (seen.has(value)) return '<cycle>';
+    if (seen.has(value)) return cycleMarker();
     seen.add(value);
     const out = {};
     const inferredNodeType = inferPlainNodeType(value);
@@ -887,6 +1035,7 @@ function serializeValue(
       out.__truncated__ = true;
       out.remaining = fields.length - activeSerializationLimits.maxFields;
     }
+    if (judged) seen.delete(value);
     return out;
   }
 
@@ -913,8 +1062,30 @@ function reserveSerializedNode() {
   return true;
 }
 
-function serializeOutputValue(value) {
-  return withSerializationLimits(OUTPUT_SERIALIZATION_LIMITS, () => serializeValue(value));
+function serializeOutputValue(value, policy) {
+  const judgedPolicy = normalizeJudgedOutputPolicy(policy);
+  if (!judgedPolicy) {
+    return withSerializationLimits(OUTPUT_SERIALIZATION_LIMITS, () => serializeValue(value));
+  }
+  const previous = activeJudgedOutput;
+  activeJudgedOutput = { policy: judgedPolicy, values: 0 };
+  let serialized;
+  try {
+    serialized = withSerializationLimits(OUTPUT_SERIALIZATION_LIMITS, () => serializeValue(value));
+  } finally {
+    activeJudgedOutput = previous;
+  }
+  const exceeded = judgedOutputExceeds(serialized, judgedPolicy);
+  if (exceeded) {
+    const bounds = {
+      byte: judgedPolicy.maxBytes,
+      item: judgedPolicy.maxItems,
+      node: judgedPolicy.maxNodes,
+      depth: judgedPolicy.maxDepth,
+    };
+    throw judgedOutputLimit(exceeded, bounds[exceeded]);
+  }
+  return serialized;
 }
 
 function serializeTopLevelValue(value, nodeRefState) {
@@ -7221,10 +7392,31 @@ async function executeCode(payload) {
       }
     }
 
+    let serializedOutput;
+    try {
+      serializedOutput = serializeOutputValue(output, payload?.judgedOutputPolicy);
+    } catch (error) {
+      if (!isJudgedOutputLimit(error)) throw error;
+      // The answer is over the judged-output policy: the case's typed
+      // limit, with no partial value.
+      const totalMs = performanceNow() - startedAt;
+      return {
+        success: false,
+        output: null,
+        error: error.message,
+        timeoutReason: 'serialization-limit',
+        consoleOutput,
+        timings: {
+          totalMs,
+          runMs: totalMs,
+          artifactCacheHit: Boolean(prepared),
+        },
+      };
+    }
     const totalMs = performanceNow() - startedAt;
     return {
       success: true,
-      output: serializeOutputValue(output),
+      output: serializedOutput,
       consoleOutput,
       timings: {
         totalMs,

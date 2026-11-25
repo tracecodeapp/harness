@@ -29,6 +29,15 @@ interface PreparedSource {
     readonly endLine: number;
   };
   readonly traceOptions?: Readonly<Record<string, unknown>>;
+  readonly judgedOutputPolicy?: JudgedOutputPolicy;
+}
+
+/** Code mode only (lane C-SEAM): the judged-output policy from the composition. */
+interface JudgedOutputPolicy {
+  readonly maxBytes: number;
+  readonly maxItems: number;
+  readonly maxNodes: number;
+  readonly maxDepth: number;
 }
 
 interface PreparedProgram {
@@ -45,6 +54,7 @@ interface PreparedProgram {
   readonly requiredModules: PreparedSource['requiredModules'];
   readonly traceLineBounds?: PreparedSource['traceLineBounds'];
   readonly traceOptions?: PreparedSource['traceOptions'];
+  readonly judgedOutputPolicy?: JudgedOutputPolicy;
 }
 
 interface WorkerRequest {
@@ -208,6 +218,15 @@ function assertPreparedShape(value: unknown): asserts value is PreparedSource {
   }
   if (!source.materializers || typeof source.materializers !== 'object' || Array.isArray(source.materializers)) {
     throw new Error('SES prepared source has invalid input materializers.');
+  }
+  const policy = source.judgedOutputPolicy;
+  if (policy !== undefined && (
+    source.mode !== 'code' || !policy || typeof policy !== 'object' ||
+    ![policy.maxBytes, policy.maxItems, policy.maxNodes, policy.maxDepth].every(
+      (bound) => Number.isSafeInteger(bound) && bound >= 0
+    )
+  )) {
+    throw new Error('SES prepared source has an invalid judged-output policy.');
   }
 }
 
@@ -416,7 +435,7 @@ const DRIVER_SOURCE = `(() => {
     }
     throw new Error('SES output serializer produced an unsupported transport value.');
   };
-  return async (inputJson, inputArgumentsJson, materializersJson, targetName, executionStyle) => {
+  return async (inputJson, inputArgumentsJson, materializersJson, targetName, executionStyle, judgedOutputPolicyJson) => {
       const materializers = parse(materializersJson);
       const input = applyInputMaterializers(normalizeInputs(parse(inputJson)), materializers);
       const __tracecodeConstructorRegistry = globalThis.__tracecodeConstructors;
@@ -480,9 +499,22 @@ const DRIVER_SOURCE = `(() => {
       } else {
         throw new Error('Unknown algorithm execution style.');
       }
+      let serialized = null;
+      if (output !== undefined) {
+        try {
+          serialized = serializeOutputValue(
+            output,
+            typeof judgedOutputPolicyJson === 'string' ? parse(judgedOutputPolicyJson) : null
+          );
+        } catch (error) {
+          if (!isJudgedOutputLimit(error)) throw error;
+          // Over the judged-output policy: the case's typed limit, no value.
+          return stringify({ success: false, limit: 'serialization-limit', error: error.message });
+        }
+      }
       return stringify({
         success: true,
-        output: encodeOutputTransport(output === undefined ? null : serializeOutputValue(output)),
+        output: encodeOutputTransport(serialized),
       });
   };
 })()`;
@@ -1249,7 +1281,8 @@ async function executeCase(
       JSON.stringify(program.inputArguments),
       JSON.stringify(program.materializers),
       program.functionName,
-      program.executionStyle
+      program.executionStyle,
+      program.judgedOutputPolicy ? JSON.stringify(program.judgedOutputPolicy) : null
     );
   } catch (error) {
     return runtimeFailure(error, performance.now() - startedAt);
@@ -1262,9 +1295,24 @@ async function executeCase(
     output?: unknown;
     error?: string;
     errorLine?: number;
+    limit?: unknown;
   };
   const elapsedMs = performance.now() - startedAt;
   const consoleOutput = snapshotConsole();
+  if (!result.success && result.limit === 'serialization-limit' && program.judgedOutputPolicy) {
+    return {
+      kind: 'limit',
+      reason: 'serialization-limit',
+      error: typeof result.error === 'string' ? result.error : 'The answer is over the judged-output policy.',
+      consoleOutput,
+      timings: {
+        totalMs: elapsedMs,
+        runMs: elapsedMs,
+        artifactCacheHit: true,
+        algorithmFastBatch: true,
+      },
+    };
+  }
   if (!result.success) {
     const errorLine = Number.isSafeInteger(result.errorLine) && result.errorLine! > 0
       ? result.errorLine
@@ -1504,6 +1552,16 @@ self.onmessage = (event: MessageEvent<unknown>) => {
             : {}),
           ...(request.source.traceOptions
             ? { traceOptions: Object.freeze({ ...request.source.traceOptions }) }
+            : {}),
+          ...(request.source.judgedOutputPolicy
+            ? {
+                judgedOutputPolicy: Object.freeze({
+                  maxBytes: request.source.judgedOutputPolicy.maxBytes,
+                  maxItems: request.source.judgedOutputPolicy.maxItems,
+                  maxNodes: request.source.judgedOutputPolicy.maxNodes,
+                  maxDepth: request.source.judgedOutputPolicy.maxDepth,
+                }),
+              }
             : {}),
         });
         reply(request.id, null);

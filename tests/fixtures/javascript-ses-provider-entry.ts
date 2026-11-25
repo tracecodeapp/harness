@@ -705,13 +705,15 @@ function solve() {
       cases: [1, 2].map((index) => ({
         id: `shared-reference-parity-${index}`,
         input: {},
+        // A judged answer writes a shared, non-cyclic child at each
+        // occurrence (C-SEAM); only a cycle is refused, as a typed limit.
         expected: [
-          [[1, 2], '<cycle>'],
-          [{ x: 1 }, '<cycle>'],
-          [[], '<cycle>', '<cycle>'],
+          [[1, 2], [1, 2]],
+          [{ x: 1 }, { x: 1 }],
+          [[], [], []],
           [
             { __type__: 'set', values: [3] },
-            '<cycle>',
+            { __type__: 'set', values: [3] },
           ],
         ],
       })),
@@ -1259,11 +1261,12 @@ export async function runJavaScriptSerializerParity(assetBaseUrl: string) {
       {
         id: 'shared',
         input: { mode: 'shared', root: null },
+        // Shared, non-cyclic children are written at each occurrence (C-SEAM).
         expected: [
-          [[1, 2], '<cycle>'],
-          [{ x: 1 }, '<cycle>'],
-          [[], '<cycle>', '<cycle>'],
-          [{ __type__: 'set', values: [3] }, '<cycle>'],
+          [[1, 2], [1, 2]],
+          [{ x: 1 }, { x: 1 }],
+          [[], [], []],
+          [{ __type__: 'set', values: [3] }, { __type__: 'set', values: [3] }],
         ],
       },
       {
