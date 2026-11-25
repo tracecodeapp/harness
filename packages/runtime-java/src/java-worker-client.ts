@@ -62,6 +62,7 @@ import {
 import { WorkerSessionCore, type WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import type { BrowserWorkerFactory, BrowserWorkerLike } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
+import type { JudgeOrdinaryBatchCall } from '../../runtime-browser/src/browser-runtime-host-internal';
 import { createJavaKernelProcess } from './java-process-kernel';
 import { javaBatchTransportDeadlineMs } from './java-batch-deadline';
 
@@ -375,9 +376,13 @@ class JavaCodeBatchProgress {
 
   constructor(
     readonly admissionId: number,
-    private readonly call: RuntimePreparedCodeBatchCall,
+    private readonly call: JudgeOrdinaryBatchCall,
     private readonly onCaseAdmitted?: (index: number) => void
   ) {}
+
+  get interruptedIndex(): number | undefined {
+    return this.running;
+  }
 
   receive(payload: unknown): void {
     if (this.call.signal?.aborted) return;
@@ -409,6 +414,7 @@ class JavaCodeBatchProgress {
     this.outcomes.push(outcome);
     this.running = undefined;
     this.stopped = this.call.stopAtFirstRunaway === true && isJavaBatchRunaway(result);
+    this.call.onCaseFinished?.(caseIndex, outcome);
   }
 }
 
@@ -1135,7 +1141,7 @@ export class JavaWorkerClient {
 
   async executePreparedCodeBatch(
     programId: string,
-    call: RuntimePreparedCodeBatchCall,
+    call: JudgeOrdinaryBatchCall,
     onCaseAdmitted?: (index: number) => void
   ): Promise<readonly JavaWorkerPreparedCodeResult[]> {
     const admissionId = ++this.nextAdmissionId;
@@ -1158,8 +1164,8 @@ export class JavaWorkerClient {
       if (!(cause instanceof RuntimeProviderError) || cause.reason === 'protocol') throw cause;
       if (progress.stopped) return progress.outcomes;
       if (progress.outcomes.length === 0) throw cause;
-      // InterruptedCodeBatchError takes a worker-loss cause. Keep the original
-      // failure in the chain when the loss was detected by the deadline or reply.
+      // Keep the original failure in the chain when the deadline or reply
+      // revealed the loss.
       const loss = error instanceof WorkerCrashedError ? error : Object.assign(
         new WorkerCrashedError({
           workerMessage: cause.message,
@@ -1169,7 +1175,10 @@ export class JavaWorkerClient {
         }),
         { cause }
       );
-      throw new InterruptedCodeBatchError(progress.outcomes, loss);
+      throw new InterruptedCodeBatchError(progress.outcomes, loss, {
+        interruption: isExecutionTimeoutError(cause.cause) ? 'transport-deadline' : 'worker-loss',
+        interruptedIndex: progress.interruptedIndex,
+      });
     }
   }
 

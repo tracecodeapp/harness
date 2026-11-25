@@ -62,18 +62,30 @@ export class WorkerCrashedError extends Data.TaggedError('WorkerCrashedError')<{
   }
 }
 
+/** What interrupted an ordinary batch after execution began. */
+export type CodeBatchInterruption = 'worker-loss' | 'transport-deadline' | 'service-deadline';
+
 /**
  * A provider failure interrupted an ordinary batch after case execution began.
  * Judge can publish the settled prefix and fail only the remaining cases.
  */
 export class InterruptedCodeBatchError extends RuntimeProviderError {
   declare readonly cause: Error;
+  readonly interruption: CodeBatchInterruption;
+  /** The entry that was running, when the provider knows one was. */
+  readonly interruptedIndex: number | undefined;
 
   constructor(
     readonly prefix: readonly CodeExecutionResult[],
-    cause: Error
+    cause: Error,
+    options: {
+      readonly interruption?: CodeBatchInterruption;
+      readonly interruptedIndex?: number;
+    } = {}
   ) {
     super(cause.message, { cause, reason: cause instanceof RuntimeProviderError ? cause.reason : 'runtime-failure' });
+    this.interruption = options.interruption ?? 'worker-loss';
+    this.interruptedIndex = options.interruptedIndex;
   }
 }
 
