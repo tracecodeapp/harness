@@ -205,6 +205,8 @@ const EXECUTION_TIMEOUT_MS = 30000;
 const PROJECT_EXECUTION_TIMEOUT_MS = 30000;
 const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
 const CODE_BATCH_MIN_SERVICE_CLOCK_MS = 5_000;
+const CODE_BATCH_STARTUP_HEADROOM_PER_CASE_MS = 100;
+const CODE_BATCH_MAX_STARTUP_HEADROOM_MS = 30_000;
 // Allow the guest guard to report its own limit before killing the worker.
 const STOPPING_BATCH_CASE_HEADROOM_MS = 1_000;
 
@@ -303,14 +305,9 @@ function restoreStreamedBatchReply<R extends { results?: unknown[]; resultsStrea
 }
 
 function interruptedCodeBatch(
-  error: unknown,
+  error: Error,
   progress: BatchCaseProgress,
-  signal?: AbortSignal
-): InterruptedCodeBatchError | undefined {
-  if (!(error instanceof WorkerCrashedError) || signal?.aborted
-    || progress.invalid || !progress.started) {
-    return undefined;
-  }
+): InterruptedCodeBatchError {
   return new InterruptedCodeBatchError(progress.finished.map((entry) =>
     liftCodeOutcome(entry as RawExecutionPayload, 'Prepared Python batch execution failed')
   ), error);
@@ -748,6 +745,15 @@ export class PythonWorkerClient {
       CODE_BATCH_MIN_SERVICE_CLOCK_MS,
       perCaseWallClockMs + STOPPING_BATCH_CASE_HEADROOM_MS
     ));
+    // Trusted setup can materialize every input before the first case starts.
+    const caseCount = Math.max(1, call.inputBatch.length);
+    const startupDeadlineMs = Math.min(MAX_WORKER_DEADLINE_MS, Math.max(
+      serviceClockMs,
+      perCaseWallClockMs * caseCount + Math.min(
+        CODE_BATCH_MAX_STARTUP_HEADROOM_MS,
+        CODE_BATCH_MIN_SERVICE_CLOCK_MS + CODE_BATCH_STARTUP_HEADROOM_PER_CASE_MS * caseCount
+      )
+    ));
     const guestLimits = pickGuestLimits({
       ...call.limits,
       wallClockMs: perCaseWallClockMs,
@@ -762,12 +768,13 @@ export class PythonWorkerClient {
       request,
       call.inputBatch.length,
       perCaseWallClockMs,
-      serviceClockMs,
+      startupDeadlineMs,
       call.signal,
       call.onCaseStarted,
       call.onCasesFinished,
       call.stopAtFirstRunaway === true,
-      call.onCaseFinished
+      call.onCaseFinished,
+      serviceClockMs
     );
     if (outcome.kind === 'case-timeout') {
       return {
@@ -987,7 +994,8 @@ export class PythonWorkerClient {
     onCaseStarted?: (index: number) => void,
     onCasesFinished?: (results: readonly unknown[]) => void,
     stopAtFirstRunaway = true,
-    onCaseFinished?: (index: number, result: CodeExecutionResult) => void
+    onCaseFinished?: (index: number, result: CodeExecutionResult) => void,
+    serviceDeadlineMs = startupDeadlineMs
   ): Promise<StoppingBatchOutcome<R>> {
     const ordinary = request.mode === 'code';
     const progress = new BatchCaseProgress(caseCount);
@@ -1015,8 +1023,8 @@ export class PythonWorkerClient {
       restartClock = () => {
         clearTimeout(timer);
         const waitingForService = ordinary && !stopAtFirstRunaway && progress.running === undefined;
-        limitMs = waitingForService ? startupDeadlineMs : perCaseWallClockMs;
-        timer = setTimeout(expire, waitingForService ? startupDeadlineMs : caseClockMs);
+        limitMs = waitingForService ? serviceDeadlineMs : perCaseWallClockMs;
+        timer = setTimeout(expire, waitingForService ? serviceDeadlineMs : caseClockMs);
       };
       return Effect.sync(() => clearTimeout(timer));
     });
@@ -1084,15 +1092,15 @@ export class PythonWorkerClient {
       const result = await this.core.runClientEffect(program, signal);
       return { kind: 'reply', reply: restoreStreamedBatchReply(result, progress) };
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (!isExecutionTimeoutError(error)) {
         // The registered ordinary path can publish authenticated case results
         // even if the worker never sends its final batch reply.
-        const interrupted = ordinary ? interruptedCodeBatch(error, progress, signal) : undefined;
-        if (!interrupted) throw error;
+        if (!ordinary || !(error instanceof WorkerCrashedError) || progress.invalid || !progress.started) throw error;
         if (stopAtFirstRunaway && progress.stoppedAtLimit()) {
           return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
         }
-        throw interrupted;
+        throw interruptedCodeBatch(error, progress);
       }
       if (progress.invalid) {
         throw new RuntimeProviderError(
@@ -1111,12 +1119,16 @@ export class PythonWorkerClient {
       }
       // No case was running, so no learner code was: the worker stalled.
       const finished = progress.finished.length;
-      throw new RuntimeProviderError(
+      const failure = new RuntimeProviderError(
         finished === 0
           ? 'The Python worker did not start the batch\'s first case in time; no learner code ran.'
           : `The Python worker did not start case ${finished + 1} in time after case ${finished} finished; no learner code was running.`,
         { cause: error }
       );
+      if (ordinary && !stopAtFirstRunaway && finished > 0) {
+        throw interruptedCodeBatch(failure, progress);
+      }
+      throw failure;
     }
   }
 

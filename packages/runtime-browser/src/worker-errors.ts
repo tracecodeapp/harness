@@ -63,15 +63,17 @@ export class WorkerCrashedError extends Data.TaggedError('WorkerCrashedError')<{
 }
 
 /**
- * A worker crash interrupted an ordinary batch after its authenticated prefix
- * reached the client. Judge can publish the prefix and fail only the suffix.
+ * A provider failure interrupted an ordinary batch after case execution began.
+ * Judge can publish the settled prefix and fail only the remaining cases.
  */
 export class InterruptedCodeBatchError extends RuntimeProviderError {
+  declare readonly cause: Error;
+
   constructor(
     readonly prefix: readonly CodeExecutionResult[],
-    cause: WorkerCrashedError
+    cause: Error
   ) {
-    super(cause.message, { cause });
+    super(cause.message, { cause, reason: cause instanceof RuntimeProviderError ? cause.reason : 'runtime-failure' });
   }
 }
 

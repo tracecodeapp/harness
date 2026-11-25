@@ -33,6 +33,7 @@ import type { CodeExecutionResult, ExecutionLimitReason, ExecutionResult } from 
 import { liftTraceOutcome } from '@tracecode/runtime-contracts';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
+  RuntimeProviderError,
   createEmptyRuntimeTrace,
   type RuntimeTrace,
   type RuntimeTraceCallFrame,
@@ -48,7 +49,6 @@ import {
   getLanguageRuntimeProfile,
   isExecutionTimeoutError,
   isRuntimeProjectExecuteRequest,
-  WorkerCrashedError,
 } from '@tracecode/runtime-browser/internal';
 import { findJudgeOrdinaryPreparationKey } from '../../runtime-browser/src/browser-runtime-host-internal';
 
@@ -1026,7 +1026,7 @@ class PreparedPythonProgramLifetime {
             if (!isPythonBatchPrefix(
               batch.results, inputBatch.length, call.stopAtFirstRunaway || batch.caseTimedOut
             )) {
-              throw new Error('Prepared Python batch returned an invalid result envelope.');
+              throw new RuntimeProviderError('Prepared Python batch returned an invalid result envelope.', { reason: 'protocol' });
             }
             return { rows: batch.results, caseTimedOut: batch.caseTimedOut };
           },
@@ -1041,16 +1041,15 @@ class PreparedPythonProgramLifetime {
         // completed prefix nor the case with the expired clock runs again.
         for (const row of result.rows) prefix.push(row);
       } catch (error) {
-        if (call.signal?.aborted) throw error;
+        if (call.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw error;
         if (offset > 0) {
-          if (error instanceof InterruptedCodeBatchError && error.cause instanceof WorkerCrashedError) {
+          if (error instanceof InterruptedCodeBatchError) {
             throw new InterruptedCodeBatchError([...prefix, ...error.prefix], error.cause);
           }
-          if (error instanceof WorkerCrashedError) {
-            throw new InterruptedCodeBatchError(prefix, error);
-          }
+          const cause = error instanceof Error ? error : new Error(String(error), { cause: error });
+          throw new InterruptedCodeBatchError(prefix, cause);
         }
-        if (fast && offset === 0 && !started && (
+        if (fast && !started && (
           taggedError(error, 'WorkerCrashedError') || error instanceof PythonAlgorithmFastBatchUnavailableError
         )) {
           return this.executeCompatibilityCodeBatch(call);
