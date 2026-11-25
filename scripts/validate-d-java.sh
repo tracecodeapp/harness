@@ -10,8 +10,16 @@ if [[ ${1:-} != --steps && ${1:-} != --gb-stable ]]; then
   fi
   mux=$(realpath "$1")
   cd "$(git rev-parse --show-toplevel)"
-  evidence=$(mktemp -d "$PWD/d-java-evidence.XXXXXXXX")
+  if [[ -n ${D_JAVA_EVIDENCE_DIR:-} ]]; then
+    mkdir "$D_JAVA_EVIDENCE_DIR"
+    evidence=$(realpath "$D_JAVA_EVIDENCE_DIR")
+  else
+    evidence=$(mktemp -d "$PWD/d-java-evidence.XXXXXXXX")
+  fi
   echo "evidence=$evidence"
+  if [[ ${D_JAVA_MEASURE_RESOURCES:-1} == 0 ]]; then
+    exec bash "$PWD/scripts/validate-d-java.sh" --steps "$evidence" "$mux"
+  fi
   exec python3 - "$PWD/scripts/validate-d-java.sh" "$evidence" "$mux" <<'PY'
 import json
 import os
@@ -118,15 +126,28 @@ gb_stable() (
   local gb_git_dir=${D_JAVA_GB_GIT_DIR:-/root/ci/harness.git}
   mkdir -p "$gate" "$consumer" "$report"
   test "$(cat "$mux/mux.sha")" = "$mux_sha"
-  git --git-dir="$gb_git_dir" archive "$gate_sha" tests/stage1-gates | tar -xf - -C "$gate"
+  if [[ -n ${D_JAVA_GB_SOURCE:-} ]]; then
+    test "$(cat "$D_JAVA_GB_SOURCE/runner.sha")" = "$gate_sha"
+    cp -R "$D_JAVA_GB_SOURCE/tests" "$gate/"
+  else
+    git --git-dir="$gb_git_dir" archive "$gate_sha" tests/stage1-gates | tar -xf - -C "$gate"
+  fi
   ln -s "$PWD/packages" "$gate/packages"
 
-  "${pnpm[@]}" pack --pack-destination "$scratch"
-  local pins=("$scratch"/*.tgz)
+  local pin_dir=$scratch
+  if [[ ${D_JAVA_EXPORT_PIN:-0} == 1 ]]; then
+    pin_dir="$evidence/pin"
+    mkdir "$pin_dir"
+  fi
+  "${pnpm[@]}" pack --pack-destination "$pin_dir"
+  local pins=("$pin_dir"/*.tgz)
   [[ ${#pins[@]} -eq 1 && -f ${pins[0]} ]]
   local pin=${pins[0]}
-  (cd "$scratch" && sha256sum "$(basename "$pin")") > "$report/tarball.sha256"
-  (cd "$scratch" && sha256sum --check "$report/tarball.sha256")
+  (cd "$pin_dir" && sha256sum "$(basename "$pin")") > "$report/tarball.sha256"
+  (cd "$pin_dir" && sha256sum --check "$report/tarball.sha256")
+  if [[ ${D_JAVA_EXPORT_PIN:-0} == 1 ]]; then
+    cp "$report/tarball.sha256" "$pin.sha256"
+  fi
   printf '%s\n' "$head" > "$report/candidate.sha"
   printf '%s\n' "$gate_sha" > "$report/runner.sha"
   printf '%s\n' '{"name":"d-java-validation","type":"module","private":true}' > "$consumer/package.json"
@@ -157,7 +178,11 @@ fi
 printf 'candidate=%s\ngb_runner=%s\nmux=%s\n' "$head" "$gate_sha" "$mux_sha" | tee "$evidence/identity.txt"
 printf 'step\texit\tseconds\n' > "$evidence/steps.tsv"
 
-step browser-setup "${pnpm[@]}" exec playwright install chromium firefox webkit || :
+browser_install=(exec playwright install)
+if [[ ${D_JAVA_PLAYWRIGHT_WITH_DEPS:-0} == 1 ]]; then
+  browser_install+=(--with-deps)
+fi
+step browser-setup "${pnpm[@]}" "${browser_install[@]}" chromium firefox webkit || :
 step tracekernel-build "${pnpm[@]}" build:tracekernel || :
 for browser in chromium firefox webkit; do
   step "java-prepared-$browser" env TRACECODE_JAVA_PREPARED_ENGINES="$browser" \
