@@ -1,6 +1,9 @@
 import type { Language } from '../../packages/runtime-contracts/src/index';
 import type { JudgeScheduleMarker } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
-import type { JudgedOutputPolicy } from '../../packages/runtime-contracts/src/judged-output-policy';
+import {
+  resolveJudgedOutputPolicy,
+  type JudgedOutputPolicy,
+} from '../../packages/runtime-contracts/src/judged-output-policy';
 
 type FaultAtPoint = {
   prepare: 'prepare';
@@ -45,6 +48,40 @@ export interface JudgeTestBridge {
    */
   readonly judgedOutputPolicy?: (context: JudgedOutputPolicyContext) =>
     Partial<JudgedOutputPolicy> | undefined;
+}
+
+/**
+ * The policy the composition puts on one ordinary (code-mode) prepare call:
+ * the product default for `language`, lowered only through the trusted page
+ * bridge. A bridge that installs the hook also receives the effective policy
+ * as a `judged-output-policy` marker. Nothing in a request, a binding or a
+ * worker message is consulted.
+ */
+export function judgedOutputPolicyForPrepare(
+  language: Language,
+  evaluationId: string,
+  bridge: JudgeTestBridge | undefined
+): JudgedOutputPolicy | undefined {
+  const context = Object.freeze({ language, evaluationId });
+  const hook = bridge?.judgedOutputPolicy;
+  let lower: unknown;
+  if (hook) {
+    try { lower = hook(context); } catch { lower = undefined; }
+  }
+  const resolved = resolveJudgedOutputPolicy(language, lower);
+  if (!resolved) return undefined;
+  if (bridge && hook) {
+    try {
+      bridge.onEvent(Object.freeze({
+        phase: 'judged-output-policy',
+        ...context,
+        ...resolved.policy,
+        lowered: resolved.lowered,
+        at: globalThis.performance.now(),
+      }));
+    } catch { /* A subscriber cannot disrupt Judge. */ }
+  }
+  return resolved.policy;
 }
 
 export function readJudgeTestBridge(): JudgeTestBridge | undefined {
