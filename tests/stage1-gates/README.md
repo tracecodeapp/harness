@@ -45,18 +45,22 @@ The C++ `print-then-throw` fixture checks the 0.21 exception refusal on step 7's
 
 Run the local oracle controls with `node --test tests/stage1-gates/ga-receipt-controls.test.mjs`.
 
-For the C-CPP landing pin `39b2119a` and its qualification pin `46943f54`, `cpp-delete-macro` checks the owner-approved A′
-compile refusal on Run, Submit, mux and both C++ direct routes. The gate
+For packages whose source contains the #93 merge `9fcf520a`, `cpp-delete-macro`
+checks the owner-approved A′ compile refusal on Run, Submit, mux and both C++
+direct routes. The gate
 checks the typed diagnostic at the `#define`, the empty Judge case array and
 the absence of a handle or case execution. The direct batch check requires
 the full returned diagnostic alongside the empty result array. Step 7 and
-the frozen candidate retain their historical macro oracle.
+the frozen candidate retain their historical macro oracle. The two pre-merge
+C-CPP qualification packages `39b2119a` and `46943f54` are already known to
+carry the adapter. If Git ancestry is unavailable, the gate uses the explicit
+list in `cpp-admission.mjs`.
 
 The 18 learner-shaped programs in `tests/fixtures/cpp-natural-shapes.json`
-come from C-CPP commit `53f9536d`. The C-CPP and final step-7 packages each have
-90 new G6 IDs covering the three Run selections, Submit and traced Submit.
-C-CPP must pass every case. On step 7, each path must match the fixture's
-recorded `on571139f0` outcome.
+come from C-CPP commit `53f9536d`. Admitted C-CPP packages and the final step-7
+package each have 90 G6 IDs covering the three Run selections, Submit and
+traced Submit. Admitted packages must pass every case. On step 7, each path
+must match the fixture's recorded `on571139f0` outcome.
 
 Use one ordinary AgentRunner slot for the two complete C++ matrices. Prepare
 a private local Git mirror on the host containing the gate commit and both

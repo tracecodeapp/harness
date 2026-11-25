@@ -12,6 +12,7 @@ import { checkConsoleAcrossPaths, checkCppDirect, checkDifferential, checkObserv
 import { runGraphControls } from './graph.mjs';
 import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
 import { installAppTraceArchive } from './app-trace-archive.mjs';
+import { admitsCppValueAdapter } from './cpp-admission.mjs';
 import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNaturalShapes } from './cpp-natural-shapes.mjs';
 import { cppRefusalFor } from './cpp-refusal.mjs';
 import { checkJudgedByteLimit, judgedByteLimitFixtures, judgedByteLimitRequest } from './judged-byte-limit.mjs';
@@ -155,7 +156,8 @@ try {
     }
   }
   const subject = process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate;
-  const selectedFixtures = [...manifest.fixtures, ...appFixtures, ...cppNaturalShapes(subject)].filter(matches);
+  const cppValueAdapter = admitsCppValueAdapter(subject, process.env.TRACECODE_STAGE1_CANDIDATE_SOURCE);
+  const selectedFixtures = [...manifest.fixtures, ...appFixtures, ...cppNaturalShapes(subject, cppValueAdapter)].filter(matches);
   const selectedByteLimits = judgedByteLimitFixtures.filter(matches);
   const muxPath = process.env.TRACECODE_STAGE1_MUX_INPUT;
   let mux;
@@ -291,7 +293,7 @@ try {
         record('controls.jsonl', { fixture: fixture.name, language: fixture.language, case: row.id, actual, route: 'ordinary-node' });
       }
     }
-    const cppRefusal = cppRefusalFor(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'));
+    const cppRefusal = cppRefusalFor(fixture, subject, manifest.candidate, receiptLanguages.has('cpp'), cppValueAdapter);
     const csharpAcknowledgements = fixture.language === 'csharp' && subject !== manifest.candidate &&
       subject !== '440dbd828870901be49cf0caefb0ade9bd88c034' &&
       (subject === '09378c5d0306c49b435de85c56e001444b7a4820' || receiptLanguages.has('csharp'));

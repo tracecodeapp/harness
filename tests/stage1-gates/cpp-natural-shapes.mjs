@@ -1,12 +1,10 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import { cCppSubjects, cppStep7Subject } from './cpp-refusal.mjs';
+import { cppStep7Subject } from './cpp-admission.mjs';
 
-export function cppNaturalShapes(subject) {
-  // The fixture records the behavior of the two carried C++ packages. Leave
-  // other subjects, including the frozen inventory, on their established matrix.
-  if (!cCppSubjects.has(subject) && subject !== cppStep7Subject) return [];
+export function cppNaturalShapes(subject, cppValueAdapter) {
+  if (!cppValueAdapter && subject !== cppStep7Subject) return [];
   const { fixtures } = JSON.parse(readFileSync(new URL('../fixtures/cpp-natural-shapes.json', import.meta.url)));
   return fixtures.map(({ name, on571139f0, ...fixture }) => ({
     ...fixture,

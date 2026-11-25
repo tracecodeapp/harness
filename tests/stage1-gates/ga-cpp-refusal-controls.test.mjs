@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { checkCppDirect, checkDifferential, checkObservation } from './checks.mjs';
-import { cCppQualificationSubject, cCppSubject, cppRefusalFor, cppStep7Subject } from './cpp-refusal.mjs';
+import { admitsCppValueAdapter, cppStep7Subject } from './cpp-admission.mjs';
+import { cppRefusalFor } from './cpp-refusal.mjs';
 import { muxRequests, requestMatrix } from './requests.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url)));
@@ -107,13 +108,14 @@ test('CPP refusal differential checks every public and mux request', () => {
   assert.equal(results.length, 2);
 });
 
-test('C-CPP alone expects the exact macro refusal on the define line', () => {
+test('admitted C-CPP pins expect the exact macro refusal on the define line', () => {
   const macroFixture = manifest.fixtures.find(({ name }) => name === 'cpp-delete-macro');
-  const rule = cppRefusalFor(macroFixture, cCppSubject, frozen, true);
-  assert.equal(cppRefusalFor(macroFixture, cCppQualificationSubject, frozen, true), rule);
+  const refusalFor = (subject) => cppRefusalFor(macroFixture, subject, frozen, true, admitsCppValueAdapter(subject));
+  const rule = refusalFor('39b2119a72d5afe003dbc6d66aba19633c15292f');
+  assert.equal(refusalFor('46943f54e42abcd5c008ac88261446a89a3fd270'), rule);
   assert.match(macroFixture.code.split('\n')[rule.line - 1], /^#define delete\s/);
   for (const historical of [frozen, 'published-0.17.1', cppStep7Subject]) {
-    assert.equal(cppRefusalFor(macroFixture, historical, frozen, true), undefined);
+    assert.equal(refusalFor(historical), undefined);
   }
   const expected = { ...macroFixture, cppRefusal: rule };
   const compileFailure = structuredClone(observation);

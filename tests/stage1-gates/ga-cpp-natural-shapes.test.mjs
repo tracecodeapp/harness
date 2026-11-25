@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { admitsCppValueAdapter, cppStep7Subject } from './cpp-admission.mjs';
 import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNaturalShapes } from './cpp-natural-shapes.mjs';
-import { cCppQualificationSubject, cCppSubject, cppStep7Subject } from './cpp-refusal.mjs';
 
-const fixed = cppNaturalShapes(cCppSubject);
-const baseline = cppNaturalShapes(cppStep7Subject);
+const shapesFor = (subject) => cppNaturalShapes(subject, admitsCppValueAdapter(subject));
+const fixed = shapesFor('39b2119a72d5afe003dbc6d66aba19633c15292f');
+const baseline = shapesFor(cppStep7Subject);
 
 function outcome(fixture, request, reported) {
   const results = [];
@@ -26,11 +27,11 @@ function completed(fixture, values) {
 
 test('natural shapes plan exactly five public routes for each of the 18 fixtures on both pins', () => {
   assert.equal(fixed.length, 18);
-  assert.deepEqual(cppNaturalShapes(cCppQualificationSubject), fixed);
+  assert.deepEqual(shapesFor('46943f54e42abcd5c008ac88261446a89a3fd270'), fixed);
   assert.equal(baseline.length, 18);
   assert.equal(baseline.filter(({ naturalShape }) => naturalShape.compileError).length, 12);
   assert.equal(baseline.filter(({ naturalShape }) => naturalShape.wrongAnswer).length, 1);
-  assert.deepEqual(cppNaturalShapes('b025fdb8220694cdfe96b136a0b8bb82843f7371'), []);
+  assert.deepEqual(shapesFor('b025fdb8220694cdfe96b136a0b8bb82843f7371'), []);
   const planned = (fixtures) => fixtures.flatMap((fixture) => {
     const [a, b] = fixture.cases.map(({ id }) => id);
     const requests = cppNaturalShapeRequests(fixture);

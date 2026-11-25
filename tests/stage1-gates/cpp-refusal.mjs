@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict';
-
-export const cppStep7Subject = '9b30ad9bc203ad2ba2f159d96dfaef62940262c7';
-export const cCppSubject = '39b2119a72d5afe003dbc6d66aba19633c15292f';
-export const cCppQualificationSubject = '46943f54e42abcd5c008ac88261446a89a3fd270';
-export const cCppSubjects = new Set([cCppSubject, cCppQualificationSubject]);
+import { cppStep7Subject } from './cpp-admission.mjs';
 
 const exceptionRefusal = Object.freeze({
   message: 'C++ exceptions are not supported yet',
@@ -22,9 +18,9 @@ const legacySubjects = new Set([
   'a637ce6c297e5fc44b8799260dbb3acf1ed899da',
 ]);
 
-export function cppRefusalFor(fixture, subject, frozen, registeredCpp) {
+export function cppRefusalFor(fixture, subject, frozen, registeredCpp, cppValueAdapter) {
   if (fixture.language !== 'cpp') return;
-  if (fixture.gate === 'G6' && fixture.name === 'cpp-delete-macro' && cCppSubjects.has(subject)) {
+  if (fixture.gate === 'G6' && fixture.name === 'cpp-delete-macro' && cppValueAdapter) {
     return macroOperationRefusal;
   }
   if (fixture.gate === 'G1' && fixture.name === 'print-then-throw' &&
