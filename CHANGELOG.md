@@ -162,6 +162,22 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Python project commands name workspace files by the path the terminal
+  shows, as CPython does for the same command in that directory. Tracebacks
+  (syntax and runtime errors, in the main file and in imported project
+  modules), `__file__`, `sys.argv[0]`, `sys.path`, warnings, and source read
+  through `inspect` or `linecache` no longer show the internal
+  `/tracecode_project` mount. Tracebacks no longer include the runner's own
+  frames. Warnings and tracebacks show the source of the current run, not a
+  previous run's. `sys.argv[0]` is the script relative to the working
+  directory, and `python -m package` gives `package/__main__.py`. An error
+  from opening or stat-ing a workspace path names the learner's path, and a
+  missing script prints `python3: can't open file '<absolute path>': [Errno
+  2] No such file or directory`. `traceback.print_stack()`, `inspect.stack()`,
+  `logging.exception` and pdb start at the script. As in CPython, the main
+  script's `__spec__` and `__package__` are `None` and its `__loader__` is a
+  `SourceFileLoader`; `io.FileIO` and `os.open` open workspace paths. Algorithm
+  runs, verdicts and traces are unchanged.
 - C# judged answers preserve built-in `TreeNode` and `ListNode` shapes,
   including shared references. On those nodes, `value` reads and writes `val`
   and is omitted from the answer. Use the `val` field for `ref` or `out`.

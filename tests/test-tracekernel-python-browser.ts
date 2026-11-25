@@ -8,6 +8,25 @@ import { tmpdir } from 'node:os';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
+import {
+  PYTHON_PROJECT_PATH_CASES,
+  leaksInternalMount,
+  pyodideExpected,
+} from './fixtures/python-project-paths';
+
+// Each path case runs in its own directory of the kernel workspace.
+const PATH_CASE_ROOT = '/workspace/paths';
+const pathCaseDirectory = (index: number) => `${PATH_CASE_ROOT}/${index}`;
+const PATH_CASES = PYTHON_PROJECT_PATH_CASES.map((entry, index) => ({
+  // A case with no files still needs its directory.
+  files: (entry.files.length > 0 ? entry.files : [{ path: '.keep', contents: '' }])
+    .map((file) => ({ path: `paths/${index}/${file.path}`, contents: file.contents })),
+  cwd: entry.cwd ? `${pathCaseDirectory(index)}/${entry.cwd}` : pathCaseDirectory(index),
+  // The terminal pipes standard input the way a learner would.
+  command: entry.stdin === undefined
+    ? entry.command
+    : `printf '${entry.stdin.replace(/\n/g, '\\n')}' | ${entry.command}`,
+}));
 
 function assertCondition(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -137,7 +156,7 @@ async function main(): Promise<void> {
       page.on('pageerror', (error) => browserErrors.push(error.message));
       await page.goto(`${server.origin}/index.html`, { waitUntil: 'load' });
       await page.evaluate('globalThis.__name = (fn) => fn');
-      const result = await page.evaluate(async () => {
+      const result = await page.evaluate(async (pathCases) => {
         // @ts-expect-error Generated into the browser test server.
         const { createBrowserProjectWorkspace } = await import('/project-harness.mjs');
         const workspace = await createBrowserProjectWorkspace({
@@ -148,6 +167,7 @@ async function main(): Promise<void> {
           },
           pythonProjectTimeoutMs: 120_000,
           files: [
+            ...pathCases.flatMap((entry) => entry.files),
             {
               path: 'watchdog-control.py',
               contents: [
@@ -705,6 +725,12 @@ async function main(): Promise<void> {
           const firstTerminalInline = await terminal.run(
             'python -c "print(\'python-first-terminal\')"'
           );
+          const pathRuns: Array<{ cd: unknown; run: unknown }> = [];
+          for (const entry of pathCases) {
+            const cd = await terminal.run(`cd ${entry.cwd}`);
+            pathRuns.push({ cd, run: await terminal.run(entry.command) });
+          }
+          const pathRunsCdBack = await terminal.run('cd /workspace');
           const fsControl = await terminal.run('python kernel-fs.py');
           const nativeFsControl = await terminal.run(
             'python kernel-native-fs.py'
@@ -769,6 +795,8 @@ async function main(): Promise<void> {
           }
           return {
             firstTerminalInline,
+            pathRuns,
+            pathRunsCdBack,
             fsControl,
             nativeFsControl,
             nativeFsResult: nativeFsControl.exitCode === 0
@@ -805,6 +833,29 @@ async function main(): Promise<void> {
           terminalOwner.dispose();
           workspace.dispose();
         }
+      }, PATH_CASES);
+
+      // Python output names the learner's paths on the kernel-mounted
+      // workspace, as CPython prints them (tests/fixtures/python-project-paths.ts).
+      assertCondition(
+        (result.pathRunsCdBack as { exitCode?: number }).exitCode === 0,
+        `cd back to the workspace root failed: ${JSON.stringify(result.pathRunsCdBack)}`
+      );
+      PYTHON_PROJECT_PATH_CASES.forEach((entry, index) => {
+        const { cd, run } = result.pathRuns[index] as {
+          cd: { exitCode: number };
+          run: { stdout: string; stderr: string; exitCode: number };
+        };
+        assertCondition(cd.exitCode === 0, `cd for "${entry.name}" failed: ${JSON.stringify(cd)}`);
+        const root = pathCaseDirectory(index);
+        const actual = { stdout: run.stdout, stderr: run.stderr, exitCode: run.exitCode };
+        const expected = pyodideExpected(entry, root);
+        assertCondition(
+          JSON.stringify(actual) === JSON.stringify(expected) &&
+            !leaksInternalMount(entry, `${run.stdout}${run.stderr}`),
+          `Python output for "${entry.name}" (${entry.command}) did not name the learner's paths:\n` +
+            `actual   ${JSON.stringify(actual)}\nexpected ${JSON.stringify(expected)}`
+        );
       });
 
       assertCondition(
