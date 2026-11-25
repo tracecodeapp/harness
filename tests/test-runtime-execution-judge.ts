@@ -5006,17 +5006,19 @@ function preparedPolicy(call: RuntimeProgramPreparationCall | undefined): unknow
   return (call as { judgedOutputPolicy?: unknown } | undefined)?.judgedOutputPolicy;
 }
 
-test('judged-output policy: the ordinary prepare carries the product default, a trace prepare none', async () => {
+test('judged-output policy: the ordinary prepare carries the product default, traced binding included', async () => {
   const code = makeState();
   await evaluate(code, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
   assert.deepEqual(code.prepareCalls.map(({ mode }) => mode), ['code']);
   assert.deepEqual(preparedPolicy(code.prepareCalls[0]), JS_JUDGED_DEFAULT);
   assert.equal(Object.isFrozen(preparedPolicy(code.prepareCalls[0])), true);
 
+  // Since step 8 a traced binding still prepares only the ordinary program;
+  // drawings come from the observer port, which never carries the policy.
   const traced = makeState();
   await evaluate(traced, makePlan([{ id: 't', input: { label: 't' }, expected: 't' }]), codeBinding({ trace: true }));
-  assert.deepEqual(traced.prepareCalls.map(({ mode }) => mode), ['trace']);
-  assert.equal(preparedPolicy(traced.prepareCalls[0]), undefined);
+  assert.deepEqual(traced.prepareCalls.map(({ mode }) => mode), ['code']);
+  assert.deepEqual(preparedPolicy(traced.prepareCalls[0]), JS_JUDGED_DEFAULT);
 });
 
 test('judged-output policy: a binding cannot supply or raise it', async () => {
