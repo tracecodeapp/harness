@@ -923,7 +923,7 @@ for (const language of ['java', 'python']) {
         const bundleId = 'deadline-bundle';
         Object.assign(sample.result, {
           bundleId, workspaceDigest: binding.workspaceDigest,
-          verdict: 'indeterminate', policy: { result: 'unknown' }, passedCount: 1, totalCount: 3,
+          verdict: 'failed', policy: { result: false }, passedCount: 1, totalCount: 3,
         });
         sample.stimulus = { bundle: { id: bundleId, workspaceDigest: binding.workspaceDigest, execution: {} },
           stopAtFirstRunaway: route === 'deadline-stop' };
@@ -952,6 +952,10 @@ for (const language of ['java', 'python']) {
           assert.equal(ledgerFor(spec, route, value).receipts
             .find(({ id }) => id.endsWith('/' + suffix))?.status, 'failed', suffix);
         };
+        const unknown = structuredClone(sample);
+        unknown.result.verdict = 'indeterminate';
+        unknown.result.policy.result = 'unknown';
+        fails(unknown, 'aggregate');
         const backstop = structuredClone(sample);
         backstop.transcript.find(({ phase }) => phase === 'service-deadline').cause = 'backstop';
         fails(backstop, 'injection-ack');

@@ -859,11 +859,10 @@ function check(fixture, route, sample, assert) {
   }
   if (!route.startsWith('run-') && !continuation(route)) {
     const passed = rows.filter((row) => desiredRow(fixture, route, row) === 'completed').length;
-    // These native-batch routes use allCasesPassed == true. Provider failures
-    // contribute a concrete non-passing row while preserving its ungraded verdict.
-    const verdict = serviceCut(fixture, route) && !batchWorkerLoss(fixture, route)
-      ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
-    const ok = verdict === 'indeterminate' ? 'unknown' : verdict === 'passed';
+    // The fixture's all-cases policy is false when a provider failure leaves
+    // an ungraded row, whether worker loss or the service watchdog stopped it.
+    const ok = passed === rows.length;
+    const verdict = ok ? 'passed' : 'failed';
     assert('aggregate', receipt?.verdict === verdict && receipt?.policy?.result === ok, [receipt?.verdict, receipt?.policy]);
     assert('counts', receipt?.passedCount === passed && receipt?.totalCount === rows.length, [receipt?.passedCount, receipt?.totalCount]);
   }
