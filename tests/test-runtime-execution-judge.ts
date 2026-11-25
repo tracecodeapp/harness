@@ -5146,31 +5146,95 @@ test('judged-output policy: a worker realm never reads the bridge', async (t) =>
 
 type ScriptedStep = 'finish' | 'runaway' | 'crash' | 'hang';
 
+/**
+ * `onAbort` is what the provider does when its signal aborts mid-case:
+ * - `reject`: rejects with an AbortError (Python's behaviour today);
+ * - `interrupted`: surfaces its authenticated prefix as an
+ *   InterruptedCodeBatchError (`fabricate` adds a finish for the running case);
+ * - `report-finish`: reports a client-timeout finish for the running case from
+ *   its abort handler, synchronously, then rejects.
+ */
 function scriptedBatchFixture(options: {
   readonly lifecycleAllowanceMs?: number;
   readonly forwardFinishes?: boolean;
+  /** Native batches (default). Without, the registry runs one call per entry. */
+  readonly native?: boolean;
+  /** The native batch stops itself at a runaway (default). Without, Run sends one call per case. */
+  readonly nativeStop?: boolean;
+  /** The registration acknowledges worker starts (default). */
+  readonly acks?: boolean;
+  readonly onAbort?: 'reject' | 'interrupted' | 'report-finish';
+  readonly fabricate?: boolean;
+  /** The worker dies before announcing this case's start. */
+  readonly crashBefore?: string;
+  /** The worker never announces this case's start. */
+  readonly skipStart?: string;
+  /** The terminal reply carries a different output for these cases than their streamed finish. */
+  readonly replyOutput?: Readonly<Record<string, unknown>>;
 } = {}) {
   const starts: string[] = [];
   const signals: AbortSignal[] = [];
-  const reached = new Map<number, ReturnType<typeof controlled>>();
-  const releases = new Map<number, ReturnType<typeof controlled<ScriptedStep>>>();
+  const reached = new Map<string, ReturnType<typeof controlled>>();
+  const releases = new Map<string, ReturnType<typeof controlled<ScriptedStep>>>();
   const late: Array<(index: number, result: CodeExecutionResult) => void> = [];
-  const at = <T,>(map: Map<number, T>, index: number, make: () => T) => {
-    let value = map.get(index);
-    if (!value) map.set(index, value = make());
+  const at = <T,>(map: Map<string, T>, key: string, make: () => T) => {
+    let value = map.get(key);
+    if (!value) map.set(key, value = make());
     return value;
   };
+  const key = (id: number | string) => typeof id === 'number' ? 'ABC'[id]! : id;
   const finished = (label: string): CodeExecutionResult => ({
     kind: 'completed', output: label, consoleOutput: [`stdout:${label}`],
   });
   const runaway = (label: string): CodeExecutionResult => ({
     kind: 'limit', reason: 'client-timeout', error: 'Execution timed out.', consoleOutput: [`stdout:${label}`],
   });
+  const lost = () => new WorkerCrashedError({
+    workerMessage: 'scripted worker lost', filename: undefined, lineno: undefined, colno: undefined,
+  });
+  /** One case on the worker: announce, wait for the test's release, answer. */
+  async function runEntry(
+    label: string,
+    index: number,
+    signal: AbortSignal | undefined,
+    outcomes: readonly CodeExecutionResult[],
+    progress: Pick<JudgeOrdinaryBatchCall, 'onCaseStarted' | 'onCaseFinished'>
+  ): Promise<CodeExecutionResult> {
+    // Each worker message arrives in its own task.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (signal?.aborted) throw abortError(signal);
+    if (options.crashBefore === label) throw new InterruptedCodeBatchError(outcomes, lost());
+    starts.push(label);
+    if (options.skipStart !== label) progress.onCaseStarted?.(index);
+    const aborted = new Promise<never>((_, reject) => {
+      signal?.addEventListener('abort', () => {
+        if (options.onAbort === 'report-finish') progress.onCaseFinished?.(index, runaway(label));
+        if (options.onAbort === 'interrupted') {
+          reject(new InterruptedCodeBatchError(
+            options.fabricate ? [...outcomes, runaway(label)] : outcomes,
+            new Error('scripted batch aborted'),
+            { interruption: 'service-deadline', interruptedIndex: index }
+          ));
+          return;
+        }
+        reject(abortError(signal));
+      }, { once: true });
+    });
+    aborted.catch(() => undefined);
+    at(reached, label, () => controlled()).resolve(undefined);
+    const step = await Promise.race([at(releases, label, () => controlled<ScriptedStep>()).promise, aborted]);
+    if (step === 'hang') await aborted;
+    if (step === 'crash') throw new InterruptedCodeBatchError(outcomes, lost());
+    const result = step === 'runaway' ? runaway(label) : finished(label);
+    if (options.forwardFinishes !== false) progress.onCaseFinished?.(index, result);
+    return result;
+  }
   const provider: RuntimePreparedExecutionProvider = {
     ...(options.lifecycleAllowanceMs === undefined ? {} : { lifecycleAllowanceMs: options.lifecycleAllowanceMs }),
     async init() { return { success: true, loadTimeMs: 0 }; },
     async prepareProgram(call) {
       if (call.mode !== 'code') throw new Error('The scripted provider prepares only ordinary code.');
+      const native = options.native !== false;
       return {
         kind: 'prepared' as const,
         program: {
@@ -5179,39 +5243,37 @@ function scriptedBatchFixture(options: {
             profile: 'compatibility' as const,
             caseIsolation: 'fresh-case-state' as const,
             maxConcurrency: 1,
-            stopsAtFirstRunaway: true as const,
+            ...(native && options.nativeStop !== false ? { stopsAtFirstRunaway: true as const } : {}),
           },
-          async executeIsolated() { throw new Error('The scripted provider runs only native batches.'); },
-          async executeBatchIsolated(request: JudgeOrdinaryBatchCall) {
+          async executeIsolated(request: RuntimePreparedCodeCall) {
+            if (native) throw new Error('The scripted provider runs only native batches.');
             if (request.signal) signals.push(request.signal);
-            if (request.onCaseFinished) late.push(request.onCaseFinished);
-            const outcomes: CodeExecutionResult[] = [];
-            const aborted = new Promise<never>((_, reject) => {
-              request.signal?.addEventListener('abort', () => reject(abortError(request.signal!)), { once: true });
-            });
-            aborted.catch(() => undefined);
-            for (const [index, inputs] of request.inputBatch.entries()) {
-              // Each worker message arrives in its own task.
-              await new Promise((resolve) => setTimeout(resolve, 0));
-              if (request.signal?.aborted) throw abortError(request.signal);
-              const label = String((inputs as { label: string }).label);
-              starts.push(label);
-              request.onCaseStarted?.(index);
-              at(reached, index, () => controlled()).resolve(undefined);
-              const step = await Promise.race([at(releases, index, () => controlled<ScriptedStep>()).promise, aborted]);
-              if (step === 'hang') await aborted;
-              if (step === 'crash') {
-                throw new InterruptedCodeBatchError(outcomes, new WorkerCrashedError({
-                  workerMessage: 'scripted worker lost', filename: undefined, lineno: undefined, colno: undefined,
-                }));
-              }
-              const result = step === 'runaway' ? runaway(label) : finished(label);
-              outcomes.push(result);
-              if (options.forwardFinishes !== false) request.onCaseFinished?.(index, result);
-              if (request.stopAtFirstRunaway && result.kind === 'limit') break;
+            const label = String((request.inputs as { label: string }).label);
+            try {
+              return await runEntry(label, 0, request.signal, [], {});
+            } catch (error) {
+              // Without a native batch a lost worker is an ordinary rejection.
+              throw error instanceof InterruptedCodeBatchError ? error.cause : error;
             }
-            return outcomes;
           },
+          ...(native ? {
+            async executeBatchIsolated(request: JudgeOrdinaryBatchCall) {
+              if (request.signal) signals.push(request.signal);
+              if (request.onCaseFinished) late.push(request.onCaseFinished);
+              const outcomes: CodeExecutionResult[] = [];
+              for (const [index, inputs] of request.inputBatch.entries()) {
+                const label = String((inputs as { label: string }).label);
+                outcomes.push(await runEntry(label, index, request.signal, outcomes, request));
+                if (request.stopAtFirstRunaway && outcomes.at(-1)!.kind === 'limit') break;
+              }
+              return outcomes.map((outcome, index) => {
+                const label = String((request.inputBatch[index] as { label: string }).label);
+                return options.replyOutput && Object.hasOwn(options.replyOutput, label)
+                  ? { ...outcome, output: options.replyOutput[label] } as CodeExecutionResult
+                  : outcome;
+              });
+            },
+          } : {}),
           async dispose() {},
         },
         consoleOutput: [],
@@ -5224,18 +5286,21 @@ function scriptedBatchFixture(options: {
     capabilities: {
       observationLease: 'separate',
       observationDeadlineMs: 3000,
-      stoppingBatchAdmission: 'worker-start',
-      nonStoppingBatchAdmission: 'worker-start',
+      ...(options.acks !== false ? {
+        stoppingBatchAdmission: 'worker-start' as const,
+        nonStoppingBatchAdmission: 'worker-start' as const,
+      } : {}),
     },
     async prepareObservation() { return { status: 'refused', reason: 'recorder-unavailable' }; },
     mark(marker) { events.push({ ...marker }); },
   };
   const host = createBrowserJudgeHostFromRuntimeHost(browserHostFor(provider, () => registration));
   return {
-    host, starts, signals, events,
-    reached: (index: number) => at(reached, index, () => controlled()).promise,
-    release: (index: number, step: ScriptedStep) => at(releases, index, () => controlled<ScriptedStep>()).resolve(step),
-    /** A finish the killed generation delivers after the batch was stopped. */
+    host, starts, signals, events, provider,
+    reached: (id: number | string) => at(reached, key(id), () => controlled()).promise,
+    release: (id: number | string, step: ScriptedStep) =>
+      at(releases, key(id), () => controlled<ScriptedStep>()).resolve(step),
+    /** A finish the stopped generation delivers after the batch was stopped. */
     deliverLate: (index: number, label: string) => late.at(-1)?.(index, finished(label)),
     finished,
   };

@@ -214,9 +214,10 @@ function executeFakeJournalBatch(
     );
   return Effect.gen(function* () {
     yield* record({ kind: 'started', caseId: a! });
+    if (command === 'journal-start-only') return { exitCode: 0, stdout: '', stderr: '' };
     yield* record({
       kind: 'finished',
-      output: command === 'journal-runaway'
+      output: command === 'journal-runaway' || command === 'journal-after-runaway'
         ? fakeFinish(a!, 1, {
             termination: { kind: 'exit', exitCode: 1 },
             value: undefined,
@@ -227,10 +228,28 @@ function executeFakeJournalBatch(
         : fakeFinish(a!, 1),
     });
     if (command === 'journal-runaway') return yield* Effect.never;
+    if (command === 'journal-after-runaway') {
+      // C is reported after A's runaway; a stopping batch never ran it.
+      const c = (invocation.cases ?? [])[2]!.caseId;
+      yield* record({ kind: 'started', caseId: c });
+      yield* record({ kind: 'finished', output: fakeFinish(c, 3) });
+      return yield* Effect.never;
+    }
+    if (command === 'journal-short') {
+      // A terminal batch that lists only A, beside A's accepted finish.
+      yield* control.publish(invocationId, { diagnostics: [], batch: [fakeFinish(a!, 1)] });
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }
     if (command === 'journal-duplicate') {
       yield* record({ kind: 'finished', output: fakeFinish(a!, 999) });
     }
     yield* record({ kind: 'started', caseId: b! });
+    if (command === 'journal-teardown') {
+      // While the watchdog kills it, the runtime reports a finish for B.
+      return yield* Effect.never.pipe(Effect.onInterrupt(() =>
+        record({ kind: 'finished', output: fakeFinish(b!, 2) }).pipe(Effect.asVoid)
+      ));
+    }
     if (command === 'journal-protocol') {
       yield* control.publish(invocationId, {
         diagnostics: [{ severity: 'error', code: 'runtime-provider-error', message: 'malformed reply', source: 'fake' }],
@@ -1225,7 +1244,7 @@ function assertServiceFailure(
     `${row.caseId}: completion uncertainty is stated only for a started case`
   );
   assert.equal(
-    /The case had not started\./u.test(row.failure?.message ?? ''),
+    /As far as the runtime reported, the case had not started\./u.test(row.failure?.message ?? ''),
     notStarted,
     `${row.caseId}: a case whose start was never accepted says so, in a batch that acknowledges starts`
   );
@@ -1357,5 +1376,42 @@ test('D-WATCH: a provider failure published after an accepted finish keeps the p
   assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
   assertServiceFailure(result.cases[1], 'protocol', true);
   assertServiceFailure(result.cases[2], 'protocol', false);
-  assert.equal(result.cases[2]?.failure?.message, 'malformed reply The case had not started.');
+  // Joined sentences keep their full stops.
+  assert.equal(result.cases[1]?.failure?.message,
+    'malformed reply. The case had started, and its completion is uncertain.');
+  assert.equal(result.cases[2]?.failure?.message,
+    'malformed reply. As far as the runtime reported, the case had not started.');
+});
+
+test('D-WATCH: a short terminal batch beside an accepted finish keeps that finish and fails the rest as protocol', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-short', { timeoutMs: 1_000 }));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.cases[0]?.status, 'completed');
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assertServiceFailure(result.cases[1], 'protocol', false);
+  assertServiceFailure(result.cases[2], 'protocol', false);
+  assert.match(result.cases[1]!.failure!.message, /returned 1 unique cases for 3 planned cases/u);
+});
+
+test('D-WATCH: a batch that exits after an accepted start and no reply is the provider failure, not a malformed runtime', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-start-only', { timeoutMs: 1_000 }));
+  assert.equal(result.status, 'completed');
+  assertServiceFailure(result.cases[0], 'protocol', true);
+  assertServiceFailure(result.cases[1], 'protocol', false);
+});
+
+test('D-WATCH: in a stopping batch, a finish accepted after the runaway stays not-run', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-after-runaway'), true);
+  assert.equal(result.cases[0]?.failure?.origin, 'limit');
+  for (const row of result.cases.slice(1)) {
+    assert.equal(row.status, 'not-run', `${row.caseId}: after the runaway`);
+    assert.equal(Object.hasOwn(row, 'value'), false);
+  }
+});
+
+test('D-WATCH: a finish recorded while the watchdog kills the batch is not graded', async () => {
+  const { result, run } = await evaluateJournalled(journalPlan('journal-teardown'));
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assertServiceFailure(result.cases[1], 'runtime-failure', true);
+  assert.equal(run.dispositions.at(-1), 'fenced', 'the teardown finish was refused');
 });
