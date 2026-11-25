@@ -9,7 +9,7 @@ import { build } from 'esbuild';
 import { chromium, firefox, webkit } from 'playwright';
 import { runCommand } from './example-app-smoke';
 import type {
-  JavaScriptObserverWorker,
+  DisposableObserverWorker,
   PythonInteractiveWorker,
 } from './fixtures/browser-algorithm-batch-entry';
 
@@ -40,12 +40,12 @@ interface BatchLanguageResult {
   readonly plainMs: number;
   readonly plainMaximumActiveWorkers: number;
   readonly plainWorkerUrls: readonly string[];
-  readonly plainJavaScriptObservers: readonly JavaScriptObserverWorker[];
+  readonly plainObservers: readonly DisposableObserverWorker[];
   readonly trace: ReceiptSummary;
   readonly traceMs: number;
   readonly traceMaximumActiveWorkers: number;
   readonly traceWorkerUrls: readonly string[];
-  readonly traceJavaScriptObservers: readonly JavaScriptObserverWorker[];
+  readonly traceObservers: readonly DisposableObserverWorker[];
   readonly interactive: {
     readonly initialMs: number;
     readonly compileTimings?: unknown;
@@ -62,7 +62,7 @@ interface BatchLanguageResult {
     readonly backgroundTraceEventCounts: readonly number[];
     readonly maximumActiveWorkers: number;
     readonly workerUrls: readonly string[];
-    readonly javascriptObservers: readonly JavaScriptObserverWorker[];
+    readonly observerWorkers: readonly DisposableObserverWorker[];
     readonly pythonWorkers?: readonly PythonInteractiveWorker[];
   };
   readonly compatibilityIsolation?: ReceiptSummary;
@@ -251,7 +251,7 @@ function assertBoundedWorkers(
   requireWorker: boolean,
   maximumActiveWorkers: number,
   configuredCSharpConcurrency: number | undefined,
-  javascriptObservers: readonly JavaScriptObserverWorker[]
+  observerWorkers: readonly DisposableObserverWorker[]
 ): void {
   const languageWorkers = workerUrls.filter((url) =>
     language === 'typescript'
@@ -274,22 +274,23 @@ function assertBoundedWorkers(
     );
     return;
   }
-  if (language === 'javascript' || language === 'typescript') {
+  let preparationAndExecutionWorkers = languageWorkers.length;
+  if (language === 'javascript' || language === 'typescript' || language === 'cpp') {
     // Judge serializes observations, and each attempt retires its executor.
     // Count those lifetimes separately from preparation and ordinary execution.
     const expectedObservations = scope === 'code batch' ? 0 : algorithmCaseCount;
     assertCondition(
-      javascriptObservers.length === expectedObservations &&
-        javascriptObservers.every(({ created, observations, retired }, index) => {
-          const previous = javascriptObservers[index - 1];
+      observerWorkers.length === expectedObservations &&
+        observerWorkers.every(({ created, observations, retired }, index) => {
+          const previous = observerWorkers[index - 1];
           return observations === 1 && retired !== undefined && retired > created &&
             (previous === undefined || (previous.retired !== undefined && previous.retired < created));
         }),
-      `${language} ${scope} should run each drawing in one disposable executor, one at a time: ${JSON.stringify(javascriptObservers)}`
+      `${language} ${scope} should run each drawing in one disposable executor, one at a time: ${JSON.stringify(observerWorkers)}`
     );
+    preparationAndExecutionWorkers -= observerWorkers.length;
   }
   const maximumWorkers = 3;
-  const preparationAndExecutionWorkers = languageWorkers.length - javascriptObservers.length;
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
       preparationAndExecutionWorkers >= 0 &&
@@ -494,7 +495,7 @@ async function main(): Promise<void> {
           false,
           languageResult.plainMaximumActiveWorkers,
           languageResult.csharpBatchConcurrency,
-          languageResult.plainJavaScriptObservers
+          languageResult.plainObservers
         );
         assertBoundedWorkers(
           language,
@@ -503,7 +504,7 @@ async function main(): Promise<void> {
           false,
           languageResult.traceMaximumActiveWorkers,
           languageResult.csharpBatchConcurrency,
-          languageResult.traceJavaScriptObservers
+          languageResult.traceObservers
         );
         if (language === 'python') {
           assertPythonInteractiveWorkers(languageResult);
@@ -515,7 +516,7 @@ async function main(): Promise<void> {
             languageResult.warmMode === 'cold',
             languageResult.interactive.maximumActiveWorkers,
             languageResult.csharpBatchConcurrency,
-            languageResult.interactive.javascriptObservers
+            languageResult.interactive.observerWorkers
           );
         }
         console.log(
