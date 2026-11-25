@@ -14899,6 +14899,8 @@ function cppProjectDiagnosticRelativePath(path, cwd) {
 }
 
 function formatTraceccProjectDiagnostics(stderr, plan, commandIndex) {
+  const wrapperPath = plan.commands[commandIndex]?.[1];
+  if (!wrapperPath) return stderr;
   const source = plan.sources[commandIndex];
   const sourceDirectory = source ? dirname(`/${source.workspacePath}`).slice(1) : '';
   const displayPath = source?.diagnosticPath || '';
@@ -14906,40 +14908,38 @@ function formatTraceccProjectDiagnostics(stderr, plan, commandIndex) {
   const sourceRoot = `${plan.compilerSourceRoot}/`;
 
   return stderr
-    .replace(/\r\n/g, '\n')
     .split('\n')
-    .filter((line) => !/^(?:In file included from |[ \t]+from )\/usr\/share\/tracecc\/project\/source-\d+\.c(?:pp)?:\d+[:,]$/.test(line))
-    .map((line) => line.replace(
-      /^((?:In file included from |[ \t]+from )?)(\/[^\n]+?):(\d+)(?=[:,])/,
-      (match, prefix, file, lineNumber) => {
-        if (file.startsWith('/usr/include/')) {
-          const includedPath = plan.diagnosticIncludePaths.get(file.slice('/usr/include/'.length));
-          return includedPath === undefined ? match : `${prefix}${includedPath}:${lineNumber}`;
-        }
-        const mount = file.startsWith(sourceRoot) ? sourceRoot : '/workspace/';
-        if (!file.startsWith(mount)) return match;
-        const path = file.slice(mount.length);
-        if (path === source?.workspacePath) {
-          return `${prefix}${displayPath}:${lineNumber}`;
-        }
-        // For a quoted include Clang spells the directory from the input
-        // operand, including "./" when the source is a bare filename.
-        if (source && (!sourceDirectory || path.startsWith(`${sourceDirectory}/`))) {
-          const relative = path.slice(sourceDirectory ? sourceDirectory.length + 1 : 0);
-          return `${prefix}${displayDirectory}${relative}:${lineNumber}`;
-        }
-        const display = displayPath.startsWith('/')
-          ? `${plan.visibleRoot}/${path}`
-          : cppProjectDiagnosticRelativePath(path, plan.cwd);
-        return `${prefix}${display}:${lineNumber}`;
+    .flatMap((line) => {
+      // Include frames end at the line number. Source diagnostics supply a
+      // line, column and severity before the message. Match whole locations
+      // so that a colon-number segment in a filename stays part of that name.
+      const frame = /^(In file included from |[ \t]+from )(\/.+):\d+[:,]\r?$/.exec(line);
+      const diagnostic = frame ? null : /^(\/.+?):\d+:\d+: (?:fatal error|error|warning|note|remark):/.exec(line);
+      const prefix = frame?.[1] || '';
+      const file = frame?.[2] ?? diagnostic?.[1];
+      if (!file) return line;
+      if (frame && file === wrapperPath) return [];
+
+      const suffix = line.slice(prefix.length + file.length);
+      if (file.startsWith('/usr/include/')) {
+        const includedPath = plan.diagnosticIncludePaths.get(file.slice('/usr/include/'.length));
+        return includedPath === undefined ? line : prefix + includedPath + suffix;
       }
-    ))
-    .join('\n')
-    // Paths also appear inside messages, for example in linker diagnostics.
-    .replace(/(^|[\s'"(<>=])\/workspace\//g, (_, prefix) =>
-      prefix + (plan.visibleRoot ? `${plan.visibleRoot}/` : '')
-    )
-    .replace(/(^|[\s'"(<>=])\/usr\/share\/tracecc\//g, '$1<TraceCC>/');
+      if (!file.startsWith(sourceRoot)) return line;
+      const path = file.slice(sourceRoot.length);
+      if (path === source?.workspacePath) return prefix + displayPath + suffix;
+      // For a quoted include Clang spells the directory from the input
+      // operand, including "./" when the source is a bare filename.
+      if (source && (!sourceDirectory || path.startsWith(`${sourceDirectory}/`))) {
+        const relative = path.slice(sourceDirectory ? sourceDirectory.length + 1 : 0);
+        return prefix + displayDirectory + relative + suffix;
+      }
+      const display = displayPath.startsWith('/')
+        ? `${plan.visibleRoot}/${path}`
+        : cppProjectDiagnosticRelativePath(path, plan.cwd);
+      return prefix + display + suffix;
+    })
+    .join('\n');
 }
 
 function createProjectEventBridge(messageId, sanitizeOutput) {
