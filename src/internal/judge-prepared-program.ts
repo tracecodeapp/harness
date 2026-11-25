@@ -23,6 +23,7 @@ import type {
   JudgeObservationProgram,
   JudgeOrdinaryBatchCall,
   JudgeReceiptProvider,
+  JudgeScheduleMarker,
   JudgeSchedulePhase,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import { bindJudgeOrdinaryPreparation } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
@@ -82,6 +83,16 @@ function stoppedByOrdinaryClock(row: JudgeEvaluationResult['cases'][number]): bo
     row.failure.reason === 'client-timeout';
 }
 
+/**
+ * The coordinator's journal of one ordinary batch dispatch. The registry
+ * forwards each start and finish it learns of; the journal checks the index
+ * and fences a batch the service watchdog already stopped.
+ */
+export interface OrdinaryBatchProgress {
+  started(index: number): void;
+  finished(index: number, result: CodeExecutionResult): void;
+}
+
 /** Owns one prepare journal and the observation lifetime for a committed evaluation. */
 export class JudgeObservationSchedule<Result, Expected> {
   private readonly lifetime = new AbortController();
@@ -100,6 +111,10 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly clockStopped = new Set<string>();
   private program?: JudgeObservationProgram;
   private artifact?: Promise<ObservationPreparation>;
+  /** Ordinary batch dispatches so far (journal generations). */
+  private dispatches = 0;
+  /** Accepted journal starts and finishes so far. */
+  private sequence = 0;
   private lease?: JudgeObservationLease;
 
   constructor(
@@ -213,17 +228,70 @@ export class JudgeObservationSchedule<Result, Expected> {
     return this.receipt.projectEvaluation(caseIds, caseIds);
   }
 
-  mark(phase: JudgeSchedulePhase, caseId?: string, attemptToken?: string): void {
+  mark(
+    phase: JudgeSchedulePhase,
+    caseId?: string,
+    attemptToken?: string,
+    journal?: Pick<JudgeScheduleMarker,
+      'caseIndex' | 'dispatchGeneration' | 'sequence' | 'progress' | 'reason' | 'cause' | 'accepted'>
+  ): void {
     if (!this.registration.mark && !this.testBridge) return;
     const marker = {
       phase,
       ...this.binding,
       caseId,
       attemptToken,
+      ...journal,
       at: globalThis.performance.now(),
     };
     this.testBridge?.onEvent(Object.freeze(marker));
     this.registration.mark?.(marker);
+  }
+
+  /** The next ordinary batch dispatch of this evaluation. */
+  beginDispatch(): number {
+    return ++this.dispatches;
+  }
+
+  /** The coordinator journalled a case's start or finish. */
+  journalled(progress: 'started' | 'finished', caseId: string, caseIndex: number, dispatchGeneration: number): void {
+    this.sequence += 1;
+    this.mark(progress === 'started' ? 'ordinary-case-started' : 'ordinary-case-accepted', caseId, undefined,
+      { caseIndex, dispatchGeneration, sequence: this.sequence });
+  }
+
+  /** The coordinator refused a case's start or finish; the journal is unchanged. */
+  journalRejected(
+    progress: 'started' | 'finished',
+    caseId: string | undefined,
+    caseIndex: number,
+    dispatchGeneration: number,
+    reason: NonNullable<JudgeScheduleMarker['reason']>
+  ): void {
+    this.mark('ordinary-case-rejected', caseId, undefined, { caseIndex, dispatchGeneration, progress, reason });
+  }
+
+  /**
+   * Trusted test control: should the service watchdog expire right after
+   * this journalled progress? Acknowledged when it does.
+   */
+  serviceDeadlineInjected(
+    progress: 'started' | 'finished',
+    caseId: string,
+    caseIndex: number,
+    dispatchGeneration: number
+  ): boolean {
+    if (!this.testBridge?.faultAt) return false;
+    const context = { ...this.faultContext(caseId), caseIndex, dispatchGeneration, progress };
+    if (this.testBridge.faultAt({ ...context, point: 'service' }) !== 'deadline') return false;
+    this.ack(context, 'service', 'deadline');
+    return true;
+  }
+
+  /** The service watchdog stopped a batch and sealed its journal. */
+  serviceDeadline(dispatchGeneration: number, cause: 'backstop' | 'injected', accepted: number): void {
+    this.mark('service-deadline', undefined, undefined,
+      { dispatchGeneration, sequence: this.sequence, cause, accepted });
   }
 
   private faultContext(caseId?: string, attemptToken?: string) {
@@ -231,8 +299,12 @@ export class JudgeObservationSchedule<Result, Expected> {
   }
 
   private ack(
-    context: ReturnType<JudgeObservationSchedule<Result, Expected>['faultContext']>,
-    point: 'prepare' | 'observe' | 'encode',
+    context: ReturnType<JudgeObservationSchedule<Result, Expected>['faultContext']> & {
+      readonly caseIndex?: number;
+      readonly dispatchGeneration?: number;
+      readonly progress?: 'started' | 'finished';
+    },
+    point: 'prepare' | 'observe' | 'encode' | 'service',
     fault: 'prepare' | 'runtime' | 'deadline' | 'encode' | 'no-recorder'
   ): void {
     this.testBridge?.onEvent(Object.freeze({
@@ -577,7 +649,8 @@ export class RuntimePreparedProgramRegistry {
     evaluationId: string,
     call: RuntimePreparedCodeBatchCall,
     admit?: (index: number) => void,
-    acknowledgeStarts = false
+    acknowledgeStarts = false,
+    journal?: OrdinaryBatchProgress
   ): Promise<readonly CodeExecutionResult[]> {
     const { program, gate } = this.preparedState(evaluationId);
     if (program.mode !== 'code') {
@@ -587,36 +660,47 @@ export class RuntimePreparedProgramRegistry {
     }
     if (program.executeBatchIsolated) {
       return gate.run(call.signal, async () => {
-        if (!acknowledgeStarts || !admit) {
-          if (!call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
-          return program.executeBatchIsolated!(call);
-        }
+        const acknowledged = acknowledgeStarts && admit !== undefined;
+        if (!acknowledged && !call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
+        if (!acknowledged && !journal) return program.executeBatchIsolated!(call);
         let live = true;
-        const admittedBatch: JudgeOrdinaryBatchCall = {
+        const progressBatch: JudgeOrdinaryBatchCall = {
           ...call,
-          onCaseStarted: (index) => {
-            if (live && !call.signal?.aborted && Number.isSafeInteger(index)
-              && index >= 0 && index < call.inputBatch.length) {
-              admit(index);
-            }
-          },
+          ...(acknowledged ? {
+            onCaseStarted: (index: number) => {
+              if (live && !call.signal?.aborted && Number.isSafeInteger(index)
+                && index >= 0 && index < call.inputBatch.length) {
+                admit!(index);
+              }
+              // The journal checks the index and fences a stopped batch itself.
+              journal?.started(index);
+            },
+          } : {}),
+          ...(journal ? {
+            onCaseFinished: (index: number, result: CodeExecutionResult) => journal.finished(index, result),
+          } : {}),
         };
         try {
-          return await program.executeBatchIsolated!(admittedBatch);
+          return await program.executeBatchIsolated!(progressBatch);
         } finally {
           live = false;
         }
       });
     }
+    // No native batch: each entry is its own call, so its start and its
+    // finish are the coordinator's to journal.
     return Promise.all(
       call.inputBatch.map((inputs, index) =>
-        gate.run(call.signal, () => {
+        gate.run(call.signal, async () => {
           admit?.(index);
-          return program.executeIsolated({
+          journal?.started(index);
+          const result = await program.executeIsolated({
             inputs,
             signal: call.signal,
             limits: call.limits,
           });
+          journal?.finished(index, result);
+          return result;
         })
       )
     );

@@ -9,6 +9,8 @@ type FaultAtPoint = {
   prepare: 'prepare';
   observe: 'runtime' | 'deadline' | 'no-recorder';
   encode: 'encode';
+  /** Expire the service watchdog right after this journalled progress. */
+  service: 'deadline';
 };
 
 type FaultPoint = keyof FaultAtPoint;
@@ -16,7 +18,13 @@ type FaultPoint = keyof FaultAtPoint;
 type FaultContext = Pick<
   JudgeScheduleMarker,
   'evaluationId' | 'workspaceDigest' | 'generation' | 'caseId' | 'attemptToken'
-> & { readonly language: Language };
+> & {
+  readonly language: Language;
+  /** Point `service` only: the progress the coordinator just journalled. */
+  readonly caseIndex?: number;
+  readonly dispatchGeneration?: number;
+  readonly progress?: 'started' | 'finished';
+};
 
 type InjectionAck = FaultContext & {
   readonly phase: 'injection-ack';
