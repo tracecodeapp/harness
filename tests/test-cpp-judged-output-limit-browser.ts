@@ -73,6 +73,30 @@ public:
   }
 };`;
 
+const UNORDERED_SET = `#include <unordered_set>
+class Solution {
+public:
+  std::unordered_set<int> solve(int count) {
+    std::unordered_set<int> out;
+    for (int n = 1; n <= count; ++n) out.insert(n);
+    return out;
+  }
+};`;
+
+const MAP_OF_SETS = `#include <map>
+#include <set>
+#include <string>
+#include <vector>
+class Solution {
+public:
+  std::map<std::string, std::set<std::vector<int>>> solve(bool nested) {
+    std::map<std::string, std::set<std::vector<int>>> out;
+    auto& values = out["x"];
+    if (nested) values.insert(std::vector<int>{1});
+    return out;
+  }
+};`;
+
 const CUSTOM_JSON = `#include <string>
 struct Blob { int n; };
 std::string toJson(const Blob& blob) { return "\\"" + std::string(blob.n, 'y') + "\\""; }
@@ -160,6 +184,24 @@ const SCENARIOS: Scenario[] = [
     cases: [
       { inputs: { rows: 0, cols: 0 }, expect: 'completed', outputSize: 2 },
       { inputs: { rows: 1, cols: 0 }, expect: 'limit', limit: 'depth' },
+    ],
+  },
+  {
+    name: 'set wrapper only counts towards JSON items and nodes',
+    code: UNORDERED_SET, functionName: 'solve', executionStyle: 'solution-method',
+    policy: { maxDepth: 1, maxItems: 2, maxNodes: 4 },
+    cases: [
+      { inputs: { count: 1 }, expect: 'completed', outputSize: JSON.stringify({ __type__: 'set', values: [1] }).length },
+      { inputs: { count: 2 }, expect: 'limit', limit: 'node' },
+      { inputs: { count: 3 }, expect: 'limit', limit: 'item' },
+    ],
+  },
+  {
+    name: 'map, set and nested vector each add one level',
+    code: MAP_OF_SETS, functionName: 'solve', executionStyle: 'solution-method', policy: { maxDepth: 2 },
+    cases: [
+      { inputs: { nested: false }, expect: 'completed', outputSize: JSON.stringify({ x: { __type__: 'set', values: [] } }).length },
+      { inputs: { nested: true }, expect: 'limit', limit: 'depth' },
     ],
   },
   {
