@@ -547,26 +547,28 @@ test('Python stopping batch whose cases all finish returns every streamed result
   }
 });
 
-test('Python stopping batch whose worker is lost mid-batch is a provider failure, not a time limit', async () => {
-  const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
+test('Python stopping batch preserves its prefix after worker loss without replay', async () => {
+  const log = { ...newLog(), entered: [] as number[] };
   const { provider, program } = await preparedProgram('code', -1, log, 2);
-  // The cases re-run once, each in a fresh worker; the worker running case 3
-  // is lost again. A lost worker is the provider's failure (the learner's own
-  // failures come back from the worker as classified replies), and never a
-  // time limit on the case that was running.
-  await assert.rejects(
-    program.executeBatchIsolated!({
-      inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
-      limits: { wallClockMs: PER_CASE_MS },
-      stopAtFirstRunaway: true,
-    } as never),
-    (error: Error) => {
-      assert.equal((error as { _tag?: unknown })._tag, 'WorkerCrashedError', `${error.name}: ${error.message}`);
-      return true;
-    }
-  );
-  await program.dispose();
-  provider.terminate();
+  try {
+    await assert.rejects(
+      program.executeBatchIsolated!({
+        inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
+        limits: { wallClockMs: PER_CASE_MS },
+        stopAtFirstRunaway: true,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof InterruptedCodeBatchError);
+        assert.deepEqual(error.prefix.map((row) => row.kind === 'completed' && row.output), [1, 2]);
+        return true;
+      }
+    );
+    assert.deepEqual(log.entered, [1, 2, 3]);
+    assert.equal(log.singleCaseRequests ?? 0, 0);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
   assert.equal(log.terminated, log.created, 'Every worker is terminated');
 });
 
