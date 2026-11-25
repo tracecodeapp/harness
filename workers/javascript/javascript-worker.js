@@ -676,19 +676,20 @@ function judgedJsonStringBytes(text) {
 }
 
 // Measures a serialized judged value as its compact JSON text, iteratively and
-// without building the text. The first pass counts every value, the entries
-// of each container and its nesting exactly, and bytes with a string at its
-// code-unit length and a number at one byte. Only an answer that pass cannot
-// place on one side of maxBytes gets the exact byte pass.
+// without building the text. The first pass counts every value and the
+// entries of each container exactly, and bytes with a string at its code-unit
+// length and a number at one byte. Only an answer that pass cannot place on
+// one side of maxBytes gets the exact byte pass. Nesting is not measured
+// here: maxDepth counts language values (a Map is one level, not its three
+// JSON wrappers), which serializeValue checks as it walks them.
 function judgedOutputExceeds(value, policy) {
   const measure = (exact) => {
     let values = 0;
     let bytes = 0;
     let stringUnits = 0;
     let numbers = 0;
-    const stack = [value, 0];
+    const stack = [value];
     while (stack.length > 0) {
-      const nesting = stack.pop();
       const current = stack.pop();
       values += 1;
       if (!exact && values > policy.maxNodes) return { exceeded: 'node' };
@@ -710,9 +711,8 @@ function judgedOutputExceeds(value, policy) {
       } else if (Array.isArray(current)) {
         const length = current.length;
         if (!exact && length > policy.maxItems) return { exceeded: 'item' };
-        if (!exact && nesting + 1 > policy.maxDepth) return { exceeded: 'depth' };
         bytes += length > 0 ? length + 1 : 2;
-        for (let index = length - 1; index >= 0; index -= 1) stack.push(current[index], nesting + 1);
+        for (let index = length - 1; index >= 0; index -= 1) stack.push(current[index]);
       } else {
         let members = 0;
         for (const key of Object.keys(current)) {
@@ -721,10 +721,9 @@ function judgedOutputExceeds(value, policy) {
           members += 1;
           bytes += (exact ? judgedJsonStringBytes(key) : key.length + 2) + 1;
           stringUnits += key.length;
-          stack.push(child, nesting + 1);
+          stack.push(child);
         }
         if (!exact && members > policy.maxItems) return { exceeded: 'item' };
-        if (!exact && nesting + 1 > policy.maxDepth) return { exceeded: 'depth' };
         bytes += members > 0 ? members + 1 : 2;
       }
       if (bytes > policy.maxBytes) return { exceeded: 'byte' };
@@ -815,9 +814,11 @@ function serializeValue(
 ) {
   const judged = activeJudgedOutput;
   if (judged) {
-    // Each value but `undefined` becomes at least one JSON value, so these
-    // only refuse what the exact measure would: they bound the work and the
-    // stack before it runs.
+    // Each value but `undefined` becomes at least one JSON value, so the
+    // value count only refuses what the exact measure would; it bounds the
+    // work. Nesting is the language value's (the root is 0, a container one
+    // deeper than its parent, a set's or map's JSON wrappers not counted),
+    // as this serializer and the C# and Java ones have always counted it.
     if (value !== undefined && ++judged.values > judged.policy.maxNodes) {
       throw judgedOutputLimit('node', judged.policy.maxNodes);
     }
