@@ -50,7 +50,40 @@ test('E-D1 compares concurrent base with F1 plus D1 on desktop repeat cells', ()
   assert.ok(plan.groups.every((entry) => entry.continuation));
 });
 
-test('experiment labels use the captured sequential witness without hiding new shapes', () => {
+test('S-prime confirmation pins the ruled phone and desktop matrices', () => {
+  const phone = pythonExperimentPlan('sprime-phone');
+  assert.equal(phone.scope, 'phone');
+  assert.deepEqual(phone.candidates, ['sprime']);
+  assert.deepEqual(phone.groups.map(({ problem, state, pythonWarmMode = 'standard', target }) =>
+    [problem, state, pythonWarmMode, target]), [
+    ['permutations', 'warm', 'fresh-page', 20],
+    ['permutations', 'cold', 'standard', 20],
+    ['permutations', 'warm', 'repeat-run', 20],
+    ['binary-search', 'warm', 'fresh-page', 20],
+    ['binary-search', 'cold', 'standard', 20],
+    ['binary-search', 'warm', 'repeat-run', 20],
+  ]);
+  assert.ok(phone.groups.every(({ cpu, versions }) =>
+    cpu === 4 && versions.join(',') === '0.17.1,sprime'));
+
+  const desktop = pythonExperimentPlan('sprime-desktop');
+  assert.equal(desktop.scope, 'desktop');
+  assert.deepEqual(desktop.candidates, ['sprime']);
+  assert.deepEqual(desktop.groups.map(({ problem, state, journey, continuation,
+    pythonWarmMode = 'standard', target }) =>
+    [problem, state, journey, continuation, pythonWarmMode, target]), [
+    ['binary-search', 'warm', 'run', false, 'fresh-page', 20],
+    ['permutations', 'warm', 'run', false, 'fresh-page', 20],
+    ['binary-search', 'cold', 'run', false, 'standard', 20],
+    ['binary-search', 'warm', 'run', true, 'repeat-run', 20],
+    ['permutations', 'warm', 'run', true, 'repeat-run', 20],
+    ['binary-search', 'warm', 'lesson', false, 'standard', 20],
+  ]);
+  assert.ok(desktop.groups.every(({ cpu, versions }) =>
+    cpu === 1 && versions.join(',') === '0.17.1,sprime'));
+});
+
+test('historical experiment labels use captured witnesses without hiding new shapes', () => {
   for (const name of ['e1', 'e2', 'ed1']) {
     const inventory = pythonExperimentShapeInventory(
       pythonExperimentPlan(name), capturedShapeKeys);
@@ -66,6 +99,10 @@ test('experiment labels use the captured sequential witness without hiding new s
     pythonExperimentPlan('e2'), 'sequential-f1-d1'), 'sequential');
   assert.equal(pythonExperimentWitnessVersion(
     pythonExperimentPlan('ed1'), 'concurrent-f1-d1'), 'concurrent');
+  assert.equal(pythonExperimentWitnessVersion(
+    pythonExperimentPlan('sprime-phone'), 'sprime'), 'sequential');
+  assert.equal(pythonExperimentWitnessVersion(
+    pythonExperimentPlan('sprime-desktop'), 'sprime'), 'sequential');
 });
 
 test('unknown experiment names fail before a browser can launch', () => {
