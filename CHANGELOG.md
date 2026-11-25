@@ -76,6 +76,13 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   A batch running without `stopAtFirstRunaway` also keeps those results if
   the worker stalls between cases.
 - Streamed Python verdicts apply only the per-case 8 MiB output limit.
+- Every request to the trusted C++ (TraceCC) compiler Worker now waits until
+  that Worker has started and received its integrity manifest. A Run sent
+  while an asset prewarm is still starting the Worker compiles normally,
+  including a Run sent right after a first Run was cancelled during its
+  compile. If the compiler service is reset while its Worker is starting, the
+  requests waiting on that start fail at once, and the next request starts a
+  new Worker that serves normally.
 
 - A warm C# runner no longer reports a correct untraced case as
   `client-timeout` ("C# execution timed out.") within milliseconds. The
