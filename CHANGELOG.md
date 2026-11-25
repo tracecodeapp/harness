@@ -34,6 +34,19 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   Other unmarked warnings, and any unmarked warning on a failed or limited
   case, are not.
 
+- **Judged answers have a product-owned output limit.** Judge sends a
+  judged-output policy with every ordinary prepare for JavaScript,
+  TypeScript, Java, C# and C++. The bounds are UTF-8 bytes of the answer's
+  compact JSON, entries in any one container, JSON values in the answer, and
+  the nesting of the language value. The defaults are 8 MiB, 250,000,
+  1,000,000 and 64 (C++ nesting 10,000). An answer over a bound, or one with
+  a cycle, is now that case's `limit` with reason `serialization-limit` and
+  no value, instead of a truncated or placeholder value. JavaScript and
+  TypeScript enforce it on the SES pool and on the disposable worker. Java,
+  C# and C++ adopt it in their own changes; until then they ignore it. Python
+  gets no policy and keeps its own ceilings. The policy can't be set from a
+  request, a binding or `execution.limits`.
+
 ### Changed
 
 - **Every Judge entry grades from the ordinary program.** `createJudge(...)`
@@ -64,6 +77,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   - **BREAKING (low-level):** `JudgeRuntimeInvocationInput.recordTrace` and
     its batch-case counterpart are removed. `evaluateJudgePlan` validates
     `tracing` but never asks a runtime to record.
+
+- **JavaScript and TypeScript judged answers are serialized completely or
+  refused** (learner-visible; no catalog answer changes):
+  - A shared child that isn't a cycle, such as `[row, row]` or
+    `new Array(3).fill([])`, is written at each occurrence. Before, the second
+    occurrence was the string `'<cycle>'`, so a correct answer failed.
+  - Nesting from 49 to 64 is written out. Before, anything past 48 became
+    `'<max depth>'`. A Set or Map counts as one level, as before.
+  - Nesting deeper than 64, a cycle through plain arrays, objects, sets or
+    maps, an answer over 8 MiB, more than 250,000 entries in one container,
+    or more than 1,000,000 values is now a `serialization-limit` with no
+    value. Before, it was a degraded value (a wrong answer), or for the size
+    bounds a completed one. An over-wide container is refused on its length
+    or size, before it is copied.
+  - A Set or Map whose built-in iterator can't be read (a proxy) is a
+    `serialization-limit`. Before, it was the string `'<unserializable Set>'`
+    or `'<unserializable Map>'`.
+  - Trace and observer serialization, direct (non-Judge) execution and
+    `'<accessor>'`/`'<function>'` members are unchanged.
 
 ### Fixed
 
@@ -166,6 +198,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   CPython. The trip is still recorded, so a fallback the learner returns is
   not the result, but a loop that catches the stop runs until the client's
   clock.
+- In JavaScript and TypeScript, a returned list or tree nested deeper than 64
+  is a `serialization-limit`. Before, it was silently cut at 48. Stated
+  constraints allow lists of up to 5,000 nodes in a learner's own Run input.
+  The policy's default for C++ is 10,000.
 
 ## [0.20.2] - 2026-11-17
 
