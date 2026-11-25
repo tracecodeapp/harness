@@ -23,11 +23,12 @@ namespace TraceCode.CSharpHost;
 public static partial class PreparedExecutionHost
 {
     private const int MaxInputDepth = 128;
+    private const int MaxOutputDepth = 64;
     private const int MaxInputCollectionItems = 200_000;
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
     private const long MaxArtifactBytes = 8L * 1024 * 1024;
-    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v2";
+    private const string ArtifactCacheSchema = "tracecode-csharp-compile-v3";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         PropertyNameCaseInsensitive = true,
@@ -170,10 +171,12 @@ public static partial class PreparedExecutionHost
                 {
                     // Converting the program's returned value runs its
                     // accessors and applies output limits to it: the program's.
-                    normalizedOutput = request.ObservationOnly ? null : NormalizeOutput(output);
+                    normalizedOutput = request.ObservationOnly
+                        ? null
+                        : NormalizeOutput(output, judged: !request.Trace);
                 }
                 catch (Exception error)
-                    when (error is not TraceClrProgramFailedException)
+                    when (error is not (TraceClrProgramFailedException or OutputDepthLimitException))
                 {
                     throw new TraceClrProgramFailedException(error);
                 }
@@ -230,6 +233,16 @@ public static partial class PreparedExecutionHost
                 capturedOut,
                 traceLimitExceeded: true,
                 timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (OutputDepthLimitException failure)
+        {
+            return SerializeError(
+                failure.Message,
+                stopwatch,
+                capturedOut,
+                timeoutReason: "serialization-limit",
                 timings: timings
             );
         }
@@ -379,13 +392,13 @@ public static partial class PreparedExecutionHost
             : null;
     }
 
-    private static object? NormalizeOutput(object? output)
+    private static object? NormalizeOutput(object? output, bool judged)
     {
         if (output is null) return null;
         object? normalized = NormalizeOutputValue(
             output,
             0,
-            new OutputReferenceTracker()
+            new OutputReferenceTracker(judged)
         );
         string json = JsonSerializer.Serialize(
             normalized,
@@ -423,7 +436,8 @@ public static partial class PreparedExecutionHost
         {
             return value;
         }
-        if (depth > 64) return "<max depth>";
+        references.CheckOutputDepth(depth);
+        if (depth > MaxOutputDepth) return "<max depth>";
 
         Type type = value.GetType();
         if (type.IsEnum) return value.ToString();
@@ -530,6 +544,7 @@ public static partial class PreparedExecutionHost
         OutputReferenceTracker references
     )
     {
+        references.CheckOutputDepth(depth);
         List<object?> values = new();
         int lower = array.GetLowerBound(dimension);
         int upper = array.GetUpperBound(dimension);
@@ -576,6 +591,7 @@ public static partial class PreparedExecutionHost
 
         Dictionary<string, object?> result = new();
         references.Track(value, type.Name, result);
+        if (BuiltinNodeOutput.IsBuiltin(type)) result["__type__"] = type.Name;
         foreach (
             FieldInfo field in OrderOutputMembers(
                 type.GetFields(BindingFlags.Public | BindingFlags.Instance)
@@ -598,6 +614,7 @@ public static partial class PreparedExecutionHost
             RuntimeTraceSink.CheckTimeout();
             if (
                 result.ContainsKey(property.Name) ||
+                BuiltinNodeOutput.IsAlias(property) ||
                 !property.CanRead ||
                 property.GetIndexParameters().Length > 0 ||
                 property.PropertyType.IsByRef ||
@@ -619,6 +636,7 @@ public static partial class PreparedExecutionHost
                     error.GetBaseException()
                         is TraceCodeTimeoutException
                             or TraceLimitExceededException
+                            or OutputDepthLimitException
                 )
             {
                 throw;
@@ -780,8 +798,16 @@ public static partial class PreparedExecutionHost
         }
     }
 
-    private sealed class OutputReferenceTracker
+    private sealed class OutputDepthLimitException()
+        : Exception($"C# judged output exceeds the maximum depth of {MaxOutputDepth}.");
+
+    private sealed class OutputReferenceTracker(bool judged)
     {
+        public void CheckOutputDepth(int depth)
+        {
+            if (judged && depth > MaxOutputDepth) throw new OutputDepthLimitException();
+        }
+
         private sealed class Entry
         {
             public Entry(

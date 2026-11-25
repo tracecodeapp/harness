@@ -16,10 +16,11 @@ import {
   createCSharpRuntimeClient,
   type CSharpPreparedWorkerAuthority,
 } from '../packages/runtime-csharp/src/csharp-runtime-client';
-import type {
-  CSharpPreparedProgramArtifact,
+import { encodeTraceClrWireResult } from '../packages/runtime-csharp/src/traceclr-wire';
+import {
   CSharpWorkerClient,
-  CSharpWorkerPrepareResult,
+  type CSharpPreparedProgramArtifact,
+  type CSharpWorkerPrepareResult,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
 
 class FakePreparedCSharpWorker {
@@ -906,4 +907,76 @@ test('C# refuses unsupported observer options at preparation without entering Ro
   }, undefined, { traceProfile: true });
   assert.deepEqual(result, { status: 'refused', reason: 'unsupported-option' });
   assert.equal(compiler.prepareCalls.length, 0);
+});
+
+
+test('a valid oversized TraceCLR collection is a case limit, and malformed replies are protocol errors', async () => {
+  const traceClrWireContract = {
+    parameters: [],
+    returnType: { wireType: 'array<int32>' },
+  };
+  function payload(length: number, items: number) {
+    const header = encodeTraceClrWireResult(traceClrWireContract, []);
+    const bytes = new Uint8Array(header.length + items * 4);
+    bytes.set(header);
+    new DataView(bytes.buffer).setInt32(4, length, true);
+    return bytes;
+  }
+
+  let outputBytes = payload(1_000_001, 1_000_001);
+  const client = new CSharpWorkerClient({
+    workerUrl: '/csharp.js',
+    assetBaseUrl: '/workers/vendor/csharp-runner',
+    runtimeRole: 'runner',
+    debug: false,
+    workerFactory() {
+      const worker = {
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null,
+        postMessage(message: { id: string; protocolToken: string; type: string }) {
+          queueMicrotask(() => worker.onmessage?.({
+            data: {
+              ...message,
+              payload: message.type === 'execute-prepared-code'
+                ? { success: true, outputBytes }
+                : { success: true, loadTimeMs: 0 },
+            },
+          } as MessageEvent));
+        },
+        terminate() {},
+      };
+      queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+      return worker;
+    },
+  });
+  const artifact: CSharpPreparedProgramArtifact = {
+    mode: 'code',
+    code: '',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    compiledArtifactKey: '0'.repeat(64),
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256: '0'.repeat(64),
+    preparedRunnerTier: 'algorithm-fast',
+    preparedRunnerReason: 'test',
+    traceClrWireContract,
+  };
+  const execute = () => client.executePreparedCode(artifact, { inputs: {} });
+  try {
+    const limited = await execute();
+    assert.equal(limited.kind, 'limit');
+    if (limited.kind === 'limit') assert.equal(limited.reason, 'serialization-limit');
+    assert.equal(Object.hasOwn(limited, 'output'), false);
+
+    for (const malformed of [payload(-2, 0), payload(1_000_001, 0), payload(1_000_001, 1_000_002)]) {
+      outputBytes = malformed;
+      await assert.rejects(execute, (error) => isRuntimeProviderError(error) && error.reason === 'protocol');
+    }
+    outputBytes = payload(2, 2);
+    const normal = await execute();
+    assert.equal(normal.kind, 'completed');
+    if (normal.kind === 'completed') assert.deepEqual(normal.output, [0, 0]);
+  } finally {
+    client.terminate();
+  }
 });

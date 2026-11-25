@@ -25,6 +25,7 @@ public static partial class CompilerHost
     private const string ProjectWorkspaceRoot = "/tmp/tracecode-csharp-project";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
     private const int MaxInputDepth = 128;
+    private const int MaxOutputDepth = 64;
     private const int MaxInputCollectionItems = 200_000;
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
@@ -33,7 +34,7 @@ public static partial class CompilerHost
     private const long ProjectMaxLiveFileChangeBytes = 4L * 1024 * 1024;
     private const int CompiledArtifactCacheMaxEntries = 24;
     private const long CompiledArtifactCacheMaxBytes = 8L * 1024 * 1024;
-    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v2";
+    private const string CompiledArtifactCacheSchema = "tracecode-csharp-compile-v3";
     private const string PreparedArtifactMetadataSchema =
         "tracecode-csharp-prepared-artifact-v1";
     private static readonly string[] DeniedUserApiText =
@@ -431,7 +432,7 @@ public static partial class CompilerHost
                     assemblyStream
                 );
                 object? output = InvokeDriver(userAssembly, inputsJson);
-                object? normalizedOutput = NormalizeOutput(output);
+                object? normalizedOutput = NormalizeOutput(output, judged: !request.Trace);
                 timings["runMs"] =
                     stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] =
@@ -486,6 +487,16 @@ public static partial class CompilerHost
                 capturedOut,
                 traceLimitExceeded: true,
                 timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (OutputDepthLimitException failure)
+        {
+            return SerializeError(
+                failure.Message,
+                stopwatch,
+                capturedOut,
+                timeoutReason: "serialization-limit",
                 timings: timings
             );
         }
@@ -640,7 +651,7 @@ public static partial class CompilerHost
                 using MemoryStream assemblyStream = new(peBytes, writable: false);
                 Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
                 object? output = InvokeDriver(userAssembly, inputsJson);
-                object? normalizedOutput = NormalizeOutput(output);
+                object? normalizedOutput = NormalizeOutput(output, judged: !request.Trace);
                 timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] = "collectible-assembly-load-context";
                 List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
@@ -691,6 +702,16 @@ public static partial class CompilerHost
                 capturedOut,
                 traceLimitExceeded: true,
                 timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (OutputDepthLimitException failure)
+        {
+            return SerializeError(
+                failure.Message,
+                stopwatch,
+                capturedOut,
+                timeoutReason: "serialization-limit",
                 timings: timings
             );
         }
@@ -1293,6 +1314,10 @@ public static partial class CompilerHost
             .WithAssemblyName("TraceCode.UserCode." + Guid.NewGuid().ToString("N"));
         RecordCompilePhase(timings, "compileCreateCompilationMs", phaseStopwatch);
         phaseStopwatch.Restart();
+        if (compilation.Assembly.GetTypeByMetadataName(BuiltinNodeOutput.MarkerTypeName) is not null)
+        {
+            throw new InvalidOperationException("C# user code declares a reserved built-in node marker.");
+        }
         ValidateUserSemanticPolicy(compilation, new[] { userTree });
         RecordCompilePhase(
             timings,
@@ -2055,6 +2080,10 @@ public static partial class CompilerHost
                 IEnumerable<ISymbol> symbols = symbolInfo.Symbol is null
                     ? symbolInfo.CandidateSymbols
                     : new[] { symbolInfo.Symbol };
+                if (symbols.Any(IsBuiltinNodeMarkerSymbol))
+                {
+                    throw new InvalidOperationException("C# user code references a reserved built-in node marker.");
+                }
                 if (symbols.Any(IsTrustedCompilerHostSymbol))
                 {
                     throw new InvalidOperationException(
@@ -2069,6 +2098,14 @@ public static partial class CompilerHost
                 }
             }
         }
+    }
+
+    private static bool IsBuiltinNodeMarkerSymbol(ISymbol symbol)
+    {
+        ISymbol target = symbol is IAliasSymbol alias ? alias.Target : symbol;
+        INamedTypeSymbol? type = target as INamedTypeSymbol ?? target.ContainingType;
+        return type?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat)
+            == "global::" + BuiltinNodeOutput.MarkerTypeName;
     }
 
     private static bool IsTrustedCompilerHostSymbol(ISymbol symbol)
@@ -5455,16 +5492,20 @@ namespace TraceCode.Internal
         if (!classNames.Contains("ListNode"))
         {
             builder.AppendLine("""
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class ListNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public ListNode? next;
 
     public ListNode(int val = 0, ListNode? next = null)
     {
         this.val = val;
-        this.value = val;
         this.next = next;
     }
 }
@@ -5474,17 +5515,21 @@ public class ListNode
         if (!classNames.Contains("TreeNode"))
         {
             builder.AppendLine("""
+[global::TraceCode.CSharpHost.BuiltinNodeAttribute]
 public class TreeNode
 {
     public int val;
-    public int value;
+    public int value
+    {
+        get => val;
+        set => val = value;
+    }
     public TreeNode? left;
     public TreeNode? right;
 
     public TreeNode(int val = 0, TreeNode? left = null, TreeNode? right = null)
     {
         this.val = val;
-        this.value = val;
         this.left = left;
         this.right = right;
     }
@@ -7751,7 +7796,7 @@ public class TreeNode
         return taskType.GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(result);
     }
 
-    private static object? NormalizeOutput(object? output)
+    private static object? NormalizeOutput(object? output, bool judged)
     {
         if (output is null)
         {
@@ -7761,7 +7806,7 @@ public class TreeNode
         object? normalized = NormalizeOutputValue(
             output,
             0,
-            new OutputReferenceTracker()
+            new OutputReferenceTracker(judged)
         );
         string json = JsonSerializer.Serialize(normalized, normalized?.GetType() ?? typeof(object), JsonOptions);
         return JsonSerializer.Deserialize<JsonElement>(json, JsonOptions);
@@ -7791,7 +7836,8 @@ public class TreeNode
             return value;
         }
 
-        if (depth > 64)
+        references.CheckOutputDepth(depth);
+        if (depth > MaxOutputDepth)
         {
             return "<max depth>";
         }
@@ -7873,6 +7919,7 @@ public class TreeNode
 
     private static object? NormalizeOutputArray(Array array, int dimension, int[] indices, int depth, OutputReferenceTracker references)
     {
+        references.CheckOutputDepth(depth);
         var values = new List<object?>();
         int lower = array.GetLowerBound(dimension);
         int upper = array.GetUpperBound(dimension);
@@ -7897,6 +7944,7 @@ public class TreeNode
 
         var result = new Dictionary<string, object?>();
         references.Track(value, type.Name, result);
+        if (BuiltinNodeOutput.IsBuiltin(type)) result["__type__"] = type.Name;
         AddOutputFieldMembers(result, value, type, depth, references);
         AddOutputPropertyMembers(result, value, type, depth, references);
         return result.Count > 0 ? result : value;
@@ -7929,6 +7977,7 @@ public class TreeNode
         {
             RuntimeTraceSink.CheckTimeout();
             if (result.ContainsKey(property.Name)
+                || BuiltinNodeOutput.IsAlias(property)
                 || !property.CanRead
                 || property.GetIndexParameters().Length > 0
                 || property.PropertyType.IsByRef
@@ -7941,7 +7990,8 @@ public class TreeNode
             {
                 result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, references);
             }
-            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException or TraceLimitExceededException)
+            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException
+                or TraceLimitExceededException or OutputDepthLimitException)
             {
                 throw;
             }
@@ -7952,8 +8002,16 @@ public class TreeNode
         }
     }
 
-    private sealed class OutputReferenceTracker
+    private sealed class OutputDepthLimitException()
+        : Exception($"C# judged output exceeds the maximum depth of {MaxOutputDepth}.");
+
+    private sealed class OutputReferenceTracker(bool judged)
     {
+        public void CheckOutputDepth(int depth)
+        {
+            if (judged && depth > MaxOutputDepth) throw new OutputDepthLimitException();
+        }
+
         private sealed class Entry
         {
             public Entry(string typeName, IDictionary<string, object?>? anchor)

@@ -9,6 +9,7 @@
  */
 
 import * as Effect from 'effect/Effect';
+import type { JudgedOutputLimit, JudgedOutputPolicy } from '../../runtime-contracts/src/judged-output-policy';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   withRuntimeTraceOptions,
@@ -73,6 +74,7 @@ import type { WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
 import {
   decodeTraceClrWireResult,
+  TraceClrCollectionLimitError,
   encodeTraceClrWireInputs,
   type TraceClrWireContractDescriptor,
 } from './traceclr-wire';
@@ -151,6 +153,36 @@ export interface CSharpDiagnostic {
 
 export type CSharpProjectCommandRequest = RuntimeProjectCommandRequest<'compile' | 'run'>;
 export type CSharpProjectCommandResult = RuntimeCommandResult;
+
+const judgedOutputEncoder = new TextEncoder();
+
+function judgedOutputLimit(output: unknown, policy: JudgedOutputPolicy): JudgedOutputLimit | undefined {
+  let nodes = 1;
+  // C# sends dictionaries as objects and sets as arrays. The transport adds
+  // no container levels to a language value's depth.
+  function walk(value: unknown, depth: number): JudgedOutputLimit | undefined {
+    if (value === null || typeof value !== 'object') return;
+    if (depth > policy.maxDepth) return 'depth';
+
+    const children = Array.isArray(value) ? value
+      : value instanceof Set ? [...value] : Object.values(value);
+    if (children.length > policy.maxItems) return 'item';
+    nodes += children.length;
+    if (nodes > policy.maxNodes) return 'node';
+    for (const child of children) {
+      const limit = walk(child, depth + 1);
+      if (limit) return limit;
+    }
+  }
+
+  if (nodes > policy.maxNodes) return 'node';
+  const limit = walk(output, 0);
+  if (limit) return limit;
+  const json = JSON.stringify(output, (_key, value) =>
+    value instanceof Set ? [...value] : value
+  );
+  if (judgedOutputEncoder.encode(json).byteLength > policy.maxBytes) return 'byte';
+}
 
 interface CSharpWorkerExecuteResult {
   success: boolean;
@@ -669,7 +701,8 @@ export class CSharpWorkerClient {
 
   async executePreparedCode(
     prepared: CSharpPreparedProgramArtifact,
-    call: RuntimePreparedCodeCall
+    call: RuntimePreparedCodeCall,
+    policy?: JudgedOutputPolicy
   ): Promise<CodeExecutionResult> {
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
@@ -721,16 +754,47 @@ export class CSharpWorkerClient {
       }
       if (prepared.preparedRunnerTier === 'algorithm-fast' && result.success) {
         if (!(result.outputBytes instanceof Uint8Array)) {
-          throw new TypeError(
-            'The algorithm-fast C# runner returned no binary output payload.'
+          throw new RuntimeProviderError(
+            'The algorithm-fast C# runner returned no binary output payload.',
+            { reason: 'protocol' }
           );
         }
-        result.output = decodeTraceClrWireResult(
-          prepared.traceClrWireContract!,
-          result.outputBytes
-        );
+        try {
+          result.output = decodeTraceClrWireResult(
+            prepared.traceClrWireContract!,
+            result.outputBytes,
+            { judged: prepared.mode === 'code' }
+          );
+        } catch (error) {
+          if (error instanceof TraceClrCollectionLimitError) {
+            return {
+              kind: 'limit',
+              reason: 'serialization-limit',
+              error: error.message,
+              consoleOutput: result.consoleOutput ?? [],
+              timings: result.timings,
+            };
+          }
+          throw new RuntimeProviderError('Invalid TraceCLR result payload.', {
+            reason: 'protocol',
+            cause: error,
+          });
+        }
       }
-      return this.toCodeExecutionResult(result);
+      const outcome = this.toCodeExecutionResult(result);
+      if (prepared.mode === 'code' && outcome.kind === 'completed' && policy) {
+        const limit = judgedOutputLimit(outcome.output, policy);
+        if (limit) {
+          return {
+            kind: 'limit',
+            reason: 'serialization-limit',
+            error: `The answer is larger than the judged-output ${limit} limit.`,
+            consoleOutput: outcome.consoleOutput,
+            timings: outcome.timings,
+          };
+        }
+      }
+      return outcome;
     });
   }
 

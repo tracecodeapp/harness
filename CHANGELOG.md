@@ -153,6 +153,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- C# judged answers preserve built-in `TreeNode` and `ListNode` shapes,
+  including shared references. On those nodes, `value` reads and writes `val`
+  and is omitted from the answer. Use the `val` field for `ref` or `out`.
+  Judged answers that exceed the byte, item, node or depth limit report
+  `serialization-limit` without a partial value.
+
 - JS/TS: clicking a case after a Run that drew nothing now draws it, instead
   of being refused after 30 s.
 - Ordinary Java batches report each finished case before the batch reply and distinguish client transport deadlines from worker loss when reporting an interrupted batch.

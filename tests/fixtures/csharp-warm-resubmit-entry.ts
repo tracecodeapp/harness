@@ -1,4 +1,5 @@
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
+import type { JudgedOutputPolicy } from '../../packages/runtime-contracts/src/judged-output-policy';
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
@@ -440,5 +441,294 @@ export async function assertCSharpObservationBoundary(
   } finally {
     Reflect.deleteProperty(window, bridge);
     globalThis.Worker = NativeWorker;
+  }
+}
+
+export async function probeCSharpJudgedOutputs(
+  workerUrl: string,
+  runnerAssetBaseUrl: string,
+  includePendingWriter: boolean
+) {
+  const { CSharpWorkerClient } = await import('../../packages/runtime-csharp/src/csharp-worker-client');
+  const { createCSharpRuntimeClient } = await import('../../packages/runtime-csharp/src/csharp-runtime-client');
+  const compiler = new CSharpWorkerClient({
+    workerUrl, runtimeRole: 'compiler', assetBaseUrl: '/workers/vendor/csharp',
+  });
+  const runtime = createCSharpRuntimeClient(compiler, {
+    compiler,
+    batchConcurrency: 1,
+    warmup: () => compiler.init(),
+    createRunner: () => new CSharpWorkerClient({
+      workerUrl, runtimeRole: 'runner', assetBaseUrl: runnerAssetBaseUrl,
+    }),
+    releaseRunner() {},
+  });
+  const failures: string[] = [];
+  async function check(
+    name: string,
+    code: string,
+    inspect: (result: Awaited<ReturnType<
+      import('../../packages/runtime-contracts/src/runtime-calls').RuntimePreparedProgram['executeIsolated']
+    >>) => void,
+    inputs: Record<string, unknown> = {},
+    policy?: Partial<JudgedOutputPolicy>
+  ) {
+    const call = {
+      mode: 'code' as const,
+      code,
+      functionName: 'solve',
+      ...(policy === undefined ? {} : {
+        judgedOutputPolicy: { maxBytes: 8_388_608, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64, ...policy },
+      }),
+    };
+    const prepared = await runtime.prepareProgram(call);
+    if (prepared.kind !== 'prepared') {
+      failures.push(`${name} [prepare]: ${JSON.stringify(prepared)}`);
+      return;
+    }
+    const program = prepared.program;
+    try {
+      const result = await program.executeIsolated({ inputs });
+      const tier = program.capabilities.profile === 'fast' ? 'algorithm-fast' : program.capabilities.profile;
+      try {
+        inspect(result);
+        console.log(`${name} [${tier}]: pass`);
+      } catch (error) {
+        failures.push(`${name} [${tier}]: ${String(error)}`);
+      }
+    } catch (error) {
+      failures.push(`${name} [provider rejection]: ${String(error)}`);
+    } finally {
+      await program.dispose();
+    }
+  }
+
+  function equals(actual: unknown, expected: unknown): void {
+    const normalize = (value: unknown) => JSON.stringify(value, (_key, entry) =>
+      entry && typeof entry === 'object' && !Array.isArray(entry)
+        ? Object.fromEntries(Object.keys(entry).sort().map((key) => [key, entry[key]]))
+        : entry);
+    if (normalize(actual) !== normalize(expected)) {
+      throw new Error(`expected ${normalize(expected)}, received ${normalize(actual)}`);
+    }
+  }
+
+  function list(length: number): unknown {
+    let next: unknown = null;
+    for (let val = length; val >= 1; val--) next = { __type__: 'ListNode', val, next };
+    return next;
+  }
+
+  const boxCode = `public class Box {
+    public int n;
+    public Box next { get; set; }
+  }
+  public class Solution {
+    public Box solve(int length, bool cycle) {
+      var head = new Box { n = 0 };
+      var tail = head;
+      for (int n = 1; n < length; n++) {
+        tail.next = new Box { n = n };
+        tail = tail.next;
+      }
+      if (cycle) tail.next = head;
+      return head;
+    }
+  }`;
+
+  function boxes(length: number, end: unknown = null) {
+    let next = end;
+    for (let n = length - 1; n > 0; n--) next = { n, next };
+    return { n: 0, next };
+  }
+
+  try {
+    await check('G6 graph output', 'public class Solution { public TreeNode solve(TreeNode root) => root; }',
+      (result) => {
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        const root = result.output as { __id__: string; left: { __id__: string } };
+        if (!root.__id__ || !root.left.__id__ || root.__id__ === root.left.__id__) {
+          throw new Error('Expected distinct IDs for the root and shared child.');
+        }
+        equals(root, {
+          __type__: 'TreeNode', __id__: root.__id__, val: 1,
+          left: {
+            __type__: 'TreeNode', __id__: root.left.__id__, val: 2,
+            left: { __ref__: root.__id__ }, right: null,
+          },
+          right: { __ref__: root.left.__id__ },
+        });
+      }, { root: { __id__: 'r', val: 1, left: { __id__: 'c', val: 2, left: { __ref__: 'r' }, right: null }, right: { __ref__: 'c' } } });
+    await check('G6 deep list (20 nodes)',
+      'public class Solution { public ListNode solve(ListNode head) => head; }',
+      (result) => {
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        equals(result.output, list(20));
+      }, { head: list(20) });
+    for (const type of ['ListNode', 'TreeNode']) {
+      await check(`built-in ${type}.value and val stay in sync`,
+        `public class Solution {
+          public int[] solve() {
+            var node = new ${type}(1);
+            int initial = node.value;
+            node.value = 7;
+            int val = node.val;
+            node.val = 9;
+            return new[] { initial, val, node.value };
+          }
+        }`,
+        (result) => equals(result.kind === 'completed' ? result.output : result, [1, 7, 9]));
+    }
+    await check('built-in compatibility output uses the written value without the alias',
+      `public class Solution {
+        public object solve() {
+          var list = new ListNode(1);
+          var tree = new TreeNode(2);
+          list.value = 7;
+          tree.val = 9;
+          return new Dictionary<string, object> { ["value"] = tree.value, ["list"] = list, ["tree"] = tree };
+        }
+      }`,
+      (result) => equals(result.kind === 'completed' ? result.output : result, {
+        value: 9,
+        list: { __type__: 'ListNode', val: 7, next: null },
+        tree: { __type__: 'TreeNode', val: 9, left: null, right: null },
+      }));
+    await check('learner node field, property, and dictionary keep their own value',
+      `public class TreeNode {
+        public int val;
+        public int value = 7;
+        public TreeNode left;
+        public TreeNode right;
+        public TreeNode(int val) { this.val = val; }
+      }
+      public class ListNode {
+        public int val;
+        public int value { get; set; } = 8;
+        public ListNode next;
+        public ListNode(int val) { this.val = val; }
+      }
+      public class Solution {
+        public object solve() => new Dictionary<string, object> {
+          ["value"] = 3, ["tree"] = new TreeNode(1), ["list"] = new ListNode(2)
+        };
+      }`,
+      (result) => equals(result.kind === 'completed' ? result.output : result, {
+        value: 3,
+        tree: { val: 1, value: 7, left: null, right: null },
+        list: { val: 2, value: 8, next: null },
+      }));
+    await check('a learner TreeNode and prelude ListNode keep distinct output shapes',
+      `public class TreeNode {
+        public int val;
+        public int value = 7;
+        public TreeNode left;
+        public TreeNode right;
+        public TreeNode(int val) { this.val = val; }
+      }
+      public class Solution {
+        public object solve() {
+          var list = new ListNode(1);
+          list.value = 8;
+          return new object[] { new TreeNode(2), list };
+        }
+      }`,
+      (result) => equals(result.kind === 'completed' ? result.output : result, [
+        { val: 2, value: 7, left: null, right: null },
+        { __type__: 'ListNode', val: 8, next: null },
+      ]));
+    if (includePendingWriter) {
+      await check('G6 TraceCLR collection ceiling',
+        'public class Solution { public int[] solve(int n) { return new int[n]; } }',
+        (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
+        { n: 1_000_001 });
+    }
+    await check('learner exception with the writer limit text stays a program failure',
+      'public class Solution { public int[] solve(int n) { if (n == 0) throw new InvalidOperationException("Invalid TraceCLR collection length."); return new int[n]; } }',
+      (result) => {
+        equals(result.kind, 'failed');
+        if (result.kind === 'failed') equals(result.diagnosticStage, 'runtime');
+      }, { n: 0 });
+    for (const n of [64, 2_048, 400]) {
+      await check(`G6 judged UTF-8 cap (${n} characters)`,
+        "public class Solution { public string solve(int n) => new string(n == 400 ? '雪' : 'x', n); }",
+        (result) => {
+          if (n === 64) equals(result.kind === 'completed' ? result.output : result, 'x'.repeat(n));
+          else equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit');
+        }, { n }, { maxBytes: 1_024 });
+    }
+    const nestedArrays = 'public class Solution { public int[][] solve() => new[] { new[] { 1, 2 }, new[] { 3, 4 } }; }';
+    await check('judged items are per container and depth counts language containers', nestedArrays,
+      (result) => equals(result.kind === 'completed' ? result.output : result, [[1, 2], [3, 4]]),
+      {}, { maxItems: 2, maxNodes: 7, maxDepth: 1 });
+    for (const policy of [{ maxItems: 1 }, { maxNodes: 6 }, { maxDepth: 0 }]) {
+      await check(`judged nested arrays honor ${Object.keys(policy)[0]}`, nestedArrays,
+        (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'), {}, policy);
+    }
+    for (const length of [64, 65]) {
+      await check(`compatibility ${length}-node chain completes`, boxCode, (result) => {
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        equals(result.output, boxes(length));
+      }, { length, cycle: false });
+    }
+    await check('compatibility 64-node cycle emits a reference', boxCode, (result) => {
+      if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+      const root = result.output as { __id__?: string };
+      if (!root.__id__) throw new Error('Expected a reference ID for the root.');
+      equals(root, { ...boxes(64, { __ref__: root.__id__ }), __id__: root.__id__ });
+    }, { length: 64, cycle: true });
+    await check('compatibility 66-node chain hits the output depth limit', boxCode,
+      (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'),
+      { length: 66, cycle: false });
+
+    const general = new CSharpWorkerClient({
+      workerUrl, runtimeRole: 'general', assetBaseUrl: '/workers/vendor/csharp',
+    });
+    const depthCall = {
+      code: boxCode, functionName: 'solve', executionStyle: 'solution-method' as const,
+      inputs: { length: 66, cycle: false },
+    };
+    const generalChecks = [
+      ['general ordinary 66-node chain hits the output depth limit', async () => {
+        const result = await general.executeCode(depthCall);
+        equals(result.kind, 'limit');
+        if (result.kind === 'limit') equals(result.reason, 'serialization-limit');
+      }],
+      ['general prepared 66-node chain hits the output depth limit', async () => {
+        const prepared = await compiler.prepareProgram({ ...depthCall, mode: 'code' });
+        const { compiledArtifactKey, compiledArtifactBase64, compiledArtifactSha256,
+          preparedRunnerTier, preparedRunnerReason } = prepared;
+        if (!prepared.success || !compiledArtifactKey || !compiledArtifactBase64 || !compiledArtifactSha256 ||
+            preparedRunnerTier !== 'compatibility' || !preparedRunnerReason) {
+          throw new Error(`Expected a compatibility artifact, received ${prepared.error ?? preparedRunnerTier}.`);
+        }
+        const result = await general.executePreparedCode({
+          ...depthCall, mode: 'code', compiledArtifactKey, compiledArtifactBase64, compiledArtifactSha256,
+          preparedRunnerTier, preparedRunnerReason,
+        }, { inputs: depthCall.inputs });
+        equals(result.kind, 'limit');
+        if (result.kind === 'limit') equals(result.reason, 'serialization-limit');
+      }],
+      ['general traced 66-node chain keeps the depth sentinel', async () => {
+        const result = await general.executeWithTracing(depthCall);
+        if (result.kind !== 'completed') throw new Error(JSON.stringify(result));
+        equals(result.output, boxes(65, '<max depth>'));
+      }],
+    ] as const;
+    try {
+      for (const [name, inspect] of generalChecks) {
+        try {
+          await inspect();
+          console.log(`${name}: pass`);
+        } catch (error) {
+          failures.push(`${name}: ${String(error)}`);
+        }
+      }
+    } finally {
+      general.terminate();
+    }
+    return failures;
+  } finally {
+    compiler.terminate();
   }
 }
