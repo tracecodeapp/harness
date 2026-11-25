@@ -14,10 +14,12 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { setImmediate } from 'node:timers/promises';
 import {
   createPythonPreparedExecutionProvider,
   type PythonPreparedProgramArtifact,
 } from '../packages/runtime-python/src/index';
+import { InterruptedCodeBatchError } from '../packages/runtime-browser/src/worker-errors';
 import { PythonWorkerClient } from '../packages/runtime-python/src/python-worker-client';
 import * as Effect from 'effect/Effect';
 import {
@@ -42,7 +44,7 @@ const PER_CASE_MS = 1_000;
 // and scheduling slack on a loaded machine.
 const VERDICT_BOUND_MS = PER_CASE_MS + 2_000;
 
-function artifact(mode: 'code' | 'trace'): PythonPreparedProgramArtifact {
+function artifact(mode: 'code' | 'trace', tier: 'algorithm-fast' | 'judge-compatible'): PythonPreparedProgramArtifact {
   return {
     schemaVersion: 'tracecode.python.prepared-program.v4',
     fingerprint: { cacheTag: 'cpython-test', magicNumber: 'test', marshalVersion: 4 },
@@ -51,8 +53,8 @@ function artifact(mode: 'code' | 'trace'): PythonPreparedProgramArtifact {
     functionName: 'solve',
     executionStyle: 'function',
     traceOptions: {},
-    isolationProfile: { tier: 'algorithm-fast', reasons: [] },
-    algorithmFastBatchCode: 'algorithm-fast-artifact',
+    isolationProfile: { tier, reasons: [] },
+    ...(tier === 'algorithm-fast' ? { algorithmFastBatchCode: 'algorithm-fast-artifact' } : {}),
     userCode: 'user-artifact',
     executorCode: 'executor-artifact',
   };
@@ -68,6 +70,8 @@ interface WorkerLog {
   unwarmedBatchRequests?: number;
   singleCaseRequests?: number;
   deliveringInvalidProgress?: boolean;
+  entered?: number[];
+  sendLateFinish?: () => void;
 }
 
 /**
@@ -97,7 +101,13 @@ class StuckCaseWorker {
     private readonly log: WorkerLog,
     /** A case whose learner code takes the worker down (a crash, not a limit). */
     private readonly crashCase = -1,
-    private readonly stall?: Stall
+    private readonly stall?: Stall,
+    private readonly scenario?: {
+      readonly tier?: 'algorithm-fast' | 'judge-compatible';
+      readonly beforeFinish?: (value: number) => Promise<void>;
+      readonly beforeFirstCase?: () => Promise<void>;
+      readonly suffixFault?: 'startup-stall' | 'between-case-stall' | 'warmup' | 'invalid-envelope';
+    }
   ) {
     log.created += 1;
     queueMicrotask(() => this.emit({ type: 'worker-ready' }));
@@ -117,17 +127,23 @@ class StuckCaseWorker {
       this.initialized = true;
       return queueMicrotask(() => reply('init-result', { success: true, loadTimeMs: 0 }));
     }
-    if (type === 'warmup') return queueMicrotask(() => reply('warmup-result', { success: true, loadTimeMs: 0 }));
+    if (type === 'warmup') {
+      if (this.log.batchRequests.length > 0 && this.scenario?.suffixFault === 'warmup') {
+        return queueMicrotask(() => reply('error', { error: 'Suffix worker warmup failed' }));
+      }
+      return queueMicrotask(() => reply('warmup-result', { success: true, loadTimeMs: 0 }));
+    }
     if (type === 'prepare-program') {
       const mode = payload?.mode as 'code' | 'trace';
       return queueMicrotask(() =>
-        reply('prepare-result', { success: true, artifact: artifact(mode), mode, consoleOutput: [] })
+        reply('prepare-result', { success: true, artifact: artifact(mode, this.scenario?.tier ?? 'algorithm-fast'), mode, consoleOutput: [] })
       );
     }
     if (type === 'execute-prepared-program') {
       this.log.singleCaseRequests = (this.log.singleCaseRequests ?? 0) + 1;
       // One case per request: the provider's per-case recovery path.
       const value = (payload?.inputs as { value: number }).value;
+      this.log.entered?.push(value);
       if (value - 1 === this.crashCase) return queueMicrotask(() => this.crash());
       return void setTimeout(() =>
         reply('execute-result', { success: true, output: value, consoleOutput: [] }), 5);
@@ -146,6 +162,14 @@ class StuckCaseWorker {
           this.emit({ ...event, payload: forgedStart, protocolToken: 'wrong-token' });
           this.emit({ ...event, payload: forgedStart, id: 'stale-command' });
           this.emit({ ...event, payload: { index: Number(progress.index) + 1, phase: 'started' } });
+          this.emit({
+            ...event,
+            payload: {
+              index: Number(progress.index) + 1,
+              phase: 'finished',
+              result: { success: true, output: 'out of order', consoleOutput: [] },
+            },
+          });
           this.log.deliveringInvalidProgress = false;
           this.emit(event);
           this.log.deliveringInvalidProgress = true;
@@ -167,15 +191,30 @@ class StuckCaseWorker {
     const report = payload.reportCaseProgress === true;
     const stream = report;
     const results: Record<string, unknown>[] = [];
+    const suffixFault = this.log.batchRequests.length > 1 ? this.scenario?.suffixFault : undefined;
+    if (suffixFault === 'startup-stall') return;
+    if (suffixFault === 'invalid-envelope') return reply('execute-result', { results: [] });
+    if (this.scenario?.beforeFirstCase) await this.scenario.beforeFirstCase();
     if (this.stall?.kind === 'before-first-case') return; // trusted setup never ends
     for (let index = 0; index < inputBatch.length; index += 1) {
+      if (suffixFault === 'between-case-stall' && index === 1) return;
       if (this.stall?.kind === 'after-case' && index === this.stall.index + 1) return;
+      const { value } = inputBatch[index]!;
+      this.log.entered?.push(value);
       if (report) progress({ index, phase: 'started' });
-      if (index === this.runawayCase) return; // learner code never returns
+      if (index === this.runawayCase) {
+        // Let a test model a finish queued on the page at the same instant the
+        // clock goes off, before asynchronous worker teardown has settled.
+        this.log.sendLateFinish = () => progress({
+          index, phase: 'finished', result: { success: true, output: value, consoleOutput: [] },
+        });
+        return;
+      }
       if (index === this.crashCase) return this.crash();
       if (payload.stopAtFirstRunaway === true) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
+      if (this.scenario?.beforeFinish) await this.scenario.beforeFinish(value);
       if (this.terminated) return;
       const result = {
         success: true,
@@ -226,14 +265,15 @@ async function preparedProgram(
   runawayCase: number,
   log: WorkerLog,
   crashCase = -1,
-  stall?: Stall
+  stall?: Stall,
+  scenario?: ConstructorParameters<typeof StuckCaseWorker>[4]
 ) {
   const provider = createPythonPreparedExecutionProvider({
     createWorkerClient: () =>
       new PythonWorkerClient({
         workerUrl: 'python-worker.js',
         debug: false,
-        workerFactory: () => new StuckCaseWorker(runawayCase, log, crashCase, stall) as never,
+        workerFactory: () => new StuckCaseWorker(runawayCase, log, crashCase, stall, scenario) as never,
       }),
   });
   const preparation = await provider.prepareProgram({
@@ -310,7 +350,7 @@ for (const mode of ['code', 'trace'] as const) {
   }
 }
 
-test('Python non-stopping batch keeps one request and its whole-batch results', async () => {
+test('Python non-stopping batch streams every result in one healthy request', async () => {
   const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
   const { provider, program } = await preparedProgram('code', -1, log);
   const results = await program.executeBatchIsolated!({
@@ -320,7 +360,7 @@ test('Python non-stopping batch keeps one request and its whole-batch results', 
   assert.equal(results.length, CASES);
   assert.ok(results.every((result, index) => result.kind === 'completed' && result.output === index + 1));
   assert.equal(log.batchRequests.length, 1);
-  assert.equal(log.batchRequests[0]!.reportCaseProgress, undefined, 'Submit does not ask for case progress');
+  assert.equal(log.batchRequests[0]!.reportCaseProgress, true, 'Submit needs progress even without a caller callback');
   await program.dispose();
   provider.terminate();
 });
@@ -348,6 +388,259 @@ test('Python non-stopping code batch acknowledges each case once on the matching
   }
 });
 
+// The old aggregate-timeout assertion expected a fabricated limit on every
+// row. Drive the real client clock and require only the running case to time out.
+for (const tier of ['algorithm-fast', 'judge-compatible'] as const) {
+  test(`Python ${tier} non-stopping batch times out only B and resumes C on a fresh worker`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { ...newLog(), entered: [] as number[] };
+    const { provider, program } = await preparedProgram('code', 1, log, -1, undefined, { tier });
+    const starts: number[] = [];
+    try {
+      assert.equal(program.mode, 'code');
+      const execution = program.executeBatchIsolated!({
+        inputBatch: [11, 0, 33].map((value) => ({ value })),
+        limits: { wallClockMs: 100 },
+        onCaseStarted: (index: number) => starts.push(index),
+      } as never) as Promise<readonly (CodeExecutionResult | ExecutionResult)[]>;
+      void execution.catch(() => undefined);
+      await setImmediate();
+      assert.deepEqual(starts, [0, 1]);
+      context.mock.timers.tick(1_100);
+      await setImmediate();
+      // Let the old whole-batch watchdog settle as well, to capture its
+      // incorrect outcome instead of leaving an unresolved test.
+      if (log.batchRequests.length === 1) context.mock.timers.tick(6_000);
+      const outcomes = await execution;
+      assert.deepEqual(outcomes.map((row) => row.kind === 'completed' ? row.output
+        : row.kind === 'limit' ? row.reason : row.kind), [11, 'client-timeout', 33]);
+      assert.deepEqual(starts, [0, 1, 2]);
+      assert.deepEqual(log.entered, [11, 0, 33]);
+      assert.equal(log.singleCaseRequests ?? 0, 0, 'A timeout never triggers compatibility execution');
+      assert.deepEqual(log.batchRequests.map((request) => request.inputBatch), [
+        [{ value: 11 }, { value: 0 }, { value: 33 }],
+        [{ value: 33 }],
+      ]);
+      assert.equal(log.batchWorkerTerminated[0]?.(), true);
+      assert.equal(log.unwarmedBatchRequests, 0);
+      assert.ok(log.batchRequests.every((request) =>
+        (request.artifact as PythonPreparedProgramArtifact).isolationProfile.tier === tier &&
+        (request.limits as { wallClockMs: number }).wallClockMs === 100
+      ));
+    } finally {
+      await program.dispose();
+      provider.terminate();
+    }
+  });
+}
+
+for (const suffixFault of ['startup-stall', 'between-case-stall', 'warmup', 'invalid-envelope'] as const) {
+  test(`Python preserves its timeout prefix when the resumed suffix has a ${suffixFault}`, async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const log = { ...newLog(), entered: [] as number[] };
+    const { provider, program } = await preparedProgram('code', 1, log, -1, undefined, { suffixFault });
+    const finishes: number[] = [];
+    try {
+      assert.equal(program.mode, 'code');
+      const call = {
+        inputBatch: (suffixFault === 'between-case-stall' ? [11, 0, 33, 44] : [11, 0, 33]).map((value) => ({ value })),
+        limits: { wallClockMs: 100 },
+        onCaseFinished: (index: number) => finishes.push(index),
+      };
+      const execution = program.executeBatchIsolated!(call);
+      void execution.catch(() => undefined);
+      await setImmediate();
+      assert.deepEqual(log.entered, [11, 0]);
+      context.mock.timers.tick(1_100);
+      await setImmediate();
+      context.mock.timers.tick(6_000);
+      await assert.rejects(execution, (error: unknown) => {
+        assert.ok(error instanceof InterruptedCodeBatchError, String(error));
+        const expected = suffixFault === 'between-case-stall' ? [11, 'client-timeout', 33] : [11, 'client-timeout'];
+        assert.deepEqual(error.prefix.map((row) => row.kind === 'completed' ? row.output
+          : row.kind === 'limit' ? row.reason : row.kind), expected);
+        assert.ok(error.cause instanceof Error);
+        assert.match(error.cause.message, {
+          'startup-stall': /first case in time/,
+          'between-case-stall': /did not start case 2/,
+          warmup: /Suffix worker warmup failed/,
+          'invalid-envelope': /invalid result envelope/,
+        }[suffixFault]);
+        return true;
+      });
+      assert.deepEqual(finishes, suffixFault === 'between-case-stall' ? [0, 2] : [0]);
+    } finally {
+      await program.dispose();
+      provider.terminate();
+    }
+  });
+}
+
+test('Python non-stopping batch preserves accepted finishes when setup between cases stalls', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const log = newLog();
+  const { provider, program } = await preparedProgram('code', -1, log, -1, { kind: 'after-case', index: 0 });
+  const finishes: number[] = [];
+  try {
+    assert.equal(program.mode, 'code');
+    const call = {
+      inputBatch: [11, 22, 33].map((value) => ({ value })),
+      limits: { wallClockMs: 100 },
+      onCaseFinished: (index: number) => finishes.push(index),
+    };
+    const execution = program.executeBatchIsolated!(call);
+    void execution.catch(() => undefined);
+    await setImmediate();
+    assert.deepEqual(finishes, [0]);
+    context.mock.timers.tick(5_000);
+    await assert.rejects(execution, (error: unknown) => {
+      assert.ok(error instanceof InterruptedCodeBatchError, String(error));
+      assert.deepEqual(error.prefix.map((row) => row.kind === 'completed' && row.output), [11]);
+      assert.match(error.message, /did not start case 2/);
+      return true;
+    });
+    assert.equal(log.batchRequests.length, 1);
+    assert.equal(log.batchWorkerTerminated[0]?.(), true);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
+});
+
+test('Python allows a large batch to finish trusted setup before arming the first case clock', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const log = newLog();
+  const { promise: setup, resolve: finishSetup } = Promise.withResolvers<void>();
+  const { provider, program } = await preparedProgram('code', -1, log, -1, undefined, {
+    beforeFirstCase: () => setup,
+  });
+  try {
+    assert.equal(program.mode, 'code');
+    const values = Array.from({ length: 16_384 }, (_, index) => index);
+    const inputBatch = Array.from({ length: 16 }, (_, value) => ({ value, values }));
+    const execution = program.executeBatchIsolated!({ inputBatch, limits: { wallClockMs: 1_000 } });
+    void execution.catch(() => undefined);
+    await setImmediate();
+    assert.equal(log.batchRequests.length, 1);
+    context.mock.timers.tick(8_000);
+    await setImmediate();
+    finishSetup();
+    const results = await execution;
+    assert.deepEqual(results.map((row) => row.kind === 'completed' && row.output), inputBatch.map(({ value }) => value));
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
+});
+
+test('Python non-stopping batch gives every case the default clock', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const log = { ...newLog(), entered: [] as number[] };
+  const { provider, program } = await preparedProgram('code', -1, log, -1, undefined, {
+    async beforeFinish() {
+      context.mock.timers.tick(11_000);
+      await setImmediate();
+    },
+  });
+  try {
+    assert.equal(program.mode, 'code');
+    const results = await program.executeBatchIsolated!({
+      inputBatch: [11, 22, 33].map((value) => ({ value })),
+    });
+    assert.deepEqual(results.map((row) => row.kind === 'completed' ? row.output : row.kind), [11, 22, 33]);
+    assert.deepEqual(log.entered, [11, 22, 33]);
+    assert.equal(log.batchRequests.length, 1);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
+});
+
+for (const cut of ['after first start', 'after first finish'] as const) {
+  test(`Python direct batch caller sees worker loss ${cut} without replay`, async () => {
+    const log = { ...newLog(), entered: [] as number[] };
+    const { provider, program } = await preparedProgram(
+      'code', -1, log, cut === 'after first start' ? 0 : -1,
+      cut === 'after first finish' ? { kind: 'crash-after-case', index: 0 } : undefined
+    );
+    try {
+      assert.equal(program.mode, 'code');
+      await assert.rejects(
+        program.executeBatchIsolated!({ inputBatch: [11, 0, 33].map((value) => ({ value })) }),
+        (error: unknown) => {
+          assert.ok(error instanceof InterruptedCodeBatchError);
+          const expected = cut === 'after first finish' ? [11] : [];
+          assert.deepEqual(error.prefix.map((row) => row.kind === 'completed' && row.output), expected);
+          return true;
+        }
+      );
+      assert.deepEqual(log.entered, [11]);
+      assert.equal(log.singleCaseRequests ?? 0, 0);
+    } finally {
+      await program.dispose();
+      provider.terminate();
+    }
+  });
+}
+
+for (const stopAtFirstRunaway of [false, true]) {
+  test(`Python ordinary batch forwards authenticated finishes in order (stop=${stopAtFirstRunaway})`, async () => {
+    const log = newLog();
+    const { provider, program } = await preparedProgram('code', -1, log);
+    const events: Array<[string, number, unknown?]> = [];
+    try {
+      assert.equal(program.mode, 'code');
+      const call = {
+        inputBatch: [11, 22, 33].map((value) => ({ value })),
+        stopAtFirstRunaway,
+        onCaseStarted: (index: number) => events.push(['start', index]),
+        onCaseFinished: (index: number, row: CodeExecutionResult) => {
+          assert.equal(row.kind, 'completed');
+          events.push(['finish', index, row.output]);
+        },
+      };
+      await program.executeBatchIsolated!(call);
+      assert.deepEqual(events, [
+        ['start', 0], ['finish', 0, 11], ['start', 1], ['finish', 1, 22], ['start', 2], ['finish', 2, 33],
+      ]);
+    } finally {
+      await program.dispose();
+      provider.terminate();
+    }
+  });
+}
+
+test('Python ordinary batch never forwards a finish after its case clock expired', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const log = newLog();
+  const { provider, program } = await preparedProgram('code', 1, log);
+  const events: Array<[string, number]> = [];
+  try {
+    assert.equal(program.mode, 'code');
+    const call = {
+      inputBatch: [11, 0, 33].map((value) => ({ value })),
+      limits: { wallClockMs: 100 },
+      onCaseStarted: (index: number) => events.push(['start', index]),
+      onCaseFinished: (index: number, _row: CodeExecutionResult) => events.push(['finish', index]),
+    };
+    const execution = program.executeBatchIsolated!(call);
+    void execution.catch(() => undefined);
+    await setImmediate();
+    assert.equal(typeof log.sendLateFinish, 'function');
+    context.mock.timers.tick(1_100);
+    log.sendLateFinish?.();
+    await setImmediate();
+    if (log.batchRequests.length === 1) context.mock.timers.tick(6_000);
+    await execution;
+    assert.deepEqual(events, [
+      ['start', 0], ['finish', 0], ['start', 1], ['start', 2], ['finish', 2],
+    ]);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
+});
+
 test('Python stopping batch whose cases all finish returns every streamed result', async () => {
   for (const mode of ['code', 'trace'] as const) {
     const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
@@ -366,26 +659,28 @@ test('Python stopping batch whose cases all finish returns every streamed result
   }
 });
 
-test('Python stopping batch whose worker is lost mid-batch is a provider failure, not a time limit', async () => {
-  const log: WorkerLog = { created: 0, terminated: 0, batchRequests: [], batchWorkerTerminated: [] };
+test('Python stopping batch preserves its prefix after worker loss without replay', async () => {
+  const log = { ...newLog(), entered: [] as number[] };
   const { provider, program } = await preparedProgram('code', -1, log, 2);
-  // The cases re-run once, each in a fresh worker; the worker running case 3
-  // is lost again. A lost worker is the provider's failure (the learner's own
-  // failures come back from the worker as classified replies), and never a
-  // time limit on the case that was running.
-  await assert.rejects(
-    program.executeBatchIsolated!({
-      inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
-      limits: { wallClockMs: PER_CASE_MS },
-      stopAtFirstRunaway: true,
-    } as never),
-    (error: Error) => {
-      assert.equal((error as { _tag?: unknown })._tag, 'WorkerCrashedError', `${error.name}: ${error.message}`);
-      return true;
-    }
-  );
-  await program.dispose();
-  provider.terminate();
+  try {
+    await assert.rejects(
+      program.executeBatchIsolated!({
+        inputBatch: Array.from({ length: CASES }, (_, index) => ({ value: index + 1 })),
+        limits: { wallClockMs: PER_CASE_MS },
+        stopAtFirstRunaway: true,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof InterruptedCodeBatchError);
+        assert.deepEqual(error.prefix.map((row) => row.kind === 'completed' && row.output), [1, 2]);
+        return true;
+      }
+    );
+    assert.deepEqual(log.entered, [1, 2, 3]);
+    assert.equal(log.singleCaseRequests ?? 0, 0);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
   assert.equal(log.terminated, log.created, 'Every worker is terminated');
 });
 

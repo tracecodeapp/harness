@@ -41,6 +41,7 @@ type PythonRawCodeBatchResult = RawExecutionBatchPayload & {
   algorithmFastBatchUnavailable?: boolean;
   algorithmFastBatchFailureClass?: 'capability-fallback' | 'driver-failure';
   resultsStreamed?: unknown;
+  startedCaseIndexes?: unknown;
 };
 
 export class PythonAlgorithmFastBatchUnavailableError extends Error {
@@ -203,34 +204,16 @@ export type PythonProjectCommandResult = RuntimeCommandResult;
 const EXECUTION_TIMEOUT_MS = 30000;
 const PROJECT_EXECUTION_TIMEOUT_MS = 30000;
 const MAX_WORKER_DEADLINE_MS = 2_147_483_647;
-const BATCH_DRIVER_BASE_HEADROOM_MS = 5_000;
-const BATCH_DRIVER_PER_CASE_HEADROOM_MS = 100;
-const BATCH_DRIVER_MAX_HEADROOM_MS = 30_000;
-/**
- * A stopping batch's per-case client clock runs this much past the case's own
- * limit, so the worker's in-process deadline (same limit, started a moment
- * earlier) names the limit precisely whenever it can, and the client clock
- * only catches what the worker cannot interrupt.
- */
+const CODE_BATCH_MIN_SERVICE_CLOCK_MS = 5_000;
+const CODE_BATCH_STARTUP_HEADROOM_PER_CASE_MS = 100;
+const CODE_BATCH_MAX_STARTUP_HEADROOM_MS = 30_000;
+// Allow the guest guard to report its own limit before killing the worker.
 const STOPPING_BATCH_CASE_HEADROOM_MS = 1_000;
 
-export function calculatePythonCodeBatchDeadlineMs(
-  caseCount: number,
-  perCaseWallClockMs?: number
-): number {
-  if (perCaseWallClockMs === undefined) return EXECUTION_TIMEOUT_MS;
-  const normalizedCaseCount = Math.max(1, Math.floor(caseCount));
-  const normalizedPerCaseMs = Math.max(1, perCaseWallClockMs);
-  const driverHeadroomMs = Math.min(
-    BATCH_DRIVER_MAX_HEADROOM_MS,
-    BATCH_DRIVER_BASE_HEADROOM_MS +
-      BATCH_DRIVER_PER_CASE_HEADROOM_MS * normalizedCaseCount
-  );
-  return Math.min(
-    MAX_WORKER_DEADLINE_MS,
-    normalizedPerCaseMs * normalizedCaseCount + driverHeadroomMs
-  );
-}
+type PythonPreparedCodeBatchResult = CodeExecutionBatchResult & {
+  /** The last result is a local timeout and the worker has been retired. */
+  readonly caseTimedOut?: true;
+};
 
 // Tracing timeout - longer because Python heuristic detection handles infinite loops
 // This is just a safety net for truly stuck executions
@@ -255,7 +238,7 @@ type StoppingBatchOutcome<R> =
 
 /**
  * Follows authenticated `batch-case-progress` messages. Each case can
- * start and finish once, in order. Stopping batches also reset the per-case
+ * start and finish once, in order. The client resets the per-case
  * watchdog when progress advances.
  */
 class BatchCaseProgress {
@@ -264,6 +247,10 @@ class BatchCaseProgress {
   invalid: Error | undefined;
 
   constructor(private readonly caseCount: number) {}
+
+  get started(): boolean {
+    return this.running !== undefined || this.finished.length > 0;
+  }
 
   /** True when the message advanced the batch (and so restarts the clock). */
   accept(message: unknown): boolean {
@@ -318,14 +305,9 @@ function restoreStreamedBatchReply<R extends { results?: unknown[]; resultsStrea
 }
 
 function interruptedCodeBatch(
-  error: unknown,
+  error: Error,
   progress: BatchCaseProgress,
-  signal?: AbortSignal
-): InterruptedCodeBatchError | undefined {
-  if (!(error instanceof WorkerCrashedError) || signal?.aborted
-    || progress.invalid || progress.finished.length === 0) {
-    return undefined;
-  }
+): InterruptedCodeBatchError {
   return new InterruptedCodeBatchError(progress.finished.map((entry) =>
     liftCodeOutcome(entry as RawExecutionPayload, 'Prepared Python batch execution failed')
   ), error);
@@ -749,6 +731,7 @@ export class PythonWorkerClient {
       readonly limits?: RuntimeExecutionLimits;
       readonly stopAtFirstRunaway?: boolean;
       readonly onCaseStarted?: (index: number) => void;
+      readonly onCaseFinished?: (index: number, result: CodeExecutionResult) => void;
       /**
        * A stopping batch's every case has finished and only its reply is
        * left. Work posted to this client now runs after the batch, because
@@ -756,13 +739,21 @@ export class PythonWorkerClient {
        */
       readonly onCasesFinished?: (results: readonly unknown[]) => void;
     }
-  ): Promise<CodeExecutionBatchResult> {
-    const perCaseWallClockMs =
-      call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
-    const wallClockMs = calculatePythonCodeBatchDeadlineMs(
-      call.inputBatch.length,
-      call.limits?.wallClockMs
-    );
+  ): Promise<PythonPreparedCodeBatchResult> {
+    const perCaseWallClockMs = call.limits?.wallClockMs ?? EXECUTION_TIMEOUT_MS;
+    const serviceClockMs = Math.min(MAX_WORKER_DEADLINE_MS, Math.max(
+      CODE_BATCH_MIN_SERVICE_CLOCK_MS,
+      perCaseWallClockMs + STOPPING_BATCH_CASE_HEADROOM_MS
+    ));
+    // Trusted setup can materialize every input before the first case starts.
+    const caseCount = Math.max(1, call.inputBatch.length);
+    const startupDeadlineMs = Math.min(MAX_WORKER_DEADLINE_MS, Math.max(
+      serviceClockMs,
+      perCaseWallClockMs * caseCount + Math.min(
+        CODE_BATCH_MAX_STARTUP_HEADROOM_MS,
+        CODE_BATCH_MIN_SERVICE_CLOCK_MS + CODE_BATCH_STARTUP_HEADROOM_PER_CASE_MS * caseCount
+      )
+    ));
     const guestLimits = pickGuestLimits({
       ...call.limits,
       wallClockMs: perCaseWallClockMs,
@@ -773,67 +764,42 @@ export class PythonWorkerClient {
       inputBatch: call.inputBatch,
       ...(guestLimits ? { limits: guestLimits } : {}),
     };
-    let result: PythonRawCodeBatchResult;
-    if (call.stopAtFirstRunaway === true) {
-      const outcome = await this.executeStoppingBatch<PythonRawCodeBatchResult>(
-        request,
-        call.inputBatch.length,
-        perCaseWallClockMs,
-        wallClockMs,
-        call.signal,
-        call.onCaseStarted,
-        call.onCasesFinished
-      );
-      if (outcome.kind === 'case-timeout') {
-        return liftCodeBatchOutcome(
-          {
-            results: [
-              ...(outcome.finished as RawExecutionPayload[]),
-              {
-                success: false,
-                error: outcome.error.message,
-                consoleOutput: [],
-                executionTimeMs: perCaseWallClockMs,
-                timeoutReason: 'client-timeout',
-              },
-            ],
-          },
-          'Prepared Python batch execution failed'
-        );
-      }
-      result = outcome.reply;
-    } else {
-      const progress = new BatchCaseProgress(call.inputBatch.length);
-      const onCaseStarted = call.onCaseStarted;
-      let commandId: string | undefined;
-      const send = this.core.sendMessageEffectWithOptions<PythonRawCodeBatchResult>(
-        'execute-prepared-program-batch',
-        { ...request, ...(onCaseStarted ? { reportCaseProgress: true } : {}) },
-        {
-          timeoutMs: null,
-          onRequestRegistered: (id) => {
-            if (!onCaseStarted) return;
-            commandId = id;
-            this.batchProgress.set(id, (message) => {
-              if (progress.accept(message) && progress.running !== undefined) {
-                onCaseStarted(progress.running);
-              }
-            });
-          },
-        }
-      );
-      const program = this.core.withExecutionDeadline(send, wallClockMs).pipe(
-        Effect.ensuring(Effect.sync(() => {
-          if (commandId !== undefined) this.batchProgress.delete(commandId);
-        }))
-      );
-      try {
-        result = restoreStreamedBatchReply(await this.core.runClientEffect(program, call.signal), progress);
-      } catch (error) {
-        throw interruptedCodeBatch(error, progress, call.signal) ?? error;
-      }
+    const outcome = await this.executeStoppingBatch<PythonRawCodeBatchResult>(
+      request,
+      call.inputBatch.length,
+      perCaseWallClockMs,
+      startupDeadlineMs,
+      call.signal,
+      call.onCaseStarted,
+      call.onCasesFinished,
+      call.stopAtFirstRunaway === true,
+      call.onCaseFinished,
+      serviceClockMs
+    );
+    if (outcome.kind === 'case-timeout') {
+      return {
+        ...liftCodeBatchOutcome({
+          results: [
+            ...(outcome.finished as RawExecutionPayload[]),
+            {
+              success: false,
+              error: outcome.error.message,
+              consoleOutput: [],
+              executionTimeMs: perCaseWallClockMs,
+              timeoutReason: 'client-timeout',
+            },
+          ],
+        }, 'Prepared Python batch execution failed'),
+        caseTimedOut: true,
+      };
     }
+    const { reply: result } = outcome;
     if (result.algorithmFastBatchUnavailable === true) {
+      // Only a rejected admission can be retried. The worker also attests
+      // its starts in the terminal envelope in case progress was lost.
+      if (Array.isArray(result.startedCaseIndexes) && result.startedCaseIndexes.length > 0) {
+        throw new RuntimeProviderError('The Python batch driver failed after a case started.');
+      }
       const unexpected =
         result.algorithmFastBatchFailureClass !== 'capability-fallback';
       logRuntimeDiagnostic(unexpected ? 'error' : 'debug', {
@@ -851,9 +817,6 @@ export class PythonWorkerClient {
       }, { enabled: unexpected || this.debug });
       throw new PythonAlgorithmFastBatchUnavailableError();
     }
-    // The aggregate watchdog is the batch's caller-visible deadline, not an
-    // isolation-admission failure. Let it surface instead of silently granting
-    // a second full budget to the hard-isolated path.
     return liftCodeBatchOutcome(
       result,
       'Prepared Python batch execution failed'
@@ -1017,30 +980,10 @@ export class PythonWorkerClient {
   }
 
   /**
-   * A stopping batch (Run) under a per-case clock instead of one clock for the
-   * whole batch. The worker reports each case as it starts and finishes; each
-   * report restarts the clock at the case's limit plus headroom. Until the
-   * first case starts (runtime and artifact setup, before any learner code)
-   * the whole-batch deadline applies, as it does for a worker that does not
-   * report progress.
-   *
-   * When a case outlives its clock the worker is terminated (nothing inside it
-   * can interrupt learner code) and the outcome is the finished prefix plus
-   * the case that was running: no second clock and no re-run.
-   *
-   * A time limit is the learner's only for a case that started and never
-   * finished. When the clock expires with no case running (trusted setup
-   * before the first case, or between cases, such as the next trace chunk's
-   * setup), no learner code was running: unless the batch was already over,
-   * the worker is terminated and the call rejects with RuntimeProviderError.
-   * That includes a worker that never reports progress at all; the client and
-   * worker ship together, so such a worker is a provider failure, and
-   * blaming case 1 would hand the learner a time limit no code of theirs hit.
-   *
-   * Every result already reached the client as progress, so the worker's
-   * final reply carries `resultsStreamed` instead of `results`; a reply that
-   * still carries `results` (a worker double, or a reply the worker could not
-   * stream, such as a fast-batch fallback) is used as is.
+   * Stream case progress and restart the execution clock on each valid start.
+   * For code batches, a separate service interval bounds setup and the gaps
+   * between cases. Only a clock that expires during a case yields a learner
+   * timeout. The caller can resume the untouched suffix on a fresh worker.
    */
   private async executeStoppingBatch<R extends { results?: unknown[]; resultsStreamed?: unknown }>(
     request: Record<string, unknown>,
@@ -1049,49 +992,81 @@ export class PythonWorkerClient {
     startupDeadlineMs: number,
     signal: AbortSignal | undefined,
     onCaseStarted?: (index: number) => void,
-    onCasesFinished?: (results: readonly unknown[]) => void
+    onCasesFinished?: (results: readonly unknown[]) => void,
+    stopAtFirstRunaway = true,
+    onCaseFinished?: (index: number, result: CodeExecutionResult) => void,
+    serviceDeadlineMs = startupDeadlineMs
   ): Promise<StoppingBatchOutcome<R>> {
+    const ordinary = request.mode === 'code';
     const progress = new BatchCaseProgress(caseCount);
+    const batchFinished = () => progress.finished.length === caseCount ||
+      (stopAtFirstRunaway && progress.stoppedAtLimit());
     const caseClockMs = Math.min(
       MAX_WORKER_DEADLINE_MS,
       perCaseWallClockMs + STOPPING_BATCH_CASE_HEADROOM_MS
     );
     let commandId: string | undefined;
+    let expired: ExecutionTimeoutError | undefined;
     let restartClock: () => void = () => undefined;
     const clock = Effect.async<never, ExecutionTimeoutError>((resume) => {
-      // The error names the limit the learner set (or the batch deadline
-      // before any case started), not the headroom on top of it.
-      let limitMs = startupDeadlineMs;
-      const expire = () =>
-        resume(Effect.fail(new ExecutionTimeoutError({
+      const expire = () => {
+        const error = new ExecutionTimeoutError({
           timeoutMs: limitMs,
           runtimeLabel: this.core.executionTimeoutLabel,
-        })));
+        });
+        // Freeze progress in this task, before the Effect race has settled.
+        expired = error;
+        resume(Effect.fail(error));
+      };
+      let limitMs = startupDeadlineMs;
       let timer = setTimeout(expire, startupDeadlineMs);
       restartClock = () => {
         clearTimeout(timer);
-        limitMs = perCaseWallClockMs;
-        timer = setTimeout(expire, caseClockMs);
+        const waitingForService = ordinary && !stopAtFirstRunaway && progress.running === undefined;
+        limitMs = waitingForService ? serviceDeadlineMs : perCaseWallClockMs;
+        timer = setTimeout(expire, waitingForService ? serviceDeadlineMs : caseClockMs);
       };
       return Effect.sync(() => clearTimeout(timer));
     });
     const reply = this.core.sendMessageEffectWithOptions<R>(
       'execute-prepared-program-batch',
-      { ...request, stopAtFirstRunaway: true, reportCaseProgress: true },
+      { ...request, ...(stopAtFirstRunaway ? { stopAtFirstRunaway: true } : {}), reportCaseProgress: true },
       {
         timeoutMs: null,
         onRequestRegistered: (id) => {
           commandId = id;
           this.batchProgress.set(id, (message) => {
-            if (!progress.accept(message)) return;
+            if (expired || signal?.aborted || !progress.accept(message)) return;
             restartClock();
-            if (progress.running !== undefined) onCaseStarted?.(progress.running);
-            else if (progress.finished.length === caseCount) onCasesFinished?.(progress.finished);
+            if (progress.running !== undefined) {
+              onCaseStarted?.(progress.running);
+              return;
+            }
+            if (onCaseFinished) {
+              const index = progress.finished.length - 1;
+              let result: CodeExecutionResult;
+              try {
+                result = liftCodeOutcome(
+                  progress.finished[index] as RawExecutionPayload,
+                  'Prepared Python batch execution failed'
+                );
+              } catch (error) {
+                progress.invalid = error instanceof Error ? error : new Error(String(error));
+                return;
+              }
+              onCaseFinished(index, result);
+            }
+            if (!signal?.aborted && progress.finished.length === caseCount) {
+              onCasesFinished?.(progress.finished);
+            }
           });
         },
       }
     );
-    const program = Effect.raceFirst(reply, clock).pipe(
+    const liveReply = reply.pipe(Effect.flatMap((result) =>
+      expired ? Effect.fail(expired) : Effect.succeed(result)
+    ));
+    const program = Effect.raceFirst(liveReply, clock).pipe(
       Effect.ensuring(Effect.sync(() => {
         if (commandId !== undefined) this.batchProgress.delete(commandId);
       })),
@@ -1102,7 +1077,7 @@ export class PythonWorkerClient {
             component: 'PythonWorkerClient',
             runtime: 'python',
             phase: 'execution-timeout',
-            message: 'Python stopping batch timed out; terminating worker.',
+            message: 'Python batch clock expired; terminating worker.',
             detail: {
               timeoutMs: error.timeoutMs,
               runningCase: progress.running,
@@ -1117,17 +1092,15 @@ export class PythonWorkerClient {
       const result = await this.core.runClientEffect(program, signal);
       return { kind: 'reply', reply: restoreStreamedBatchReply(result, progress) };
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (!isExecutionTimeoutError(error)) {
         // The registered ordinary path can publish authenticated case results
         // even if the worker never sends its final batch reply.
-        const interrupted = request.mode === 'code' && onCaseStarted
-          ? interruptedCodeBatch(error, progress, signal)
-          : undefined;
-        if (!interrupted) throw error;
-        if (progress.stoppedAtLimit()) {
+        if (!ordinary || !(error instanceof WorkerCrashedError) || progress.invalid || !progress.started) throw error;
+        if (stopAtFirstRunaway && progress.stoppedAtLimit()) {
           return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
         }
-        throw interrupted;
+        throw interruptedCodeBatch(error, progress);
       }
       if (progress.invalid) {
         throw new RuntimeProviderError(
@@ -1141,17 +1114,21 @@ export class PythonWorkerClient {
       }
       // The batch was over (every case finished, or the last one finished at
       // a limit and stopped it) and only the reply was late.
-      if (progress.finished.length === caseCount || progress.stoppedAtLimit()) {
+      if (batchFinished()) {
         return { kind: 'reply', reply: { results: progress.finished } as unknown as R };
       }
       // No case was running, so no learner code was: the worker stalled.
       const finished = progress.finished.length;
-      throw new RuntimeProviderError(
+      const failure = new RuntimeProviderError(
         finished === 0
           ? 'The Python worker did not start the batch\'s first case in time; no learner code ran.'
           : `The Python worker did not start case ${finished + 1} in time after case ${finished} finished; no learner code was running.`,
         { cause: error }
       );
+      if (ordinary && !stopAtFirstRunaway && finished > 0) {
+        throw interruptedCodeBatch(failure, progress);
+      }
+      throw failure;
     }
   }
 

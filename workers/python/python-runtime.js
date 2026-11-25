@@ -1939,11 +1939,13 @@ try:
     del __tracecode_case_progress
 except NameError:
     _tracecode_batch_case_progress = None
+_tracecode_batch_stream_results = globals().pop('__tracecode_stream_batch_results', False)
 _tracecode_batch_encoded_bytes = 2
 _tracecode_batch_max_encoded_bytes = 32 * 1024 * 1024
 _tracecode_batch_result_reserve_bytes = 512
 if (
-    len(_tracecode_batch_cases) * _tracecode_batch_result_reserve_bytes
+    not _tracecode_batch_stream_results
+    and len(_tracecode_batch_cases) * _tracecode_batch_result_reserve_bytes
     >= _tracecode_batch_max_encoded_bytes
 ):
     raise RuntimeError(
@@ -2148,7 +2150,7 @@ for _tracecode_batch_user_node in _tracecode_batch_ast.walk(
 _tracecode_batch_user_code = _tracecode_batch_builtins.compile(
     _tracecode_batch_user_tree, 'solution.py', 'exec'
 )
-def _tracecode_batch_append_result(entry):
+def _tracecode_batch_encode_case_result(entry):
     global _tracecode_batch_encoded_bytes
     try:
         encoded = _tracecode_batch_encode_results(
@@ -2195,6 +2197,10 @@ def _tracecode_batch_append_result(entry):
             },
         }
         encoded = _tracecode_batch_encode_results(entry)
+    # Streamed ordinary results cross into the worker one row at a time.
+    # They never enter the aggregate Python string or spend its reserve.
+    if _tracecode_batch_stream_results:
+        return entry, encoded
     separator_bytes = 1 if _tracecode_batch_encoded_results else 0
     encoded_bytes = len(encoded)
     remaining_case_count = (
@@ -2233,9 +2239,7 @@ def _tracecode_batch_append_result(entry):
         )
     _tracecode_batch_encoded_results.append(encoded)
     _tracecode_batch_encoded_bytes += separator_bytes + encoded_bytes
-    # Encoding may have replaced the result with a limit: callers decide from
-    # the result recorded, not the one the case produced.
-    return entry
+    return entry, encoded
 
 def _tracecode_batch_format_error(error):
     error_line = None
@@ -2624,13 +2628,13 @@ for _tracecode_batch_case_index, _tracecode_batch_inputs in enumerate(
                 'algorithmFastBatch': True,
             },
         }
-    _tracecode_case_result = _tracecode_batch_append_result(
-        _tracecode_case_result
+    _tracecode_case_result, _tracecode_case_encoded = (
+        _tracecode_batch_encode_case_result(_tracecode_case_result)
     )
     if _tracecode_batch_case_progress is not None:
         _tracecode_batch_case_progress(
             _tracecode_batch_case_index,
-            _tracecode_batch_encoded_results[-1],
+            _tracecode_case_encoded,
         )
     # Run semantics: stop after the first case whose recorded result is a
     # time or line limit.
@@ -8872,25 +8876,67 @@ const PYTHON_RUNAWAY_LIMIT_REASONS = new Set(['client-timeout', 'line-limit', 's
 const PYTHON_TRACE_BUDGET_REASONS = new Set(['trace-limit', 'trace-byte-limit', 'line-limit', 'single-line-limit']);
 
 /**
- * Called from the algorithm-fast driver at each case boundary: `encodedResult`
- * is undefined when the case starts and its JSON result when it finishes.
- * Reporting must never fail the batch, so a result that cannot be decoded is
- * simply not reported (the client then has no prefix past it, as before).
+ * The fast driver emits a start without a result. A finish contains one
+ * encoded row. Validate each ordinary streamed finish before posting it.
  */
-function reportAlgorithmFastCaseProgress(caseProgress, mode, caseIndex, encodedResult) {
+function reportAlgorithmFastCaseProgress(caseProgress, mode, caseIndex, encodedResult, resultStream) {
   try {
     if (encodedResult === undefined || encodedResult === null) {
       caseProgress.started(caseIndex);
       return;
     }
     const result = JSON.parse(String(encodedResult));
+    if (resultStream) {
+      if (!isAlgorithmFastCaseResult(result)) {
+        throw new Error('Prepared Python algorithm-fast batch returned an invalid case result.');
+      }
+      resultStream.finish(caseIndex, result);
+      return;
+    }
     caseProgress.finished(
       caseIndex,
       mode === 'trace' ? pythonCodeResultAsEmptyTraceResult(result) : result
     );
-  } catch {
-    // Progress is advisory; the batch's own result stays authoritative.
+  } catch (error) {
+    if (resultStream) throw error;
+    // Legacy progress is advisory; its terminal envelope still holds the rows.
   }
+}
+
+function isAlgorithmFastCaseResult(result) {
+  return result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    typeof result.success === 'boolean' &&
+    Object.hasOwn(result, 'output') &&
+    Array.isArray(result.consoleOutput) &&
+    result.timings?.algorithmFastBatch === true;
+}
+
+/** The page owns finished rows. Keep only the metadata the terminal needs. */
+function createOrdinaryBatchResultStream(caseProgress, caseCount, stopAtFirstRunaway) {
+  let count = 0;
+  let success = true;
+  let endedAtRunaway = false;
+  const consoleOutput = [];
+  return {
+    finish(index, result) {
+      if (index !== count || index >= caseCount || endedAtRunaway) {
+        throw new Error('Prepared Python batch streamed an invalid case index.');
+      }
+      caseProgress.finished(index, result);
+      count += 1;
+      success = success && result.success === true;
+      endedAtRunaway = stopAtFirstRunaway && isPythonRunawayResult(result);
+      for (const line of result.consoleOutput ?? []) consoleOutput.push(line);
+    },
+    complete() {
+      if (count !== caseCount && !endedAtRunaway) {
+        throw new Error('Prepared Python batch did not stream every required result.');
+      }
+      return { success, resultsStreamed: count, consoleOutput };
+    },
+  };
 }
 
 function isPythonRunawayResult(result) {
@@ -8922,7 +8968,8 @@ async function executePreparedProgramBatch(
   traceEnabledBatch = undefined,
   forceJudgeCompatible = false,
   stopAtFirstRunaway = false,
-  caseProgress = undefined
+  caseProgress = undefined,
+  streamOrdinaryResults = artifact?.mode === 'code' && typeof caseProgress?.finished === 'function'
 ) {
   // Ordinary batches stream finishes to preserve delivered results if the
   // worker disappears. Non-stopping trace batches can reorder cases.
@@ -8974,7 +9021,8 @@ async function executePreparedProgramBatch(
       caseProgress && {
         started: (index) => caseProgress.started(index),
         finished: (index, result) => caseProgress.finished(index, pythonCodeResultAsEmptyTraceResult(result)),
-      }
+      },
+      false
     );
     return { ...raw, results: raw.results.map(pythonCodeResultAsEmptyTraceResult) };
   }
@@ -9145,6 +9193,9 @@ async function executePreparedProgramBatch(
       forceJudgeCompatible !== true &&
       currentIsolationProfile.tier === 'algorithm-fast' &&
       cases.every((inputs) => !pythonInputsRequireCustomMaterialization(inputs));
+    const resultStream = streamOrdinaryResults
+      ? createOrdinaryBatchResultStream(caseProgress, cases.length, stopAtFirstRunaway === true)
+      : undefined;
     if (useAlgorithmFastBatch) {
       try {
         algorithmFastBatchCode = deserializePythonCodeArtifact(
@@ -9167,12 +9218,14 @@ async function executePreparedProgramBatch(
             ),
             ...(caseProgress
               ? {
+                  ...(resultStream ? { __tracecode_stream_batch_results: true } : {}),
                   __tracecode_case_progress: (caseIndex, encodedResult) =>
                     reportAlgorithmFastCaseProgress(
                       caseProgress,
                       artifact.mode,
                       caseIndex,
-                      encodedResult
+                      encodedResult,
+                      resultStream
                     ),
                 }
               : {}),
@@ -9180,32 +9233,24 @@ async function executePreparedProgramBatch(
           undefined,
           'algorithm-fast'
         );
-        const results = JSON.parse(resultJson);
-        const resultsHaveTrustedShape =
-          isPythonBatchResultPrefix(results, cases.length, stopAtFirstRunaway) &&
-          results.every((result) =>
-            result !== null &&
-            typeof result === 'object' &&
-            !Array.isArray(result) &&
-            typeof result.success === 'boolean' &&
-            Object.hasOwn(result, 'output') &&
-            Array.isArray(result.consoleOutput) &&
-            result.timings !== null &&
-            typeof result.timings === 'object' &&
-            result.timings.algorithmFastBatch === true
-          );
-        if (!resultsHaveTrustedShape) {
-          throw new Error(
-            'Prepared Python algorithm-fast batch returned an invalid result envelope.'
-          );
+        let envelope;
+        if (resultStream) {
+          envelope = resultStream.complete();
+        } else {
+          const results = JSON.parse(resultJson);
+          if (!isPythonBatchResultPrefix(results, cases.length, stopAtFirstRunaway) ||
+              !results.every(isAlgorithmFastCaseResult)) {
+            throw new Error('Prepared Python algorithm-fast batch returned an invalid result envelope.');
+          }
+          envelope = {
+            success: results.every((result) => result.success === true),
+            results,
+            consoleOutput: results.flatMap((result) => result.consoleOutput),
+          };
         }
         const runMs = deps.performanceNow() - startedAt;
         return {
-          success: results.every((result) => result?.success === true),
-          results,
-          consoleOutput: results.flatMap(
-            (result) => result?.consoleOutput ?? []
-          ),
+          ...envelope,
           timings: {
             totalMs: runMs,
             runMs,
@@ -9215,9 +9260,8 @@ async function executePreparedProgramBatch(
           },
         };
       } catch (error) {
-        // No partial batch result has crossed the worker boundary. Ask the
-        // provider to retire this worker and retry each case in its own full
-        // compatibility scope instead of exposing an internal driver error.
+        // The worker attests its starts in the reply, so only failed
+        // admissions can fall back to compatibility.
         const runMs = deps.performanceNow() - startedAt;
         deps.emitRuntimeDiagnostic?.(
           'error',
@@ -9343,20 +9387,26 @@ async function executePreparedProgramBatch(
           ...scopeTimings,
         },
       };
-      results.push(
-        artifact.mode === 'trace' && !tracingEnabled
+      if (resultStream) {
+        startCase();
+        resultStream.finish(caseIndex, timedResult);
+      } else {
+        const row = artifact.mode === 'trace' && !tracingEnabled
           ? pythonCodeResultAsEmptyTraceResult(timedResult)
-          : timedResult
-      );
-      startCase();
-      caseProgress?.finished?.(caseIndex, results[results.length - 1]);
+          : timedResult;
+        results.push(row);
+        startCase();
+        caseProgress?.finished?.(caseIndex, row);
+      }
       if (stopAtFirstRunaway === true && isPythonRunawayResult(timedResult)) break;
     }
     const runMs = deps.performanceNow() - startedAt;
     return {
-      success: results.every((result) => result.success === true),
-      results,
-      consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      ...(resultStream ? resultStream.complete() : {
+        success: results.every((result) => result.success === true),
+        results,
+        consoleOutput: results.flatMap((result) => result.consoleOutput ?? []),
+      }),
       timings: {
         totalMs: runMs,
         runMs,

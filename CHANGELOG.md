@@ -67,6 +67,15 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Ordinary Python batches time each case separately. When a case runs past
+  its client deadline, only that case receives `client-timeout`. Unless
+  `stopAtFirstRunaway` is set, a fresh worker resumes at the next case,
+  keeping the results already recorded.
+- Ordinary Python batches keep finished case results if the worker is lost.
+  A batch running without `stopAtFirstRunaway` also keeps those results if
+  the worker stalls between cases.
+- Streamed Python verdicts apply only the per-case 8 MiB output limit.
+
 - A warm C# runner no longer reports a correct untraced case as
   `client-timeout` ("C# execution timed out.") within milliseconds. The
   runner's trace sink was left recording, with a two-second deadline, after
@@ -123,6 +132,13 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   untraced cases), the algorithm-fast batch and `executeCode`'s interview
   guard. If the learner's code holds the PEP 669 tool id the guards use, the
   stop takes another free one.
+
+### Changed
+
+- A healthy Python Submit now reports each case start to the caller's
+  `onCaseStarted` callback when supplied. The prepared Python runtime forwards
+  accepted case finishes to `onCaseFinished` with the original case index and
+  its `CodeExecutionResult`.
 
 ### Known limits
 

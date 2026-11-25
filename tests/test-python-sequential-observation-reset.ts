@@ -394,6 +394,7 @@ async function prepare(python: PythonInterpreter, mode: 'code' | 'trace') {
 
 async function verdictBatch(python: PythonInterpreter) {
   const artifact = await prepare(python, 'code');
+  const rows: Array<{ index: number; row: Record<string, unknown> }> = [];
   const result = await python.runtime.executePreparedProgramBatch!(
     python.deps,
     artifact,
@@ -402,10 +403,17 @@ async function verdictBatch(python: PythonInterpreter) {
     undefined,
     undefined,
     true,
-    { started() {}, finished() {}, finishedCount: 0, startedCaseIndexes: [] }
+    {
+      started() {},
+      finished(index: number, row: Record<string, unknown>) {
+        rows.push({ index, row });
+      },
+    }
   );
   assert.equal(result.timings?.algorithmFastBatch, true, JSON.stringify(result).slice(0, 400));
-  return (structuredClone(result.results) as Array<Record<string, unknown>>).map(({ success, output, error }) => ({ success, output, error }));
+  assert.equal(result.resultsStreamed, CASES.length);
+  assert.deepEqual(rows.map(({ index }) => index), CASES.map((_, index) => index));
+  return structuredClone(rows).map(({ row: { success, output, error } }) => ({ success, output, error }));
 }
 
 async function rawDrawing(python: PythonInterpreter, input: Record<string, unknown>) {
