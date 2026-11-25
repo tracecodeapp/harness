@@ -21,8 +21,13 @@ import {
 } from '../src/internal/browser-judge';
 import type {
   BrowserRuntimeJudgeReceiptLease,
+  JudgeOrdinaryBatchCall,
   JudgeReceiptProvider,
 } from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import {
+  InterruptedCodeBatchError,
+  WorkerCrashedError,
+} from '../packages/runtime-browser/src/worker-errors';
 import { RuntimePreparedProgramRegistry } from '../src/internal/judge-prepared-program';
 import {
   createBrowserRuntimeHost,
@@ -2879,6 +2884,11 @@ test('a stored 0.20.2 result keeps its unmarked trace-recording budget, and only
   }
 });
 
+/** D-WATCH's journal markers, which interleave with observation markers. */
+function isJournalPhase(phase: string): boolean {
+  return phase.startsWith('ordinary-case-') || phase === 'service-deadline';
+}
+
 function controlled<T = void>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((done) => { resolve = done; });
@@ -3310,7 +3320,8 @@ for (const observerFirst of [true, false]) {
       observation.resolve();
       await pending;
       assert.deepEqual(
-        f.markers.filter(({ phase }) => phase !== 'ordinary-write-attempt').map(({ phase }) => phase),
+        f.markers.filter(({ phase }) => phase !== 'ordinary-write-attempt' && !isJournalPhase(phase))
+          .map(({ phase }) => phase),
         ['observer-start', earlier, observerFirst ? 'ordinary-commit' : 'observer-end', 'attachment-bind', 'public-resolve']
       );
     } finally {
@@ -3899,7 +3910,7 @@ test('trusted Judge bridge observes the complete journal with no provider mark c
   const cached = await observed.host.execute(request);
   assert.equal(cached.evaluation.cases[0]?.attachment, initial.evaluation.cases[0]?.attachment);
   assert.deepEqual(new Set(events.map(({ phase }) => phase)), new Set([
-    'ordinary-write-attempt', 'ordinary-commit', 'observer-start', 'observer-end',
+    'ordinary-case-started', 'ordinary-case-accepted', 'ordinary-write-attempt', 'ordinary-commit', 'observer-start', 'observer-end',
     'attachment-bind', 'public-resolve', 'observation-cache-hit',
   ]));
   const phase = (name: string) => events.findIndex(({ phase }) => phase === name);
@@ -4069,7 +4080,8 @@ const RUN_LIMIT = Object.freeze({ wallClockMs: 1500 });
 const OBSERVER_BACKSTOP_MS = 20_000;
 
 function journalPhases(markers: ReadonlyArray<{ phase: string }>): string[] {
-  return markers.filter(({ phase }) => phase !== 'ordinary-write-attempt').map(({ phase }) => phase);
+  return markers.filter(({ phase }) => phase !== 'ordinary-write-attempt' && !isJournalPhase(phase))
+    .map(({ phase }) => phase);
 }
 
 async function drainTurns(turns = 20): Promise<void> {
@@ -5121,4 +5133,313 @@ test('judged-output policy: a worker realm never reads the bridge', async (t) =>
   const state = makeState();
   await evaluate(state, makePlan([{ id: 'p', input: { label: 'p' }, expected: 'p' }]));
   assert.deepEqual(preparedPolicy(state.prepareCalls[0]), JS_JUDGED_DEFAULT);
+});
+
+// ---------------------------------------------------------------------------
+// D-WATCH: the case-progress journal and the service watchdog.
+//
+// A scripted provider runs A, B and C as one native batch. It announces each
+// start and finish only when the test releases it (message barriers, never a
+// timeout near a guessed row boundary), so the test decides exactly what the
+// coordinator has accepted when a loss or a deadline arrives.
+// ---------------------------------------------------------------------------
+
+type ScriptedStep = 'finish' | 'runaway' | 'crash' | 'hang';
+
+function scriptedBatchFixture(options: {
+  readonly lifecycleAllowanceMs?: number;
+  readonly forwardFinishes?: boolean;
+} = {}) {
+  const starts: string[] = [];
+  const signals: AbortSignal[] = [];
+  const reached = new Map<number, ReturnType<typeof controlled>>();
+  const releases = new Map<number, ReturnType<typeof controlled<ScriptedStep>>>();
+  const late: Array<(index: number, result: CodeExecutionResult) => void> = [];
+  const at = <T,>(map: Map<number, T>, index: number, make: () => T) => {
+    let value = map.get(index);
+    if (!value) map.set(index, value = make());
+    return value;
+  };
+  const finished = (label: string): CodeExecutionResult => ({
+    kind: 'completed', output: label, consoleOutput: [`stdout:${label}`],
+  });
+  const runaway = (label: string): CodeExecutionResult => ({
+    kind: 'limit', reason: 'client-timeout', error: 'Execution timed out.', consoleOutput: [`stdout:${label}`],
+  });
+  const provider: RuntimePreparedExecutionProvider = {
+    ...(options.lifecycleAllowanceMs === undefined ? {} : { lifecycleAllowanceMs: options.lifecycleAllowanceMs }),
+    async init() { return { success: true, loadTimeMs: 0 }; },
+    async prepareProgram(call) {
+      if (call.mode !== 'code') throw new Error('The scripted provider prepares only ordinary code.');
+      return {
+        kind: 'prepared' as const,
+        program: {
+          mode: 'code' as const,
+          capabilities: {
+            profile: 'compatibility' as const,
+            caseIsolation: 'fresh-case-state' as const,
+            maxConcurrency: 1,
+            stopsAtFirstRunaway: true as const,
+          },
+          async executeIsolated() { throw new Error('The scripted provider runs only native batches.'); },
+          async executeBatchIsolated(request: JudgeOrdinaryBatchCall) {
+            if (request.signal) signals.push(request.signal);
+            if (request.onCaseFinished) late.push(request.onCaseFinished);
+            const outcomes: CodeExecutionResult[] = [];
+            const aborted = new Promise<never>((_, reject) => {
+              request.signal?.addEventListener('abort', () => reject(abortError(request.signal!)), { once: true });
+            });
+            aborted.catch(() => undefined);
+            for (const [index, inputs] of request.inputBatch.entries()) {
+              // Each worker message arrives in its own task.
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              if (request.signal?.aborted) throw abortError(request.signal);
+              const label = String((inputs as { label: string }).label);
+              starts.push(label);
+              request.onCaseStarted?.(index);
+              at(reached, index, () => controlled()).resolve(undefined);
+              const step = await Promise.race([at(releases, index, () => controlled<ScriptedStep>()).promise, aborted]);
+              if (step === 'hang') await aborted;
+              if (step === 'crash') {
+                throw new InterruptedCodeBatchError(outcomes, new WorkerCrashedError({
+                  workerMessage: 'scripted worker lost', filename: undefined, lineno: undefined, colno: undefined,
+                }));
+              }
+              const result = step === 'runaway' ? runaway(label) : finished(label);
+              outcomes.push(result);
+              if (options.forwardFinishes !== false) request.onCaseFinished?.(index, result);
+              if (request.stopAtFirstRunaway && result.kind === 'limit') break;
+            }
+            return outcomes;
+          },
+          async dispose() {},
+        },
+        consoleOutput: [],
+      };
+    },
+  };
+  const events: Array<Record<string, unknown> & { phase: string }> = [];
+  const registration: JudgeReceiptProvider = {
+    runtimeVersion: 'scripted-batch.v1',
+    capabilities: {
+      observationLease: 'separate',
+      observationDeadlineMs: 3000,
+      stoppingBatchAdmission: 'worker-start',
+      nonStoppingBatchAdmission: 'worker-start',
+    },
+    async prepareObservation() { return { status: 'refused', reason: 'recorder-unavailable' }; },
+    mark(marker) { events.push({ ...marker }); },
+  };
+  const host = createBrowserJudgeHostFromRuntimeHost(browserHostFor(provider, () => registration));
+  return {
+    host, starts, signals, events,
+    reached: (index: number) => at(reached, index, () => controlled()).promise,
+    release: (index: number, step: ScriptedStep) => at(releases, index, () => controlled<ScriptedStep>()).resolve(step),
+    /** A finish the killed generation delivers after the batch was stopped. */
+    deliverLate: (index: number, label: string) => late.at(-1)?.(index, finished(label)),
+    finished,
+  };
+}
+
+async function dWatchBundle(limits?: { readonly wallClockMs: number }) {
+  return receiptBundle(undefined, limits);
+}
+
+type DWatchRow = JudgeCaseResult;
+
+/**
+ * The GB service-cut oracle, by assertion ID. A stands as delivered, the
+ * suffix is the provider's failure (no verdict, limit or not-run), and no
+ * generation started A twice.
+ */
+function serviceCutFailures(rows: readonly DWatchRow[], starts: readonly string[], uncertain: string[]): string[] {
+  const failures: string[] = [];
+  const [a, ...suffix] = rows;
+  if (a?.status !== 'completed') failures.push('A/status');
+  if (a?.value !== 'A') failures.push('A/value');
+  if (a?.stdout !== 'stdout:A\n') failures.push('A/stdout');
+  if (starts.filter((label) => label === 'A').length !== 1) failures.push('A/ordinary-start-count');
+  for (const row of suffix) {
+    const id = row.caseId;
+    if (row.status !== 'runtime-error') failures.push(`${id}/status`);
+    if (row.failure?.origin !== 'provider') failures.push(`${id}/origin`);
+    if (row.failure?.origin === 'provider' && row.failure.reason !== 'runtime-failure') failures.push(`${id}/reason`);
+    if (row.timedOut || row.notRun || row.verdict.kind !== 'not-evaluated' || Object.hasOwn(row, 'value')) {
+      failures.push(`${id}/no-learner-outcome`);
+    }
+    if (/completion is uncertain/u.test(row.failure?.message ?? '') !== uncertain.includes(id)) {
+      failures.push(`${id}/completion-uncertain`);
+    }
+  }
+  return failures;
+}
+
+function faultBridge(t: import('node:test').TestContext, at: { caseId: string; progress: 'started' | 'finished' }) {
+  const install = installJudgeTestGlobals(t);
+  const bridgeEvents: TestBridgeEvent[] = [];
+  install({
+    onEvent: (event) => bridgeEvents.push(event),
+    faultAt: (context) => context.point === 'service' && context.caseId === at.caseId &&
+      context.progress === at.progress ? 'deadline' : undefined,
+  });
+  return bridgeEvents;
+}
+
+for (const stop of [false, true]) {
+  test(`D-WATCH deadline-${stop ? 'stop' : 'keep'}: expiring only the service watchdog between A and B keeps A and fails B and C as the provider`, { timeout: 10000 }, async (t) => {
+    const bridgeEvents = faultBridge(t, { caseId: 'A', progress: 'finished' });
+    const f = scriptedBatchFixture();
+    t.after(() => f.host.dispose());
+    const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: stop });
+    await f.reached(0);
+    f.release(0, 'finish');
+    const receipt = await pending;
+    const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+    assert.deepEqual(serviceCutFailures(rows, f.starts, []), []);
+    assert.deepEqual(f.starts, ['A'], 'B never started: the deadline came between A and B');
+    assert.equal(f.signals[0]?.aborted, true, 'the stopped batch was torn down');
+
+    const phases = bridgeEvents.map((event) => event.phase === 'injection-ack'
+      ? `injection-ack:${(event as { point: string }).point}` : event.phase);
+    assert.deepEqual(phases.filter((phase) => isJournalPhase(phase) || phase.startsWith('injection-ack') || phase === 'ordinary-commit'), [
+      'ordinary-case-started', 'ordinary-case-accepted', 'injection-ack:service', 'service-deadline', 'ordinary-commit',
+    ]);
+    const deadline = bridgeEvents.find((event) => event.phase === 'service-deadline') as Record<string, unknown>;
+    assert.equal(deadline.cause, 'injected');
+    assert.equal(deadline.accepted, 1);
+    assert.equal(deadline.dispatchGeneration, 1);
+    const accepted = bridgeEvents.find((event) => event.phase === 'ordinary-case-accepted') as Record<string, unknown>;
+    assert.deepEqual(
+      [accepted.caseId, accepted.caseIndex, accepted.dispatchGeneration, accepted.sequence],
+      ['A', 0, 1, 2]
+    );
+    // The provider-side mark sees the same journal.
+    assert.deepEqual(
+      f.events.filter(({ phase }) => isJournalPhase(phase)).map(({ phase }) => phase),
+      ['ordinary-case-started', 'ordinary-case-accepted', 'service-deadline']
+    );
+
+    // A late finish from the stopped generation is fenced.
+    f.deliverLate(1, 'B');
+    const rejected = bridgeEvents.filter((event) => event.phase === 'ordinary-case-rejected') as Array<Record<string, unknown>>;
+    assert.deepEqual(rejected.map(({ caseId, reason, progress }) => [caseId, reason, progress]), [['B', 'fenced', 'finished']]);
+  });
+}
+
+test('D-WATCH loss during B: A stands, B is a service loss with uncertain completion, C is the provider failure; late and duplicate finishes change nothing', { timeout: 10000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bridgeEvents: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => bridgeEvents.push(event) });
+  const f = scriptedBatchFixture();
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached(0);
+  f.release(0, 'finish');
+  await f.reached(1);
+  f.release(1, 'crash');
+  const receipt = await pending;
+  const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.match(rows[1]!.failure!.message, /worker was lost/u);
+  f.deliverLate(1, 'B');
+  f.deliverLate(0, 'A');
+  const rejected = bridgeEvents.filter((event) => event.phase === 'ordinary-case-rejected') as Array<Record<string, unknown>>;
+  assert.deepEqual(rejected.map(({ caseId, reason }) => [caseId, reason]), [['B', 'fenced'], ['A', 'fenced']]);
+  assert.equal(bridgeEvents.some((event) => event.phase === 'service-deadline'), false, 'a worker loss is not the service deadline');
+});
+
+test('D-WATCH: a provider that does not forward finishes still keeps its interrupted prefix through the journal', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  const f = scriptedBatchFixture({ forwardFinishes: false });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached(0);
+  f.release(0, 'finish');
+  await f.reached(1);
+  f.release(1, 'crash');
+  const receipt = await pending;
+  const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+});
+
+test('D-WATCH: the service deadline racing the provider\'s own interruption publishes once, with the same rows', { timeout: 10000 }, async (t) => {
+  faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture();
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached(0);
+  f.release(0, 'finish');
+  await f.reached(1);
+  // The deadline has already won; the provider's crash arrives on a stopped batch.
+  f.release(1, 'crash');
+  const receipt = await pending;
+  const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  assert.match(rows[1]!.failure!.message, /did not finish within its own deadline/u);
+  assert.equal(f.events.filter(({ phase }) => phase === 'ordinary-commit').length, 1);
+});
+
+test('D-WATCH: a stopping batch whose accepted prefix ends at a runaway keeps its not-run suffix when the deadline fires', { timeout: 10000 }, async (t) => {
+  faultBridge(t, { caseId: 'A', progress: 'finished' });
+  const f = scriptedBatchFixture();
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: true });
+  await f.reached(0);
+  f.release(0, 'runaway');
+  const receipt = await pending;
+  const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+  assert.equal(rows[0]?.failure?.origin, 'limit');
+  for (const row of rows.slice(1)) {
+    assert.equal(row.status, 'not-run');
+    assert.deepEqual(row.notRun, { reason: 'run-stopped-after-limit', stoppedByCaseId: 'A', limit: 'client-timeout' });
+  }
+});
+
+test('D-WATCH: the real backstop publishes only the accepted prefix and acknowledges the service deadline', { timeout: 30000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bridgeEvents: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => bridgeEvents.push(event) });
+  const f = scriptedBatchFixture({ lifecycleAllowanceMs: 1 });
+  t.after(() => f.host.dispose());
+  const bundle = await createAlgorithmJudgeBundle({
+    id: 'd-watch-backstop',
+    language: 'javascript',
+    code: 'function solve(label) { return label; }',
+    functionName: 'solve',
+    limits: { wallClockMs: 50 },
+    cases: [{ id: 'A', input: { label: 'A' }, expected: 'A' }, { id: 'B', input: { label: 'B' }, expected: 'B' }],
+  });
+  const pending = f.host.evaluateAlgorithm({ bundle, stopAtFirstRunaway: false });
+  await f.reached(0);
+  f.release(0, 'finish');
+  await f.reached(1);
+  f.release(1, 'hang');
+  const receipt = await pending;
+  const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
+  assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
+  const deadline = bridgeEvents.find((event) => event.phase === 'service-deadline') as Record<string, unknown> | undefined;
+  assert.equal(deadline?.cause, 'backstop');
+  assert.equal(deadline?.accepted, 1);
+  assert.equal(bridgeEvents.some((event) => event.phase === 'injection-ack'), false);
+});
+
+test('D-WATCH seeded controls: the service-cut oracle bites on a replaced A record and on a restarted A', () => {
+  const a = {
+    caseId: 'A', status: 'completed', value: 'A', stdout: 'stdout:A\n', timedOut: false,
+    verdict: { kind: 'passed' },
+  } as unknown as DWatchRow;
+  const b = {
+    caseId: 'B', status: 'runtime-error', timedOut: false, verdict: { kind: 'not-evaluated' },
+    failure: { origin: 'provider', reason: 'runtime-failure', message: 'lost. The case had started, and its completion is uncertain.' },
+  } as unknown as DWatchRow;
+  const c = { ...b, caseId: 'C', failure: { origin: 'provider', reason: 'runtime-failure', message: 'lost.' } } as unknown as DWatchRow;
+  assert.deepEqual(serviceCutFailures([a, b, c], ['A', 'B'], ['B']), [], 'the unmutated subject passes');
+  // Mutant 1: replace A's committed record with B's timeout on transport failure.
+  const timedOutA = {
+    ...a, status: 'timed-out', timedOut: true, value: undefined,
+    failure: { origin: 'limit', reason: 'client-timeout', message: 'timed out' },
+  } as unknown as DWatchRow;
+  assert.ok(serviceCutFailures([timedOutA, b, c], ['A', 'B'], ['B']).includes('A/status'));
+  // Mutant 2: restart A in a fresh generation but restore its original value.
+  assert.deepEqual(serviceCutFailures([a, b, c], ['A', 'B', 'A'], ['B']), ['A/ordinary-start-count']);
 });
