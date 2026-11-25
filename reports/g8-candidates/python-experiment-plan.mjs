@@ -14,6 +14,8 @@ const labels = Object.freeze({
   }),
   'sprime-phone': Object.freeze({ sprime: 'sequential' }),
   'sprime-desktop': Object.freeze({ sprime: 'sequential' }),
+  'final-phone': Object.freeze({ 'final-main': 'sequential' }),
+  'final-desktop': Object.freeze({ 'final-main': 'sequential' }),
 });
 
 function group(problem, state, pythonWarmMode, versions, target, continuation = false,
@@ -116,6 +118,47 @@ const plans = Object.freeze({
       }),
     ]),
   }),
+  'final-phone': Object.freeze({
+    name: 'final-phone',
+    scope: 'phone',
+    candidates: Object.freeze(['final-main']),
+    controlVersions: Object.freeze([]),
+    collectReceiptSnapshotMs: false,
+    groups: Object.freeze([
+      group('permutations', 'warm', 'fresh-page', ['0.17.1', 'final-main'], 20),
+      group('permutations', 'cold', 'standard', ['0.17.1', 'final-main'], 20),
+      group('permutations', 'warm', 'repeat-run', ['0.17.1', 'final-main'], 20, false,
+        { pairedControlFor: 'final-main' }),
+      group('binary-search', 'warm', 'fresh-page', ['0.17.1', 'final-main'], 20),
+      group('binary-search', 'cold', 'standard', ['0.17.1', 'final-main'], 20),
+      group('binary-search', 'warm', 'repeat-run', ['0.17.1', 'final-main'], 20, false,
+        { pairedControlFor: 'final-main' }),
+    ]),
+  }),
+  'final-desktop': Object.freeze({
+    name: 'final-desktop',
+    scope: 'desktop',
+    candidates: Object.freeze(['final-main']),
+    controlVersions: Object.freeze([]),
+    collectReceiptSnapshotMs: false,
+    groups: Object.freeze([
+      group('binary-search', 'warm', 'fresh-page', ['0.17.1', 'final-main'], 20,
+        false, { cpu: 1 }),
+      group('permutations', 'warm', 'fresh-page', ['0.17.1', 'final-main'], 20,
+        false, { cpu: 1 }),
+      group('binary-search', 'cold', 'standard', ['0.17.1', 'final-main'], 20,
+        false, { cpu: 1 }),
+      group('binary-search', 'warm', 'repeat-run', ['0.17.1', 'final-main'], 20,
+        true, { cpu: 1, pairedControlFor: 'final-main' }),
+      group('permutations', 'warm', 'repeat-run', ['0.17.1', 'final-main'], 20,
+        true, { cpu: 1, pairedControlFor: 'final-main' }),
+      Object.freeze({
+        language: 'python', cpu: 1, problem: 'binary-search', state: 'warm',
+        journey: 'lesson', target: 20, versions: Object.freeze(['0.17.1', 'final-main']),
+        continuation: false,
+      }),
+    ]),
+  }),
 });
 
 export function pythonExperimentPlan(name) {
@@ -133,7 +176,16 @@ export function pythonExperimentShapeInventory(plan, capturedShapeKeys) {
   const captured = new Set(capturedShapeKeys);
   return plan.groups.flatMap((entry) => entry.versions.map((version) => {
     const witnessVersion = pythonExperimentWitnessVersion(plan, version);
-    const witnessKey = measurementShapeKey(plan.scope, entry, witnessVersion);
+    const witnessPolicy = entry.pairedControlFor === undefined ? undefined :
+      pythonExperimentWitnessVersion(plan, entry.pairedControlFor);
+    const pairedWarm = entry.pythonWarmMode === 'repeat-run' ||
+      entry.pythonWarmMode === 'submit-after-run';
+    const witnessGroup = {
+      ...entry,
+      ...(pairedWarm && witnessPolicy ? { pairedControlFor: witnessPolicy } :
+        { pairedControlFor: undefined }),
+    };
+    const witnessKey = measurementShapeKey(plan.scope, witnessGroup, witnessVersion);
     return Object.freeze({
       experiment: plan.name,
       key: measurementShapeKey(plan.scope, entry, version),

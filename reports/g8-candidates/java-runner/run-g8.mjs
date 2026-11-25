@@ -80,6 +80,7 @@ import {
 } from '../measurement-shapes.mjs';
 import { capturedShapeKeys } from '../shape-captures.mjs';
 import { csharpMeasurementPlan } from '../csharp-measurement-plan.mjs';
+import { finalReleasePlan } from '../final-release-plan.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -105,6 +106,7 @@ const pythonFreshAa = process.env.SPEED_PYTHON_FRESH_AA === '1';
 const submitAa = process.env.SPEED_SUBMIT_AA === '1';
 const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
 const javaClosingPhase = process.env.SPEED_JAVA_CLOSING_PHASE;
+const finalRelease = process.env.SPEED_G8_FINAL_RELEASE === '1';
 const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
 const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
@@ -115,7 +117,7 @@ assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the p
 assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
-  pythonLocalDiagnostic, pythonFreshAa, submitAa, javaClosing].filter(Boolean).length <= 1,
+  pythonLocalDiagnostic, pythonFreshAa, submitAa, javaClosing, finalRelease].filter(Boolean).length <= 1,
   'Select only one special measurement mode');
 assert.ok(!liveControl || pythonLocalDiagnostic ||
   ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa, submitAa].some(Boolean),
@@ -125,6 +127,9 @@ assert.ok(!releasePythonWarm || releaseVersion === '0.17.3',
 const staged = candidateScope ? inventoryOnly ? {} : await jsonCandidate() : undefined;
 const candidate = releaseVersion === undefined ? staged : undefined;
 assert.ok(!liveControl || candidate, 'A live control requires a candidate session');
+assert.ok(!finalRelease || liveControl && candidate && testedLanguage !== 'python' &&
+  ['desktop', 'phone'].includes(candidateScope),
+  'Final release measurement requires a staged non-Python candidate and live control');
 assert.ok(!javaClosing || liveControl && candidate && testedLanguage === 'java' &&
   candidateScope === 'desktop', 'Java closing requires the staged Java candidate and live control');
 assert.ok(javaClosingPhase === undefined || javaClosing && javaClosingPhase === 'spot',
@@ -155,7 +160,7 @@ const appRefs = {
   '0.20.1': 'd0debe20a21885e701731d5e10f5741390b1ddd0',
 };
 const candidateVersions = ['candidate-main', 'candidate-deploy'];
-const csharpWarmSubmitControl = liveControl && testedLanguage === 'csharp' &&
+const csharpWarmSubmitControl = liveControl && !finalRelease && testedLanguage === 'csharp' &&
   candidateScope === 'desktop';
 const isLiveWitnessControl = (version, language) => liveControl &&
   (version === '0.17.1' || csharpWarmSubmitControl && language === 'csharp' &&
@@ -168,7 +173,8 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = shapeProbeFile ? `shape-probe-${testedLanguage}-${candidateScope}-` :
+const filePrefix = finalRelease ? `final-${testedLanguage}-${candidateScope}-` :
+  shapeProbeFile ? `shape-probe-${testedLanguage}-${candidateScope}-` :
   javaClosing ? `java-closing${javaClosingPhase ? '-' + javaClosingPhase : ''}-` : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
   candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
@@ -486,6 +492,7 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (finalRelease) return structuredClone(finalReleasePlan(testedLanguage, candidateScope));
   if (javaClosing) return structuredClone(javaClosingPhase === 'spot'
     ? javaClosingPlan.slice(2) : javaClosingPlan);
   if (submitAa) return structuredClone(submitAaPlan);
@@ -661,6 +668,13 @@ const report = {
     ...(testedLanguage === 'python' && candidateScope !== 'spot' &&
       { pythonWarmSubmitControl: '0.20.1' }),
     ...(csharpWarmSubmitControl && { csharpWarmSubmitControl: '0.20.1' }),
+  } }),
+  ...(finalRelease && { finalRelease: {
+    comparator: 'same-window-0.17.1', target: 20,
+    medianRatioLimit: 1.10, p90Gate: false,
+    shippingPolicyByJourney: { run: 'candidate-main', submit: 'candidate-deploy',
+      lesson: 'candidate-main' },
+    alternatingOrderPerRound: true,
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,

@@ -103,6 +103,24 @@ test('historical experiment labels use captured witnesses without hiding new sha
     pythonExperimentPlan('sprime-phone'), 'sprime'), 'sequential');
   assert.equal(pythonExperimentWitnessVersion(
     pythonExperimentPlan('sprime-desktop'), 'sprime'), 'sequential');
+  assert.equal(pythonExperimentWitnessVersion(
+    pythonExperimentPlan('final-phone'), 'final-main'), 'sequential');
+  assert.equal(pythonExperimentWitnessVersion(
+    pythonExperimentPlan('final-desktop'), 'final-main'), 'sequential');
+});
+
+test('final Python plans carry the exact S-prime cells with live 0.17.1 controls', () => {
+  const phone = pythonExperimentPlan('final-phone');
+  const desktop = pythonExperimentPlan('final-desktop');
+  assert.deepEqual(phone.candidates, ['final-main']);
+  assert.deepEqual(desktop.candidates, ['final-main']);
+  assert.deepEqual(phone.controlVersions, []);
+  assert.deepEqual(desktop.controlVersions, []);
+  assert.equal(phone.groups.length, 6);
+  assert.equal(desktop.groups.length, 6);
+  assert.ok([...phone.groups, ...desktop.groups].every((group) =>
+    group.versions.includes('0.17.1') && group.versions.includes('final-main')));
+  assert.equal(desktop.groups.some((group) => group.versions.includes('0.20.1')), false);
 });
 
 test('unknown experiment names fail before a browser can launch', () => {

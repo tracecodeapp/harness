@@ -98,7 +98,8 @@ edit('const versions = Object.keys(appRefs);', `
 const candidateInstalls = ${JSON.stringify(config)};
 const candidateVersions = ${JSON.stringify(candidates)};
 const experiment = pythonExperimentPlan(${JSON.stringify(experimentName)});
-const submitControlVersions = experiment ? [] : windowName === 'desktop-b' ? ['0.20.1'] : [];
+const submitControlVersions = experiment?.controlVersions ??
+  (experiment ? [] : windowName === 'desktop-b' ? ['0.20.1'] : []);
 const measuredVersions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
 const versions = ['0.17.1', ...submitControlVersions, ...candidateVersions];
 `);
