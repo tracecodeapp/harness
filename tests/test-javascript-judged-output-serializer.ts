@@ -55,7 +55,9 @@ function judged(value: unknown, policy: Partial<Policy> = {}): Outcome {
 }
 
 function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value === undefined ? null : value), 'utf8');
+  // JSON.stringify(undefined) writes nothing: a root undefined is 0 bytes.
+  const text = JSON.stringify(value);
+  return text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
 }
 
 /** Nesting of the language value: a container is one deeper than its parent; scalars add nothing. */
@@ -73,6 +75,8 @@ function valueDepth(value: unknown): number {
 
 /** JSON values, the largest container and the deepest container nesting. */
 function jsonShape(value: unknown) {
+  // A root undefined writes no JSON text: no values at all.
+  if (value === undefined) return { nodes: 0, items: 0, depth: 0 };
   let nodes = 0;
   let items = 0;
   let depth = 0;
@@ -277,6 +281,90 @@ test('a judged value never carries a placeholder or a truncation marker', () => 
   for (const marker of ['<max depth>', '<cycle>', '__truncated__']) assert.equal(text.includes(marker), false, marker);
 });
 
+test('an over-wide array is refused before it is copied', () => {
+  // A 10,000,000-slot array behind a proxy that counts element reads: the
+  // bound must fire on its length, before any element is read or copied.
+  let reads = 0;
+  const wide = new Proxy(new Array(10_000_000), {
+    get(target, property, receiver) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) reads += 1;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  assert.deepEqual(judged(wide, { maxItems: 1000 }), { ok: false, limit: 'item' });
+  assert.equal(reads, 0, 'no element read before the entry bound');
+  assert.deepEqual(judged(wide, { maxItems: Number.MAX_SAFE_INTEGER, maxNodes: 1000 }), { ok: false, limit: 'node' });
+  assert.equal(reads, 0, 'no element read before the value bound');
+});
+
+test('an over-wide typed array is refused on its length', () => {
+  const startedAt = performance.now();
+  assert.deepEqual(judged(new Uint8Array(20_000_000), { maxItems: 1000 }), { ok: false, limit: 'item' });
+  assert.deepEqual(judged(new Uint8Array(20_000_000).buffer, { maxItems: 1000 }), { ok: false, limit: 'item' });
+  assert.ok(performance.now() - startedAt < 1_000, 'bounded work');
+});
+
+test('an over-wide Set or Map is refused without draining it', () => {
+  const originalValues = Set.prototype.values;
+  const originalEntries = Map.prototype.entries;
+  let pulls = 0;
+  const counted = <T,>(iterator: Iterator<T>): Iterator<T> => ({
+    next() { pulls += 1; return iterator.next(); },
+  });
+  Set.prototype.values = function values(this: Set<unknown>) {
+    return counted(originalValues.call(this)) as ReturnType<typeof originalValues>;
+  };
+  Map.prototype.entries = function entries(this: Map<unknown, unknown>) {
+    return counted(originalEntries.call(this)) as ReturnType<typeof originalEntries>;
+  };
+  try {
+    const set = new Set(Array.from({ length: 5000 }, (_, index) => index));
+    const map = new Map(Array.from({ length: 5000 }, (_, index) => [index, index]));
+    for (const value of [set, map]) {
+      pulls = 0;
+      assert.deepEqual(judged(value, { maxItems: 100 }), { ok: false, limit: 'item' });
+      assert.ok(pulls <= 101, `drained ${pulls} entries past a 100-entry bound`);
+      pulls = 0;
+      assert.deepEqual(judged(value, { maxNodes: 100 }), { ok: false, limit: 'node' });
+      assert.ok(pulls <= 101, `drained ${pulls} entries past a 100-value bound`);
+    }
+  } finally {
+    Set.prototype.values = originalValues;
+    Map.prototype.entries = originalEntries;
+  }
+});
+
+test('a Set or Map that cannot be read is a typed limit, never a placeholder', () => {
+  // A proxy has no Set or Map internal slot, so the built-in iterator throws.
+  for (const value of [new Proxy(new Set([1]), {}), new Proxy(new Map([[1, 2]]), {})]) {
+    assert.deepEqual(judged(value), { ok: false, limit: 'unrepresentable' });
+    assert.deepEqual(judged([1, value]), { ok: false, limit: 'unrepresentable' });
+  }
+  // Without a policy (trace mode, direct execution) the placeholder is unchanged.
+  assert.equal(serializer.serializeOutputValue(new Proxy(new Set([1]), {})), '<unserializable Set>');
+  assert.equal(serializer.serializeOutputValue(new Proxy(new Map([[1, 2]]), {})), '<unserializable Map>');
+});
+
+test('a malformed policy fails closed', () => {
+  const malformed = { maxBytes: '1024', maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64 };
+  assert.throws(
+    () => serializer.serializeOutputValue('x', malformed as unknown as Policy),
+    (error) => serializer.isJudgedOutputLimit(error) && (error as { limit?: unknown }).limit === 'byte'
+  );
+  const missing = { maxBytes: 1024, maxItems: 250_000, maxNodes: 1_000_000 };
+  assert.throws(
+    () => serializer.serializeOutputValue([], missing as unknown as Policy),
+    (error) => serializer.isJudgedOutputLimit(error) && (error as { limit?: unknown }).limit === 'depth'
+  );
+});
+
+test('a root undefined is no JSON text, so zero bytes', () => {
+  assert.deepEqual(judged(undefined, { maxBytes: 0 }), { ok: true, value: undefined });
+  assert.deepEqual(judged(null, { maxBytes: 3 }), { ok: false, limit: 'byte' });
+  assert.deepEqual(judged([undefined], { maxBytes: 5 }), { ok: false, limit: 'byte' });
+  assert.equal(judged([undefined], { maxBytes: 6 }).ok, true);
+});
+
 // A seeded generator keeps the fuzz reproducible.
 function random(seed: number) {
   let state = seed >>> 0;
@@ -332,7 +420,7 @@ test('fuzz: every bound agrees with JSON.stringify at the boundary', () => {
     check({ maxBytes: bytes }, null, 'bytes at the bound');
     if (bytes > 0) check({ maxBytes: bytes - 1 }, 'byte', 'bytes over the bound');
     check({ maxNodes: shape.nodes }, null, 'nodes at the bound');
-    check({ maxNodes: shape.nodes - 1 }, 'node', 'nodes over the bound');
+    if (shape.nodes > 0) check({ maxNodes: shape.nodes - 1 }, 'node', 'nodes over the bound');
     check({ maxItems: shape.items }, null, 'items at the bound');
     if (shape.items > 0) check({ maxItems: shape.items - 1 }, 'item', 'items over the bound');
     const depth = valueDepth(value);
