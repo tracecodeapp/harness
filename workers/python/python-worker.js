@@ -5030,13 +5030,17 @@ async function executeProjectPythonUserCall(
     kernelClient
   );
   const projectCode = `
+import _io
 import base64
 import builtins
 import contextlib
 import errno
 import io
 import importlib
+import importlib.machinery
+import importlib.util
 import json
+import linecache
 import math
 import os
 import runpy
@@ -5044,6 +5048,7 @@ import shutil
 import signal
 import stat
 import sys
+import tokenize
 import traceback
 import types
 from js import self as _js_self
@@ -8173,17 +8178,28 @@ class _TraceProjectFile:
 _stdout = _TraceProjectStream("stdout")
 _stderr = _TraceProjectStream("stderr")
 
+def _is_project_path(_path):
+    # The mount, or the workspace path the learner sees.
+    if not isinstance(_path, str):
+        return False
+    if _path == _root or _path.startswith(_root + os.sep):
+        return True
+    return _project_relative_from_virtual_path(_path) is not None
+
 def _is_project_module(_module):
-    _module_file = getattr(_module, "__file__", None)
-    return isinstance(_module_file, str) and _module_file.startswith(_root + os.sep)
+    return _is_project_path(getattr(_module, "__file__", None))
 
 def _clear_project_import_state():
     for _module_name, _module in list(sys.modules.items()):
         if _module_name not in _previous_modules or _is_project_module(_module):
             sys.modules.pop(_module_name, None)
     for _cache_path in list(sys.path_importer_cache.keys()):
-        if isinstance(_cache_path, str) and (_cache_path == _root or _cache_path.startswith(_root + os.sep)):
+        if _is_project_path(_cache_path):
             sys.path_importer_cache.pop(_cache_path, None)
+    # Each command sees its own source, as a fresh CPython process would.
+    for _cache_path in list(linecache.cache.keys()):
+        if _is_project_path(_cache_path):
+            linecache.cache.pop(_cache_path, None)
     importlib.invalidate_caches()
 
 def _project_path_entry(_entry):
@@ -8225,9 +8241,13 @@ def _virtual_path_from_project_relative(_relative):
     return _workspace_root + "/" + str(_relative).replace(os.sep, "/")
 
 def _project_pythonpath_entries():
-    _entries = [_root]
+    # sys.path names workspace directories by the learner's path; the
+    # project path hook imports them from the mount.
+    _entries = [_workspace_root]
     for _entry in str(_env.get("PYTHONPATH", "")).split(os.pathsep):
         _path = _project_path_entry(_entry)
+        if _path:
+            _path = _virtual_workspace_path(_path)
         if _path and _path not in _entries:
             _entries.append(_path)
     return _entries
@@ -8883,6 +8903,57 @@ def _virtual_workspace_path(_value):
             return _virtual_path_from_project_relative(_relative)
     return _value
 
+class _ProjectSourceLoader(importlib.machinery.SourceFileLoader):
+    # Names a workspace module by the learner's path (__file__, its code's
+    # filename) and reads it from the mount.
+    def __init__(self, fullname, path):
+        super().__init__(fullname, _virtual_workspace_path(path))
+
+    def get_data(self, path):
+        return super().get_data(_map_workspace_path(path))
+
+    def path_stats(self, path):
+        return super().path_stats(_map_workspace_path(path))
+
+    def set_data(self, path, data, *, _mode=0o666):
+        return super().set_data(_map_workspace_path(path), data, _mode=_mode)
+
+class _ProjectSourcelessLoader(importlib.machinery.SourcelessFileLoader):
+    def __init__(self, fullname, path):
+        super().__init__(fullname, _virtual_workspace_path(path))
+
+    def get_data(self, path):
+        return super().get_data(_map_workspace_path(path))
+
+_project_loader_details = (
+    (importlib.machinery.ExtensionFileLoader, importlib.machinery.EXTENSION_SUFFIXES),
+    (_ProjectSourceLoader, importlib.machinery.SOURCE_SUFFIXES),
+    (_ProjectSourcelessLoader, importlib.machinery.BYTECODE_SUFFIXES),
+)
+
+class _ProjectFileFinder(importlib.machinery.FileFinder):
+    # Finds modules in a workspace directory on the mount; their specs carry
+    # the learner's paths.
+    def __init__(self, path):
+        super().__init__(path, *_project_loader_details)
+        self._learner_path = _virtual_workspace_path(path)
+
+    def find_spec(self, fullname, target=None):
+        _spec = super().find_spec(fullname, target)
+        if _spec is None:
+            return None
+        if isinstance(_spec.loader, (_ProjectSourceLoader, _ProjectSourcelessLoader)):
+            _spec.origin = _spec.loader.path
+            _spec.cached = None
+        if _spec.submodule_search_locations is not None:
+            _spec.submodule_search_locations = [
+                _virtual_workspace_path(_location) for _location in _spec.submodule_search_locations
+            ]
+        return _spec
+
+    def __repr__(self):
+        return f"FileFinder({self._learner_path!r})"
+
 def _install_virtual_workspace_paths():
     _original_open = builtins.open
     _original_io_open = io.open
@@ -8901,6 +8972,10 @@ def _install_virtual_workspace_paths():
     _original_os_fchmod = getattr(os, "fchmod", None)
     _original_os_fchown = getattr(os, "fchown", None)
     _original_os_statvfs = getattr(os, "statvfs", None)
+    _original_open_code = io.open_code
+    _original_io_module_open_code = _io.open_code
+    _original_tokenize_open = tokenize.open
+    _original_isdir = os.path.isdir
     _open_file_descriptors = {}
     _workspace_file_descriptors = {}
     _device_file_descriptors = {}
@@ -9420,9 +9495,40 @@ def _install_virtual_workspace_paths():
     ]:
         _patch_one(os.path, _name)
 
+    def _patched_open_code(_path):
+        return _original_open_code(_map_workspace_path(_path))
+
+    def _patched_tokenize_open(_filename):
+        return _original_tokenize_open(_map_workspace_path(_filename))
+
+    def _project_path_hook(_path):
+        _real_path = _map_workspace_path(_path) if isinstance(_path, str) else None
+        if isinstance(_real_path, str) and not os.path.isabs(_real_path):
+            _real_path = os.path.join(_original_getcwd(), _real_path)
+        if not isinstance(_real_path, str):
+            raise ImportError("not a workspace path", path=_path)
+        _real_path = os.path.normpath(_real_path)
+        if _real_path != _root and not _real_path.startswith(_root + os.sep):
+            raise ImportError("not a workspace path", path=_path)
+        if not _original_isdir(_real_path):
+            raise ImportError("only directories are supported", path=_path)
+        return _ProjectFileFinder(_real_path)
+
+    # runpy, importlib and linecache open source through these, so a
+    # learner's path from __file__ reads the mounted file.
+    io.open_code = _patched_open_code
+    _io.open_code = _patched_open_code
+    tokenize.open = _patched_tokenize_open
+    sys.path_hooks.insert(0, _project_path_hook)
+
     os.environ["PWD"] = _patched_getcwd()
 
     def _restore():
+        if _project_path_hook in sys.path_hooks:
+            sys.path_hooks.remove(_project_path_hook)
+        io.open_code = _original_open_code
+        _io.open_code = _original_io_module_open_code
+        tokenize.open = _original_tokenize_open
         builtins.open = _original_open
         io.open = _original_io_open
         os.getcwd = _original_getcwd
@@ -9463,11 +9569,96 @@ def _project_argv():
         try:
             _module_spec = importlib.util.find_spec(_script_path)
             _module_origin = getattr(_module_spec, "origin", None)
+            _locations = getattr(_module_spec, "submodule_search_locations", None)
+            if _locations is not None:
+                # python -m package runs package.__main__; argv[0] names that file.
+                # Found without importing the package, which runs later.
+                _package_directory = os.path.dirname(_module_origin) if isinstance(_module_origin, str) else next(iter(_locations), None)
+                _package_main = os.path.join(_package_directory, "__main__.py") if _package_directory else None
+                if _package_main and os.path.isfile(_package_main):
+                    _module_origin = _package_main
             if isinstance(_module_origin, str) and _module_origin:
-                return [_module_origin] + _args
+                return [_virtual_workspace_path(_module_origin)] + _args
         except Exception:
             pass
+    if _source == "file":
+        # As typed: the script relative to the working directory.
+        return [os.path.relpath(
+            _virtual_workspace_path(_script_absolute_path),
+            _virtual_workspace_path(_active_project_cwd),
+        )] + _args
     return [_script_path] + _args
+
+def _run_project_main_file(_real_path):
+    # runpy.run_path(path, run_name="__main__") for a workspace file, except
+    # that __file__ and the code's filename are the learner's path, and
+    # sys.argv[0] stays as typed.
+    import pkgutil
+    _learner_path = _virtual_workspace_path(_real_path)
+    _importer = pkgutil.get_importer(_real_path)
+    if isinstance(_importer, _ProjectFileFinder):
+        runpy.run_path(_learner_path, run_name="__main__")
+        return
+    if _importer is not None:
+        runpy.run_path(_real_path, run_name="__main__")
+        return
+    with io.open_code(_real_path) as _handle:
+        _code = pkgutil.read_code(_handle)
+    if _code is None:
+        with io.open_code(_real_path) as _handle:
+            _code = compile(_handle.read(), _learner_path, "exec", dont_inherit=True)
+    _main_module = types.ModuleType("__main__")
+    _main_module.__dict__.update({
+        "__file__": _learner_path,
+        "__cached__": None,
+        "__loader__": None,
+        "__package__": "",
+        "__spec__": None,
+    })
+    _missing = object()
+    _saved_main = sys.modules.get("__main__", _missing)
+    sys.modules["__main__"] = _main_module
+    try:
+        exec(_code, _main_module.__dict__)
+    finally:
+        if _saved_main is _missing:
+            sys.modules.pop("__main__", None)
+        else:
+            sys.modules["__main__"] = _saved_main
+
+_project_runner_globals = globals()
+
+def _learner_traceback(_traceback):
+    # The learner's frames only: no frame of this runner, and none of the
+    # runpy frames that start the program, as CPython prints for a script.
+    _entries = []
+    _started = False
+    while _traceback is not None:
+        _frame_globals = _traceback.tb_frame.f_globals
+        if _frame_globals is not _project_runner_globals and (_started or _frame_globals is not runpy.__dict__):
+            _started = True
+            _entries.append(_traceback)
+        _traceback = _traceback.tb_next
+    _result = None
+    for _entry in reversed(_entries):
+        _result = types.TracebackType(_result, _entry.tb_frame, _entry.tb_lasti, _entry.tb_lineno)
+    return _result
+
+def _strip_runner_frames(_error, _seen):
+    if _error is None or id(_error) in _seen:
+        return
+    _seen.add(id(_error))
+    _error.__traceback__ = _learner_traceback(_error.__traceback__)
+    _strip_runner_frames(_error.__cause__, _seen)
+    _strip_runner_frames(_error.__context__, _seen)
+    if isinstance(_error, BaseExceptionGroup):
+        for _nested in _error.exceptions:
+            _strip_runner_frames(_nested, _seen)
+
+def _print_learner_exception(_file):
+    _error = sys.exc_info()[1]
+    _strip_runner_frames(_error, set())
+    traceback.print_exception(_error, file=_file)
 
 try:
     _clear_project_import_state()
@@ -9483,14 +9674,15 @@ try:
     os.makedirs(_cwd, exist_ok=True)
     os.chdir(_cwd)
     _restore_workspace_paths = _install_virtual_workspace_paths()
-    if _cwd not in sys.path:
-        sys.path.insert(0, _cwd)
+    _learner_cwd = _virtual_workspace_path(_cwd)
+    if _learner_cwd not in sys.path:
+        sys.path.insert(0, _learner_cwd)
     for _index, _path_entry in enumerate(_project_pythonpath_entries()):
         if _path_entry not in sys.path:
             sys.path.insert(_index + 1, _path_entry)
     _script_absolute_path = _project_script_absolute_path() if _source == "file" else _script_path
     if _source == "file":
-        _script_dir = os.path.dirname(os.path.abspath(_script_absolute_path))
+        _script_dir = _virtual_workspace_path(os.path.dirname(os.path.abspath(_script_absolute_path)))
         if _script_dir and _script_dir not in sys.path:
             sys.path.insert(0, _script_dir)
     _install_tracekernel_asgi_modules()
@@ -9504,7 +9696,7 @@ try:
     with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
         try:
             if _source == "file":
-                runpy.run_path(_script_absolute_path, run_name="__main__")
+                _run_project_main_file(_script_absolute_path)
             elif _source == "module":
                 runpy.run_module(_script_path, run_name="__main__")
             else:
@@ -9520,7 +9712,7 @@ try:
                 _stderr.write(str(exc.code) + "\\n")
                 _exit_code = 1
         except BaseException:
-            traceback.print_exc(file=_stderr)
+            _print_learner_exception(_stderr)
             _exit_code = 1
 finally:
     _restore_tracekernel_select_module()
