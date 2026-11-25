@@ -805,7 +805,7 @@ public static partial class PreparedExecutionHost
     {
         public void CheckOutputDepth(int depth)
         {
-            if (judged && depth >= MaxOutputDepth) throw new OutputDepthLimitException();
+            if (judged && depth > MaxOutputDepth) throw new OutputDepthLimitException();
         }
 
         private sealed class Entry

@@ -25,6 +25,7 @@ public static partial class CompilerHost
     private const string ProjectWorkspaceRoot = "/tmp/tracecode-csharp-project";
     private const string ScriptRunnerClassName = "__TraceCodeScriptRunner";
     private const int MaxInputDepth = 128;
+    private const int MaxOutputDepth = 64;
     private const int MaxInputCollectionItems = 200_000;
     private const int MaxInputObjectProperties = 50_000;
     private const int MaxInputTraversalNodes = 750_000;
@@ -431,7 +432,7 @@ public static partial class CompilerHost
                     assemblyStream
                 );
                 object? output = InvokeDriver(userAssembly, inputsJson);
-                object? normalizedOutput = NormalizeOutput(output);
+                object? normalizedOutput = NormalizeOutput(output, judged: !request.Trace);
                 timings["runMs"] =
                     stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] =
@@ -486,6 +487,16 @@ public static partial class CompilerHost
                 capturedOut,
                 traceLimitExceeded: true,
                 timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (OutputDepthLimitException failure)
+        {
+            return SerializeError(
+                failure.Message,
+                stopwatch,
+                capturedOut,
+                timeoutReason: "serialization-limit",
                 timings: timings
             );
         }
@@ -640,7 +651,7 @@ public static partial class CompilerHost
                 using MemoryStream assemblyStream = new(peBytes, writable: false);
                 Assembly userAssembly = loadContext.LoadFromStream(assemblyStream);
                 object? output = InvokeDriver(userAssembly, inputsJson);
-                object? normalizedOutput = NormalizeOutput(output);
+                object? normalizedOutput = NormalizeOutput(output, judged: !request.Trace);
                 timings["runMs"] = stopwatch.Elapsed.TotalMilliseconds - runStartedAt;
                 timings["executionRealm"] = "collectible-assembly-load-context";
                 List<RuntimeTraceEvent> events = SnapshotTraceEvents(capturedOut);
@@ -691,6 +702,16 @@ public static partial class CompilerHost
                 capturedOut,
                 traceLimitExceeded: true,
                 timeoutReason: traceLimit.TimeoutReason,
+                timings: timings
+            );
+        }
+        catch (OutputDepthLimitException failure)
+        {
+            return SerializeError(
+                failure.Message,
+                stopwatch,
+                capturedOut,
+                timeoutReason: "serialization-limit",
                 timings: timings
             );
         }
@@ -7775,7 +7796,7 @@ public class TreeNode
         return taskType.GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(result);
     }
 
-    private static object? NormalizeOutput(object? output)
+    private static object? NormalizeOutput(object? output, bool judged)
     {
         if (output is null)
         {
@@ -7785,7 +7806,7 @@ public class TreeNode
         object? normalized = NormalizeOutputValue(
             output,
             0,
-            new OutputReferenceTracker()
+            new OutputReferenceTracker(judged)
         );
         string json = JsonSerializer.Serialize(normalized, normalized?.GetType() ?? typeof(object), JsonOptions);
         return JsonSerializer.Deserialize<JsonElement>(json, JsonOptions);
@@ -7815,7 +7836,8 @@ public class TreeNode
             return value;
         }
 
-        if (depth > 64)
+        references.CheckOutputDepth(depth);
+        if (depth > MaxOutputDepth)
         {
             return "<max depth>";
         }
@@ -7897,6 +7919,7 @@ public class TreeNode
 
     private static object? NormalizeOutputArray(Array array, int dimension, int[] indices, int depth, OutputReferenceTracker references)
     {
+        references.CheckOutputDepth(depth);
         var values = new List<object?>();
         int lower = array.GetLowerBound(dimension);
         int upper = array.GetUpperBound(dimension);
@@ -7967,7 +7990,8 @@ public class TreeNode
             {
                 result[property.Name] = NormalizeOutputValue(property.GetValue(value), depth + 1, references);
             }
-            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException or TraceLimitExceededException)
+            catch (Exception error) when (error.GetBaseException() is TraceCodeTimeoutException
+                or TraceLimitExceededException or OutputDepthLimitException)
             {
                 throw;
             }
@@ -7978,8 +8002,16 @@ public class TreeNode
         }
     }
 
-    private sealed class OutputReferenceTracker
+    private sealed class OutputDepthLimitException()
+        : Exception($"C# judged output exceeds the maximum depth of {MaxOutputDepth}.");
+
+    private sealed class OutputReferenceTracker(bool judged)
     {
+        public void CheckOutputDepth(int depth)
+        {
+            if (judged && depth > MaxOutputDepth) throw new OutputDepthLimitException();
+        }
+
         private sealed class Entry
         {
             public Entry(string typeName, IDictionary<string, object?>? anchor)
