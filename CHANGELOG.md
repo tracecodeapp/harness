@@ -67,6 +67,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- C#: drawing a program that uses conditional compilation directives (`#if`,
+  `#elif`, `#else`, `#endif`, `#define`, `#undef`) is declined. The drawing
+  is refused with the new refusal reason
+  `csharp-trace-conditional-compilation-unsupported`. Run verdicts and Submit
+  are unaffected.
 - **A batch that ends without per-case results keeps what finished.** When a
   batch watchdog stops a provider batch, the provider fails it, or it ends
   without a valid terminal reply, every case whose finish was journalled
