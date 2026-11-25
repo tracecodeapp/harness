@@ -139,10 +139,8 @@ async function withPythonPage(run: (page: Page) => Promise<void>): Promise<void>
         contents: `
           export { runStoppingClock } from './tests/fixtures/python-stopping-batch-clock-entry.ts';
           export { createAlgorithmJudgeBundle, createBrowserJudgeHost } from './src/judge';
-          import {
-            createPythonPreparedExecutionProvider,
-            PythonWorkerClient,
-          } from './packages/runtime-python/src/index.ts';
+          import { createPythonPreparedExecutionProvider } from './packages/runtime-python/src/python-runtime-client.ts';
+          import { PythonWorkerClient } from './packages/runtime-python/src/python-worker-client.ts';
           export function createProvider() {
             const assetBase = new URL('/workers/', location.href);
             const indexUrl = new URL('python/pyodide-0.29.3/', assetBase);
