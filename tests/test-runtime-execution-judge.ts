@@ -5171,6 +5171,8 @@ function scriptedBatchFixture(options: {
   readonly fabricate?: boolean;
   /** The worker dies before announcing this case's start. */
   readonly crashBefore?: string;
+  /** A 'crash' is a malformed worker reply (main's protocol reason), not a lost worker. */
+  readonly crashProtocol?: boolean;
   /** The worker never announces this case's start. */
   readonly skipStart?: string;
   /** The terminal reply carries a different output for these cases than their streamed finish. */
@@ -5232,7 +5234,11 @@ function scriptedBatchFixture(options: {
     const step = await Promise.race([at(releases, label, () => controlled<ScriptedStep>()).promise, aborted]);
     if (step === 'hang') await aborted;
     signal?.removeEventListener('abort', onAbort!);
-    if (step === 'crash') throw new InterruptedCodeBatchError(outcomes, lost());
+    if (step === 'crash') {
+      throw new InterruptedCodeBatchError(outcomes, options.crashProtocol
+        ? new RuntimeProviderError('The worker sent a malformed batch reply.', { reason: 'protocol' })
+        : lost());
+    }
     const result = step === 'runaway' ? runaway(label) : finished(label);
     if (options.forwardFinishes !== false) progress.onCaseFinished?.(index, result);
     return result;
@@ -5774,4 +5780,54 @@ test('D-WATCH review: a custom control port that records asynchronously keeps th
   assert.equal(rows[0]?.status, 'completed');
   assert.equal(rows[0]?.value, 'A');
   assert.equal(rows[1]?.failure?.origin, 'provider');
+});
+
+for (const path of [
+  { label: 'native batch with a journal', options: {}, stop: false },
+  { label: 'Run sent one call per case', options: { nativeStop: false, acks: false }, stop: true },
+] as const) {
+  test(`D-WATCH: a protocol interruption keeps its reason on the suffix (${path.label})`, { timeout: 10000 }, async (t) => {
+    installJudgeTestGlobals(t);
+    const f = scriptedBatchFixture({ ...path.options, crashProtocol: true });
+    t.after(() => f.host.dispose());
+    const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: path.stop });
+    await f.reached('A');
+    f.release('A', 'finish');
+    await f.reached('B');
+    f.release('B', 'crash');
+    const rows = rowsOf(await pending);
+    assert.deepEqual(serviceCutFailures(rows, f.starts, ['B'], undefined, 'protocol'), []);
+    assert.match(rows[1]!.failure!.message, /malformed batch reply/u);
+  });
+}
+
+test('D-WATCH: without a journal, a protocol interruption keeps its reason on the suffix too', { timeout: 10000 }, async (t) => {
+  installJudgeTestGlobals(t);
+  class AsyncRecordControl extends InMemoryJudgeRuntimeControl {
+    override record(invocationId: string, progress: Parameters<InMemoryJudgeRuntimeControl['record']>[1]) {
+      return Effect.promise(() => Promise.resolve()).pipe(Effect.andThen(super.record(invocationId, progress)));
+    }
+  }
+  const f = scriptedBatchFixture({ forwardFinishes: false, crashProtocol: true });
+  const host = browserHostFor(f.provider);
+  t.after(() => host.dispose());
+  const pending = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const judge = yield* createBrowserRuntimeJudge({
+      host, language: RUNTIME, binding: codeBinding(), runtimeControl: new AsyncRecordControl(),
+    });
+    return yield* judge.evaluate<FakeInput>(makePlan(['A', 'B', 'C'].map((label) => ({
+      id: label, input: { label }, expected: label,
+    }))));
+  })));
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'crash');
+  const evaluation = await pending;
+  const rows = evaluation.status === 'completed' ? evaluation.cases : [];
+  assert.equal(rows[0]?.value, 'A');
+  for (const row of rows.slice(1)) {
+    assert.equal(row.failure?.origin, 'provider');
+    assert.equal(row.failure?.origin === 'provider' ? row.failure.reason : undefined, 'protocol', row.caseId);
+  }
 });
