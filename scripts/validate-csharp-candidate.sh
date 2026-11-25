@@ -32,6 +32,7 @@ build_candidate() {
 
 installed_package() (
   set -euo pipefail
+  git diff --exit-code HEAD
   shopt -s nullglob
   scratch=$(mktemp -d)
   trap 'rm -rf -- "$scratch"' EXIT
@@ -42,7 +43,6 @@ installed_package() (
     exit 1
   fi
   tarball=${tarballs[0]}
-  sha256sum "$tarball" | tee "$out/package.sha256"
   consumer="$scratch/consumer"
   site="$scratch/site"
   mkdir "$consumer" "$site"
@@ -177,10 +177,11 @@ try {
   server.closeAllConnections();
 }
 JS
+  sha256sum "$tarball" | tee "$out/package.sha256"
 )
 
 suite_names=(csharp-public-surface csharp-runtime csharp-worker-browser tracekernel-csharp-browser installed-package)
-setup=(install materialize build)
+setup=(install materialize build lock typecheck)
 outcome=0
 for name in "${setup[@]}"; do
   if (( outcome != 0 )); then
@@ -191,6 +192,8 @@ for name in "${setup[@]}"; do
     install) step "$name" pnpm install --frozen-lockfile ;;
     materialize) step "$name" pnpm materialize:csharp-role-assets ;;
     build) step "$name" build_candidate ;;
+    lock) step "$name" pnpm test:runtime-assets-lock ;;
+    typecheck) step "$name" pnpm typecheck ;;
   esac
   outcome=$step_status
 done
