@@ -20,6 +20,8 @@ import {
 import { JavaScriptWorkerClient } from '../packages/runtime-javascript/src/javascript-worker-client';
 import { createJavaScriptRuntimeClient } from '../packages/runtime-javascript/src/javascript-runtime-client';
 import { createJavaScriptPreparedProgram } from '../packages/runtime-javascript/src/javascript-prepared-program';
+import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
+import { allCasesPassPolicy, createAlgorithmJudgeBundle } from '../src/judge';
 import type {
   CodeExecutionResult,
   RuntimePreparedCodeCall,
@@ -59,6 +61,11 @@ const runtimeKernelPolicySource = readFileSync(
 class VmJavaScriptWorker {
   static readonly instances: VmJavaScriptWorker[] = [];
   static readonly typeScriptImports = new Map<string, number>();
+  /**
+   * Deliver worker messages as a structured clone, as a real Worker does, so
+   * a receipt that adopts transferred replies sees main-realm plain data.
+   */
+  static cloneReplies = false;
 
   onmessage: ((event: MessageEvent<ProtocolMessage>) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -79,7 +86,8 @@ class VmJavaScriptWorker {
       postMessage: (message) => {
         queueMicrotask(() => {
           if (!this.terminated) {
-            this.onmessage?.({ data: message } as MessageEvent<ProtocolMessage>);
+            const data = VmJavaScriptWorker.cloneReplies ? structuredClone(message) : message;
+            this.onmessage?.({ data } as MessageEvent<ProtocolMessage>);
           }
         });
       },
@@ -209,6 +217,78 @@ for (const language of ['javascript', 'typescript'] as const) {
       }
     } finally {
       client.terminate();
+    }
+  });
+}
+
+for (const language of ['javascript', 'typescript'] as const) {
+  // B-DESIGN rev 2.2: an unselected row has no attachment, and "a later
+  // explicit continuation can still request the drawing". The Judge disposes
+  // the ordinary program once the first request's receipt is joined and
+  // keeps the observation schedule for continuations, so an observer the
+  // first request never prepared must still derive from the ordinary
+  // preparation after that disposal.
+  test(`${language} continuation draws a case after a first request that drew nothing`, async () => {
+    resetVmWorkers();
+    const originalWorker = globalThis.Worker;
+    Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: VmJavaScriptWorker });
+    VmJavaScriptWorker.cloneReplies = true;
+    const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+      providerRegistry: createBrowserRuntimeProviderRegistry([
+        createJavaScriptBrowserRuntimeProvider({ algorithmExecution: 'disposable-worker' }),
+      ]),
+      providers: ['javascript', 'typescript'],
+      featureOverrides: {
+        worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true,
+      },
+      debug: false,
+    }));
+    const bundle = (id: string) => createAlgorithmJudgeBundle({
+      id,
+      language,
+      code: language === 'typescript'
+        ? 'function solve(n: number): number {\n  return n + 1;\n}'
+        : 'function solve(n) {\n  return n + 1;\n}',
+      functionName: 'solve',
+      executionStyle: 'function',
+      trace: true,
+      cases: [{ id: 'A', input: { n: 1 }, expected: 2 }, { id: 'C', input: { n: 3 }, expected: 4 }],
+      policy: allCasesPassPolicy(),
+    });
+    const attachments = (evaluation: any) =>
+      evaluation.cases.map((row: any) => [row.caseId, row.attachment?.status, row.attachment?.reason]);
+    const prepares = () => VmJavaScriptWorker.instances
+      .flatMap((worker) => worker.postedTypes).filter((type) => type === 'prepare-execution').length;
+    try {
+      // Control: the first request draws A, so the observer is prepared
+      // before the ordinary program is disposed.
+      const drawnFirst = await host.execute({ bundle: await bundle('drawn-first'), interactive: true, tracing: { caseIds: ['A'] } });
+      assert(drawnFirst.executionId, 'drawn-first execution was not retained');
+      const afterDrawn = await host.execute({ executionId: drawnFirst.executionId, tracing: { caseIds: ['C'] } });
+      assert.deepEqual(attachments(afterDrawn.evaluation), [['C', 'drawn', undefined]]);
+      await host.disposeExecution(drawnFirst.executionId);
+
+      const preparesBefore = prepares();
+      const plain = await host.execute({ bundle: await bundle('plain-first'), interactive: true });
+      assert(plain.executionId, 'plain execution was not retained');
+      assert(plain.evaluation.status === 'completed');
+      assert.deepEqual(plain.evaluation.cases.map((row) => [row.caseId, row.verdict.kind, row.attachment]),
+        [['A', 'passed', undefined], ['C', 'passed', undefined]]);
+      const startedAt = performance.now();
+      const continued = await host.execute({ executionId: plain.executionId, tracing: { caseIds: ['A'] } });
+      const elapsedMs = performance.now() - startedAt;
+      assert.deepEqual(attachments(continued.evaluation), [['A', 'drawn', undefined]],
+        `continuation after a plain first request after ${Math.round(elapsedMs)} ms`);
+      const second = await host.execute({ executionId: plain.executionId, tracing: { caseIds: ['C'] } });
+      assert.deepEqual(attachments(second.evaluation), [['C', 'drawn', undefined]]);
+      // The observer derives from the one trusted ordinary preparation.
+      assert.equal(prepares() - preparesBefore, 1);
+      await host.disposeExecution(plain.executionId);
+    } finally {
+      await host.dispose();
+      resetVmWorkers();
+      VmJavaScriptWorker.cloneReplies = false;
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: originalWorker });
     }
   });
 }

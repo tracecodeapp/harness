@@ -408,6 +408,13 @@ export class JavaScriptWorkerClient {
   private initPromise: Promise<InitResult> | null = null;
   private warmupPromises = new Map<JavaScriptWorkerLanguage, Promise<WarmupResult>>();
   private executionTail: Promise<void> = Promise.resolve();
+  /**
+   * Observer derivations keyed by the ordinary preparation call. A slot lives
+   * as long as its key, not as long as the ordinary program: the Judge
+   * disposes that program once the first request's receipt is joined, and a
+   * later continuation may still prepare the observer from the same trusted
+   * reply.
+   */
   private readonly observationPreparations = new WeakMap<object, ObservationPreparationSlot>();
   private readonly preparedPrograms = new Set<RuntimePreparedProgram>();
   private readonly leasedExecutionWorkers =
@@ -1166,7 +1173,8 @@ export class JavaScriptWorkerClient {
         executeTraceBatch: preparation.mode === 'trace' ? executeTraceBatch : undefined,
         dispose: async () => {
           preparedExecution = undefined;
-          this.observationPreparations.delete(call);
+          // Keep the observer slot: it derives only from the trusted reply,
+          // and a continuation may prepare it after this disposal.
           this.preparedPrograms.delete(program);
           if (sesProgram) await pool?.disposeProgram(sesProgram).catch(() => undefined);
           if (sesTraceProgram) await pool?.disposeProgram(sesTraceProgram).catch(() => undefined);
