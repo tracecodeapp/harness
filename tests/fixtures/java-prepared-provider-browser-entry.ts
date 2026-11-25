@@ -12,6 +12,7 @@ import type {
 import type {
   RuntimeTraceEvent,
 } from '../../packages/runtime-contracts/src/runtime-trace';
+import './java-judged-output-browser-entry';
 
 interface JavaAlgorithmProfileShape {
   schema?: string;

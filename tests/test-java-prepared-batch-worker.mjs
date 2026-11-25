@@ -294,3 +294,27 @@ for (const stop of [false, true]) {
     ]);
   });
 }
+
+test('judged Java replies enforce UTF-8 bytes and carry typed refusals', () => {
+  const presentationWorker = readFileSync(new URL('../workers/java/java-worker.js', import.meta.url), 'utf8');
+  const values = ['x'.repeat(64), 'x'.repeat(2048), '雪'.repeat(341), '😀'.repeat(255), '\ud800'.repeat(171)];
+  const outputs = values.map((value) => JSON.stringify(value));
+  const evaluate = (output) => JSON.parse(runInNewContext(presentationWorker + `
+    JSON.stringify(preparedJavaResultFromReport(
+      { mode: 'code', judgedOutputPolicy: { maxBytes: 1024, maxItems: 2, maxDepth: 64, maxNodes: 65 } },
+      { success: true, output, runtimeStdoutLines: ['preserved'] }, 0, 0
+    ))
+  `, { self: workerGlobal(), URL, queueMicrotask, TextEncoder, output }));
+  const rows = outputs.map(evaluate);
+  assert.equal(rows[0].output, values[0]);
+  assert.equal(rows[1].timeoutReason, 'serialization-limit', 'ascii-2048 is a typed serialization-limit');
+  assert.equal(rows[3].output, values[3]);
+  for (const result of [rows[1], rows[2], rows[4], evaluate('tracecode:judged-output-limit:cycle')]) {
+    assert.equal(result.success, false);
+    assert.equal(result.output, null);
+    assert.equal(result.timeoutReason, 'serialization-limit');
+    assert.deepEqual(result.consoleOutput, ['preserved']);
+  }
+  const markerAsLearnerString = 'tracecode:judged-output-limit:cycle';
+  assert.equal(evaluate(JSON.stringify(markerAsLearnerString)).output, markerAsLearnerString);
+});
