@@ -1208,7 +1208,8 @@ function evaluateJournalled(
 function assertServiceFailure(
   row: JudgeEvaluationResult['cases'][number] | undefined,
   reason: 'runtime-failure' | 'protocol',
-  uncertain: boolean
+  uncertain: boolean,
+  notStarted = !uncertain
 ) {
   assert.ok(row);
   assert.equal(row.status, 'runtime-error', `${row.caseId}: status`);
@@ -1223,6 +1224,14 @@ function assertServiceFailure(
     uncertain,
     `${row.caseId}: completion uncertainty is stated only for a started case`
   );
+  assert.equal(
+    /The case had not started\./u.test(row.failure?.message ?? ''),
+    notStarted,
+    `${row.caseId}: a case whose start was never accepted says so, in a batch that acknowledges starts`
+  );
+  const error = row.diagnostics.find((diagnostic) => diagnostic.severity === 'error');
+  assert.equal(error?.message, row.failure?.message, `${row.caseId}: the diagnostic states the same failure`);
+  assert.equal(error?.code, 'runtime-provider-error');
   assert.ok(
     !row.diagnostics.some((diagnostic) => diagnostic.code === 'client-timeout'),
     `${row.caseId}: no client-timeout diagnostic`
@@ -1348,5 +1357,5 @@ test('D-WATCH: a provider failure published after an accepted finish keeps the p
   assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
   assertServiceFailure(result.cases[1], 'protocol', true);
   assertServiceFailure(result.cases[2], 'protocol', false);
-  assert.equal(result.cases[2]?.failure?.message, 'malformed reply');
+  assert.equal(result.cases[2]?.failure?.message, 'malformed reply The case had not started.');
 });

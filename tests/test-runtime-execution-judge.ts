@@ -5252,7 +5252,12 @@ type DWatchRow = JudgeCaseResult;
  * suffix is the provider's failure (no verdict, limit or not-run), and no
  * generation started A twice.
  */
-function serviceCutFailures(rows: readonly DWatchRow[], starts: readonly string[], uncertain: string[]): string[] {
+function serviceCutFailures(
+  rows: readonly DWatchRow[],
+  starts: readonly string[],
+  uncertain: string[],
+  notStarted: string[] = rows.slice(1).map(({ caseId }) => caseId).filter((id) => !uncertain.includes(id))
+): string[] {
   const failures: string[] = [];
   const [a, ...suffix] = rows;
   if (a?.status !== 'completed') failures.push('A/status');
@@ -5270,6 +5275,11 @@ function serviceCutFailures(rows: readonly DWatchRow[], starts: readonly string[
     if (/completion is uncertain/u.test(row.failure?.message ?? '') !== uncertain.includes(id)) {
       failures.push(`${id}/completion-uncertain`);
     }
+    if (/The case had not started\./u.test(row.failure?.message ?? '') !== notStarted.includes(id)) {
+      failures.push(`${id}/not-started`);
+    }
+    const error = row.diagnostics.find((diagnostic) => diagnostic.severity === 'error');
+    if (error?.message !== row.failure?.message) failures.push(`${id}/diagnostic`);
   }
   return failures;
 }
@@ -5435,11 +5445,13 @@ test('D-WATCH seeded controls: the service-cut oracle bites on a replaced A reco
     caseId: 'A', status: 'completed', value: 'A', stdout: 'stdout:A\n', timedOut: false,
     verdict: { kind: 'passed' },
   } as unknown as DWatchRow;
-  const b = {
-    caseId: 'B', status: 'runtime-error', timedOut: false, verdict: { kind: 'not-evaluated' },
-    failure: { origin: 'provider', reason: 'runtime-failure', message: 'lost. The case had started, and its completion is uncertain.' },
-  } as unknown as DWatchRow;
-  const c = { ...b, caseId: 'C', failure: { origin: 'provider', reason: 'runtime-failure', message: 'lost.' } } as unknown as DWatchRow;
+  const providerRow = (caseId: string, message: string) => ({
+    caseId, status: 'runtime-error', timedOut: false, verdict: { kind: 'not-evaluated' },
+    failure: { origin: 'provider', reason: 'runtime-failure', message },
+    diagnostics: [{ severity: 'error', code: 'runtime-provider-error', message }],
+  }) as unknown as DWatchRow;
+  const b = providerRow('B', 'lost. The case had started, and its completion is uncertain.');
+  const c = providerRow('C', 'lost. The case had not started.');
   assert.deepEqual(serviceCutFailures([a, b, c], ['A', 'B'], ['B']), [], 'the unmutated subject passes');
   // Mutant 1: replace A's committed record with B's timeout on transport failure.
   const timedOutA = {
