@@ -626,6 +626,8 @@ function batchItemResult<Input, Expected, Result>(
 const COMPLETION_UNCERTAIN =
   'The case had started, and its completion is uncertain.';
 
+const NOT_STARTED = 'The case had not started.';
+
 const UNFINISHED_BATCH_MESSAGE =
   'The runtime batch ended without its result.';
 
@@ -657,7 +659,8 @@ function unfinishedBatchFailure(outcome: JudgeKernelProcessOutcome): JudgeKernel
  * finish stands as delivered. In a stopping batch, the cases after an
  * accepted runaway were never going to run, so they stay not-run. Every
  * other case is the provider's failure, never a limit or a verdict; one
- * whose start was accepted says its completion is uncertain.
+ * whose start was accepted says its completion is uncertain, and in a batch
+ * that acknowledges starts, one that never started says so.
  */
 function serviceStoppedBatch<Input, Expected, Result>(
   plan: JudgeEvaluationPlan<Input, Expected>,
@@ -698,9 +701,14 @@ function serviceStoppedBatch<Input, Expected, Result>(
       if (stopAtFirstRunaway && limit && !stoppedBy) stoppedBy = { stoppedByCaseId: testCase.id, limit };
       continue;
     }
+    // A batch that acknowledges starts tells a case that started and never
+    // finished apart from one that never started. Without start
+    // acknowledgements nothing is claimed about which.
     const message = started.has(testCase.id)
       ? `${failure.message} ${COMPLETION_UNCERTAIN}`
-      : failure.message;
+      : started.size > 0
+        ? `${failure.message} ${NOT_STARTED}`
+        : failure.message;
     const errorDiagnostic = (failed.diagnostics ?? []).find((diagnostic) => diagnostic.severity === 'error');
     const {
       structuredResult: _value,
