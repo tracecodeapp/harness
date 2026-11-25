@@ -821,7 +821,7 @@ function parseTerminalStatements(command: string): TerminalAstStatement[] | null
 
 // Static value of a word that needs no expansion at runtime: literals,
 // single-quoted text, and double-quoted text without substitutions.
-function terminalStaticWordValue(word: unknown): string | null {
+export function terminalStaticWordValue(word: unknown): string | null {
   const candidate = word as {
     type?: unknown;
     parts?: Array<{ type?: unknown; value?: unknown; pattern?: unknown; parts?: unknown[] }>;

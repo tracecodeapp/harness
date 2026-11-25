@@ -169,6 +169,26 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   `/usr/include` path in `__FILE__`. Compiling preserves the original
   source bytes read by `#embed`.
 
+- **Terminal: piped and redirected program output goes only where the shell
+  sends it.** A program in any of the six languages, or an npm script, run in a
+  pipeline, with a redirect, inside `$(…)`, or in a redirected function,
+  group, subshell or script, now writes to the terminal only on the streams
+  the shell leaves there, as Bash does for the same line. `prog | grep x`
+  shows grep's lines and the program's stderr; `prog > out 2> err` shows
+  nothing; `prog 2>&1 > out` shows only stderr. `prog 2>&1`, `prog 2>&1 |
+  cat`, `prog > out 2>&1` and `prog &> out` keep stdout and stderr in the
+  order the program wrote them. Before, the terminal also showed the
+  program's unfiltered output, though the files and the next command got the
+  right bytes. As in Bash, a piped or redirected stream no longer appears
+  while the program runs: `prog | tee log` shows the output when the pipeline
+  finishes, and `prog > /dev/tty` shows it once, after the program exits.
+  npm with a pipe or redirect, including on its input (`echo x | npm test`,
+  `npm test < input`), no longer prints the script's output twice. The same
+  holds after `exec > file`, `exec 2> file` or `exec 1>&2`, and inside a file
+  run with `source` or `.` or a string run with `eval`. A program started
+  from `source` or `eval` no longer ends the rest of the line. An npm
+  script's runtime error reaches the result as a direct run's does. Verdicts,
+  traces and drawings are unchanged.
 - Python project commands name workspace files by the path the terminal
   shows, as CPython does for the same command in that directory. Tracebacks
   (syntax and runtime errors, in the main file and in imported project

@@ -1,6 +1,7 @@
 import { withOperationAuthority } from '../operation-authority';
 import { ProcessAuthority } from './process-authority';
 import { markShellStdinInAst } from './shell-stdin';
+import { markShellOutputInAst, mergedChildOutput, routeChildOutputEvent, SHELL_FRAME_OUTPUT_ROUTES } from './shell-output';
 import { isWasiCommandExecutable } from './executable-format';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
@@ -547,6 +548,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
   // Cached RuntimeFile objects are immutable; consumers must shallow-copy arrays before filtering.
   private snapshotCache: { version: number; files: RuntimeFile[]; directories: string[]; directoryMetadata: RuntimeDirectory[]; symlinks: RuntimeSymlink[]; kernelFiles: RuntimeFile[] } | null = null;
   private readonly fsLocks = new RuntimeFileSystemLockCoordinator();
+  /** Runtime children whose ctx.exec owns the runtimes it starts (package managers). */
+  private readonly runtimeParentContexts = new WeakSet<RuntimeCommandExecutionContext>();
   private readonly commandScheduler: RuntimeCommandScheduler;
   private readonly maxProcesses: number | null;
   private readonly httpState: WorkspaceHttpState;
@@ -1040,6 +1043,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         rewriteKernelShellCommandInvocationsInAst(ast);
         rewriteTraceKernelBinInvocationsInAst(ast, this.traceKernelCommandDispatchNames);
         markShellStdinInAst(ast);
+        markShellOutputInAst(ast);
         return { ast };
       },
     } as never);
@@ -1052,7 +1056,9 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
     ctx: CommandContext,
     execute: (context: CommandContext) => Promise<RuntimeCommandResult>
   ): Promise<RuntimeCommandResult> {
-    const parentContext = this.resolveCommandContext(ctx);
+    // Package scripts run their commands through the package manager child's
+    // ctx.exec, which carries that child as the runtime parent.
+    const parentContext = this.runtimeParentContext(ctx) ?? this.resolveCommandContext(ctx);
     if (!parentContext) return execute(ctx);
     // Script dispatch delegates to the shell's ctx.exec closure. It owns no
     // runtime engine itself; isolate the language invocation that it starts.
@@ -1104,7 +1110,8 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       }
       kernelProcess = spawned.right;
     }
-    const result = await this.runCommandAs(
+    let childContext: RuntimeCommandExecutionContext | undefined;
+    const childResult = await this.runCommandAs(
       command,
       {
         cwd: ctx.cwd,
@@ -1121,12 +1128,41 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
       {
         ...(kernelProcess ? { kernelProcess, preserveKernelStandardIo: true } : {}),
         admittedShellChild: true,
-        initialize: async (_process, context) => { context.parentEventContext = parentContext; },
+        initialize: async (_process, context) => {
+          childContext = context;
+          context.parentEventContext = parentContext;
+          // Live output follows the shell's routing for this stage: a piped or
+          // redirected stream reaches the terminal only through the shell.
+          if (ctx.outputRoutes) context.outputRoutes = ctx.outputRoutes;
+        },
         kernelProcessGroupId: parentContext.process.pgid,
         kernelSessionId: parentContext.process.sid,
-        execute: (_context, fs) => execute({ ...ctx, fs }),
+        execute: async (context, fs) => {
+          const exec = ctx.exec;
+          if (!exec) return execute({ ...ctx, fs });
+          // Commands this child runs (a package script) belong to it, and
+          // their routes are relative to its own output.
+          this.runtimeParentContexts.add(context);
+          const result = await execute({
+            ...ctx,
+            fs,
+            exec: (script, options) => exec(script, {
+              ...options,
+              outputRoutes: options?.outputRoutes ?? SHELL_FRAME_OUTPUT_ROUTES,
+              runtimeParent: context,
+            }),
+          });
+          // A package manager returns only its script's bytes and status; keep
+          // the last runtime invocation's structured outcome, as a direct run does.
+          return result.error || !context.runtimeInvocationError
+            ? result
+            : { ...result, error: context.runtimeInvocationError };
+        },
       }
     );
+    const result = childContext?.outputRoutes?.[2]
+      ? mergedChildOutput(childResult, childContext.mergedOutputTranscript)
+      : childResult;
     // just-bash retains only shell result fields. Preserve the final runtime
     // invocation's structured outcome on the owning shell, including clearing
     // a recovered predecessor's failure after a successful invocation.
@@ -1139,6 +1175,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private resolveCommandContext(ctx?: CommandContext): RuntimeCommandExecutionContext | undefined {
     return ctx?.fs ? commandContextForFs(ctx.fs) : undefined;
+  }
+
+  private runtimeParentContext(ctx: CommandContext): RuntimeCommandExecutionContext | undefined {
+    const parent = ctx.runtimeParent as RuntimeCommandExecutionContext | undefined;
+    return parent && this.runtimeParentContexts.has(parent) ? parent : undefined;
   }
 
   private hasHttpCapability(actor: RuntimeWorkspaceActor, capability: keyof NonNullable<RuntimeWorkspaceCapabilities['http']>): boolean {
@@ -3788,7 +3829,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
 
   private dispatchRuntimeEvent(event: RuntimeCommandEvent, commandContext?: RuntimeCommandExecutionContext): void {
     if (commandContext?.parentEventContext) {
-      commandContext.parentEventContext.runtimeIo.emit(event);
+      if (event.type === 'output' && commandContext.outputRoutes?.[2]) {
+        (commandContext.mergedOutputTranscript ??= []).push({ stream: event.stream, data: event.data });
+      }
+      const routed = routeChildOutputEvent(event, commandContext.outputRoutes);
+      if (routed) commandContext.parentEventContext.runtimeIo.emit(routed);
       return;
     }
     commandContext?.eventHandler?.(event);
