@@ -185,6 +185,20 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   script's `__spec__` and `__package__` are `None` and its `__loader__` is a
   `SourceFileLoader`; `io.FileIO` and `os.open` open workspace paths. Algorithm
   runs, verdicts and traces are unchanged.
+
+- JavaScript and TypeScript projects: every stack frame names the file it
+  came from, with that file's line and column, as Node prints them for the
+  same files. A frame in a required or imported module was labelled with the
+  entry file (`node main.js` showed `helper.js`'s throw at `main.js:1:30`),
+  and a module that threw while it was loading lost all its frames. A caught
+  error's `err.stack`, and `console.error(err)`, carried raw `eval at ...`
+  frames and runtime URLs; `err.stack` is now right whenever the program
+  reads it. Top-level code reads `Object.<anonymous>` in CommonJS, ES module
+  frames use `file://` URLs, and frames outside the workspace are still left
+  out. A multi-line error message keeps all its lines. In ES modules, lines
+  no longer shift after a multi-line `import` or an `import`/`export` next to
+  blank lines. TypeScript frames name the emitted JavaScript (`out/*.js`).
+
 - C# judged answers preserve built-in `TreeNode` and `ListNode` shapes,
   including shared references. On those nodes, `value` reads and writes `val`
   and is omitted from the answer. Use the `val` field for `ref` or `out`.
@@ -277,6 +291,14 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   its `CodeExecutionResult`.
 
 ### Known limits
+
+- In Firefox and Safari, which have no stack-formatting hook, JavaScript and
+  TypeScript project stacks keep the engine's own frame format, and a frame
+  on a module's first line reports its column shifted by the module wrapper's
+  header. Lines are right; Chromium also corrects those columns.
+- In a JavaScript ES module, a frame on a line that starts with an `import` or
+  `export` statement can report a shifted column; its line is right. Frames
+  inside code the program passes to `eval` or `new Function` are left out.
 
 - In an untraced case of a mixed trace batch (and in an untraced Run), a loop
   that runs only inside the learner's own `exec`/`eval` code is not seen by
