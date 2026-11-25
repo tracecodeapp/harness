@@ -198,6 +198,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   out. A multi-line error message keeps all its lines. In ES modules, lines
   no longer shift after a multi-line `import` or an `import`/`export` next to
   blank lines. TypeScript frames name the emitted JavaScript (`out/*.js`).
+  Anonymous callbacks print without a name, as in Node, and a function named
+  `eval` keeps its name. In Firefox and Safari, an uncaught error and
+  `console.error(err)` print the error's whole message before its frames;
+  they printed no message, and a learner's own `Error.prepareStackTrace` no
+  longer loses message lines after the first.
 
 - C# judged answers preserve built-in `TreeNode` and `ListNode` shapes,
   including shared references. On those nodes, `value` reads and writes `val`
