@@ -71,6 +71,7 @@ interface WorkerLog {
   singleCaseRequests?: number;
   deliveringInvalidProgress?: boolean;
   entered?: number[];
+  sendLateFinish?: () => void;
 }
 
 /**
@@ -154,6 +155,14 @@ class StuckCaseWorker {
           this.emit({ ...event, payload: forgedStart, protocolToken: 'wrong-token' });
           this.emit({ ...event, payload: forgedStart, id: 'stale-command' });
           this.emit({ ...event, payload: { index: Number(progress.index) + 1, phase: 'started' } });
+          this.emit({
+            ...event,
+            payload: {
+              index: Number(progress.index) + 1,
+              phase: 'finished',
+              result: { success: true, output: 'out of order', consoleOutput: [] },
+            },
+          });
           this.log.deliveringInvalidProgress = false;
           this.emit(event);
           this.log.deliveringInvalidProgress = true;
@@ -181,7 +190,14 @@ class StuckCaseWorker {
       const { value } = inputBatch[index]!;
       this.log.entered?.push(value);
       if (report) progress({ index, phase: 'started' });
-      if (index === this.runawayCase) return; // learner code never returns
+      if (index === this.runawayCase) {
+        // Let a test model a finish queued on the page at the same instant the
+        // clock goes off, before asynchronous worker teardown has settled.
+        this.log.sendLateFinish = () => progress({
+          index, phase: 'finished', result: { success: true, output: value, consoleOutput: [] },
+        });
+        return;
+      }
       if (index === this.crashCase) return this.crash();
       if (payload.stopAtFirstRunaway === true) {
         await new Promise((resolve) => setTimeout(resolve, 5));
@@ -454,6 +470,64 @@ for (const cut of ['after first start', 'after first finish'] as const) {
     }
   });
 }
+
+for (const stopAtFirstRunaway of [false, true]) {
+  test(`Python ordinary batch forwards authenticated finishes in order (stop=${stopAtFirstRunaway})`, async () => {
+    const log = newLog();
+    const { provider, program } = await preparedProgram('code', -1, log);
+    const events: Array<[string, number, unknown?]> = [];
+    try {
+      assert.equal(program.mode, 'code');
+      const call = {
+        inputBatch: [11, 22, 33].map((value) => ({ value })),
+        stopAtFirstRunaway,
+        onCaseStarted: (index: number) => events.push(['start', index]),
+        onCaseFinished: (index: number, row: CodeExecutionResult) => {
+          assert.equal(row.kind, 'completed');
+          events.push(['finish', index, row.output]);
+        },
+      };
+      await program.executeBatchIsolated!(call);
+      assert.deepEqual(events, [
+        ['start', 0], ['finish', 0, 11], ['start', 1], ['finish', 1, 22], ['start', 2], ['finish', 2, 33],
+      ]);
+    } finally {
+      await program.dispose();
+      provider.terminate();
+    }
+  });
+}
+
+test('Python ordinary batch never forwards a finish after its case clock expired', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const log = newLog();
+  const { provider, program } = await preparedProgram('code', 1, log);
+  const events: Array<[string, number]> = [];
+  try {
+    assert.equal(program.mode, 'code');
+    const call = {
+      inputBatch: [11, 0, 33].map((value) => ({ value })),
+      limits: { wallClockMs: 100 },
+      onCaseStarted: (index: number) => events.push(['start', index]),
+      onCaseFinished: (index: number, _row: CodeExecutionResult) => events.push(['finish', index]),
+    };
+    const execution = program.executeBatchIsolated!(call);
+    void execution.catch(() => undefined);
+    await setImmediate();
+    assert.equal(typeof log.sendLateFinish, 'function');
+    context.mock.timers.tick(1_100);
+    log.sendLateFinish?.();
+    await setImmediate();
+    if (log.batchRequests.length === 1) context.mock.timers.tick(6_000);
+    await execution;
+    assert.deepEqual(events, [
+      ['start', 0], ['finish', 0], ['start', 1], ['start', 2], ['finish', 2],
+    ]);
+  } finally {
+    await program.dispose();
+    provider.terminate();
+  }
+});
 
 test('Python stopping batch whose cases all finish returns every streamed result', async () => {
   for (const mode of ['code', 'trace'] as const) {
