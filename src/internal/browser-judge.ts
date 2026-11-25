@@ -318,12 +318,6 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
   private sealed = false;
   /** `service-deadline` has been marked for this dispatch. */
   private deadlineMarked = false;
-  /**
-   * The cases known to have finished when the deadline sealed the journal:
-   * those accepted, and, in an in-order batch, every case before the last
-   * accepted start. Only these can still be kept from a late prefix.
-   */
-  private completeAtSeal: ReadonlySet<number> = new Set();
   /** Every entry's start is journalled (worker ACKs, or the coordinator sends each case). */
   private startsAcknowledged = false;
   private portFailed = false;
@@ -410,22 +404,25 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
 
   /**
    * Bring a provider's interrupted prefix into the journal before
-   * publishing. A prefix entry is an authenticated finish, so it also
-   * evidences its start. After the service deadline only a case known to
-   * have finished before it is kept; any other entry is fenced.
+   * publishing. A prefix entry is the provider's authenticated finish.
+   * - Before any stop (a worker loss), it also evidences its own start.
+   * - After a watchdog stop (the injected deadline or the real kill), the
+   *   one keep rule applies: the entry stands only if, where this dispatch
+   *   records starts, the journal recorded that case's start. Any other
+   *   entry is fenced. The dispatch calls this only within its grace.
+   * An entry for a case already accepted never replaces it.
    */
   reconcile(error: InterruptedCodeBatchError, offset = 0): void {
     this.withOffset(offset, () => {
       error.prefix.forEach((result, local) => {
         const index = local + offset;
         if (this.accepted.has(index)) return;
-        if (this.sealed && !this.completeAtSeal.has(index)) {
+        const startKnown = !this.startsAcknowledged || this.startedEntries.has(index);
+        if (this.sealed && !startKnown) {
           this.fenced('finished', local);
           return;
         }
-        if (this.startsAcknowledged && !this.startedEntries.has(index)) {
-          this.record('started', local, undefined, true);
-        }
+        if (!startKnown) this.record('started', local, undefined, true);
         this.record('finished', local, result, true);
       });
     });
@@ -471,11 +468,6 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
   }
 
   private expire(): void {
-    const lastStart = Math.max(-1, ...this.startedEntries);
-    this.completeAtSeal = new Set([
-      ...this.accepted.keys(),
-      ...Array.from({ length: Math.max(0, lastStart) }, (_, index) => index),
-    ]);
     this.sealed = true;
     this.deadlineMarked = true;
     this.marks.serviceDeadline(this.generation, 'injected', this.accepted.size);
@@ -505,7 +497,13 @@ class BatchProgressJournal implements OrdinaryBatchProgress {
     }
     const entry = progress === 'started'
       ? { kind: 'started' as const, caseId }
-      : { kind: 'finished' as const, output: batchCaseOutput(caseId, mappedCodeOutcome(this.runtime, result!)) };
+      : {
+          kind: 'finished' as const,
+          output: batchCaseOutput(caseId, mappedCodeOutcome(this.runtime, result!)),
+          // A reconciled finish is the provider's interrupted prefix, which
+          // the port admits after its process was stopped.
+          ...(reconciling ? { prefix: true as const } : {}),
+        };
     const recorded = Effect.runSyncExit(this.control.record!(this.invocationId, entry));
     if (Exit.isFailure(recorded)) {
       // An asynchronous (or failing) port keeps no journal for this dispatch.
@@ -1314,8 +1312,8 @@ type JournalledBatchReply =
   | typeof SERVICE_DEADLINE;
 
 /**
- * How long a provider the service deadline aborted may take to surface the
- * authenticated prefix it already holds.
+ * How long a provider stopped by a watchdog (the injected deadline or the
+ * real kill) may take to surface the authenticated prefix it already holds.
  */
 const SERVICE_DEADLINE_SETTLE_MS = 2_000;
 
@@ -1331,9 +1329,10 @@ function settled<T>(promise: Promise<T>): Promise<Settled<T>> {
  *   signal, so once the call is stopped (the injected deadline, the
  *   watchdog's kill, a caller abort) no provider abort handler can report
  *   progress into it.
- * - The trusted service deadline can win the race. The provider is then
- *   aborted and gets a short grace to surface its authenticated prefix,
- *   which is reconciled under the deadline's rules.
+ * - The trusted service deadline can win the race; the real watchdog's
+ *   kill interrupts the call. Either way the aborted provider gets the same
+ *   short grace to surface its authenticated prefix, which is reconciled
+ *   under the one keep rule (see `BatchProgressJournal.reconcile`).
  * `offset` is the case index of entry 0 (one-case calls).
  */
 function journalledBatchCall(
@@ -1346,20 +1345,16 @@ function journalledBatchCall(
       Effect.catchAll(keepInterruptedPrefix)
     );
   }
-  return Effect.tryPromise({
-    try: async (signal): Promise<JournalledBatchReply> => {
-      if (journal.expiredAlready) return SERVICE_DEADLINE;
-      const local = new AbortController();
-      const linked = AbortSignal.any([signal, local.signal]);
-      linked.addEventListener('abort', () => journal.seal(), { once: true });
-      const pending = settled(call(linked));
-      const expired = journal.expiredPromise().then((): typeof SERVICE_DEADLINE => SERVICE_DEADLINE);
-      const first = await Promise.race([pending, expired]);
-      if (first !== SERVICE_DEADLINE) {
-        if (first.ok) return first.value;
-        throw first.error;
-      }
-      local.abort(new DOMException('The service deadline expired.', 'TimeoutError'));
+  return Effect.suspend(() => {
+    let pending: Promise<Settled<readonly CodeExecutionResult[]>> | undefined;
+    let graced: Promise<void> | undefined;
+    // After a watchdog stop (the injected deadline, or the real kill that
+    // interrupts this call), the aborted provider gets the same grace to
+    // surface the authenticated prefix it holds. TraceKernel awaits this
+    // call's interruption before the process ends, so the grace completes
+    // before the batch is taken.
+    const grace = () => graced ??= (async () => {
+      if (!pending) return;
       let timer: number | ReturnType<typeof setTimeout> | undefined;
       const late = await Promise.race([
         pending,
@@ -1367,10 +1362,30 @@ function journalledBatchCall(
       ]);
       clearTimeout(timer);
       if (late && !late.ok && late.error instanceof InterruptedCodeBatchError) journal.reconcile(late.error, offset);
-      return SERVICE_DEADLINE;
-    },
-    catch: errorFromUnknown,
-  }).pipe(Effect.catchAll(keepInterruptedPrefix));
+    })();
+    return Effect.tryPromise({
+      try: async (signal): Promise<JournalledBatchReply> => {
+        if (journal.expiredAlready) return SERVICE_DEADLINE;
+        const local = new AbortController();
+        const linked = AbortSignal.any([signal, local.signal]);
+        linked.addEventListener('abort', () => journal.seal(), { once: true });
+        pending = settled(call(linked));
+        const expired = journal.expiredPromise().then((): typeof SERVICE_DEADLINE => SERVICE_DEADLINE);
+        const first = await Promise.race([pending, expired]);
+        if (first !== SERVICE_DEADLINE) {
+          if (first.ok) return first.value;
+          throw first.error;
+        }
+        local.abort(new DOMException('The service deadline expired.', 'TimeoutError'));
+        await grace();
+        return SERVICE_DEADLINE;
+      },
+      catch: errorFromUnknown,
+    }).pipe(
+      Effect.onInterrupt(() => Effect.promise(grace)),
+      Effect.catchAll(keepInterruptedPrefix)
+    );
+  });
 }
 
 /**
@@ -1591,7 +1606,7 @@ function executeProviderBatchUntilRunaway(
             'Prepared runtime returned too many batch outcomes.', { reason: 'protocol' }
           ));
         }
-        if (finished && !journal.hasFinished(index)) entry.finished(0, finished);
+        if (finished) journal.reconcile(reply, index);
         return providerFailure(options.runtime, interruptedCodeBatchMessage(reply));
       }
       const outcomes = journal.settle(reply, index);
@@ -1835,8 +1850,8 @@ class EvaluationJudgeRuntimeControl
       : Effect.succeed('unknown-case' as const);
   }
 
-  sealAt(invocationId: string, deadlineAt: number): Effect.Effect<void> {
-    return this.delegate.sealAt ? this.delegate.sealAt(invocationId, deadlineAt) : Effect.void;
+  sealWhen(invocationId: string, stopped: () => boolean): Effect.Effect<void> {
+    return this.delegate.sealWhen ? this.delegate.sealWhen(invocationId, stopped) : Effect.void;
   }
 
   take(

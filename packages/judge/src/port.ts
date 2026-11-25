@@ -53,7 +53,17 @@ export interface JudgeRuntimeBatchCaseOutput<Result = unknown> {
  */
 export type JudgeRuntimeCaseProgress<Result = unknown> =
   | { readonly kind: 'started'; readonly caseId: string }
-  | { readonly kind: 'finished'; readonly output: JudgeRuntimeBatchCaseOutput<Result> };
+  | {
+      readonly kind: 'finished';
+      readonly output: JudgeRuntimeBatchCaseOutput<Result>;
+      /**
+       * The finish comes from the provider's interrupted prefix, which the
+       * runtime adapter delivers within its grace after the batch was
+       * stopped. The stop fence (`sealWhen`) does not apply to it;
+       * publication and `take` still do.
+       */
+      readonly prefix?: true;
+    };
 
 /**
  * What the control port did with a progress event. Only `accepted` changes
@@ -64,7 +74,7 @@ export type JudgeRuntimeCaseProgress<Result = unknown> =
  *   finish (the browser dispatch does).
  * - `unknown-case`: not a case of this batch, or not a batch invocation.
  * - `fenced`: the batch already published its result, its process ended,
- *   or its watchdog deadline passed (`sealAt`).
+ *   or its process was stopped (`sealWhen`).
  */
 export type JudgeRuntimeProgressDisposition =
   | 'accepted'
@@ -131,12 +141,14 @@ export interface JudgeRuntimeControlPort {
     progress: JudgeRuntimeCaseProgress
   ): Effect.Effect<JudgeRuntimeProgressDisposition>;
   /**
-   * Seal the journal at the process watchdog's deadline (epoch ms, the
-   * TraceKernel watchdog's clock). Progress recorded at or after it is
-   * `fenced`: a runtime that reports a finish while it is being stopped
-   * cannot have it graded. Optional, like `record`.
+   * Seal the journal at the moment its process is stopped: from the first
+   * record at which `stopped()` is true, progress is `fenced`, except an
+   * interrupted-prefix finish (`prefix: true`). Progress recorded before the
+   * stop counts. The TraceKernel Judge port reports the actual kill (the
+   * process has a pending terminating signal, or has ended), not the
+   * watchdog's scheduled instant. Optional, like `record`.
    */
-  sealAt?(invocationId: string, deadlineAt: number): Effect.Effect<void>;
+  sealWhen?(invocationId: string, stopped: () => boolean): Effect.Effect<void>;
   /** The published output, with the recorded journal. Seals the journal. */
   take(
     invocationId: string
