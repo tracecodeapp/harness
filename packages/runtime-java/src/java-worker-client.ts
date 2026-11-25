@@ -27,6 +27,7 @@ import type {
   RuntimeTraceCall,
   TraceExecutionOptions,
 } from '@tracecode/runtime-contracts';
+import type { JudgedPreparationCall } from '../../runtime-contracts/src/judged-output-policy';
 import { liftCodeBatchOutcome, liftCodeOutcome, type RawExecutionBatchPayload } from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandEventHandler,
@@ -949,6 +950,9 @@ export class JavaWorkerClient {
     call: RuntimeProgramPreparationCall,
     observerOnly = false
   ): Promise<JavaWorkerPreparedProgramResult> {
+    const judgedOutputPolicy = call.mode === 'code'
+      ? (call as JudgedPreparationCall).judgedOutputPolicy
+      : undefined;
     const program = this.initGateEffect().pipe(
       Effect.andThen(
         this.core.sendMessageEffect<JavaWorkerPreparedProgramResult>(
@@ -959,6 +963,7 @@ export class JavaWorkerClient {
             functionName: call.functionName ?? '',
             executionStyle: call.executionStyle ?? 'function',
             options: call.traceOptions,
+            ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
             ...(observerOnly ? { observerOnly: true } : {}),
             ...this.workerOptionsPayload(),
           },

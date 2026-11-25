@@ -42,8 +42,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   1,000,000 and 64 (C++ nesting 10,000). An answer over a bound, or one with
   a cycle, is now that case's `limit` with reason `serialization-limit` and
   no value, instead of a truncated or placeholder value. JavaScript and
-  TypeScript enforce it on the SES pool and on the disposable worker. Java,
-  C# and C++ adopt it in their own changes; until then they ignore it. Python
+  TypeScript enforce it on the SES pool and on the disposable worker. Python
   gets no policy and keeps its own ceilings. The policy can't be set from a
   request, a binding or `execution.limits`.
 
@@ -66,6 +65,11 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   provider failure says what interrupted the batch.
 
 ### Changed
+
+- Java judged answers return a per-case `serialization-limit` with no value
+  when the output crosses a bound or contains a cycle the serializer cannot
+  represent. Valid node references still work. Java answers can now nest
+  through 64 levels before reaching the depth limit.
 
 - C#: drawing a program that uses conditional compilation directives (`#if`,
   `#elif`, `#else`, `#endif`, `#define`, `#undef`) is declined. The drawing

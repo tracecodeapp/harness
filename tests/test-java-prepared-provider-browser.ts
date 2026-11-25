@@ -18,6 +18,7 @@ import {
   type BrowserType,
 } from 'playwright';
 import type {} from './fixtures/java-stopping-batch-browser-entry';
+import type {} from './fixtures/java-judged-output-browser-entry';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 
 type BrowserEngine = 'chromium' | 'firefox' | 'webkit';
@@ -153,6 +154,52 @@ function assertConsoleResults(
     `${engine}: Java consoleOutput must retain stdout in print order`
   );
   assert.equal(consoleResults.success.output, 7);
+}
+
+function assertJudgedOutputPolicy(
+  { rows, markers, legacyNode, batch, profile, restoredResult, opsResult }: Awaited<ReturnType<typeof globalThis.javaJudgedOutputProbe>>,
+): void {
+  const failures: string[] = [];
+  for (const id of ['ascii-2048', 'snow-over', 'emoji-over', 'lone-over', 'depth-65',
+    'item-over', 'cycle', 'node-over', 'container-root', 'map-depth-65', 'set-depth-65',
+    'list-depth-65', 'set-wrapper-items', 'set-wrapper-nodes']) {
+    const row = rows.find((item) => item.id === id);
+    if (!(row?.status !== 'completed' && row?.failure?.origin === 'limit' && 'reason' in row.failure &&
+      row.failure.reason === 'serialization-limit' && !row.hasValue)) {
+      failures.push(`${id} is a typed serialization-limit with no value`);
+    }
+  }
+  for (const id of ['ascii-64', 'ascii-edge', 'emoji-edge', 'depth-64', 'per-container',
+    'node-edge', 'scalar-root', 'node-cycle', 'map-depth-64', 'set-depth-64', 'list-depth-64',
+    'map-key-collision']) {
+    const row = rows.find((item) => item.id === id);
+    if (row?.verdict !== 'passed') failures.push(`${id} passes comparison: ${JSON.stringify(row)}`);
+  }
+  const judgedNode = rows.find((row) => row.id === 'node-cycle');
+  if (legacyNode.kind !== 'completed' || judgedNode?.status !== 'completed' ||
+      JSON.stringify(legacyNode.output) !== JSON.stringify(judgedNode.value)) {
+    failures.push(`legacy and judged cyclic nodes have the same wire shape: ${JSON.stringify({ legacyNode, judgedNode })}`);
+  }
+  if (!rows.find((row) => row.id === 'shared')?.hasValue) {
+    failures.push('acyclic sharing still emits a value');
+  }
+  assert.ok(markers.some((marker) => (marker as { maxBytes?: number }).maxBytes === 1024));
+  const [refusal, recovered] = batch;
+  if (refusal?.kind !== 'limit' || refusal.reason !== 'serialization-limit' ||
+    Object.hasOwn(refusal, 'output') || recovered?.kind !== 'completed' ||
+    recovered.output !== 'x'.repeat(64)) {
+    failures.push('cycle refusal followed by a completed case in one batch');
+  }
+  const runnerProcessCount = (refusal?.timings as { runnerProcessCount?: number } | undefined)?.runnerProcessCount;
+  if (profile?.tier !== 'algorithm-fast' || runnerProcessCount !== 1) {
+    failures.push(`both cases use one runner JVM: ${JSON.stringify({ profile, runnerProcessCount })}`);
+  }
+  for (const [label, result] of [['restored artifact', restoredResult], ['ops-class', opsResult]] as const) {
+    if (result.kind !== 'limit' || result.reason !== 'serialization-limit' || Object.hasOwn(result, 'output')) {
+      failures.push(`${label} keeps its judged-output policy`);
+    }
+  }
+  assert.deepEqual(failures, [], failures.join('\n'));
 }
 
 async function assertOrdinaryExitNoOp(page: import('playwright').Page): Promise<void> {
@@ -724,6 +771,7 @@ try {
     format: 'iife',
     platform: 'browser',
     target: 'es2022',
+    alias: { 'node:zlib': resolve('packages/tracekernel/src/zlib-browser-shim.ts') },
     outfile: bundlePath,
     logLevel: 'silent',
   });
@@ -880,7 +928,8 @@ try {
       const stoppingOnly = process.env.TRACECODE_JAVA_STOPPING_ONLY === '1';
       const journalOnly = process.env.TRACECODE_JAVA_JOURNAL_ONLY === '1';
       const exitProbe = process.env.TRACECODE_JAVA_EXIT_PROBE === '1';
-      const isolationModes = stoppingOnly || journalOnly || exitProbe
+      const judgedOutputOnly = process.env.TRACECODE_JAVA_JUDGED_OUTPUT_ONLY === '1';
+      const isolationModes = judgedOutputOnly ? [true] : stoppingOnly || journalOnly || exitProbe
         ? [false] : engine === 'chromium' ? [true, false] : [true];
       for (const isolated of isolationModes) {
         const browser = await browserType.launch({ headless: true });
@@ -905,6 +954,11 @@ try {
             await assertOrdinaryExitNoOp(page);
             console.log(`PASS: characterized the TraceJVM 0.4.1 exit-zero no-op in ${engine}`);
             continue;
+          }
+          if (judgedOutputOnly || isolated) {
+            assertJudgedOutputPolicy(await page.evaluate(() => globalThis.javaJudgedOutputProbe()));
+            console.log(`PASS: Java judged-output policy in ${engine}`);
+            if (judgedOutputOnly) continue;
           }
           if (!isolated) {
             await page.goto(`${origin}?isolated=false&stopping`);
