@@ -790,6 +790,31 @@ async function testInteractiveTerminalContract(): Promise<void> {
       status.exitCode === 0 && status.stdout === 'status=1\n',
       `shell status expansion should preserve the prior exit code: ${JSON.stringify(status)}`
     );
+    // Separately typed lines: Bash prints each program's status on the next line.
+    const separateLines = [
+      ["node -e 'process.exit(3)'", 3, ''],
+      ['echo $?', 0, '3\n'],
+      ["node -e 'throw new Error(\"boom\")'", 1, ''],
+      ['echo $?', 0, '1\n'],
+      ['false', 1, ''],
+      ['echo "$?"', 0, '1\n'],
+      ["node -e 'console.log(Object.keys(process.env).filter((key) => /^(?:[?#@*]|IFS|OPTIND|PIPESTATUS|BASHOPTS|SHELLOPTS)/.test(key)).join() || \"none\")'", 0, 'none\n'],
+    ] as const;
+    for (const [command, exitCode, stdout] of separateLines) {
+      const line = await terminal.run(command);
+      assertCondition(
+        line.exitCode === exitCode && line.stdout === stdout,
+        `${command} should match Bash on a separately typed line (${exitCode}, ${JSON.stringify(stdout)}): ${JSON.stringify(line)}`
+      );
+    }
+    const envListing = await terminal.run('env | sort');
+    assertCondition(
+      envListing.exitCode === 0 &&
+        /^HOME=\/home\/user$/m.test(envListing.stdout) &&
+        !/^(?:[?#@*]|IFS|OPTIND|PIPESTATUS\w*|BASHOPTS|SHELLOPTS|OSTYPE|MACHTYPE|HOSTTYPE)=/m.test(envListing.stdout) &&
+        !envListing.stdout.startsWith('\n'),
+      `env should list variables, not interpreter internals: ${JSON.stringify(envListing)}`
+    );
 
     const missingDirectory = await terminal.run('cd missing-directory');
     const fileAsDirectory = await terminal.run('cd read-stdin.js');
