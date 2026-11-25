@@ -209,7 +209,7 @@ const SHARD = {
 };
 
 function createService(
-  workerFactory: (url: string) => unknown = (url) => new StrictCompilerWorker(url)
+  workerFactory: (url: string | URL) => unknown = (url) => new StrictCompilerWorker(url)
 ): TraceCCCompilerService {
   return new TraceCCCompilerService({
     workerUrl: '/workers/cpp-worker.js',
