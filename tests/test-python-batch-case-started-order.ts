@@ -40,10 +40,12 @@ function proxy(value: unknown) {
 
 async function runBatch(
   mode: 'code' | 'trace' = 'trace',
-  stopAtFirstRunaway = true
-): Promise<{ events: string[]; batch: any }> {
+  stopAtFirstRunaway = true,
+  options: { fast?: boolean; reportFinishes?: boolean } = {}
+): Promise<{ events: string[]; batch: any; finished: unknown[] }> {
   const runtime = loadRuntime();
   const events: string[] = [];
+  const finished: unknown[] = [];
   const guard = {
     begin() {},
     begin_algorithm() {},
@@ -53,7 +55,18 @@ async function runBatch(
     artifact_fingerprint: () => proxy(FINGERPRINT),
     classify_algorithm_source: () => proxy({ tier: 'algorithm-fast', reasons: [] }),
     deserialize_code: (encoded: string) => encoded,
-    run_compiled(_code: unknown, _namespace: unknown, _resultName: string) {
+    run_compiled(code: unknown, namespace: Map<string, unknown>, _resultName: string) {
+      if (code === 'algorithm-fast-artifact') {
+        const progress = namespace.get('__tracecode_case_progress') as (index: number, result?: string) => void;
+        for (const index of [0, 1]) {
+          progress(index);
+          progress(index, JSON.stringify({
+            success: true, output: index + 1, consoleOutput: [`case ${index}`],
+            timings: { algorithmFastBatch: true },
+          }));
+        }
+        return '[]';
+      }
       events.push('learner-code');
       return JSON.stringify({
         success: true,
@@ -66,7 +79,7 @@ async function runBatch(
   const pyodide = {
     FS: {},
     runPython: () => guard,
-    toPy: () => ({ set() {}, destroy() {} }),
+    toPy: () => new Map(),
     globals: { delete() {} },
   };
   let now = 0;
@@ -105,21 +118,25 @@ async function runBatch(
     userCode: 'user-artifact',
     executorCode: 'executor-artifact',
   };
-  // Force the JS per-case loop for the code artifact too.
   const batch = await runtime.executePreparedProgramBatch(
     deps,
     artifact,
     [{ value: 1 }, { value: 2 }],
     { guest: { wallClockMs: 1000 } },
     undefined,
-    true,
+    !options.fast,
     stopAtFirstRunaway,
     {
       started: (index: number) => events.push(`started:${index}`),
-      ...(stopAtFirstRunaway ? { finished: (index: number) => events.push(`finished:${index}`) } : {}),
+      ...(stopAtFirstRunaway || options.reportFinishes ? {
+        finished(index: number, result: { output: unknown }) {
+          events.push(`finished:${index}`);
+          finished.push(result.output);
+        },
+      } : {}),
     }
   );
-  return { events, batch };
+  return { events, batch, finished };
 }
 
 test('the JS per-case loop posts started after input conversion and just before learner code runs', async () => {
@@ -149,3 +166,14 @@ test('a non-stopping code batch acknowledges each start before learner code and 
     'learner-code',
   ]);
 });
+
+for (const fast of [true, false]) {
+  test(`a streamed ordinary ${fast ? 'fast' : 'compatibility'} batch keeps only terminal metadata`, async () => {
+    const { batch, finished } = await runBatch('code', false, { fast, reportFinishes: true });
+    assert.deepEqual(finished, fast ? [1, 2] : [1, 1]);
+    assert.equal(batch.success, true);
+    assert.equal(batch.results, undefined, 'The worker must not keep a second result array');
+    assert.equal(batch.resultsStreamed, 2);
+    assert.deepEqual(Array.from(batch.consoleOutput), fast ? ['case 0', 'case 1'] : []);
+  });
+}
