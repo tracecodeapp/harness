@@ -1,10 +1,18 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { CppWorkerClient } from '../packages/runtime-cpp/src/cpp-worker-client';
 import type { CppPreparedProgramPreparationResult } from '../packages/runtime-cpp/src/index';
-import { createCppPreparedExecutionProvider } from '../packages/runtime-cpp/src/cpp-prepared-provider';
+import {
+  createCppOrdinaryExecutionProvider,
+  createCppPreparedExecutionProvider,
+} from '../packages/runtime-cpp/src/cpp-prepared-provider';
+import {
+  resolveJudgedOutputPolicy,
+  type JudgedPreparationCall,
+} from '../packages/runtime-contracts/src/judged-output-policy';
 import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
 import { isRuntimeProviderError } from '../packages/runtime-contracts/src/execution-outcome';
 
@@ -1323,6 +1331,46 @@ async function main(): Promise<void> {
 
 test('cpp browser provider prewarms assets inside TraceCC without page fetches', testBrowserProviderDefersCompilerWarmupUntilPreparation);
 test('cpp compile promotes queued compiler asset prewarm', testCompilePromotesQueuedCompilerPrewarm);
+test('cpp ordinary provider forwards judged-output policy on prepare and re-prepare', async () => {
+  const policy = resolveJudgedOutputPolicy('cpp', { maxBytes: 1024 })!.policy;
+  const calls: JudgedPreparationCall[] = [];
+  let handleCurrent = true;
+  const provider = createCppOrdinaryExecutionProvider({
+    createWorkerClient: () => ({
+      init: async () => ({ success: true }),
+      prepareRuntimeProgram: async (call: JudgedPreparationCall) => {
+        calls.push(call);
+        handleCurrent = true;
+        return { success: true, handle: { programId: 'prepared-1' }, consoleOutput: [] };
+      },
+      isPreparedProgramHandleCurrent: () => handleCurrent,
+      executePreparedCode: async () => ({ kind: 'completed', output: 1, consoleOutput: [] }),
+      disposePreparedProgram: async () => undefined,
+      terminate: () => undefined,
+    }) as unknown as CppWorkerClient,
+  });
+  try {
+    const call: JudgedPreparationCall = {
+      mode: 'code',
+      code: 'class Solution { public: int solve() { return 1; } };',
+      executionStyle: 'solution-method',
+      functionName: 'solve',
+      signal: new AbortController().signal,
+      judgedOutputPolicy: policy,
+    };
+    const prepared = await provider.prepareProgram(call);
+    assert(prepared.kind === 'prepared' && prepared.program.mode === 'code');
+    handleCurrent = false;
+    await prepared.program.executeIsolated({ inputs: {} });
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0]?.judgedOutputPolicy, policy, 'ordinary prepare dropped judged-output policy');
+    assert.equal(calls[1]?.judgedOutputPolicy, policy, 'ordinary re-prepare dropped judged-output policy');
+    assert.equal(calls[1]?.signal, undefined);
+    await prepared.program.dispose();
+  } finally {
+    provider.terminate();
+  }
+});
 test('cpp prepared provider protocol lifecycle', testPreparedProviderProtocolLifecycle);
 test('cpp compiler lifecycle', main);
 

@@ -24,7 +24,6 @@ import type {
   RuntimePreparedTraceCall,
   RuntimePreparedTraceBatchCall,
   RuntimeExecutionTimings,
-  RuntimeProgramPreparationCall,
 } from '@tracecode/runtime-contracts';
 import type {
   RuntimeCommandEventHandler,
@@ -43,6 +42,7 @@ import {
   type RawExecutionPayload,
 } from '@tracecode/runtime-contracts';
 import type { Cut, RuntimeTrace } from '@tracecode/runtime-contracts';
+import type { JudgedPreparationCall } from '../../runtime-contracts/src/judged-output-policy';
 import type { CppCompilerIntegrityManifest } from '../../runtime-browser/src/runtime-assets';
 export type {
   CppCompilerIntegrityEntry,
@@ -1462,7 +1462,7 @@ export class CppWorkerClient {
   }
 
   async prepareRuntimeProgram(
-    call: RuntimeProgramPreparationCall & { observationOnly?: boolean }
+    call: JudgedPreparationCall & { observationOnly?: boolean }
   ): Promise<CppPreparedProgramPreparationResult> {
     const timeoutMs = this.compileTimeoutMs;
     const stage: CppClientTimeoutStage = call.mode === 'trace'
@@ -1481,6 +1481,9 @@ export class CppWorkerClient {
               executionStyle: call.executionStyle,
               traceOptions: call.traceOptions,
               ...(call.observationOnly === true ? { observationOnly: true } : {}),
+              ...(call.mode === 'code' && call.judgedOutputPolicy
+                ? { judgedOutputPolicy: call.judgedOutputPolicy }
+                : {}),
             },
             null,
             undefined,

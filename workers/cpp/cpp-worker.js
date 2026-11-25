@@ -12185,6 +12185,7 @@ function parseProgramStdout(stdout, options = {}) {
   const pendingStdoutEvents = options.tracing ? [] : null;
   const lastSnapshotValueJsonByVariable = new Map();
   let output = null;
+  let outputOverByteLimit = false;
   let foundResult = false;
   let traceStatus = null;
   let cursor = 0;
@@ -12237,7 +12238,10 @@ function parseProgramStdout(stdout, options = {}) {
       cursor = marker.nextIndex;
     } else if (markerIndex === resultIndex && resultAuthenticated) {
       const marker = splitMarkerLine(stdout, markerIndex, RESULT_MARKER);
-      output = marker.payload ? JSON.parse(marker.payload) : null;
+      // An answer over the judged byte limit is refused unparsed.
+      outputOverByteLimit = Boolean(options.judgedOutputPolicy && marker.payload) &&
+        judgedOutputJsonExceedsBytes(options.judgedOutputPolicy, marker.payload, options.judgedOutputFramed === true);
+      output = marker.payload && !outputOverByteLimit ? JSON.parse(marker.payload) : null;
       foundResult = true;
       if (nonceRequired) resultAuthenticated = false;
       cursor = marker.nextIndex;
@@ -12294,7 +12298,119 @@ function parseProgramStdout(stdout, options = {}) {
   if (!foundResult && !options.allowMissingResult) {
     throw new Error('C++ program did not emit a TraceCode result.');
   }
-  return { output, consoleOutput, events: traceEvents ?? [], traceStatus, foundResult };
+  return {
+    output, consoleOutput, events: traceEvents ?? [], traceStatus, foundResult,
+    ...(outputOverByteLimit ? { outputOverByteLimit } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Judged-output policy.
+//
+// The Judge composition supplies these bounds at ordinary preparation. Bytes
+// count the driver's answer JSON, including a learner's `toJson` output.
+// Items count entries per container, nodes count all JSON values, and depth
+// counts container nesting.
+//
+// The bound holds only once the WebAssembly program has built the string:
+// tracecode::to_json has no size or depth bound of its own (an in-Wasm bound
+// needs a runtime header change, which is a TraceCC publish).
+// ---------------------------------------------------------------------------
+
+function normalizeJudgedOutputPolicy(policy) {
+  if (!policy || typeof policy !== 'object') return null;
+  const bound = (value) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : Infinity);
+  const normalized = {
+    maxBytes: bound(policy.maxBytes),
+    maxItems: bound(policy.maxItems),
+    maxNodes: bound(policy.maxNodes),
+    maxDepth: bound(policy.maxDepth),
+  };
+  return Object.values(normalized).some(Number.isFinite) ? normalized : null;
+}
+
+// UTF-8 length of text.slice(start, end), counting no further than limit + 1.
+function utf8ByteLengthUpTo(text, start, end, limit) {
+  let bytes = 0;
+  for (let index = start; index < end && bytes <= limit; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < end) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function judgedValueShapeExceeds(value, policy) {
+  if (!Number.isFinite(policy.maxItems) && !Number.isFinite(policy.maxNodes) && !Number.isFinite(policy.maxDepth)) {
+    return null;
+  }
+  let nodes = 0;
+  // Iterative, so a deep answer cannot overflow the worker's stack here.
+  const stack = [[value, 0]];
+  while (stack.length > 0) {
+    const [current, depth] = stack.pop();
+    nodes += 1;
+    if (nodes > policy.maxNodes) return 'node';
+    if (current === null || typeof current !== 'object') continue;
+    if (depth + 1 > policy.maxDepth) return 'depth';
+    const isArray = Array.isArray(current);
+    const children = isArray ? current : Object.values(current);
+    if (children.length > policy.maxItems) return 'item';
+    // Both C++ set serializers use {"__type__":"set","values":[...]}. The
+    // values array still counts for JSON items and nodes. Only its depth is
+    // shared with the set. C++ maps serialize as plain objects.
+    const setValues = !isArray && children.length === 2 &&
+      current.__type__ === 'set' && Array.isArray(current.values)
+      ? current.values
+      : undefined;
+    for (const child of children) {
+      stack.push([child, child === setValues ? depth : depth + 1]);
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether the answer's JSON is over the byte limit. `framed` is a named-batch
+ * reply, whose JSON is the one-element array `[x]`.
+ */
+function judgedOutputJsonExceedsBytes(policy, text, framed) {
+  if (!policy || !Number.isFinite(policy.maxBytes) || typeof text !== 'string') return false;
+  const start = framed ? 1 : 0;
+  const end = framed ? text.length - 1 : text.length;
+  const units = end - start;
+  // A UTF-16 code unit is one to three UTF-8 bytes (a surrogate pair is two
+  // units and four bytes), so only a middle-sized answer needs counting.
+  return units > policy.maxBytes ||
+    (units * 3 > policy.maxBytes && utf8ByteLengthUpTo(text, start, end, policy.maxBytes) > policy.maxBytes);
+}
+
+/** The serialization-limit reply for a judged answer over the policy, or null. */
+function judgedOutputLimitResult(policy, parsed, framed, details) {
+  if (!policy || !parsed.foundResult) return null;
+  let exceeded = parsed.outputOverByteLimit ? 'byte' : null;
+  if (!exceeded) {
+    if (framed && (!Array.isArray(parsed.output) || parsed.output.length !== 1)) return null;
+    exceeded = judgedValueShapeExceeds(framed ? parsed.output[0] : parsed.output, policy);
+  }
+  if (!exceeded) return null;
+  const bound = { byte: policy.maxBytes, item: policy.maxItems, node: policy.maxNodes, depth: policy.maxDepth }[exceeded];
+  return {
+    success: false,
+    output: null,
+    error: `The answer is larger than the judged-output ${exceeded} limit (${bound}).`,
+    timeoutReason: 'serialization-limit',
+    ...details,
+  };
 }
 
 function normalizeScriptTraceEvents(events, userLineCount) {
@@ -16151,6 +16267,7 @@ async function handlePrepareRuntimeProgram(payload) {
     ...result.preparedArtifact,
     mode,
     observationOnly,
+    judgedOutputPolicy: mode === 'code' ? normalizeJudgedOutputPolicy(payload?.judgedOutputPolicy) : null,
   });
   return {
     success: true,
@@ -16214,6 +16331,9 @@ async function runPreparedRuntimeProgram(
     const runMs = elapsedMs(runStartedAt);
     const totalMs = elapsedMs(startedAt);
     const timings = preparedExecutionTimings(runMs, totalMs);
+    const judgedOutputPolicy = program.exitCode === 0 && !preparedProgram.tracing && !preparedProgram.observationOnly
+      ? preparedProgram.judgedOutputPolicy
+      : null;
     let parsed;
     try {
       parsed = parseProgramStdout(program.stdout, {
@@ -16221,6 +16341,8 @@ async function runPreparedRuntimeProgram(
         defaultLine: preparedProgram.signatureLine,
         allowMissingResult: preparedProgram.tracing,
         resultNonce,
+        judgedOutputPolicy,
+        judgedOutputFramed: preparedProgram.inputMode === 'named-batch',
       });
     } catch (error) {
       return programOutputParseFailureResult(
@@ -16286,6 +16408,15 @@ async function runPreparedRuntimeProgram(
         executionTimeMs: totalMs,
         timings,
       };
+    }
+
+    if (judgedOutputPolicy) {
+      const limited = judgedOutputLimitResult(judgedOutputPolicy, parsed, preparedProgram.inputMode === 'named-batch', {
+        consoleOutput,
+        executionTimeMs: totalMs,
+        timings,
+      });
+      if (limited) return limited;
     }
 
     if (preparedProgram.inputMode === 'named-batch') {

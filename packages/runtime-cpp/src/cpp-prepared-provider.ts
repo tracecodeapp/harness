@@ -4,7 +4,6 @@ import type {
   RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
   RuntimePreparedTraceBatchCall,
-  RuntimeProgramPreparationCall,
   RuntimeProgramPreparationResult,
 } from '@tracecode/runtime-contracts';
 import type {
@@ -16,6 +15,7 @@ import {
 } from '@tracecode/runtime-browser/internal';
 import { CppWorkerClient } from './cpp-worker-client';
 import { RuntimeProviderError } from '@tracecode/runtime-contracts';
+import type { JudgedPreparationCall } from '../../runtime-contracts/src/judged-output-policy';
 
 export interface CppPreparedExecutionProviderOptions {
   createWorkerClient(): CppWorkerClient;
@@ -149,7 +149,7 @@ export function createCppPreparedExecutionProvider(
     },
 
     async prepareProgram(
-      call: RuntimeProgramPreparationCall
+      call: JudgedPreparationCall
     ): Promise<RuntimeProgramPreparationResult> {
       assertRuntimeRequestSupported(getLanguageRuntimeProfile('cpp'), {
         request: call.mode === 'trace' ? 'trace' : 'execute',
@@ -410,11 +410,14 @@ export function createCppOrdinaryExecutionProvider(
   const provider = createCppPreparedExecutionProvider(options);
   return {
     ...provider,
-    prepareProgram({ mode, code, functionName, executionStyle, signal }) {
+    prepareProgram({ mode, code, functionName, executionStyle, signal, judgedOutputPolicy }: JudgedPreparationCall) {
       if (mode !== 'code') {
         throw new TypeError('C++ ordinary preparation requires code mode.');
       }
-      return provider.prepareProgram({ mode, code, functionName, executionStyle, signal });
+      return provider.prepareProgram({
+        mode, code, functionName, executionStyle, signal,
+        ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
+      });
     },
   };
 }
