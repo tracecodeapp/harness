@@ -14,6 +14,7 @@ import { appFixtureAssertionIds, appFixtureName, appSpec, cppDirectRoutes, jsRou
 import { installAppTraceArchive } from './app-trace-archive.mjs';
 import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNaturalShapes } from './cpp-natural-shapes.mjs';
 import { cppRefusalFor } from './cpp-refusal.mjs';
+import { checkJudgedByteLimit, judgedByteLimitFixtures, judgedByteLimitRequest } from './judged-byte-limit.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 import { retainedControlTargets } from './worker-evidence.mjs';
@@ -155,6 +156,7 @@ try {
   }
   const subject = process.env.TRACECODE_STAGE1_SUBJECT ?? manifest.candidate;
   const selectedFixtures = [...manifest.fixtures, ...appFixtures, ...cppNaturalShapes(subject)].filter(matches);
+  const selectedByteLimits = judgedByteLimitFixtures.filter(matches);
   const muxPath = process.env.TRACECODE_STAGE1_MUX_INPUT;
   let mux;
   if (muxPath) {
@@ -165,7 +167,7 @@ try {
     }
   }
   if (mux) record('identity.jsonl', { mux: mux.muxPin, scope: 'pinned slot adapter, no stored result writer' });
-  assert(selectedFixtures.length, 'Filter selected no fixtures');
+  assert(selectedFixtures.length || selectedByteLimits.length, 'Filter selected no fixtures');
   const assertions = [];
   const recordAssertion = (item) => {
     assertions.push(item);
@@ -219,9 +221,6 @@ try {
     return registered;
   }
   const runtime = { setupMs: performance.now(), requests: 0, fixtureMs: {}, requestMs: {} };
-  for (const cap of manifest.baselineCaps.filter((cap) => !filter || filter.test(`G6/${cap.language}/judged-byte-limit`))) {
-    recordAssertion({ ...cap, status: 'fail', message: cap.reason, evidence: 'required-baseline-failure' });
-  }
   async function exercise(fixture, requests, options = {}) {
     const key = `${fixture.gate}/${fixture.language}/${fixture.name}`;
     const page = await browser.newPage();
@@ -265,12 +264,20 @@ try {
       try { await page.close(); } finally { await disposeArchive?.(); }
       console.log(`${key} ${options.control ?? 'baseline'} ${Math.round(performance.now() - started)}ms`);
     }
+    if (fixture.judgedByteLimit !== undefined) {
+      recordAssertion(checkJudgedByteLimit(fixture, observed));
+      return;
+    }
     const registered = judgePath(fixture, requests, observed, options);
     if (!options.control && !options.route && !fixture.cppRefusal && !fixture.untracedOnly &&
         manifest.fixtures.some(({ name, language }) => name === fixture.name && language === fixture.language)) {
       checkDifferential(fixture, observed, recordAssertion, registered);
     }
     return registered;
+  }
+  for (const fixture of selectedByteLimits) {
+    if (fixture.judgedByteLimit === undefined) recordAssertion(checkJudgedByteLimit(fixture, []));
+    else await exercise(fixture, [judgedByteLimitRequest]);
   }
   for (const fixture of selectedFixtures) {
     if (fixture.naturalShape) {

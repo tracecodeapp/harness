@@ -19,13 +19,16 @@ export function supportedTraceOptions(language, options) {
 let transcript = [];
 const journal = [];
 
-export function installJudgeJournal() {
+export function installJudgeJournal(targetLanguage, maxBytes) {
   Object.defineProperty(globalThis, Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1'), {
     configurable: true,
     value: {
       onEvent(event) {
         journal.push({ ...event, sequence: journal.length });
       },
+      ...(maxBytes === undefined ? {} : {
+        judgedOutputPolicy: ({ language }) => language === targetLanguage ? { maxBytes } : undefined,
+      }),
     },
   });
 }
@@ -239,7 +242,7 @@ export async function archiveAppObservation(observation) {
 }
 
 export async function runFixture(fixture, requests, nonce, mutation) {
-  installJudgeJournal();
+  installJudgeJournal(fixture.language, fixture.judgedByteLimit);
   const handles = new Map();
   let drawn;
   let submitHost;

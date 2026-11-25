@@ -610,11 +610,13 @@ export function summarize(inventory, results) {
   const repeated = [];
   const failed = [];
   const passed = [];
+  const notApplicable = [];
   for (const result of results) {
     if (!expected.has(result.id)) unexpected.push(result.id);
     if (seen.has(result.id)) repeated.push(result.id);
     seen.add(result.id);
-    (result.status === 'pass' ? passed : failed).push(result.id);
+    if (result.status === 'not-applicable') notApplicable.push(result.id);
+    else (result.status === 'pass' ? passed : failed).push(result.id);
   }
   const missing = inventory.filter((id) => !seen.has(id));
   const counts = new Map();
@@ -622,7 +624,7 @@ export function summarize(inventory, results) {
     for (const id of ids) {
       const key = id.split('/').slice(0, 2).join('/');
       const info = counts.get(key) ?? { expected: 0, seen: 0, passed: 0, failed: 0, missing: 0 };
-      info[field]++;
+    info[field] = (info[field] ?? 0) + 1;
       counts.set(key, info);
     }
   }
@@ -630,6 +632,8 @@ export function summarize(inventory, results) {
   count(seen, 'seen');
   count(passed, 'passed');
   count(failed, 'failed');
+  count(notApplicable, 'notApplicable');
   count(missing, 'missing');
-  return { counts: Object.fromEntries(counts), unexpected, repeated, failed, missing };
+  return { counts: Object.fromEntries(counts), unexpected, repeated, failed, missing,
+    ...(notApplicable.length ? { notApplicable } : {}) };
 }

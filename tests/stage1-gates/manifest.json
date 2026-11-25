@@ -112,13 +112,6 @@
     "termination",
     "diagnostics"
   ],
-  "baselineCaps": [
-    {"language":"javascript","id":"G6/javascript/judged-byte-limit/provider/policy/@request/limit","status":"required-baseline-failure","reason":"no explicit judge limit: no serialization-limit possible"},
-    {"language":"typescript","id":"G6/typescript/judged-byte-limit/provider/policy/@request/limit","status":"required-baseline-failure","reason":"no explicit judge limit: no serialization-limit possible"},
-    {"language":"java","id":"G6/java/judged-byte-limit/provider/policy/@request/limit","status":"required-baseline-failure","reason":"no explicit judge limit: no serialization-limit possible"},
-    {"language":"csharp","id":"G6/csharp/judged-byte-limit/provider/policy/@request/limit","status":"required-baseline-failure","reason":"no explicit judge limit: no serialization-limit possible","observedPolicy":"TraceCLR wire safety caps are not a typed Judge serializer policy. The collection-cap fixture tests the actual artifact."},
-    {"language":"cpp","id":"G6/cpp/judged-byte-limit/provider/policy/@request/limit","status":"required-baseline-failure","reason":"no explicit judge limit: no serialization-limit possible"}
-  ],
   "controls": [
     {"seed":"stdout-b","fixture":"G1/python/stdout","requests":["run-first"],"keys":["run-first/B/value"],"unchanged":["run-first/B/verdict"],"hits":1},
     {"seed":"stdout-all","fixture":"G1/python/stdout","requests":["run-first","draw-b","redraw-b","run-all","run-none","submit-default-AB","submit-default-A","submit-default-B","submit-stop-AB","submit-stop-A","submit-stop-B","submit-traced","execute-code-A","execute-traced-A","execute-code-B","execute-traced-B"],"keys":["run-first/A/value","run-first/B/value","draw-b/B/value","redraw-b/B/value","run-all/A/value","run-all/B/value","run-none/A/value","run-none/B/value","submit-default-AB/A/value","submit-default-AB/B/value","submit-default-A/A/value","submit-default-B/B/value","submit-stop-AB/A/value","submit-stop-AB/B/value","submit-stop-A/A/value","submit-stop-B/B/value","submit-traced/A/value","submit-traced/B/value","execute-code-A/A/value","execute-traced-A/A/value","execute-code-B/B/value","execute-traced-B/B/value"],"hits":22},
@@ -25540,6 +25533,7 @@
     "G6/java/judged-byte-limit/provider/policy/@request/limit",
     "G6/csharp/judged-byte-limit/provider/policy/@request/limit",
     "G6/cpp/judged-byte-limit/provider/policy/@request/limit",
+    "G6/python/judged-byte-limit/provider/policy/@request/limit",
     "G1/python/queens/default/path-differential/A/receipt",
     "G1/python/queens/default/path-differential/B/receipt",
     "G1/python/queens-legacy-budget/default/path-differential/A/receipt",

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { appFixtureName, appSpec, cppDirectRoutes, jsRouteRequests, muxRequests, requestMatrix } from './requests.mjs';
+import { judgedByteLimitFixtures, judgedByteLimitId } from './judged-byte-limit.mjs';
 
 const candidate = 'b025fdb8220694cdfe96b136a0b8bb82843f7371';
 const languages = { js: 'javascript', ts: 'typescript', py: 'python', java: 'java', cs: 'csharp', cpp: 'cpp' };
@@ -350,12 +351,7 @@ for (const fixture of fixtures) {
     }
   }
 }
-const baselineCaps = Object.values(languages).filter((language) => language !== 'python').map((language) => ({
-  language, id: `G6/${language}/judged-byte-limit/provider/policy/@request/limit`, status: 'required-baseline-failure',
-  reason: 'no explicit judge limit: no serialization-limit possible',
-  ...(language === 'csharp' ? { observedPolicy: 'TraceCLR wire safety caps are not a typed Judge serializer policy. The collection-cap fixture tests the actual artifact.' } : {}),
-}));
-inventory.push(...baselineCaps.map(({ id }) => id));
+inventory.push(...judgedByteLimitFixtures.map(judgedByteLimitId));
 for (const fixture of fixtures.filter(({ untracedOnly }) => !untracedOnly)) {
   for (const row of fixture.cases) {
     inventory.push(`${fixture.gate}/${fixture.language}/${fixture.name}/default/path-differential/${row.id}/receipt`);
@@ -371,7 +367,7 @@ const controls = [
 if (new Set(inventory).size !== inventory.length) throw new Error('Repeated assertion IDs');
 const path = new URL('manifest.json', import.meta.url);
 writeFileSync(path, '{\n'
-  + Object.entries({ candidate, traceOptions, fixtures, requests, rowChecks, baselineCaps, controls, inventory })
+  + Object.entries({ candidate, traceOptions, fixtures, requests, rowChecks, controls, inventory })
     .map(([key, value]) => `  ${JSON.stringify(key)}: ${Array.isArray(value) ? '[\n' + value.map((item) => '    ' + JSON.stringify(item)).join(',\n') + '\n  ]' : JSON.stringify(value)}`)
     .join(',\n')
   + '\n}\n');

@@ -19,7 +19,7 @@ The host job copies and verifies the canonical `b025fdb8` tarball, installs it i
 
 The pinned mux adapter runs against a Playwright-supplied private slot and checks both raw and legacy projections. Release qualification also needs the real mux worker's result writer and reader. Provider companions compile from the frozen candidate's source and serve assets from the installed artifact, with separate route IDs for the selectable JS/TS routes and C++ direct execution.
 
-The cap dispositions are part of the assertion inventory. Python tests its existing item ceiling. The other baseline byte-limit cells fail with the recorded absence of a product-owned seam. The gate needs a product-owned policy before it can run the 1,024-byte control on those serializers.
+The `G6/<language>/judged-byte-limit` cell uses the private Judge bridge on the installed package's ordinary Submit path. It requires a marker confirming the 1,024-byte cap, a completed 64-character answer, and a typed `serialization-limit` with no value for a 2,048-character answer. Python's byte-limit cell is recorded as not applicable in 0.21. Its existing item-ceiling fixture still runs in the full matrix.
 
 The print-then-throw fixture checks for both messages and the deliberate runtime error in every receipt. For Java, Python, C# and C++, its text oracle allows one trailing LF per captured message. JS and TS use their line-oriented console and must match its LF framing. Judge paths within each language must agree byte for byte. `console-framing.jsonl` records byte differences from program writes and indicates whether framing alone accounts for each difference.
 
