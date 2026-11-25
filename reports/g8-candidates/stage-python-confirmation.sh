@@ -11,7 +11,6 @@ read -r digest named < "$art/$archive.sha256"
 test "$named" = "$archive"
 test "$digest" = "$(sha256sum "$art/$archive" | cut -d' ' -f1)"
 mkdir "$out"
-rmdir "$out"
 node "$stage/stage.mjs" "$art/$archive" "$digest" "$expected" "$out/vsprime"
 ln -s ../historical/v0.17.1 "$out/v0.17.1"
 node --input-type=module - "$out" "$expected" <<'JS'
