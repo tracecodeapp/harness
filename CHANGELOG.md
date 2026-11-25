@@ -47,7 +47,34 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   gets no policy and keeps its own ceilings. The policy can't be set from a
   request, a binding or `execution.limits`.
 
+- **Batch case-progress journal** (additive, low-level). The runtime control
+  port can journal a batch's per-case progress: `JudgeRuntimeControlPort.record?`
+  takes a `JudgeRuntimeCaseProgress` (`started` or `finished`) and returns a
+  `JudgeRuntimeProgressDisposition` (`accepted`, `duplicate`, `out-of-order`,
+  `unknown-case` or `fenced`). `InMemoryJudgeRuntimeControl` implements it.
+  `take` returns the accepted progress as `journal`, and publication or the
+  end of the process seals it, so a late reply from a stopped batch changes
+  nothing. A runtime cannot publish a `journal` itself.
+- `InterruptedCodeBatchError` takes an optional third argument,
+  `{ interruption, interruptedIndex }`: what interrupted the batch
+  (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and
+  which entry was running. The unfinished cases' provider failure says which.
+
 ### Changed
+
+- **A batch that ends without per-case results keeps what finished.** When a
+  batch watchdog stops a provider batch, the provider fails it, or it ends
+  without its terminal reply, every case that had finished keeps its own
+  result, unchanged. Every other case is the provider's failure (`origin:
+  'provider'`), and a case that had started says its completion is uncertain.
+  In a stopping batch, the cases after a finished runaway stay `not-run`.
+  - **Breaking, low-level:** a batch watchdog with `timeoutRole: 'limit'` no
+    longer reports `client-timeout` on every case of the batch. A batch-wide
+    clock is not any one case's time limit, so each unfinished case is the
+    provider's failure. A single case's own watchdog is unchanged.
+  - In the browser Judge, Python and Java keep that prefix once their
+    providers forward per-case finishes. Other languages report every case
+    as the provider's failure, as before.
 
 - **Every Judge entry grades from the ordinary program.** `createJudge(...)`
   `evaluate`, `execute` (one-shot, interactive and continuation) and

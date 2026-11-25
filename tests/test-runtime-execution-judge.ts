@@ -5297,6 +5297,13 @@ for (const stop of [false, true]) {
     const rows = receipt.evaluation.status === 'completed' ? receipt.evaluation.cases : [];
     assert.deepEqual(serviceCutFailures(rows, f.starts, []), []);
     assert.deepEqual(f.starts, ['A'], 'B never started: the deadline came between A and B');
+    // App-facing: A converts as delivered; the suffix is a provider error,
+    // never a learner limit or wrong answer.
+    const converted = judgeCaseExecutionOutcome(rows[0]!, { language: 'javascript' });
+    assert.equal('kind' in converted ? converted.kind : undefined, 'completed');
+    for (const row of rows.slice(1)) {
+      assert.throws(() => judgeCaseExecutionOutcome(row, { language: 'javascript' }), isRuntimeProviderError);
+    }
     assert.equal(f.signals[0]?.aborted, true, 'the stopped batch was torn down');
 
     const phases = bridgeEvents.map((event) => event.phase === 'injection-ack'
