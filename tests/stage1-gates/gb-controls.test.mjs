@@ -1064,12 +1064,72 @@ test('Java timeout transport discards finishes arriving after the production wat
   }
 });
 
+test('Java timeout ACK binds the forced production callback, including the adjacent archived event', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const { Worker: originalWorker, setTimeout: originalSetTimeout, clearTimeout: originalClearTimeout } = globalThis;
+  const cancelled = [];
+  globalThis.Worker = transportFixtureWorker();
+  globalThis.setTimeout = () => 17;
+  globalThis.clearTimeout = (token) => cancelled.push(token);
+  const spec = fixture('java', 'transport');
+  const route = 'timeout-fanout';
+  const journal = installJournal(spec);
+  try {
+    journal.track(route, route);
+    const worker = new Worker('java-worker.js');
+    const command = javaFaultRequest(spec);
+    worker.postMessage(command);
+    let expired = 0;
+    setTimeout(() => { expired++; }, 132000);
+    for (const [index, output] of [11, 22, 33].entries()) {
+      worker.reply(javaFaultProgress(command, 'started', index));
+      worker.reply(javaFaultProgress(command, 'finished', index, { success: true, output, consoleOutput: [] }));
+    }
+    assert.equal(expired, 0);
+    worker.reply({ ...command, payload: { success: true, resultsStreamed: 3 } });
+    assert.equal(expired, 1);
+    assert.deepEqual(cancelled, [17]);
+    assert.equal(worker.delivered.length, 6, 'The worker terminal stays held');
+    const sample = referenceReceipt(spec);
+    sample.transcript = journal.since(0);
+    const check = (value) => ledgerFor(spec, route, value).receipts
+      .find(({ id }) => id.endsWith('/injection-ack'))?.status;
+    const timerOf = (value) => value.transcript.find(({ kind }) => kind === 'production-timers-fired');
+    const timer = timerOf(sample);
+    assert.deepEqual([timer.request, timer.commandId, timer.admissionId], [route, command.id, 7]);
+    assert.equal(check(sample), 'passed');
+    const legacy = structuredClone(sample);
+    for (const key of ['request', 'commandId', 'admissionId', 'generation']) delete timerOf(legacy)[key];
+    assert.equal(check(legacy), 'passed');
+    const delayed = structuredClone(legacy);
+    timerOf(delayed).sequence++;
+    assert.equal(check(delayed), 'failed');
+    const wrongRoute = structuredClone(sample);
+    timerOf(wrongRoute).request = 'cut-keep';
+    assert.equal(check(wrongRoute), 'failed');
+    const wrongGeneration = structuredClone(sample);
+    timerOf(wrongGeneration).generation++;
+    assert.equal(check(wrongGeneration), 'failed');
+    const absent = structuredClone(sample);
+    absent.transcript = absent.transcript.filter(({ kind }) => kind !== 'production-timers-fired');
+    assert.equal(check(absent), 'failed');
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('Java G4 requires forwarded finish evidence, the sealed suffix and no replay', () => {
   const spec = fixture('java', 'transport');
   const route = 'during-keep';
   const sample = referenceReceipt(spec);
   const { cases } = sample.result.evaluation;
-  sample.result.workspaceDigest = 'workspace';
+  Object.assign(sample.result, {
+    workspaceDigest: 'workspace', verdict: 'failed', policy: { result: false }, totalCount: 3, passedCount: 1,
+  });
+  sample.stimulus = { bundle: { workspaceDigest: 'workspace' } };
   sample.conversions = { cases: [{ kind: 'completed', output: 11 }] };
   for (const row of cases.slice(1)) {
     row.status = 'runtime-error';
@@ -1094,7 +1154,7 @@ test('Java G4 requires forwarded finish evidence, the sealed suffix and no repla
   progress('started', 'B', 1);
   push('injection', { fault: route });
   const mark = (phase, caseId) => push('schedule', {
-    phase, caseId, language: 'java', evaluationId: 'evaluation', workspaceDigest: 'workspace',
+    phase, caseId, evaluationId: 'evaluation', workspaceDigest: 'workspace',
   });
   cases.forEach(({ caseId }) => mark('ordinary-write-attempt', caseId));
   mark('ordinary-commit');
@@ -1102,7 +1162,7 @@ test('Java G4 requires forwarded finish evidence, the sealed suffix and no repla
 
   const status = (value, check) => ledgerFor(spec, route, value).receipts
     .find(({ id }) => id.endsWith('/' + check))?.status;
-  for (const check of ['A/start-proof', 'B/start-proof', 'C/start-proof', 'A/worker-finish',
+  for (const check of ['aggregate', 'A/start-proof', 'B/start-proof', 'C/start-proof', 'A/worker-finish',
     'A/coordinator-commit', 'injection-ack', 'generation-fence', 'suffix/storage']) {
     assert.equal(status(sample, check), 'passed', check);
   }
@@ -1118,6 +1178,13 @@ test('Java G4 requires forwarded finish evidence, the sealed suffix and no repla
   const badSuffix = structuredClone(sample);
   badSuffix.result.evaluation.cases[1].failure.origin = 'limit';
   assert.equal(status(badSuffix, 'suffix/storage'), 'failed');
+  const badCommit = structuredClone(sample);
+  badCommit.transcript.find(({ phase }) => phase === 'ordinary-commit').workspaceDigest = 'foreign';
+  assert.equal(status(badCommit, 'A/coordinator-commit'), 'failed');
+  const unknown = structuredClone(sample);
+  unknown.result.verdict = 'indeterminate';
+  unknown.result.policy.result = 'unknown';
+  assert.equal(status(unknown, 'aggregate'), 'failed');
   const noStorage = structuredClone(sample);
   noStorage.transcript = noStorage.transcript.filter(({ kind }) => kind !== 'schedule');
   assert.equal(status(noStorage, 'A/coordinator-commit'), undefined);

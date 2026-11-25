@@ -62,9 +62,10 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
     return fault === 'timeout-fanout' && fixture.language === 'java' && ms === 132000;
   }
 
-  function expire(at) {
-    const timers = [...scheduled.entries()].filter(([, timer]) => timer.due <= at);
-    record('production-timers-fired', { delays: timers.map(([, timer]) => timer.ms), at });
+  function expire(at, command) {
+    const timers = [...scheduled.entries()].filter(([, timer]) =>
+      timer.request === command.request && timer.due <= at);
+    record('production-timers-fired', { ...command, delays: timers.map(([, timer]) => timer.ms), at });
     for (const [token, timer] of timers) {
       if (!scheduled.delete(token)) continue;
       nativeClearTimeout(token);
@@ -90,7 +91,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       scheduled.delete(token);
       run();
     }, ms);
-    scheduled.set(token, { ms, due: ms, run });
+    scheduled.set(token, { ms, due: ms, run, request: timerRequest });
     return token;
   };
   globalThis.clearTimeout = function (token) {
@@ -394,7 +395,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       } else if (!java.sliced) {
         record('injection', { ...correlated, fault: wire.fault });
         fault = undefined;
-        expire(Infinity);
+        expire(Infinity, correlated);
       } else if (wire.fault.startsWith('during-') &&
           java.next === 1 && java.running === undefined && payload.resultsStreamed === 1) {
         wire.index++;

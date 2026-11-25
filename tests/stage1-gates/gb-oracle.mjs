@@ -24,8 +24,9 @@ function serviceCut(fixture, route) {
   return fixture.name === 'transport' && /^(?:cut|deadline|during)-/u.test(route);
 }
 
-function pythonWorkerLoss(fixture, route) {
-  return fixture.language === 'python' && fixture.name === 'transport' && /^(cut|during)-(keep|stop)$/u.test(route);
+function batchWorkerLoss(fixture, route) {
+  return ['python', 'java'].includes(fixture.language) && fixture.name === 'transport' &&
+    /^(cut|during)-(keep|stop)$/u.test(route);
 }
 
 function required(fixture, route) {
@@ -441,8 +442,14 @@ function checkJavaTransport(fixture, route, sample, published, wire, assert) {
     finishes.every((event) => validProgress(event, 'finished')) && orderedFinishes &&
     forwarded.length === starts.length + finishes.length;
   if (hit || wire.some(({ kind }) => kind === 'test-transport-failure')) {
-    const triggeredDeadline = !timeout || wire.some(({ kind, delays, sequence }) =>
-      kind === 'production-timers-fired' && sequence > hit?.sequence && isDeepStrictEqual(delays, [132000]));
+    // The test's synchronous expire() call records the callback immediately
+    // after the injection. Archived transports did not tag that one event.
+    const timers = timeout && hit ? (sample.transcript ?? []).filter(({ sequence }) => sequence === hit.sequence + 1) : [];
+    const [timer] = timers;
+    const legacyTimer = timer && timer.request === undefined && timer.commandId === undefined &&
+      timer.generation === undefined && timer.admissionId === undefined;
+    const triggeredDeadline = !timeout || (timers.length === 1 && timer.kind === 'production-timers-fired' &&
+      (legacyTimer || (timer.request === route && sameCommand(timer))) && isDeepStrictEqual(timer.delays, [132000]));
     const terminal = wire.find(({ kind }) => kind === 'worker-reply');
     const wholeBatch = !timeout || (terminal && beforeFault(terminal) &&
       (terminal.payload?.resultsStreamed === finishes.length || isDeepStrictEqual(
@@ -450,7 +457,7 @@ function checkJavaTransport(fixture, route, sample, published, wire, assert) {
       )));
     assert('injection-ack', hits.length === 1 && sameCommand(hit) && witnessedProgress &&
       wholeBatch && triggeredDeadline && !wire.some(({ kind }) => kind === 'test-transport-failure'),
-    { releases, starts, finishes, forwarded, hits, terminal, triggeredDeadline });
+    { releases, starts, finishes, forwarded, hits, terminal, timer, triggeredDeadline });
   }
   if (validRelease) {
     for (const id of ids) {
@@ -480,39 +487,24 @@ function checkJavaTransport(fixture, route, sample, published, wire, assert) {
     assert('generation-fence', oneCommand && witnessedProgress &&
       forwarded.every(beforeFault), { dispatch, starts, finishes, forwarded });
   }
-  const marks = wire.filter(({ kind, language }) => kind === 'schedule' && language === 'java');
-  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
-  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
-  const resolves = marks.filter(({ phase }) => phase === 'public-resolve');
-  if (!marks.length || !aFinish || !hit) return;
+  if (!aFinish || !hit) return;
   // Delivery happened before loss; the Judge journal witnesses the later seal.
-  const commit = commits[0];
-  const stored = commits.length === 1 && hit.sequence < commit.sequence &&
-    resolves.length === 1 && commit.sequence < resolves[0].sequence &&
-    commit.workspaceDigest === sample.result?.workspaceDigest &&
-    marks.every((event) => scopeMatches(event, commit)) &&
-    isDeepStrictEqual(idsOf(writes), ids) &&
-    writes.every(({ sequence, origin }) => hit.sequence < sequence &&
-      sequence < commit.sequence && origin !== 'observer');
+  const storage = storedBatch(fixture, sample, wire, hit.sequence);
+  if (!storage) return;
   const a = published.find(({ caseId }) => caseId === 'A');
-  const retained = a?.status === 'completed' && isDeepStrictEqual(a.value, aFinish.result.output) &&
-    a.verdict?.kind === fixture.cases[0].grade && a.stdout === fixture.cases[0].stdout &&
-    a.stderr === '' && a.termination?.kind === 'exit' && a.termination.exitCode === 0 &&
-    validProgress(aFinish, 'finished');
-  assert('A/coordinator-commit', stored && retained, { commit, writes, resolves, a, aFinish });
+  assert('A/coordinator-commit', storage.stored && retainsA(fixture, a, aFinish.result) &&
+    validProgress(aFinish, 'finished'), { a, aFinish, ...storage });
   if (serviceCut(fixture, route)) {
     const suffix = ids.slice(1).map((id) => published.find(({ caseId }) => caseId === id));
     const conversions = sample.conversions?.cases;
     if (conversions) {
-      assert('suffix/storage', stored && suffix.every((row) => row?.failure?.origin === 'provider' &&
-        row.verdict?.kind === 'not-evaluated' && row.timedOut === false &&
-        row.notRun === undefined && !Object.hasOwn(row, 'value') &&
-        conversions[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError'), { suffix, commits, writes });
+      assert('suffix/storage', storage.stored && providerSuffixStored(suffix, published, conversions),
+        { suffix, ...storage });
     }
   }
 }
 
-function pythonStoredBatch(fixture, sample, wire, afterSequence) {
+function storedBatch(fixture, sample, wire, afterSequence) {
   const marks = wire.filter(({ kind, phase }) => kind === 'schedule' &&
     ['ordinary-commit', 'ordinary-write-attempt', 'public-resolve'].includes(phase));
   if (!marks.length) return;
@@ -526,17 +518,23 @@ function pythonStoredBatch(fixture, sample, wire, afterSequence) {
     Number.isSafeInteger(commit.generation) && commit.generation > 0 &&
     typeof digest === 'string' && commit.workspaceDigest === digest && sample.result?.workspaceDigest === digest &&
     afterSequence < commit.sequence && commit.sequence < resolves[0].sequence &&
-    marks.every((event) => (event.language === undefined || event.language === 'python') && scopeMatches(event, commit)) &&
+    marks.every((event) => (event.language === undefined || event.language === fixture.language) && scopeMatches(event, commit)) &&
     isDeepStrictEqual(writes.map(({ caseId }) => caseId), fixture.cases.map(({ id }) => id)) &&
     writes.every((event) => afterSequence < event.sequence && event.sequence < commit.sequence && event.origin !== 'observer');
   return { stored, marks };
 }
 
-function retainsPythonA(fixture, row, result) {
+function retainsA(fixture, row, result) {
   return result?.success === true && row?.status === 'completed' &&
     isDeepStrictEqual(row.value, result.output) && row.verdict?.kind === fixture.cases[0].grade &&
     row.stdout === fixture.cases[0].stdout && row.stderr === '' && row.failure === undefined &&
     row.termination?.kind === 'exit' && row.termination.exitCode === 0 && row.timedOut === false;
+}
+
+function providerSuffixStored(suffix, published, conversions) {
+  return suffix.every((row) => row?.failure?.origin === 'provider' && row.failure.reason === 'runtime-failure' &&
+    row.verdict?.kind === 'not-evaluated' && row.timedOut === false && row.notRun === undefined &&
+    !Object.hasOwn(row, 'value') && conversions[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError');
 }
 
 function hasPythonWorkerLossWitness(wire) {
@@ -603,18 +601,15 @@ function checkPythonWorkerLoss(fixture, route, sample, published, wire, assert) 
   assert('generation-fence', injected && startCoverage && aFinished &&
     deliveries.length === cases.length + 1 && deliveries.every(beforeHit) &&
     events('ordinary-start').length === 1, proof);
-  const storage = pythonStoredBatch(fixture, sample, wire, hit?.sequence);
+  const storage = storedBatch(fixture, sample, wire, hit?.sequence);
   if (storage && workerFinish) {
     const a = published.find(({ caseId }) => caseId === 'A');
     const stored = storage.stored && injected && aFinished;
-    assert('A/coordinator-commit', stored && retainsPythonA(fixture, a, workerFinish.detail),
+    assert('A/coordinator-commit', stored && retainsA(fixture, a, workerFinish.detail),
       { a, workerFinish, ...storage });
     if (sample.conversions?.cases) {
       const suffix = ids.slice(1).map((id) => published.find(({ caseId }) => caseId === id));
-      assert('suffix/storage', stored && suffix.every((row) => row?.failure?.origin === 'provider' &&
-        row.failure.reason === 'runtime-failure' && row.verdict?.kind === 'not-evaluated' &&
-        row.timedOut === false && row.notRun === undefined && !Object.hasOwn(row, 'value') &&
-        sample.conversions.cases[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError'),
+      assert('suffix/storage', stored && providerSuffixStored(suffix, published, sample.conversions.cases),
       { suffix, ...storage });
     }
   }
@@ -710,11 +705,11 @@ function checkPythonClock(fixture, route, sample, published, wire, assert) {
     aStarts[0]?.sequence < aFinish.sequence && aFinish.result?.success === true &&
     isDeepStrictEqual(aFinish.result.output, fixture.cases[0].actual);
   assert('A/worker-finish', aFinished, aFinishes);
-  const storage = pythonStoredBatch(fixture, sample, wire, terminal?.sequence);
+  const storage = storedBatch(fixture, sample, wire, terminal?.sequence);
   if (!storage) return;
   const a = published.find(({ caseId }) => caseId === 'A');
   assert('A/coordinator-commit', aFinished && streamed && storage.stored &&
-    retainsPythonA(fixture, a, aFinish.result), { a, aFinish, ...storage });
+    retainsA(fixture, a, aFinish.result), { a, aFinish, ...storage });
 }
 
 function checkServiceDeadline(fixture, sample, published, wire, assert) {
@@ -864,9 +859,9 @@ function check(fixture, route, sample, assert) {
   }
   if (!route.startsWith('run-') && !continuation(route)) {
     const passed = rows.filter((row) => desiredRow(fixture, route, row) === 'completed').length;
-    // These Python routes use allCasesPassed == true. Provider failures
+    // These native-batch routes use allCasesPassed == true. Provider failures
     // contribute a concrete non-passing row while preserving its ungraded verdict.
-    const verdict = serviceCut(fixture, route) && !pythonWorkerLoss(fixture, route)
+    const verdict = serviceCut(fixture, route) && !batchWorkerLoss(fixture, route)
       ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
     const ok = verdict === 'indeterminate' ? 'unknown' : verdict === 'passed';
     assert('aggregate', receipt?.verdict === verdict && receipt?.policy?.result === ok, [receipt?.verdict, receipt?.policy]);
@@ -881,7 +876,7 @@ function check(fixture, route, sample, assert) {
     routeWire.some(({ kind }) => kind === 'java-release');
   const pythonClock = pythonTransportClock(fixture, route);
   const serviceDeadline = serviceDeadlineRoute(fixture, route);
-  const pythonLoss = pythonWorkerLoss(fixture, route) && hasPythonWorkerLossWitness(routeWire);
+  const pythonLoss = fixture.language === 'python' && batchWorkerLoss(fixture, route) && hasPythonWorkerLossWitness(routeWire);
   const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock &&
     !serviceDeadline && !pythonLoss ? completeOrdinaryStarts(routeWire) : undefined;
   for (const expected of rows) {
