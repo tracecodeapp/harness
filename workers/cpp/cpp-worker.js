@@ -12362,9 +12362,19 @@ function judgedValueShapeExceeds(value, policy) {
     if (nodes > policy.maxNodes) return 'node';
     if (current === null || typeof current !== 'object') continue;
     if (depth + 1 > policy.maxDepth) return 'depth';
-    const children = Array.isArray(current) ? current : Object.values(current);
+    const isArray = Array.isArray(current);
+    const children = isArray ? current : Object.values(current);
     if (children.length > policy.maxItems) return 'item';
-    for (const child of children) stack.push([child, depth + 1]);
+    // Both C++ set serializers use {"__type__":"set","values":[...]}. The
+    // values array still counts for JSON items and nodes. Only its depth is
+    // shared with the set. C++ maps serialize as plain objects.
+    const setValues = !isArray && children.length === 2 &&
+      current.__type__ === 'set' && Array.isArray(current.values)
+      ? current.values
+      : undefined;
+    for (const child of children) {
+      stack.push([child, child === setValues ? depth : depth + 1]);
+    }
   }
   return null;
 }
