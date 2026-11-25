@@ -89,8 +89,12 @@ function stoppedByOrdinaryClock(row: JudgeEvaluationResult['cases'][number]): bo
  * and fences a batch the service watchdog already stopped.
  */
 export interface OrdinaryBatchProgress {
+  /** The registry will journal every entry's start (worker ACKs or per-entry calls). */
+  acknowledgesStarts(): void;
   started(index: number): void;
   finished(index: number, result: CodeExecutionResult): void;
+  /** Progress that arrived after its batch call was stopped or settled. */
+  fenced(progress: 'started' | 'finished', index: number): void;
 }
 
 /** Owns one prepare journal and the observation lifetime for a committed evaluation. */
@@ -664,20 +668,27 @@ export class RuntimePreparedProgramRegistry {
         if (!acknowledged && !call.stopAtFirstRunaway) call.inputBatch.forEach((_, index) => admit?.(index));
         if (!acknowledged && !journal) return program.executeBatchIsolated!(call);
         let live = true;
+        // Admission and the journal take progress only while the call runs.
+        const open = () => live && !call.signal?.aborted;
+        if (acknowledged) journal?.acknowledgesStarts();
         const progressBatch: JudgeOrdinaryBatchCall = {
           ...call,
           ...(acknowledged ? {
             onCaseStarted: (index: number) => {
-              if (live && !call.signal?.aborted && Number.isSafeInteger(index)
-                && index >= 0 && index < call.inputBatch.length) {
-                admit!(index);
+              if (!open()) {
+                journal?.fenced('started', index);
+                return;
               }
-              // The journal checks the index and fences a stopped batch itself.
+              if (Number.isSafeInteger(index) && index >= 0 && index < call.inputBatch.length) admit!(index);
+              // The journal checks the index itself.
               journal?.started(index);
             },
           } : {}),
           ...(journal ? {
-            onCaseFinished: (index: number, result: CodeExecutionResult) => journal.finished(index, result),
+            onCaseFinished: (index: number, result: CodeExecutionResult) => {
+              if (open()) journal.finished(index, result);
+              else journal.fenced('finished', index);
+            },
           } : {}),
         };
         try {
@@ -688,22 +699,38 @@ export class RuntimePreparedProgramRegistry {
       });
     }
     // No native batch: each entry is its own call, so its start and its
-    // finish are the coordinator's to journal.
+    // finish are the coordinator's to journal, while the batch runs.
+    journal?.acknowledgesStarts();
+    let live = true;
+    const open = () => live && !call.signal?.aborted;
     return Promise.all(
       call.inputBatch.map((inputs, index) =>
         gate.run(call.signal, async () => {
+          if (journal && !open()) {
+            // An earlier entry already failed the batch: run nothing more.
+            journal.fenced('started', index);
+            throw new Error('The prepared batch already failed.');
+          }
           admit?.(index);
           journal?.started(index);
-          const result = await program.executeIsolated({
-            inputs,
-            signal: call.signal,
-            limits: call.limits,
-          });
-          journal?.finished(index, result);
-          return result;
+          try {
+            const result = await program.executeIsolated({
+              inputs,
+              signal: call.signal,
+              limits: call.limits,
+            });
+            if (open()) journal?.finished(index, result);
+            else journal?.fenced('finished', index);
+            return result;
+          } catch (error) {
+            live = false;
+            throw error;
+          }
         })
       )
-    );
+    ).finally(() => {
+      live = false;
+    });
   }
 
   async dispose(evaluationId: string): Promise<void> {

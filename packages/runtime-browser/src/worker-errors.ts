@@ -78,7 +78,10 @@ export type CodeBatchInterruption = 'worker-loss' | 'transport-deadline' | 'serv
 export class InterruptedCodeBatchError extends RuntimeProviderError {
   declare readonly cause: Error;
   readonly interruption: CodeBatchInterruption;
-  /** The entry that was running, when the provider knows one was. */
+  /**
+   * The entry that was running, when the provider knows one was. Absent
+   * when the loss came between entries; Judge infers no start from it.
+   */
   readonly interruptedIndex: number | undefined;
 
   constructor(
@@ -105,9 +108,9 @@ const INTERRUPTION_DESCRIPTIONS: Readonly<Record<CodeBatchInterruption, string>>
 export function interruptedCodeBatchMessage(error: InterruptedCodeBatchError): string {
   const description = INTERRUPTION_DESCRIPTIONS[error.interruption] ??
     INTERRUPTION_DESCRIPTIONS['worker-loss'];
-  return error.message && error.message !== description
-    ? `${description} ${error.message}`
-    : description;
+  const detail = error.message.trim();
+  if (!detail || detail === description) return description;
+  return /[.!?]$/u.test(detail) ? `${description} ${detail}` : `${description} ${detail}.`;
 }
 
 /** A bootstrap failure before this worker could accept learner code. */
