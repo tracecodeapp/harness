@@ -5563,7 +5563,10 @@ test('D-WATCH review: when the deadline wins, an authenticated prefix the provid
   assert.equal(deadline.cause, 'injected');
 });
 
-test('D-WATCH review: a prefix entry for the case the deadline interrupted is fenced, not graded', { timeout: 10000 }, async (t) => {
+test('D-WATCH review 2: within the grace, the interrupted case\'s own prefix entry is kept when its start was recorded', { timeout: 10000 }, async (t) => {
+  // The rule after a watchdog stop: a result stands if its finish is
+  // authenticated (journalled before the seal, or in the provider's prefix
+  // within the grace) and, where starts are recorded, its start was.
   const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
   const f = scriptedBatchFixture({ forwardFinishes: false, onAbort: 'interrupted', fabricate: true });
   t.after(() => f.host.dispose());
@@ -5571,8 +5574,42 @@ test('D-WATCH review: a prefix entry for the case the deadline interrupted is fe
   await f.reached('A');
   f.release('A', 'finish');
   const rows = rowsOf(await pending);
+  assert.equal(rows[0]?.value, 'A');
+  assert.equal(rows[1]?.failure?.origin, 'limit', 'B\'s prefix finish is the provider\'s authenticated result');
+  assert.equal(rows[2]?.failure?.origin, 'provider');
+  assert.deepEqual(rejections(bridgeEvents), []);
+});
+
+test('D-WATCH review 2: within the grace, a prefix entry for a case whose start was never recorded is fenced', { timeout: 10000 }, async (t) => {
+  const bridgeEvents = faultBridge(t, { caseId: 'B', progress: 'started' });
+  const f = scriptedBatchFixture({ forwardFinishes: false, onAbort: 'interrupted', skipStart: 'A' });
+  t.after(() => f.host.dispose());
+  const pending = f.host.evaluateAlgorithm({ bundle: await dWatchBundle(), stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  const rows = rowsOf(await pending);
+  assert.equal(rows[0]?.failure?.origin, 'provider', 'A sits below the last start but its start was never recorded');
+  assert.match(rows[0]!.failure!.message, /had not started/u);
+  assert.deepEqual(rejections(bridgeEvents), [['A', 'fenced', 'finished']]);
+});
+
+test('D-WATCH review 2: the real backstop keeps the prefix the provider surfaces within the grace, like the injected deadline', { timeout: 60000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bridgeEvents: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => bridgeEvents.push(event) });
+  const f = scriptedBatchFixture({ lifecycleAllowanceMs: 1, forwardFinishes: false, onAbort: 'interrupted' });
+  t.after(() => f.host.dispose());
+  const bundle = await receiptBundle(undefined, { wallClockMs: 50 });
+  const pending = f.host.evaluateAlgorithm({ bundle, stopAtFirstRunaway: false });
+  await f.reached('A');
+  f.release('A', 'finish');
+  await f.reached('B');
+  f.release('B', 'hang');
+  const rows = rowsOf(await pending);
   assert.deepEqual(serviceCutFailures(rows, f.starts, ['B']), []);
-  assert.deepEqual(rejections(bridgeEvents), [['B', 'fenced', 'finished']]);
+  const deadline = f.events.find(({ phase }) => phase === 'service-deadline');
+  assert.equal(deadline?.cause, 'backstop');
+  assert.deepEqual(rejections(bridgeEvents), []);
 });
 
 test('D-WATCH review: a finish a provider reports from its abort handler after the injected deadline is fenced', { timeout: 10000 }, async (t) => {

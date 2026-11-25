@@ -215,6 +215,15 @@ function executeFakeJournalBatch(
   return Effect.gen(function* () {
     yield* record({ kind: 'started', caseId: a! });
     if (command === 'journal-start-only') return { exitCode: 0, stdout: '', stderr: '' };
+    if (command === 'journal-late-boundary') {
+      // A finishes after the watchdog's scheduled instant but before its
+      // kill: the event loop is held, so the kill cannot run yet.
+      const startedAt = Date.now();
+      yield* Effect.sleep(100);
+      while (Date.now() < startedAt + 205) { /* hold the event loop past the deadline */ }
+      yield* record({ kind: 'finished', output: fakeFinish(a!, 1) });
+      return yield* Effect.never;
+    }
     yield* record({
       kind: 'finished',
       output: command === 'journal-runaway' || command === 'journal-after-runaway'
@@ -1414,4 +1423,37 @@ test('D-WATCH: a finish recorded while the watchdog kills the batch is not grade
   assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
   assertServiceFailure(result.cases[1], 'runtime-failure', true);
   assert.equal(run.dispositions.at(-1), 'fenced', 'the teardown finish was refused');
+});
+
+test('D-WATCH: a finish recorded after the watchdog\'s scheduled instant but before its kill is kept', async () => {
+  const { result, run } = await evaluateJournalled(journalPlan('journal-late-boundary', { timeoutMs: 200 }));
+  assert.deepEqual(run.dispositions, ['accepted', 'accepted'], 'the journal takes progress until the actual kill');
+  assert.equal(result.cases[0]?.status, 'completed');
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assertServiceFailure(result.cases[1], 'runtime-failure', false);
+});
+
+test('D-WATCH: once its process is stopped the journal fences a plain finish but takes an interrupted prefix entry', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const id = await Effect.runPromise(control.begin({
+    phase: 'batch', planId: 'p', cases: [{ caseId: 'A', value: 1 }, { caseId: 'B', value: 2 }],
+  }));
+  let stopped = false;
+  await Effect.runPromise(control.sealWhen(id, () => stopped));
+  const record = (progress: JudgeRuntimeCaseProgress) => Effect.runPromise(control.record(id, progress));
+  assert.equal(await record({ kind: 'started', caseId: 'A' }), 'accepted');
+  assert.equal(await record({ kind: 'started', caseId: 'B' }), 'accepted');
+  stopped = true;
+  assert.equal(await record({ kind: 'finished', output: fakeFinish('B', 2) }), 'fenced', 'a report from the stopped process');
+  assert.equal(
+    await record({ kind: 'finished', output: fakeFinish('A', 1), prefix: true }),
+    'accepted',
+    'the provider\'s interrupted prefix, which the dispatch delivers within its grace'
+  );
+  await Effect.runPromise(control.publish(id, { diagnostics: [] }));
+  assert.equal(
+    await record({ kind: 'finished', output: fakeFinish('B', 2), prefix: true }),
+    'fenced',
+    'publication still seals the journal'
+  );
 });
