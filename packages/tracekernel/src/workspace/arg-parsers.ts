@@ -880,6 +880,12 @@ function terminalLoneSimpleCommand(statement: TerminalAstStatement | undefined):
   return command;
 }
 
+// A submission that parses to no statements at all, such as a line of only
+// comments. Like a blank line, it runs nothing.
+export function isEmptyTerminalSubmission(command: string): boolean {
+  return parseTerminalStatements(command)?.length === 0;
+}
+
 export function parseSimpleCommandWords(command: string, options: TerminalWordOptions = {}): string[] | null {
   const statements = parseTerminalStatements(command);
   if (!statements || statements.length !== 1) return null;

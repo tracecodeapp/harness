@@ -115,6 +115,7 @@ import type {
 } from './index';
 import { normalizeTerminalAbsolutePath, terminalCwdLabel } from './paths';
 import {
+  isEmptyTerminalSubmission,
   parseSimpleCommandWords,
   parseTerminalCommandList,
   type TerminalCommandListSegment,
@@ -473,6 +474,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
     this.commandHistory.push(trimmed);
     if (this.commandHistory.length > 1000) this.commandHistory.shift();
+    // A line of only comments runs nothing and keeps `$?`, as in Bash.
+    if (isEmptyTerminalSubmission(trimmed)) return { stdout: '', stderr: '', exitCode: 0 };
 
     const commandList = parseTerminalCommandList(trimmed);
     if (commandList.some((segment) => segment.background)) {
@@ -655,17 +658,32 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
   // A line that changed directory itself (`cd src && make`, `cd -; ls`,
   // `cd "$DIR"`) leaves the terminal where the shell finished, with the
-  // shell's OLDPWD. A directory the terminal cannot navigate to is not
-  // adopted.
+  // shell's OLDPWD. Both pass the terminal's navigation check first:
+  // - a final directory outside the limits is not adopted, and the line
+  //   leaves the prompt and OLDPWD as they were;
+  // - an OLDPWD outside the limits is never stored. The terminal keeps the
+  //   last allowed directory instead: the one the prompt left, if the line
+  //   moved it, otherwise its previous OLDPWD.
   private async adoptShellCwd(pwd: string | undefined, oldPwd: string | undefined): Promise<void> {
     const startCwd = this.currentCwd;
-    if (oldPwd !== undefined) this.previousCwd = oldPwd;
-    if (pwd === undefined || pwd === startCwd) return;
-    try {
-      this.currentCwd = await this.options.resolveCwd(startCwd, pwd);
-    } catch {
-      // Stay in the terminal's directory.
+    let nextCwd = startCwd;
+    if (pwd !== undefined && pwd !== startCwd) {
+      try {
+        nextCwd = await this.options.resolveCwd(startCwd, pwd);
+      } catch {
+        return;
+      }
     }
+    let nextPreviousCwd = this.previousCwd;
+    if (oldPwd !== undefined) {
+      try {
+        nextPreviousCwd = await this.options.resolveCwd(startCwd, oldPwd);
+      } catch {
+        if (nextCwd !== startCwd) nextPreviousCwd = startCwd;
+      }
+    }
+    this.currentCwd = nextCwd;
+    this.previousCwd = nextPreviousCwd;
   }
 
   private async executeForegroundTerminalCommand(
