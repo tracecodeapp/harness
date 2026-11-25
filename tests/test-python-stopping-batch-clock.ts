@@ -401,8 +401,8 @@ for (const tier of ['algorithm-fast', 'judge-compatible'] as const) {
       const execution = program.executeBatchIsolated!({
         inputBatch: [11, 0, 33].map((value) => ({ value })),
         limits: { wallClockMs: 100 },
-        onCaseStarted: (index) => starts.push(index),
-      });
+        onCaseStarted: (index: number) => starts.push(index),
+      } as never) as Promise<readonly (CodeExecutionResult | ExecutionResult)[]>;
       void execution.catch(() => undefined);
       await setImmediate();
       assert.deepEqual(starts, [0, 1]);
