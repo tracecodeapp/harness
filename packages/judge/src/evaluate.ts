@@ -521,7 +521,7 @@ function runBatch<Snapshot, Input, Expected, Result>(
         outcome.timedOut ||
         outcome.backstopTimedOut ||
         outcome.failure?.origin === 'provider' ||
-        (outcome.journal?.finished.length ?? 0) > 0
+        outcome.journal !== undefined
       )) {
         // The batch ended without per-case outcomes: a watchdog stopped it,
         // the provider failed it, or it ended without its terminal reply.
@@ -546,20 +546,27 @@ function runBatch<Snapshot, Input, Expected, Result>(
         }));
       }
       const byId = new Map(outcome.batch.map((item) => [item.caseId, item]));
-      if (byId.size !== plan.cases.length) {
-        return yield* Effect.fail(new JudgeInfrastructureError({
-          operation: 'execute isolated batch',
-          message:
-            `The runtime batch returned ${byId.size} unique cases for ` +
-            `${plan.cases.length} planned cases.`,
-        }));
-      }
       const omitted = plan.cases.find((testCase) => !byId.has(testCase.id));
-      if (omitted) {
+      const malformed = byId.size !== plan.cases.length
+        ? `The runtime batch returned ${byId.size} unique cases for ` +
+          `${plan.cases.length} planned cases.`
+        : omitted
+          ? `The runtime batch omitted case ${JSON.stringify(omitted.id)}.`
+          : undefined;
+      if (malformed && outcome.journal) {
+        // A malformed terminal batch is the provider's protocol failure. The
+        // journal's accepted progress still stands; the terminal rows do not.
+        return serviceStoppedBatch<Input, Expected, Result>(
+          plan,
+          protocolFailureOutcome(outcome, malformed),
+          comparator,
+          stopAtFirstRunaway
+        );
+      }
+      if (malformed) {
         return yield* Effect.fail(new JudgeInfrastructureError({
           operation: 'execute isolated batch',
-          message:
-            `The runtime batch omitted case ${JSON.stringify(omitted.id)}.`,
+          message: malformed,
         }));
       }
       return Object.freeze(plan.cases.map((testCase) =>
@@ -626,7 +633,31 @@ function batchItemResult<Input, Expected, Result>(
 const COMPLETION_UNCERTAIN =
   'The case had started, and its completion is uncertain.';
 
-const NOT_STARTED = 'The case had not started.';
+/** The journal knows only that no start was accepted for the case. */
+const NOT_STARTED = 'As far as the runtime reported, the case had not started.';
+
+/** Join two sentences, giving the first its full stop when it lacks one. */
+function joinSentences(first: string, second: string): string {
+  const head = first.trimEnd();
+  if (head === '') return second;
+  return /[.!?]$/u.test(head) ? `${head} ${second}` : `${head}. ${second}`;
+}
+
+function protocolFailureOutcome(
+  outcome: JudgeKernelProcessOutcome,
+  message: string
+): JudgeKernelProcessOutcome {
+  const { batch: _batch, ...process } = outcome;
+  return Object.freeze({
+    ...process,
+    diagnostics: Object.freeze([Object.freeze({
+      severity: 'error' as const,
+      code: 'runtime-provider-error',
+      message,
+    })]),
+    failure: Object.freeze({ origin: 'provider' as const, reason: 'protocol' as const, message }),
+  });
+}
 
 const UNFINISHED_BATCH_MESSAGE =
   'The runtime batch ended without its result.';
@@ -639,19 +670,7 @@ const UNFINISHED_BATCH_MESSAGE =
 function unfinishedBatchFailure(outcome: JudgeKernelProcessOutcome): JudgeKernelProcessOutcome {
   if (outcome.failure?.origin === 'provider') return outcome;
   if (outcome.timedOut || outcome.backstopTimedOut) return backstopTimeoutOutcome(outcome);
-  return Object.freeze({
-    ...outcome,
-    diagnostics: Object.freeze([Object.freeze({
-      severity: 'error' as const,
-      code: 'runtime-provider-error',
-      message: UNFINISHED_BATCH_MESSAGE,
-    })]),
-    failure: Object.freeze({
-      origin: 'provider' as const,
-      reason: 'protocol' as const,
-      message: UNFINISHED_BATCH_MESSAGE,
-    }),
-  });
+  return protocolFailureOutcome(outcome, UNFINISHED_BATCH_MESSAGE);
 }
 
 /**
@@ -678,7 +697,9 @@ function serviceStoppedBatch<Input, Expected, Result>(
   let stoppedBy: Omit<JudgeNotRun, 'reason'> | undefined;
   for (const testCase of plan.cases) {
     const item = finished.get(testCase.id);
-    if (stoppedBy && !item) {
+    // After an accepted runaway a stopping batch runs nothing more, so a
+    // later finish cannot be graded either.
+    if (stoppedBy) {
       rows.push(notRunResult<Result, Expected>(
         testCase as JudgeCasePlan<unknown, Expected>,
         { reason: 'run-stopped-after-limit', ...stoppedBy },
@@ -705,9 +726,9 @@ function serviceStoppedBatch<Input, Expected, Result>(
     // finished apart from one that never started. Without start
     // acknowledgements nothing is claimed about which.
     const message = started.has(testCase.id)
-      ? `${failure.message} ${COMPLETION_UNCERTAIN}`
+      ? joinSentences(failure.message, COMPLETION_UNCERTAIN)
       : started.size > 0
-        ? `${failure.message} ${NOT_STARTED}`
+        ? joinSentences(failure.message, NOT_STARTED)
         : failure.message;
     const errorDiagnostic = (failed.diagnostics ?? []).find((diagnostic) => diagnostic.severity === 'error');
     const {

@@ -192,6 +192,10 @@ class TraceKernelJudgeSession
           ),
           Effect.tapError(() => this.runtimeControl.discard(invocationId))
         );
+      if (watchdog && this.runtimeControl.sealAt) {
+        // Progress the runtime reports once its watchdog fired is fenced.
+        yield* this.runtimeControl.sealAt(invocationId, watchdog.deadlineAt);
+      }
       return new TraceKernelJudgeProcess(
         this.id,
         process,

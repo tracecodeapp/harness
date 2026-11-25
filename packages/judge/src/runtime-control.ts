@@ -19,6 +19,8 @@ interface InvocationRecord {
     readonly caseIds: ReadonlySet<string>;
     readonly started: string[];
     readonly finished: Map<string, JudgeRuntimeBatchCaseOutput>;
+    /** The watchdog deadline (epoch ms) from which progress is fenced. */
+    sealAt?: number;
   };
 }
 
@@ -110,6 +112,7 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
       if (!record || record.output) return 'fenced';
       const journal = record.journal;
       if (!journal) return 'unknown-case';
+      if (journal.sealAt !== undefined && Date.now() >= journal.sealAt) return 'fenced';
       const caseId = progress.kind === 'started' ? progress.caseId : progress.output.caseId;
       if (!journal.caseIds.has(caseId)) return 'unknown-case';
       if (journal.finished.has(caseId)) return 'duplicate';
@@ -129,6 +132,13 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
           : {}),
       }));
       return 'accepted';
+    });
+  }
+
+  sealAt(invocationId: string, deadlineAt: number): Effect.Effect<void> {
+    return Effect.sync(() => {
+      const journal = this.invocations.get(invocationId)?.journal;
+      if (journal) journal.sealAt = deadlineAt;
     });
   }
 

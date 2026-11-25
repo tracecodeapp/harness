@@ -59,10 +59,12 @@ export type JudgeRuntimeCaseProgress<Result = unknown> =
  * What the control port did with a progress event. Only `accepted` changes
  * the journal.
  * - `duplicate`: the case already started (or finished, for a finish).
- * - `out-of-order`: a finish without its start, in a batch whose starts are
- *   recorded.
+ * - `out-of-order`: a finish without its start, once the batch has recorded
+ *   a start. A runtime that acknowledges starts must check its own first
+ *   finish (the browser dispatch does).
  * - `unknown-case`: not a case of this batch, or not a batch invocation.
- * - `fenced`: the batch already published its result, or its process ended.
+ * - `fenced`: the batch already published its result, its process ended,
+ *   or its watchdog deadline passed (`sealAt`).
  */
 export type JudgeRuntimeProgressDisposition =
   | 'accepted'
@@ -128,6 +130,13 @@ export interface JudgeRuntimeControlPort {
     invocationId: string,
     progress: JudgeRuntimeCaseProgress
   ): Effect.Effect<JudgeRuntimeProgressDisposition>;
+  /**
+   * Seal the journal at the process watchdog's deadline (epoch ms, the
+   * TraceKernel watchdog's clock). Progress recorded at or after it is
+   * `fenced`: a runtime that reports a finish while it is being stopped
+   * cannot have it graded. Optional, like `record`.
+   */
+  sealAt?(invocationId: string, deadlineAt: number): Effect.Effect<void>;
   /** The published output, with the recorded journal. Seals the journal. */
   take(
     invocationId: string
