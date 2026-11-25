@@ -82,7 +82,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   including a Run sent right after a first Run was cancelled during its
   compile. If the compiler service is reset while its Worker is starting, the
   requests waiting on that start fail at once, and the next request starts a
-  new Worker that serves normally.
+  new Worker that serves normally. A compiler Worker that fails to start or to
+  initialize is terminated: the request that hit the failure reports it, and
+  the next request starts a new Worker.
 
 - A warm C# runner no longer reports a correct untraced case as
   `client-timeout` ("C# execution timed out.") within milliseconds. The
