@@ -103,9 +103,11 @@ export interface JudgeEvaluationOptions<
    */
   readonly comparator?: JudgeComparator<Input, Expected, Result>;
   /**
-   * Explicit per-case trace recording selection. An empty list means record
-   * no cases from a trace-capable execution; omission preserves the binding's
-   * ordinary behavior.
+   * Cases to observe. Judge validates the ids but never asks a runtime to
+   * record: every case is graded from its ordinary execution, and a host with
+   * an observer attaches drawings to the selected rows afterwards. The browser
+   * Judge's `evaluate` draws every case of a trace binding when this is
+   * omitted, and none when it is an empty list.
    */
   readonly tracing?: {
     readonly caseIds: readonly string[];

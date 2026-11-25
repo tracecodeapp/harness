@@ -175,24 +175,31 @@ function assertStoppingBatch(
   assert.equal(result.happy.length, 10);
   assert.deepEqual(result.happy.map((row) => row.verdict.kind), Array(10).fill('passed'));
   assert.deepEqual(result.happy.map((row) => row.value), Array.from({ length: 10 }, (_, i) => i));
-  assert.ok(traceSize(result.happy[0]?.trace) > 0);
-  assert.ok(result.happy.slice(1).every((row) => traceSize(row.trace) === 0));
+  // Step 8: the graded batch never records. This host registers no Java
+  // observer, so the selected drawing is refused and no row carries a trace.
+  const refusedReason = (row: { attachment?: { status: string; reason?: string } } | undefined) =>
+    row?.attachment?.status === 'refused' ? row.attachment.reason : row?.attachment?.status;
+  assert.ok(result.happy.every((row) => traceSize(row.trace) === 0));
+  assert.equal(refusedReason(result.happy[0]), 'recorder-unavailable');
+  assert.ok(result.happy.slice(1).every((row) => !Object.hasOwn(row, 'attachment')));
   assert.equal(result.happyLifecycle.workers, 1);
   assert.equal(result.happyLifecycle.runners, 1);
-  assert.deepEqual(result.happyLifecycle.dispatches, [true, ...Array(9).fill(false)]);
+  assert.deepEqual(result.happyLifecycle.dispatches, Array(10).fill(false));
   assert.equal(result.continuationLifecycle.workers, 1);
   assert.equal(result.continuationLifecycle.terminated, false);
-  assert.deepEqual(result.continuationLifecycle.requests, ['execute-prepared-runtime-program-batch']);
-  assert.equal(result.continuationLifecycle.runners, 1);
+  // A continuation re-projects the committed row: zero worker requests.
+  assert.deepEqual(result.continuationLifecycle.requests, []);
+  assert.equal(result.continuationLifecycle.runners, 0);
   assert.equal(result.continuation[0]?.caseId, '1');
   assert.equal(result.continuation[0]?.value, 1);
-  assert.ok(traceSize(result.continuation[0]?.trace) > 0);
+  assert.equal(refusedReason(result.continuation[0]), 'recorder-unavailable');
+  assert.equal(traceSize(result.continuation[0]?.trace), 0);
 
   for (const { cases, requests, dispatches, selection } of result.stopRuns) {
     assert.equal(requests.length, 1);
     assert.equal(requests[0]?.type, 'execute-prepared-runtime-program-batch');
     assert.ok((requests[0]?.elapsed ?? Infinity) < result.bound + 800, JSON.stringify(requests));
-    assert.deepEqual(dispatches, [selection === '0', selection === '1']);
+    assert.deepEqual(dispatches, [false, false], `selection ${selection}: the graded batch never records`);
     assert.equal(cases[0]?.verdict.kind, 'passed');
     assert.equal(cases[1]?.status, 'timed-out');
     assert.equal(cases[1]?.failure?.origin, 'limit');
@@ -217,7 +224,8 @@ function assertStoppingBatch(
   assert.deepEqual(result.fallbackTimeoutLifecycle.dispatches, [true, false]);
   assert.equal(result.abortName, 'AbortError');
   assert.equal(result.abortedWorkerTerminated, true);
-  assert.deepEqual(result.abortLifecycle.dispatches, [true, false]);
+  assert.ok(result.abortLifecycle.dispatches.length > 0);
+  assert.ok(result.abortLifecycle.dispatches.every((tracing) => tracing === false), 'an aborted ordinary batch never records');
 }
 
 function assertPreparedResult(

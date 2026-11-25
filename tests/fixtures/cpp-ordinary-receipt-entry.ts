@@ -328,10 +328,12 @@ export async function assertCppProductReceiptPaths() {
       });
       return yield* judge.evaluate(healthy.plan);
     })));
-    check(direct.status === 'completed' && direct.cases[0]?.status === 'completed' &&
-      direct.cases[0].value === 2 && direct.cases[0].stdout === 'learner output\n' &&
-      Boolean(direct.cases[0].trace) && !Object.hasOwn(direct.cases[0], 'attachment'),
-    'direct trace binding lost its legacy result');
+    // Step 8: a direct trace binding grades from ordinary WASM like every
+    // other entry, and its drawing arrives as an attachment.
+    const [directRow] = direct.status === 'completed' ? direct.cases : [];
+    check(directRow?.status === 'completed' && directRow.value === 2 && directRow.stdout === 'learner output\n' &&
+      directRow.attachment?.status === 'drawn' && directRow.trace === directRow.attachment.trace,
+    'direct trace binding did not grade from the ordinary owner: ' + JSON.stringify(direct));
 
     const receipt = await host.evaluateAlgorithm({ bundle: healthy });
     check(receipt.evaluation.status === 'completed', 'product C++ healthy compile');

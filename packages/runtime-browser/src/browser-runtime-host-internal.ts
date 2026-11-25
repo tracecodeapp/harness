@@ -80,7 +80,6 @@ export interface JudgeReceiptProvider {
   readonly capabilities: {
     readonly observationLease: 'separate';
     readonly certification?: 'ends-same';
-    readonly algorithmBundlesOnly?: true;
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;

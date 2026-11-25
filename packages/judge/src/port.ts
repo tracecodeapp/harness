@@ -23,13 +23,11 @@ export interface JudgeRuntimeInvocationInput<Input = unknown> {
   readonly evaluationId?: string;
   readonly caseId?: string;
   readonly value?: Input;
-  readonly recordTrace?: boolean;
   /** Batch only: stop at the first case stopped by a time or line limit. */
   readonly stopAtFirstRunaway?: boolean;
   readonly cases?: readonly {
     readonly caseId: string;
     readonly value: Input;
-    readonly recordTrace?: boolean;
   }[];
 }
 
