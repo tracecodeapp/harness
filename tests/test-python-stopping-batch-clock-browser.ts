@@ -271,7 +271,7 @@ test('Python ordinary batch gives only the stuck case a timeout in a real worker
         const rows = await program.executeBatchIsolated({
           inputBatch: [11, 0, 33].map((value) => ({ value })),
           limits: { wallClockMs },
-          onCaseStarted: (index: number) => starts.push(index),
+          onCaseStarted(index: number) { starts.push(index); },
         });
         await program.dispose();
         return {
@@ -303,17 +303,22 @@ test('Python ordinary batch matches five 7 MiB singleton results in a real worke
         if (preparation.kind !== 'prepared') throw new Error(JSON.stringify(preparation));
         const { program } = preparation;
         const inputBatch = [1, 2, 3, 4, 5].map((value) => ({ value }));
-        const summary = (row: { kind: string; output?: string; reason?: string; timings?: { algorithmFastBatch?: boolean } }) =>
-          row.kind === 'completed' && typeof row.output === 'string'
-            ? { size: row.output.length, first: row.output[0], last: row.output.at(-1) }
-            : { kind: row.kind, reason: row.reason };
+        const projection = {
+          summary(row: { kind: string; output?: string; reason?: string }) {
+            return row.kind === 'completed' && typeof row.output === 'string'
+              ? { size: row.output.length, first: row.output[0], last: row.output.at(-1) }
+              : { kind: row.kind, reason: row.reason };
+          },
+        };
         const singletons = [];
-        for (const inputs of inputBatch) singletons.push(summary(await program.executeIsolated({ inputs })));
+        for (const inputs of inputBatch) {
+          singletons.push(projection.summary(await program.executeIsolated({ inputs })));
+        }
         const batch = await program.executeBatchIsolated({ inputBatch, onCaseStarted() {} });
         await program.dispose();
         return {
           singletons,
-          batch: batch.map(summary),
+          batch: batch.map(projection.summary),
           fast: batch.map((row: { timings?: { algorithmFastBatch?: boolean } }) => row.timings?.algorithmFastBatch),
         };
       } finally {
