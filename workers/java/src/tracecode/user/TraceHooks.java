@@ -739,9 +739,260 @@ public final class TraceHooks {
   }
 
   public static String serializeOutputResult(Object value) {
+    JudgedOutputPolicy policy = PREPARED_OPERATIONS_OUTPUT_POLICY.get();
+    if (policy != null) return serializeJudgedOutput(value, policy);
     java.util.IdentityHashMap<Object, String> seen = state().serializeSeen;
     seen.clear();
     return serializeResult(value, seen, 0, false);
+  }
+
+  private record JudgedOutputPolicy(long maxItems, long maxNodes, long maxDepth) {}
+
+  private static final ThreadLocal<JudgedOutputPolicy> PREPARED_OPERATIONS_OUTPUT_POLICY =
+      new ThreadLocal<>();
+
+  // The prepared ops driver delegates both invocation and result serialization
+  // to PreparedInputs. Scope the policy to that call, including when it throws.
+  public static String withJudgedOperationsOutput(
+      long maxItems, long maxNodes, long maxDepth, java.util.function.Supplier<String> run) {
+    JudgedOutputPolicy previous = PREPARED_OPERATIONS_OUTPUT_POLICY.get();
+    PREPARED_OPERATIONS_OUTPUT_POLICY.set(new JudgedOutputPolicy(maxItems, maxNodes, maxDepth));
+    try {
+      return run.get();
+    } finally {
+      if (previous == null) PREPARED_OPERATIONS_OUTPUT_POLICY.remove();
+      else PREPARED_OPERATIONS_OUTPUT_POLICY.set(previous);
+    }
+  }
+
+  public static String serializeOutputResult(Object value, long maxItems, long maxNodes, long maxDepth) {
+    return serializeJudgedOutput(value, new JudgedOutputPolicy(maxItems, maxNodes, maxDepth));
+  }
+
+  private static String serializeJudgedOutput(Object value, JudgedOutputPolicy policy) {
+    JudgedOutputSerializer serializer = new JudgedOutputSerializer(policy);
+    try {
+      serializer.write(value, 0);
+      return serializer.out.toString();
+    } catch (JudgedOutputRefusal limit) {
+      // This is outside the JSON value grammar. A learner string, even with
+      // this prefix, is always JSON-quoted by the serializer.
+      return "tracecode:judged-output-limit:" + limit.getMessage();
+    }
+  }
+
+  private static final class JudgedOutputRefusal extends RuntimeException {
+    JudgedOutputRefusal(String reason) {
+      super(reason, null, false, false);
+    }
+  }
+
+  private static final class JudgedOutputSerializer {
+    final StringBuilder out = new StringBuilder();
+    private final JudgedOutputPolicy policy;
+    private final java.util.IdentityHashMap<Object, String> seen = new java.util.IdentityHashMap<>();
+    private final java.util.IdentityHashMap<Object, Boolean> active = new java.util.IdentityHashMap<>();
+    private long nodes;
+
+    JudgedOutputSerializer(JudgedOutputPolicy policy) {
+      this.policy = policy;
+    }
+
+    private void countNodes(long count) {
+      nodes += count;
+      if (nodes > policy.maxNodes()) throw new JudgedOutputRefusal("node");
+    }
+
+    private void checkDepth(int depth) {
+      if (depth > policy.maxDepth()) throw new JudgedOutputRefusal("depth");
+    }
+
+    private void checkItems(long count) {
+      if (count > policy.maxItems()) throw new JudgedOutputRefusal("item");
+    }
+
+    void write(Object value, int nesting) {
+      countNodes(1);
+      if (value == null) {
+        out.append("null");
+        return;
+      }
+      if (value.getClass().isArray() || value instanceof java.util.Collection<?> ||
+          value instanceof java.util.Map<?, ?> || isUserObject(value)) {
+        writeContainer(value, nesting + 1);
+      } else {
+        writeScalar(value);
+      }
+    }
+
+    private void writeScalar(Object value) {
+      if (value instanceof Character || value instanceof CharSequence) {
+        writeString(String.valueOf(value));
+      } else {
+        // Reuse legacy scalar formatting, including its non-finite number
+        // spellings. This branch receives no containers.
+        String json = serializeResult(value, seen, 0, false);
+        appendWellFormed(json);
+      }
+    }
+
+    private void writeContainer(Object value, int depth) {
+      boolean hasReferenceTarget = !(value.getClass().isArray() ||
+          value instanceof java.util.Collection<?> || value instanceof java.util.Map<?, ?>);
+      if (!hasReferenceTarget && active.containsKey(value)) {
+        throw new JudgedOutputRefusal("cycle");
+      }
+      checkDepth(depth);
+      String ref = seen.get(value);
+      if (ref != null) {
+        checkItems(1);
+        countNodes(1);
+        out.append("{\"__ref__\":");
+        writeString(ref);
+        out.append('}');
+        return;
+      }
+
+      if (!hasReferenceTarget) active.put(value, Boolean.TRUE);
+      try {
+        if (value.getClass().isArray()) {
+          writeArray(value, depth);
+        } else {
+          String id = hasReferenceTarget
+              ? stableTraceReferenceId(value, value.getClass().getSimpleName())
+              : "ref-" + seen.size();
+          seen.put(value, id);
+          if (value instanceof java.util.Collection<?> collection) {
+            writeCollection(collection, depth);
+          } else if (value instanceof java.util.Map<?, ?> map) {
+            writeMap(map, depth);
+          } else {
+            writeObject(value, id, depth);
+          }
+        }
+      } finally {
+        if (!hasReferenceTarget) active.remove(value);
+      }
+    }
+
+    private void writeArray(Object array, int depth) {
+      int length = java.lang.reflect.Array.getLength(array);
+      checkItems(length);
+      if (array.getClass().getComponentType().isPrimitive()) {
+        countNodes(length);
+        String json = serializeResult(array, seen, 0, false);
+        if (array instanceof char[]) appendWellFormed(json);
+        else out.append(json);
+        return;
+      }
+      seen.put(array, "ref-" + seen.size());
+      out.append('[');
+      for (int index = 0; index < length; index++) {
+        if (index > 0) out.append(',');
+        write(java.lang.reflect.Array.get(array, index), depth);
+      }
+      out.append(']');
+    }
+
+    private void writeCollection(java.util.Collection<?> collection, int depth) {
+      boolean set = collection instanceof java.util.Set<?>;
+      if (set) {
+        // Charge the encoded wrapper's items and nodes. Its values array
+        // adds no nesting to the Java value.
+        checkItems(2);
+        countNodes(2);
+        out.append("{\"__type__\":\"set\",\"values\":");
+      }
+      out.append('[');
+      int items = 0;
+      for (Object item : collection) {
+        checkItems(++items);
+        if (items > 1) out.append(',');
+        write(item, depth);
+      }
+      out.append(']');
+      if (set) out.append('}');
+    }
+
+    private void writeMap(java.util.Map<?, ?> map, int depth) {
+      // Java keys are stringified by the existing output format. Keep the last
+      // value for a name, as JSON.parse does, before counting JSON values.
+      var fields = new java.util.LinkedHashMap<String, Object>();
+      for (var entry : map.entrySet()) {
+        String name = String.valueOf(entry.getKey());
+        if (visibleMember(name)) fields.put(name, entry.getValue());
+      }
+      if ("NestedInteger".equals(fields.get("__type__")) && fields.get("value") == null) {
+        fields.remove("value");
+      }
+      checkItems(fields.size());
+      out.append('{');
+      boolean first = true;
+      for (var entry : fields.entrySet()) {
+        if (!first) out.append(',');
+        first = false;
+        writeMember(entry.getKey(), entry.getValue(), depth);
+      }
+      out.append('}');
+    }
+
+    private void writeObject(Object value, String id, int depth) {
+      String type = value.getClass().getSimpleName();
+      boolean nestedInteger = type.equals("NestedInteger");
+      long items = 2;
+      checkItems(items);
+      out.append('{');
+      writeMember("__type__", type, depth);
+      out.append(',');
+      writeMember("__id__", id, depth);
+      for (var field : serializableFields(value.getClass())) {
+        String name = field.getName();
+        if (!visibleMember(name)) continue;
+        Object child;
+        try {
+          child = field.get(value);
+        } catch (IllegalAccessException error) {
+          throw new JudgedOutputRefusal("unrepresentable");
+        }
+        if (nestedInteger && name.equals("value") && child == null) continue;
+        checkItems(++items);
+        out.append(',');
+        writeMember(name, child, depth);
+      }
+      out.append('}');
+    }
+
+    private static boolean visibleMember(String name) {
+      // Match the existing worker projection of Java output.
+      return !name.equals("__class__") && !name.equals("__proto__");
+    }
+
+    private void writeMember(String name, Object value, int depth) {
+      writeString(name);
+      out.append(':');
+      write(value, depth);
+    }
+
+    private void writeString(String value) {
+      appendWellFormed(jsonString(value));
+    }
+
+    private void appendWellFormed(String json) {
+      // Escape isolated UTF-16 code units before the JVM/worker transport can
+      // replace them. A valid pair travels as its original Unicode scalar.
+      int start = 0;
+      for (int index = 0; index < json.length(); index++) {
+        char ch = json.charAt(index);
+        if (Character.isHighSurrogate(ch) && index + 1 < json.length() &&
+            Character.isLowSurrogate(json.charAt(index + 1))) {
+          index++;
+        } else if (Character.isSurrogate(ch)) {
+          out.append(json, start, index).append("\\u").append(Integer.toHexString(ch));
+          start = index + 1;
+        }
+      }
+      out.append(json, start, json.length());
+    }
   }
 
   public static void emitLineAtLine(int line) {

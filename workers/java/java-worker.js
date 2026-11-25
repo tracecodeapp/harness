@@ -3943,15 +3943,20 @@ function buildExportsSource(source, functionName, executionStyle, input, options
   const helperMethods = buildHelperMethods(features);
   const nodePreludeSource = options.skipNodePrelude === true ? '' : buildNodePreludeSource(source, options);
   const dynamicInputsByKey = dynamicInputByKey(options.dynamicInputs ?? []);
+  const policy = options.judgedOutputPolicy;
+  const shapeBounds = policy ? `${policy.maxItems}L, ${policy.maxNodes}L, ${policy.maxDepth}L` : '';
+  const serializeOutput = (value) =>
+    `TraceHooks.serializeOutputResult(${value}${policy ? `, ${shapeBounds}` : ''})`;
 
   if (executionStyle === 'ops-class') {
     const preparedOpsInput = dynamicInputsByKey.get('__ops__');
     if (preparedOpsInput) {
+      const run = `new tracecode.browser.PreparedInputs().runOperations(${functionName}.class, ${JSON.stringify(preparedOpsInput.property)})`;
       return `${nodePreludeSource}public class Exports {
 ${helperMethods}
 
   public static String run() {
-    return new tracecode.browser.PreparedInputs().runOperations(${functionName}.class, ${JSON.stringify(preparedOpsInput.property)});
+    return ${policy ? `TraceHooks.withJudgedOperationsOutput(${shapeBounds}, () -> ${run})` : run};
   }
 }
 `;
@@ -4007,7 +4012,7 @@ ${helperMethods}
 
   public static String run() {
 ${lines.join('\n')}
-    return TraceHooks.serializeOutputResult(out);
+    return ${serializeOutput('out')};
   }
 }
 `;
@@ -4044,8 +4049,8 @@ ${lines.join('\n')}
   }
   const invocationArgs = invocationKeys.join(', ');
   const invocationLine = returnType === 'void'
-    ? `    solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(null);`
-    : `    ${returnType || 'Object'} ${resultLocalName} = solution.${functionName}(${invocationArgs});\n    return TraceHooks.serializeOutputResult(${resultLocalName});`;
+    ? `    solution.${functionName}(${invocationArgs});\n    return ${serializeOutput('null')};`
+    : `    ${returnType || 'Object'} ${resultLocalName} = solution.${functionName}(${invocationArgs});\n    return ${serializeOutput(resultLocalName)};`;
 
   return `${nodePreludeSource}public class Exports {
 ${helperMethods}
@@ -4374,7 +4379,7 @@ function normalizePublicClassDeclarations(source) {
   return String(source).replace(/^([ \t]*)public\s+class\s+/gm, '$1class ');
 }
 
-function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
+function buildPlainRunnableSource(payload, compileId, dynamicInputs, judgedOutputPolicy) {
   const exportsClassName = buildExportsClassName(compileId);
   const packageName = buildPackageName(compileId);
   const exportsSource = buildExportsSource(
@@ -4386,6 +4391,7 @@ function buildPlainRunnableSource(payload, compileId, dynamicInputs) {
       dynamicInputs,
       hasDynamicInputs: dynamicInputs.length > 0,
       scriptMode: payload.scriptMode === true,
+      judgedOutputPolicy,
     }
   ).replaceAll(/\bpublic class Exports\b/g, `public class ${exportsClassName}`);
 
@@ -7419,6 +7425,15 @@ async function runJavaCodeBatchRequest(payload, requestId) {
   };
 }
 
+function readJavaJudgedOutputPolicy(value) {
+  if (!value || typeof value !== 'object') return undefined;
+  const { maxBytes, maxItems, maxNodes, maxDepth } = value;
+  if (![maxBytes, maxItems, maxNodes, maxDepth].every((bound) =>
+    Number.isSafeInteger(bound) && bound >= 0
+  )) return undefined;
+  return { maxBytes, maxItems, maxNodes, maxDepth };
+}
+
 async function prepareJavaRuntimeProgram(payload, requestId) {
   const totalStart = performance.now();
   const mode = payload?.mode;
@@ -7441,6 +7456,9 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
   let buildKey;
   let shellIdentity;
   let rewriteMs = 0;
+  const judgedOutputPolicy = mode === 'code'
+    ? readJavaJudgedOutputPolicy(payload.judgedOutputPolicy)
+    : undefined;
   try {
     normalizedPayload = normalizeJavaExecutionPayload({
       ...payload,
@@ -7454,6 +7472,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
       executionStyle: normalizedPayload.executionStyle,
       scriptMode: normalizedPayload.scriptMode === true,
       options: mode === 'trace' ? normalizedPayload.options ?? {} : {},
+      judgedOutputPolicy,
     });
     stableCompileId = stableHash(buildKey);
     // Admission excludes the exact generated entry shell and its nested
@@ -7510,7 +7529,8 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
         source: buildPlainRunnableSource(
           normalizedPayload,
           shellIdentity,
-          traceDynamicInputs
+          traceDynamicInputs,
+          judgedOutputPolicy
         ),
       }];
       dynamicInputs = traceDynamicInputs;
@@ -7635,6 +7655,7 @@ async function prepareJavaRuntimeProgram(payload, requestId) {
 
   const preparedState = {
     mode,
+    ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
     ...(observerOnly ? { observerOnly: true } : {}),
     entryClass,
     ...(cleanEntryClass ? { cleanEntryClass } : {}),
@@ -7729,8 +7750,12 @@ async function restorePreparedJavaRuntimeProgram(payload) {
       'The selected Java runtime did not reclassify the restored artifact.'
     );
   }
+  const judgedOutputPolicy = snapshot.mode === 'code'
+    ? readJavaJudgedOutputPolicy(snapshot.judgedOutputPolicy)
+    : undefined;
   preparedJavaRuntimePrograms.set(snapshot.programId, {
     mode: snapshot.mode,
+    ...(judgedOutputPolicy ? { judgedOutputPolicy } : {}),
     ...(snapshot.observerOnly === true ? { observerOnly: true } : {}),
     entryClass: snapshot.entryClass,
     ...(snapshot.cleanEntryClass
@@ -7782,6 +7807,32 @@ function preparedJavaInputProperties(program, inputs) {
       JSON.stringify(preparedJavaInputValue(program, inputs, dynamicInput)),
     ])
   );
+}
+
+const JAVA_JUDGED_OUTPUT_LIMIT_PREFIX = 'tracecode:judged-output-limit:';
+
+function preparedJavaJudgedReply(reportOutput, policy) {
+  let limit;
+  let output;
+  if (policy && reportOutput?.startsWith(JAVA_JUDGED_OUTPUT_LIMIT_PREFIX)) {
+    limit = reportOutput.slice(JAVA_JUDGED_OUTPUT_LIMIT_PREFIX.length);
+  } else {
+    output = parseJavaReportOutput(reportOutput);
+    if (policy && output !== undefined &&
+        new TextEncoder().encode(JSON.stringify(output)).byteLength > policy.maxBytes) {
+      limit = 'byte';
+    }
+  }
+  if (!limit) return { success: true, output };
+  const bound = {
+    byte: policy.maxBytes, item: policy.maxItems, node: policy.maxNodes, depth: policy.maxDepth,
+  }[limit];
+  const error = limit === 'cycle'
+    ? 'The answer contains a cycle, which a judged answer cannot represent.'
+    : bound === undefined
+      ? 'The answer cannot be serialized completely.'
+      : `The answer is larger than the judged-output ${limit} limit (${bound}).`;
+  return { success: false, output: null, timeoutReason: 'serialization-limit', error };
 }
 
 function preparedJavaResultFromReport(
@@ -7874,8 +7925,7 @@ function preparedJavaResultFromReport(
     };
   }
   return {
-    success: true,
-    output: parseJavaReportOutput(report.output),
+    ...preparedJavaJudgedReply(report.output, program.judgedOutputPolicy),
     consoleOutput,
     executionTimeMs,
     runtimeIsolation: report.isolation,
