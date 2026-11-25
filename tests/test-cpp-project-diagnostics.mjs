@@ -13,6 +13,29 @@ const worker = (await readFile(
   new URL('../workers/cpp/cpp-worker.js', import.meta.url), 'utf8'
 )).replace(/^import [\s\S]*? from ['"][^'"]+['"];\n/gm, '');
 
+test('C++ Project removes only the current wrapper include frame', () => {
+  const wrapperPath = '/usr/share/tracecc/project/source-0.cpp';
+  const kept = [
+    'In file included from /usr/share/tracecc/project/source-1.cpp:5:',
+    `In file included from ${wrapperPath}:5:2:`,
+    `${wrapperPath}:5:2: note: unrelated compiler text`,
+    '',
+  ].join('\n');
+  const stderr = `In file included from ${wrapperPath}:5:\n${kept}`;
+  const context = vm.createContext({
+    self: { location: new URL('https://example.test/workers/cpp-worker.js'), postMessage() {} },
+    URL, TextEncoder, TextDecoder, Uint8Array, performance, wrapperPath, stderr,
+  });
+  const output = vm.runInContext(`
+    ${worker}
+    formatTraceccProjectDiagnostics(stderr, {
+      commands: [['tracecc-cxx', wrapperPath]],
+      sources: [], compilerSourceRoot: '/home/guest/playground', diagnosticIncludePaths: new Map(),
+    }, 0);
+  `, context, { filename: 'cpp-worker.js' });
+  assert.equal(output, kept);
+});
+
 for (const fixture of cases) {
   test(`C++ Project diagnostic paths match Clang: ${fixture.name}`, async () => {
     const context = vm.createContext({
@@ -34,7 +57,11 @@ for (const fixture of cases) {
       runWasiReactor = async (_reactor, args, fs) => {
         const hasDiagnostic = commandIndex++ === fixture.traceccCommandIndex;
         if (hasDiagnostic) {
-          if (!args[1].endsWith('/source-' + fixture.traceccCommandIndex + '.cpp')) {
+          if (fixture.tool === 'wasm-ld') {
+            if (args[0] !== 'wasm-ld' || !args.includes('/workspace/.tracecc-build/user-0.o')) {
+              throw new Error('link fixture did not reach the expected linker input');
+            }
+          } else if (!args[1].endsWith('/source-' + fixture.traceccCommandIndex + '.cpp')) {
             throw new Error('diagnostic fixture did not reach its source wrapper');
           }
         }
@@ -55,7 +82,10 @@ for (const fixture of cases) {
         },
       });
     `, context, { filename: 'cpp-worker.js' });
-    assert.equal(fixture.expectedStderr, fixture.matchingClangStderr ?? fixture.clangStderr);
+    const reference = fixture.tool === 'wasm-ld'
+      ? fixture.before
+      : fixture.matchingClangStderr ?? fixture.clangStderr;
+    assert.equal(fixture.expectedStderr, reference);
     assert.equal(result.success, fixture.exitCode === 0);
     assert.equal(result.stderr, fixture.expectedStderr);
   });
