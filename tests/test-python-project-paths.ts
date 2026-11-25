@@ -13,6 +13,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import vm from 'node:vm';
+import { createRuntimeCommandStdinPipeFromText } from '../packages/runtime-contracts/src/runtime-command';
 import {
   PYTHON_PROJECT_INTERNAL_MOUNT,
   PYTHON_PROJECT_PATH_CASES,
@@ -81,7 +82,16 @@ function requestFor(entry: PythonProjectPathCase): Record<string, unknown> {
     cwd,
     env: {},
     code: '',
-    project: { workspaceRoot: WORKSPACE_ROOT, cwd: WORKSPACE_ROOT, files: entry.files.map((file) => ({ ...file })) },
+    ...(entry.stdin === undefined ? {} : { stdinPipe: createRuntimeCommandStdinPipeFromText(entry.stdin) }),
+    project: {
+      workspaceRoot: WORKSPACE_ROOT,
+      cwd: WORKSPACE_ROOT,
+      files: entry.files.map((file) => ({ ...file })),
+      // The runner reads standard input from the device TraceKernel declares.
+      ...(entry.stdin === undefined
+        ? {}
+        : { kernelDevices: [{ path: '/dev/stdin', readable: true, writable: false, inputDevice: '/dev/stdin' }] }),
+    },
   };
 }
 

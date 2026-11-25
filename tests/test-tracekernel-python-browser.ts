@@ -18,9 +18,14 @@ import {
 const PATH_CASE_ROOT = '/workspace/paths';
 const pathCaseDirectory = (index: number) => `${PATH_CASE_ROOT}/${index}`;
 const PATH_CASES = PYTHON_PROJECT_PATH_CASES.map((entry, index) => ({
-  files: entry.files.map((file) => ({ path: `paths/${index}/${file.path}`, contents: file.contents })),
+  // A case with no files still needs its directory.
+  files: (entry.files.length > 0 ? entry.files : [{ path: '.keep', contents: '' }])
+    .map((file) => ({ path: `paths/${index}/${file.path}`, contents: file.contents })),
   cwd: entry.cwd ? `${pathCaseDirectory(index)}/${entry.cwd}` : pathCaseDirectory(index),
-  command: entry.command,
+  // The terminal pipes standard input the way a learner would.
+  command: entry.stdin === undefined
+    ? entry.command
+    : `printf '${entry.stdin.replace(/\n/g, '\\n')}' | ${entry.command}`,
 }));
 
 function assertCondition(condition: boolean, message: string): asserts condition {
