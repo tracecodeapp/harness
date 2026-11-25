@@ -8,11 +8,6 @@ import {
 } from "../kernel/workspace-paths";
 
 import {
-  AsyncFunction,
-  BrowserFunction,
-} from "./constructors";
-
-import {
   ModuleRecord,
 } from "./contracts";
 
@@ -27,6 +22,11 @@ import {
   workspaceFileUrl,
   workspaceFilename,
 } from "./resolution";
+
+import {
+  MODULE_WRAPPER_PARAMETERS,
+  createWorkspaceStackFrames,
+} from "./stack-frames";
 
 import {
   createHttpApi,
@@ -194,6 +194,9 @@ export function createBrowserModuleRuntime(
 
   const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
 
+  // Names each module's frames after its file for as long as the command runs.
+  const stackFrames = createWorkspaceStackFrames();
+
   let hostGlobalsRestored = false;
 
   const restoreHostGlobals = (): void => {
@@ -203,6 +206,7 @@ export function createBrowserModuleRuntime(
         netApi.closeAll();
         restoreTimerGlobals();
         restoreHttpGlobals();
+        stackFrames.release();
       };
 
   executionState.cleanupHostGlobals = restoreHostGlobals;
@@ -362,24 +366,19 @@ export function createBrowserModuleRuntime(
         const localRequire = createWorkspaceRequire(normalizedPath, module);
         module.require = localRequire;
         const localImport = (specifier: string) => importModule(specifier, normalizedPath);
-        const executableCode = isEsmModule(modules, normalizedPath)
+        const esm = isEsmModule(modules, normalizedPath);
+        const executableCode = esm
           ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot))
           : code;
         try {
-          const fn = new BrowserFunction(
-            'require',
-            '__import',
-            'module',
-            'exports',
-            'console',
-            'process',
-            'Buffer',
-            '__filename',
-            '__dirname',
-            executableCode
+          const fn = stackFrames.compile(
+            executableCode,
+            esm ? workspaceFileUrl(normalizedPath, workspaceRoot) : workspaceFilename(normalizedPath, workspaceRoot),
+            esm ? 'module' : 'commonjs',
+            { parameters: MODULE_WRAPPER_PARAMETERS }
           );
           fn.call(
-            isEsmModule(modules, normalizedPath) ? undefined : module.exports,
+            esm ? undefined : module.exports,
             localRequire,
             localImport,
             module,
@@ -391,7 +390,7 @@ export function createBrowserModuleRuntime(
             workspaceDirname(normalizedPath, workspaceRoot)
           );
         } catch (error) {
-          throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+          throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot), stackFrames);
         }
         module.loaded = true;
         return module.exports;
@@ -428,17 +427,11 @@ export function createBrowserModuleRuntime(
         const localImport = (specifier: string) => importModule(specifier, normalizedPath);
         const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot));
         try {
-          const fn = new AsyncFunction(
-            'require',
-            '__import',
+          const fn = stackFrames.compile(
+            executableCode,
+            workspaceFileUrl(normalizedPath, workspaceRoot),
             'module',
-            'exports',
-            'console',
-            'process',
-            'Buffer',
-            '__filename',
-            '__dirname',
-            executableCode
+            { parameters: MODULE_WRAPPER_PARAMETERS, async: true }
           );
           await fn.call(
             undefined,
@@ -453,7 +446,7 @@ export function createBrowserModuleRuntime(
             workspaceDirname(normalizedPath, workspaceRoot)
           );
         } catch (error) {
-          throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+          throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot), stackFrames);
         }
         module.loaded = true;
         await Promise.resolve();
@@ -478,6 +471,8 @@ export function createBrowserModuleRuntime(
     requireModule,
 
     restoreHostGlobals,
+
+    stackFrames,
 
   };
 

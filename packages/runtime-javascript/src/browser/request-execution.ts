@@ -116,9 +116,8 @@ import {
 } from "../kernel/workspace-paths";
 
 import {
-  AsyncFunction,
-  BrowserFunction,
-} from "../modules/constructors";
+  MODULE_WRAPPER_PARAMETERS,
+} from "../modules/stack-frames";
 
 import {
   ModuleRecord,
@@ -357,6 +356,7 @@ export async function runBrowserJavaScriptProjectRequest(
       preloadParentPath,
       requireModule,
       restoreHostGlobals,
+      stackFrames,
     } = moduleRuntime;
 
     try {
@@ -384,17 +384,11 @@ export async function runBrowserJavaScriptProjectRequest(
           ? transformStaticEsmToCommonJs(request.code, workspaceFileUrl('[eval]', workspaceRoot))
           : request.code;
         try {
-          const fn = new AsyncFunction(
-            'require',
-            '__import',
-            'module',
-            'exports',
-            'console',
-            'process',
-            'Buffer',
-            '__filename',
-            '__dirname',
-            transformDynamicImports(evalCode)
+          const fn = stackFrames.compile(
+            transformDynamicImports(evalCode),
+            `${workspaceRoot}/[eval]`,
+            'script',
+            { parameters: MODULE_WRAPPER_PARAMETERS, async: true }
           );
           await fn.call(
             module.exports,
@@ -409,7 +403,7 @@ export async function runBrowserJavaScriptProjectRequest(
             cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
           );
         } catch (error) {
-          throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
+          throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`, stackFrames);
         }
         await Promise.resolve();
       }
@@ -512,7 +506,7 @@ export async function runBrowserJavaScriptProjectRequest(
       httpApi.closeAll();
       eventLoopApi.clearAll();
       const sourcePath = processArgvForRequest(request)[1] ?? `${request.project.workspaceRoot ?? request.project.cwd ?? '/workspace'}/[eval]`;
-      const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath);
+      const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath, stackFrames);
       const exitCode = typeof (displayError as { exitCode?: unknown }).exitCode === 'number'
         ? (displayError as { exitCode: number }).exitCode
         : 1;

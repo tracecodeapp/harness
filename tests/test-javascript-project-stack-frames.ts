@@ -17,6 +17,10 @@ import {
   createBrowserTypeScriptProjectRunner,
 } from '../packages/runtime-javascript/src/project-browser';
 import {
+  MODULE_WRAPPER_PARAMETERS,
+  createWorkspaceStackFrames,
+} from '../packages/runtime-javascript/src/modules/stack-frames';
+import {
   STACK_FRAME_WORKSPACE_ROOT,
   stackFrameCases,
   workspaceFrames,
@@ -144,10 +148,83 @@ async function checkCase(testCase: StackFrameCase): Promise<void> {
   }
 }
 
+interface RawCallSite {
+  getLineNumber(): number | null;
+  getColumnNumber(): number | null;
+  getScriptNameOrSourceURL(): string | null;
+}
+
+/** The engine's own call sites, bypassing every installed formatter. */
+function engineCallSites(run: () => unknown): RawCallSite[] {
+  const errorHooks = Error as unknown as { prepareStackTrace?: unknown };
+  const previous = errorHooks.prepareStackTrace;
+  errorHooks.prepareStackTrace = (_error: unknown, sites: RawCallSite[]) => sites;
+  try {
+    run();
+  } catch (error) {
+    return (error as { stack: RawCallSite[] }).stack;
+  } finally {
+    errorHooks.prepareStackTrace = previous;
+  }
+  throw new Error('expected the probe to throw');
+}
+
+// The module compiler names the file at load and keeps the file's lines.
+function checkModuleCompiler(): void {
+  const frames = createWorkspaceStackFrames();
+  try {
+    const options = { parameters: MODULE_WRAPPER_PARAMETERS };
+    const location = `${STACK_FRAME_WORKSPACE_ROOT}/lib/probe.js`;
+    const probe = frames.compile('// probe\n\nthrow new Error("probe");\n', location, 'commonjs', options);
+    const [site] = engineCallSites(() => probe());
+    assertCondition(
+      site?.getScriptNameOrSourceURL() === location && site.getLineNumber() === 3 && site.getColumnNumber() === 7,
+      `the engine should place the probe at ${location}:3:7, not ${site?.getScriptNameOrSourceURL()}:${site?.getLineNumber()}:${site?.getColumnNumber()}`
+    );
+
+    // CommonJS top-level return and directives behave as in a Node module.
+    assertCondition(frames.compile('return 42;', `${STACK_FRAME_WORKSPACE_ROOT}/return.js`, 'commonjs', options)() === 42, 'top-level return');
+    const strict = frames.compile('"use strict"; return this;', `${STACK_FRAME_WORKSPACE_ROOT}/strict.js`, 'commonjs', options);
+    assertCondition(strict.call(undefined) === undefined, 'a "use strict" module body is strict');
+
+    // A body that closes the wrapper early never runs outside it; it fails as
+    // the Function constructor fails, with the same SyntaxError.
+    const escape = '}); globalThis.__tracecodeWrapperEscape = true; (function () {';
+    let constructorMessage = '';
+    try {
+      new Function(...MODULE_WRAPPER_PARAMETERS, escape);
+    } catch (error) {
+      constructorMessage = (error as Error).message;
+    }
+    let compileError: unknown;
+    try {
+      frames.compile(escape, `${STACK_FRAME_WORKSPACE_ROOT}/escape.js`, 'commonjs', options);
+    } catch (error) {
+      compileError = error;
+    }
+    assertCondition(
+      compileError instanceof SyntaxError && compileError.message === constructorMessage && constructorMessage !== '',
+      `a wrapper-closing body should throw the Function constructor's SyntaxError (${constructorMessage}), got ${String(compileError)}`
+    );
+    assertCondition(!('__tracecodeWrapperEscape' in globalThis), 'a wrapper-closing body ran outside its wrapper');
+
+  } finally {
+    frames.release();
+  }
+}
+
 async function main(): Promise<void> {
   // tsx installs its own formatter; the runner must hand it back unchanged.
   const hostPrepareStackTrace = Error.prepareStackTrace;
   const failures: string[] = [];
+  try {
+    checkModuleCompiler();
+    console.log('ok - module compiler');
+  } catch (error) {
+    failures.push('module compiler');
+    console.log('not ok - module compiler');
+    console.log(error instanceof Error ? error.message : String(error));
+  }
   for (const testCase of stackFrameCases) {
     try {
       await checkCase(testCase);
