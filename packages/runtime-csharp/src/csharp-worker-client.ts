@@ -33,6 +33,7 @@ import {
   liftCodeBatchOutcome,
   liftTraceOutcome,
   RuntimeProviderError,
+  TRACE_UNAVAILABLE_CODE,
   type ExecutionDiagnosticStage,
   type RawExecutionBatchPayload,
 } from '@tracecode/runtime-contracts';
@@ -184,10 +185,36 @@ function judgedOutputLimit(output: unknown, policy: JudgedOutputPolicy): JudgedO
   if (judgedOutputEncoder.encode(json).byteLength > policy.maxBytes) return 'byte';
 }
 
+/**
+ * The compiler's refusal code for a traced build of source that uses
+ * conditional compilation (#if, #elif, #else, #endif, #define, #undef). The
+ * ordinary build of the same source is unaffected.
+ */
+export const CSHARP_TRACE_CONDITIONAL_COMPILATION_UNSUPPORTED =
+  'csharp-trace-conditional-compilation-unsupported' as const;
+
+/**
+ * What a learner reads when a traced build is declined for conditional
+ * compilation. The compiler reply carries only the code; this is the one
+ * place the wording lives.
+ */
+export const CSHARP_TRACE_CONDITIONAL_COMPILATION_MESSAGE =
+  'Tracing is not available for programs that use conditional compilation (#if/#define).';
+
+/** Whether a compiler reply declined a traced build (only traced builds carry this code). */
+export function isCSharpTraceRefusal(
+  result: { readonly success?: boolean; readonly refusalCode?: unknown }
+): boolean {
+  return result.success === false &&
+    result.refusalCode === CSHARP_TRACE_CONDITIONAL_COMPILATION_UNSUPPORTED;
+}
+
 interface CSharpWorkerExecuteResult {
   success: boolean;
   output?: unknown;
   error?: string;
+  /** Set by the compiler when it declines a traced build; see CSHARP_TRACE_CONDITIONAL_COMPILATION_UNSUPPORTED. */
+  refusalCode?: string;
   diagnostics?: CSharpDiagnostic[];
   consoleOutput?: string[];
   events?: RuntimeTraceEvent[];
@@ -1028,6 +1055,12 @@ export class CSharpWorkerClient {
     traceOptions: TraceExecutionOptions | undefined,
     fallbackExecutionTimeMs: number
   ): ExecutionResult {
+    if (isCSharpTraceRefusal(result)) {
+      // The program itself is fine and runs untraced; only tracing is declined.
+      throw new RuntimeProviderError(CSHARP_TRACE_CONDITIONAL_COMPILATION_MESSAGE, {
+        code: TRACE_UNAVAILABLE_CODE,
+      });
+    }
     const consoleOutput = result.consoleOutput ?? [];
     const hostEmittedStdout = result.events?.some((event) => event.kind === 'stdout') === true;
     const events = [

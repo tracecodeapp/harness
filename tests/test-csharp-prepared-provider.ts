@@ -11,7 +11,11 @@ import type {
   RuntimeProgramPreparationCall,
   RuntimeExecutionTimings,
 } from '../packages/runtime-contracts/src/index';
-import { createEmptyRuntimeTrace, isRuntimeProviderError } from '../packages/runtime-contracts/src/index';
+import {
+  createEmptyRuntimeTrace,
+  isRuntimeProviderError,
+  isTraceUnavailableError,
+} from '../packages/runtime-contracts/src/index';
 import {
   createCSharpRuntimeClient,
   type CSharpPreparedWorkerAuthority,
@@ -22,6 +26,10 @@ import {
   type CSharpPreparedProgramArtifact,
   type CSharpWorkerPrepareResult,
 } from '../packages/runtime-csharp/src/csharp-worker-client';
+
+const TRACE_REFUSAL_CODE = 'csharp-trace-conditional-compilation-unsupported';
+const TRACE_REFUSAL_MESSAGE =
+  'Tracing is not available for programs that use conditional compilation (#if/#define).';
 
 class FakePreparedCSharpWorker {
   prepareCalls: RuntimeProgramPreparationCall[] = [];
@@ -36,6 +44,8 @@ class FakePreparedCSharpWorker {
   }> = [];
   disposeCalls: string[] = [];
   failPreparation = false;
+  /** When set, the compiler declines every traced build with this refusal code. */
+  traceRefusalCode: string | undefined;
   preparationTimeoutReason: 'client-timeout' | undefined;
   preparedRunnerTier: 'algorithm-fast' | 'compatibility' = 'compatibility';
   executionResult: CodeExecutionResult | undefined;
@@ -56,6 +66,16 @@ class FakePreparedCSharpWorker {
         error: 'C# compilation timed out.',
         timeoutReason: this.preparationTimeoutReason,
         consoleOutput: [],
+      };
+    }
+    if (this.traceRefusalCode !== undefined && call.mode === 'trace') {
+      return {
+        success: false,
+        // The compiler reply carries only the code; the client owns the wording.
+        error: this.traceRefusalCode,
+        refusalCode: this.traceRefusalCode,
+        consoleOutput: [],
+        timings: { compileMs: 1, compileCacheHit: false },
       };
     }
     if (this.failPreparation) {
@@ -979,4 +999,119 @@ test('a valid oversized TraceCLR collection is a case limit, and malformed repli
   } finally {
     client.terminate();
   }
+});
+
+test('C# observation reports a declined traced build as a typed drawing refusal', async () => {
+  const compiler = new FakePreparedCSharpWorker();
+  compiler.traceRefusalCode = TRACE_REFUSAL_CODE;
+  let observerRunners = 0;
+  const authority = {
+    compiler: compiler as unknown as CSharpWorkerClient,
+    batchConcurrency: 1,
+    warmup: () => compiler.init(),
+    createRunner: () => new FakePreparedCSharpWorker() as unknown as CSharpWorkerClient,
+    createObserverRunner: () => {
+      observerRunners += 1;
+      return new FakePreparedCSharpWorker() as unknown as CSharpWorkerClient;
+    },
+    releaseRunner() {},
+    releaseObserverRunner() {},
+  };
+  const provider = createCSharpRuntimeClient(authority.compiler, authority);
+  const program = {
+    code: 'public class Solution { public int Solve(int value) => value; }',
+    functionName: 'Solve',
+    executionStyle: 'solution-method' as const,
+  };
+  const observer = await provider.prepareObservation(program);
+  assert.ok(!('status' in observer));
+  try {
+    for (const attemptToken of ['first', 'second']) {
+      const drawing = await observer.observe({ program, inputs: { value: 7 }, attemptToken });
+      assert.deepEqual(drawing, { status: 'refused', reason: TRACE_REFUSAL_CODE });
+    }
+    assert.deepEqual(compiler.prepareCalls.map(({ mode }) => mode), ['trace'], 'the traced build is attempted once');
+    assert.equal(observerRunners, 0, 'no observer runner starts for a declined traced build');
+  } finally {
+    await observer.dispose();
+  }
+  assert.deepEqual(compiler.disposeCalls, []);
+});
+
+test('C# prepared trace program reports a declined traced build as trace-unavailable', async () => {
+  const worker = new FakePreparedCSharpWorker();
+  worker.traceRefusalCode = TRACE_REFUSAL_CODE;
+  const provider = createCSharpRuntimeClient(worker as unknown as CSharpWorkerClient);
+  await assert.rejects(
+    provider.prepareProgram({
+      mode: 'trace',
+      code: 'public class Solution { public int Solve(int n) => n; }',
+      functionName: 'Solve',
+    }),
+    (error: unknown) => isRuntimeProviderError(error) && isTraceUnavailableError(error) &&
+      (error as Error).message === TRACE_REFUSAL_MESSAGE
+  );
+  const ordinary = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Solve(int n) => n; }',
+    functionName: 'Solve',
+  });
+  assert.equal(ordinary.kind, 'prepared', 'the ordinary build of the same program is unaffected');
+  if (ordinary.kind === 'prepared') await ordinary.program.dispose();
+});
+
+test('C# ordinary preparation never reads a refusal code as a trace refusal', async () => {
+  const worker = new FakePreparedCSharpWorker();
+  worker.prepareProgram = async (call) => {
+    worker.prepareCalls.push(call);
+    return {
+      success: false,
+      error: 'synthetic compiler failure',
+      refusalCode: TRACE_REFUSAL_CODE,
+      consoleOutput: [],
+    };
+  };
+  const provider = createCSharpRuntimeClient(worker as unknown as CSharpWorkerClient);
+  const result = await provider.prepareProgram({
+    mode: 'code',
+    code: 'public class Solution { public int Solve(int n) => n; }',
+    functionName: 'Solve',
+  });
+  assert.equal(result.kind, 'failed');
+  if (result.kind === 'failed') assert.equal(result.diagnosticStage, 'compile');
+});
+
+test('C# compiler declines conditional compilation only for traced builds, before any trace rewrite', () => {
+  const source = readFileSync(
+    'packages/runtime-csharp/dotnet/TraceCode.CSharpHost/CompilerHost.cs',
+    'utf8'
+  );
+  const plan = source.slice(
+    source.indexOf('private static PreparedCompilationPlan CreateCompilationPlan('),
+    source.indexOf('private static string GeneratePreparedArtifactMetadataSource(')
+  );
+  const guard = plan.indexOf('if (request.Trace)');
+  assert.ok(guard > 0, 'the traced build checks its source');
+  assert.match(plan.slice(guard), /^if \(request\.Trace\)\s*\{?\s*RefuseUntraceableDirectives\(originalUserTree\);/);
+  assert.ok(guard < plan.indexOf('TraceRewriter.Instrument('), 'the check runs before the trace rewrite');
+
+  const execute = source.slice(
+    source.indexOf('public static string Execute(string requestJson)'),
+    source.indexOf('public static string ExecuteProject(string requestJson)')
+  );
+  const executeGuard = execute.indexOf('RefuseUntraceableDirectives(');
+  assert.ok(executeGuard > 0, 'single-call traced execution checks its source');
+  assert.ok(
+    executeGuard < execute.indexOf('TryGetCompiledArtifact('),
+    'the check runs before any cached artifact is reused'
+  );
+
+  const check = source.slice(
+    source.indexOf('private static void RefuseUntraceableDirectives('),
+    source.indexOf('private static void ValidateUserSourcePolicy(')
+  );
+  const refused = [...check.matchAll(/SyntaxKind\.(\w+)DirectiveTrivia/g)].map((match) => match[1]).sort();
+  assert.deepEqual(refused, ['Define', 'Elif', 'Else', 'EndIf', 'If', 'Undef']);
+  assert.match(check, /descendIntoTrivia: true/);
+  assert.doesNotMatch(source, /conditional compilation \(#if/, 'the learner-facing wording lives in the client, not the compiler');
 });

@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.02fed17532dbb0bf8983e52d2863e8ec846bd1f4a2f7604a29e2929be5b9e49c"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.dd3887e593cab5eebb8342688c1e73edb197aeaf5317c398b8a57cf48f7a5b4c"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "02fed17532dbb0bf8983e52d2863e8ec846bd1f4a2f7604a29e2929be5b9e49c",
-  "totalPackagedRuntimeBytes": 152707174,
+  "packageTreeSha256": "dd3887e593cab5eebb8342688c1e73edb197aeaf5317c398b8a57cf48f7a5b4c",
+  "totalPackagedRuntimeBytes": 152710246,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.1dcc9177386a9db477dce1ba6b4822416f9c2edd7e2d90dc9fb19c9cd8b4fb5f",
@@ -38,9 +38,9 @@
       ]
     },
     "csharp": {
-      "releaseId": "csharp+sha256.a8e401671cbcc706d4d48b86d610aa8b194db666bdcd59428bebe2c0f2119fc9",
-      "treeSha256": "a8e401671cbcc706d4d48b86d610aa8b194db666bdcd59428bebe2c0f2119fc9",
-      "totalBytes": 63399966,
+      "releaseId": "csharp+sha256.116bce28a20bc72a5d0b7a53de23aa4ace1662e74957e67088bab61be4cbe2b3",
+      "treeSha256": "116bce28a20bc72a5d0b7a53de23aa4ace1662e74957e67088bab61be4cbe2b3",
+      "totalBytes": 63403038,
       "files": [
         {
           "path": "workers/csharp/csharp-worker.js",
@@ -1192,9 +1192,9 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/TraceCode.CSharpHost.wasm",
-          "size": 624405,
-          "sha256": "5ed18e5d03654c32b2afb0b74043da984a8a0a8d9153ecbb06f6f054d8d079ee",
-          "integrity": "sha256-XtGOXQNlTDKyr7C3QEPamEqKCo2RU+y7BvbwVNjQee4=",
+          "size": 625941,
+          "sha256": "ec18d9f05c803b5da0d093b4457116a621afa392942c3ed6f757e9690aa044c0",
+          "integrity": "sha256-7BjZ8FyAO12g0JO0RXEWpiGvo5KULD7W91fpaQqgRMA=",
           "mediaType": "application/wasm"
         },
         {
@@ -1249,8 +1249,8 @@
         {
           "path": "workers/vendor/csharp/_framework/dotnet.boot.js",
           "size": 48588,
-          "sha256": "00dacd001df6669a2c4712b29cf70e582932ed7115707b25c8598a8cb4589650",
-          "integrity": "sha256-ANrNAB32ZposRxKynPcOWCky7XEVcHslyFmKjLRYllA=",
+          "sha256": "fdddab6080a5803eb6a99da5ea1bcc4c2370362e59216c132a34b1fbb95acd3d",
+          "integrity": "sha256-/d2rYIClgD62qZ2l6hvMTCNwNi5ZIWwTKjSx+7lazT0=",
           "mediaType": "text/javascript"
         },
         {
@@ -1731,9 +1731,9 @@
         },
         {
           "path": "workers/vendor/csharp/_framework/supportFiles/TraceCode.CSharpHost.dll",
-          "size": 624640,
-          "sha256": "1ecd99cba1ffa2145ed5faf8929f80583cd6fa5c93d3bdd50721eb5f9e2abcbe",
-          "integrity": "sha256-Hs2Zy6H/ohRe1fr4kp+AWDzW+lyT073VByHrX54qvL4=",
+          "size": 626176,
+          "sha256": "7b231151b9f107792832c4725b8192ff116d5044150282b5af9b0a4f9862490e",
+          "integrity": "sha256-eyMRUbnxB3koMsRyW4GS/xFtUEQVAoK1r5sKT5hiSQ4=",
           "mediaType": "application/octet-stream"
         },
         {
@@ -2105,20 +2105,20 @@
       },
       "roles": {
         "general": {
-          "artifact": "csharp-bundle.f311d34a220176090b0e7ac31cdd8b2049db301e9f89f2e1894b46c5f8650e39.zip",
-          "artifactBytes": 18130224,
-          "artifactSha256": "f311d34a220176090b0e7ac31cdd8b2049db301e9f89f2e1894b46c5f8650e39",
+          "artifact": "csharp-bundle.2dea42728c6e49e739d423d51eb06166f17e750657b502faf42c348588051523.zip",
+          "artifactBytes": 18131053,
+          "artifactSha256": "2dea42728c6e49e739d423d51eb06166f17e750657b502faf42c348588051523",
           "fileCount": 242,
-          "treeSha256": "b74b5d2c3cf0df86d2a9e3ce95bfa84e76756f0c68a158e7648b641d7b1b0427",
-          "uncompressedBytes": 50388366
+          "treeSha256": "62930c0ee0cb8f2edbd4561027015dd9119c610e622d5be9e9ac2f8dc33c8c6e",
+          "uncompressedBytes": 50391438
         },
         "compiler": {
-          "artifact": "csharp-bundle.f311d34a220176090b0e7ac31cdd8b2049db301e9f89f2e1894b46c5f8650e39.zip",
-          "artifactBytes": 18130224,
-          "artifactSha256": "f311d34a220176090b0e7ac31cdd8b2049db301e9f89f2e1894b46c5f8650e39",
+          "artifact": "csharp-bundle.2dea42728c6e49e739d423d51eb06166f17e750657b502faf42c348588051523.zip",
+          "artifactBytes": 18131053,
+          "artifactSha256": "2dea42728c6e49e739d423d51eb06166f17e750657b502faf42c348588051523",
           "fileCount": 242,
-          "treeSha256": "b74b5d2c3cf0df86d2a9e3ce95bfa84e76756f0c68a158e7648b641d7b1b0427",
-          "uncompressedBytes": 50388366
+          "treeSha256": "62930c0ee0cb8f2edbd4561027015dd9119c610e622d5be9e9ac2f8dc33c8c6e",
+          "uncompressedBytes": 50391438
         },
         "runner": {
           "artifact": "csharp-bundle.7f78505fa0a8d010ebcdb086fb55e59d0fb48ab969e311bd2cac6990e4c3ab01.zip",
@@ -2262,11 +2262,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 608,
-    "bytes": 428571982,
+    "bytes": 428575054,
     "byClass": {
       "locked": {
         "files": 349,
-        "bytes": 425828939
+        "bytes": 425832011
       },
       "alias": {
         "files": 1,
@@ -2385,7 +2385,7 @@
       {
         "path": "vendor",
         "files": 255,
-        "bytes": 72924752
+        "bytes": 72927824
       }
     ]
   }

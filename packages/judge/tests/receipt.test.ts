@@ -100,7 +100,8 @@ test('the /judge attachment exports retain closed discriminants and reasons', ()
   const refusals: Equal<Refusal,
     'recorder-unavailable' | 'unsupported-program' | 'unsupported-option' |
     'observer-prepare' | 'observer-encode' | 'observer-runtime' | 'observer-protocol' |
-    'observer-timeout' | 'uncertified-drawing' | 'case-not-run'
+    'observer-timeout' | 'uncertified-drawing' | 'case-not-run' |
+    'csharp-trace-conditional-compilation-unsupported'
   > = true;
   assert.ok(statuses && cuts && refusals);
 });
@@ -391,6 +392,20 @@ test('the ordinary conversion and archive never read observer properties', () =>
   const [row] = store.projectEvaluation().cases;
   assert.equal(Object.hasOwn(row!, 'trace'), false);
   assert.equal(Object.hasOwn(row!, 'attachment'), false);
+});
+
+test('a runtime-named drawing refusal binds as itself and never as a failed attempt', () => {
+  const store = owner();
+  const attempt = store.beginObservation('A');
+  store.commitOrdinary(a, ordinary());
+  store.seal({ status: 'completed' }, evaluatedAt);
+  const reason = 'csharp-trace-conditional-compilation-unsupported';
+  assert.equal(store.publishDrawing(attempt, a, { status: 'refused', reason }), true);
+  const row = store.projectEvaluation(['A']).cases[0]!;
+  assert.deepEqual(row.attachment, { ...a, status: 'refused', reason });
+  assert.equal(row.status, 'completed');
+  assert.equal(row.verdict.kind, ordinary().verdict.kind);
+  assert.equal('trace' in row, false);
 });
 
 test('an observer deadline requires a retained prefix to count as truncated', () => {

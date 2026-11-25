@@ -33,7 +33,13 @@ export type Refusal =
   | 'observer-protocol'
   | 'observer-timeout'
   | 'uncertified-drawing'
-  | 'case-not-run';
+  | 'case-not-run'
+  /**
+   * The C# compiler declined the traced build because the source uses
+   * conditional compilation (#if, #elif, #else, #endif, #define or #undef).
+   * The ordinary result is unaffected.
+   */
+  | 'csharp-trace-conditional-compilation-unsupported';
 
 /** The trusted adapter certifies the trace before returning a drawing. */
 export type Drawing =
