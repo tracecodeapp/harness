@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.e9997874d3e3818ead50974879d3843cf81ce1a088c4cdac194e8d6dd1782ac6"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.1bd681f573fac2742fd376d751d0fca855a758602ae57f63bbc00b40c276e041"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "e9997874d3e3818ead50974879d3843cf81ce1a088c4cdac194e8d6dd1782ac6",
-  "totalPackagedRuntimeBytes": 152739723,
+  "packageTreeSha256": "1bd681f573fac2742fd376d751d0fca855a758602ae57f63bbc00b40c276e041",
+  "totalPackagedRuntimeBytes": 152748902,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.0d92597fc5fd587393290b9923108b46b65bc75f39b9ca47e2e47f009412be28",
@@ -1851,15 +1851,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.689fe4a751c4e77a8f39c1c40f9bb0a5ac84bfe4999bf5c67c19275c0581d172",
-      "treeSha256": "689fe4a751c4e77a8f39c1c40f9bb0a5ac84bfe4999bf5c67c19275c0581d172",
-      "totalBytes": 1858243,
+      "releaseId": "javascript+sha256.57d800a984fcd721e8ba7da2eba37bbb1cc9dc6c0eefd4503922586815856b5d",
+      "treeSha256": "57d800a984fcd721e8ba7da2eba37bbb1cc9dc6c0eefd4503922586815856b5d",
+      "totalBytes": 1867422,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
-          "size": 539604,
-          "sha256": "be43cf765edca68754fd5ed602d0f83797ce2bd4f7aab709c01e43b0f63453cb",
-          "integrity": "sha256-vkPPdl7cpodU/V7WAtD4N5fOK9T3qrcJwB5DsPY0U8s=",
+          "size": 548783,
+          "sha256": "41f64851c1c35826a3bd5dbde78344a26ed617ebf0a0bce988d8e0bb7b579068",
+          "integrity": "sha256-QfZIUcHDWCajvV2954NEom7WF+vwoLzpiNjgu3tXkGg=",
           "mediaType": "text/javascript"
         },
         {
@@ -2262,11 +2262,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 608,
-    "bytes": 428608492,
+    "bytes": 428617671,
     "byClass": {
       "locked": {
         "files": 349,
-        "bytes": 425861488
+        "bytes": 425870667
       },
       "alias": {
         "files": 1,
@@ -2345,7 +2345,7 @@
       {
         "path": "javascript-project-worker.js",
         "files": 1,
-        "bytes": 539604
+        "bytes": 548783
       },
       {
         "path": "javascript-ses-algorithm-worker.js",

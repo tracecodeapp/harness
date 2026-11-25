@@ -6467,6 +6467,204 @@ function assertSafeWorkspaceFilePath(path, basePath = "", workspace = { root: "/
   return normalizeWorkspaceEntryPath(path, basePath, false, workspace);
 }
 
+// packages/runtime-javascript/src/modules/constructors.ts
+var AsyncFunction = Object.getPrototypeOf(async function noop() {
+}).constructor;
+var BrowserFunction = Function;
+var browserIndirectEval = globalThis.eval;
+
+// packages/runtime-javascript/src/modules/stack-frames.ts
+var FUNCTION_BODY_LINE_OFFSET = 2;
+var functionToString = Function.prototype.toString;
+var MODULE_WRAPPER_PARAMETERS = Object.freeze([
+  "require",
+  "__import",
+  "module",
+  "exports",
+  "console",
+  "process",
+  "Buffer",
+  "__filename",
+  "__dirname"
+]);
+var errorConstructor = Error;
+var errorToString = Error.prototype.toString;
+var activeModuleSources = /* @__PURE__ */ new Set();
+var formattedStacks = /* @__PURE__ */ new WeakMap();
+var hostStackHook = null;
+function errorHeader(error) {
+  try {
+    return errorToString.call(error);
+  } catch {
+    return "<error>";
+  }
+}
+function lookupModuleSource(sourceUrl) {
+  for (const sources of activeModuleSources) {
+    const source = sources.get(sourceUrl);
+    if (source) return source;
+  }
+  return void 0;
+}
+function bodyIndex(source, line, column) {
+  const bodyLine = line - source.lineOffset;
+  const bodyColumn = column - 1 - (bodyLine === 1 ? source.firstLineColumnOffset : 0);
+  if (bodyLine < 1 || bodyColumn < 0) return null;
+  if (!source.lineStarts) {
+    const starts = [0];
+    for (const match of source.code.matchAll(/\r\n|[\r\n\u2028\u2029]/g)) starts.push(match.index + match[0].length);
+    source.lineStarts = starts;
+  }
+  const start = source.lineStarts[bodyLine - 1];
+  return start === void 0 ? null : start + bodyColumn;
+}
+var EVAL_NAMED_START = /^(?:(?:async|static)\s+)*(?:function\b\s*)?\*?\s*eval\s*\(/;
+var EVAL_NAMED_KEY = /(?:\beval|(["'])eval\1)\s*[:=]\s*(?:async\s+)?$/;
+function namedEval(source, site) {
+  const line = site.getEnclosingLineNumber?.();
+  const column = site.getEnclosingColumnNumber?.();
+  if (line === null || line === void 0 || column === null || column === void 0) return false;
+  const index = bodyIndex(source, line, column);
+  if (index === null) return false;
+  return EVAL_NAMED_START.test(source.code.slice(index, index + 80)) || EVAL_NAMED_KEY.test(source.code.slice(Math.max(0, index - 80), index));
+}
+function anonymousFrame(site, location) {
+  const prefix = site.isAsync?.() ? "async " : "";
+  if (site.isConstructor?.()) return `${prefix}new <anonymous> (${location})`;
+  if (site.isToplevel?.() === false) {
+    const typeName = site.getTypeName?.();
+    return `${prefix}${typeName ? `${typeName}.` : ""}${site.getMethodName?.() || "<anonymous>"} (${location})`;
+  }
+  return `${prefix}${location}`;
+}
+function workspaceFrame(site) {
+  const sourceUrl = site.getScriptNameOrSourceURL?.();
+  const source = sourceUrl ? lookupModuleSource(sourceUrl) : void 0;
+  const line = site.getLineNumber();
+  const column = site.getColumnNumber();
+  if (!sourceUrl || !source || line === null || column === null) return null;
+  const bodyLine = line - source.lineOffset;
+  const fileLine = Math.max(1, bodyLine);
+  const fileColumn = bodyLine === 1 ? Math.max(1, column - source.firstLineColumnOffset) : column;
+  const location = `${source.location}:${fileLine}:${fileColumn}`;
+  if (site.getFunctionName() === "eval" && !namedEval(source, site)) return anonymousFrame(site, location);
+  const engineLocation = `${sourceUrl}:${line}:${column}`;
+  const frame = String(site);
+  const index = frame.lastIndexOf(engineLocation);
+  return index === -1 ? frame : `${frame.slice(0, index)}${location}${frame.slice(index + engineLocation.length)}`;
+}
+function hostFormat(error, sites) {
+  const host = hostStackHook?.value;
+  if (typeof host === "function") return host(error, sites);
+  return `${errorHeader(error)}${sites.map((site) => `
+    at ${String(site)}`).join("")}`;
+}
+var prepareWorkspaceStackTrace = (error, sites) => {
+  const frames = [];
+  for (const site of sites) {
+    const frame = workspaceFrame(site);
+    if (frame !== null) frames.push(frame);
+  }
+  if (frames.length === 0) return hostFormat(error, sites);
+  const stack = `${errorHeader(error)}${frames.map((frame) => `
+    at ${frame}`).join("")}`;
+  if (error !== null && (typeof error === "object" || typeof error === "function")) {
+    formattedStacks.set(error, stack);
+  }
+  return stack;
+};
+function installStackHook() {
+  if (hostStackHook) return;
+  const host = {
+    had: Object.prototype.hasOwnProperty.call(errorConstructor, "prepareStackTrace"),
+    value: errorConstructor.prepareStackTrace
+  };
+  try {
+    errorConstructor.prepareStackTrace = prepareWorkspaceStackTrace;
+    hostStackHook = host;
+  } catch {
+  }
+}
+function restoreStackHook() {
+  if (!hostStackHook) return;
+  const host = hostStackHook;
+  hostStackHook = null;
+  try {
+    if (host.had) {
+      errorConstructor.prepareStackTrace = host.value;
+    } else {
+      delete errorConstructor.prepareStackTrace;
+    }
+  } catch {
+  }
+}
+function errorMessageHeader(error) {
+  return errorHeader(error);
+}
+function isEngineFrameOnlyStack(stack) {
+  const lines = stack.split("\n");
+  return (lines[0] ?? "").includes("@") && !lines.some((line) => /^\s+at /.test(line));
+}
+function errorTextWithMessage(error) {
+  const header = errorHeader(error);
+  const stack = error.stack;
+  if (typeof stack !== "string" || !stack.trim()) return header;
+  return isEngineFrameOnlyStack(stack) && !stack.startsWith(`${header}
+`) ? `${header}
+${stack.replace(/\n+$/, "")}` : stack;
+}
+function isWorkspaceFormattedStack(error) {
+  if (error === null || typeof error !== "object" && typeof error !== "function") return false;
+  const stack = formattedStacks.get(error);
+  return stack !== void 0 && error.stack === stack;
+}
+function sourceUrlFor(location) {
+  return location.replace(/\s/g, (character) => encodeURIComponent(character));
+}
+function createWorkspaceStackFrames() {
+  const sources = /* @__PURE__ */ new Map();
+  activeModuleSources.add(sources);
+  installStackHook();
+  let released = false;
+  return {
+    compile(code, location, kind, options) {
+      const sourceUrl = sourceUrlFor(location);
+      const Constructor = options.async ? AsyncFunction : BrowserFunction;
+      const constructed = new Constructor(...options.parameters, `${code}
+//# sourceURL=${sourceUrl}`);
+      const header = `(${options.async ? "async " : ""}function (${options.parameters.join(", ")}) {`;
+      try {
+        const compiled = browserIndirectEval(`${header}${code}
+})
+//# sourceURL=${sourceUrl}`);
+        if (typeof compiled === "function" && functionToString.call(compiled) === `${header.slice(1)}${code}
+}`) {
+          sources.set(sourceUrl, { location, kind, lineOffset: 0, firstLineColumnOffset: header.length, code });
+          return compiled;
+        }
+      } catch {
+      }
+      sources.set(sourceUrl, { location, kind, lineOffset: FUNCTION_BODY_LINE_OFFSET, firstLineColumnOffset: 0, code });
+      return constructed;
+    },
+    isWorkspaceFrame(line) {
+      for (const [sourceUrl, source] of sources) {
+        for (const name of sourceUrl === source.location ? [sourceUrl] : [sourceUrl, source.location]) {
+          const index = line.indexOf(`${name}:`);
+          if (index !== -1 && /^\d/.test(line.slice(index + name.length + 1))) return true;
+        }
+      }
+      return false;
+    },
+    release() {
+      if (released) return;
+      released = true;
+      activeModuleSources.delete(sources);
+      if (activeModuleSources.size === 0) restoreStackHook();
+    }
+  };
+}
+
 // packages/runtime-javascript/src/modules/resolution.ts
 function workspaceFilename(path, workspaceRoot = "/workspace") {
   const normalized = normalizeProjectPath(path);
@@ -6664,8 +6862,20 @@ function toDynamicImportBinding(specifier) {
 function transformDynamicImports(code) {
   return code.replace(
     /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
-    (_match, _quote, specifier) => toDynamicImportBinding(specifier)
+    keepingLineBreaks((_match, _quote, specifier) => toDynamicImportBinding(specifier))
   );
+}
+var LINE_BREAKS = /\r\n|[\r\n\u2028\u2029]/g;
+function keepingLineBreaks(replacer) {
+  return (match, ...groups) => {
+    const replacement = replacer(match, ...groups);
+    const offset = groups[groups.length - 2];
+    const source = groups[groups.length - 1];
+    let breaks = match.match(LINE_BREAKS)?.length ?? 0;
+    if (match.endsWith("\r") && source[offset + match.length] === "\n") breaks -= 1;
+    const missing = breaks - (replacement.match(LINE_BREAKS)?.length ?? 0);
+    return missing > 0 ? `${replacement}${"\n".repeat(missing)}` : replacement;
+  };
 }
 function defaultImportBinding(name, specifier, index) {
   const moduleName = `__tracecode_esm_default_${index}`;
@@ -6688,6 +6898,10 @@ function namedExportAssignments(bindings, moduleName) {
     return `exports.${targetName} = ${source};`;
   }).join(" ");
 }
+var STATEMENT_INDENT = "[^\\S\\r\\n\\u2028\\u2029]*";
+function statementPattern(pattern) {
+  return new RegExp(`^${STATEMENT_INDENT}${pattern}`, "gm");
+}
 function transformStaticEsmToCommonJs(code, importMetaUrl) {
   let defaultImportIndex = 0;
   let reExportIndex = 0;
@@ -6695,58 +6909,58 @@ function transformStaticEsmToCommonJs(code, importMetaUrl) {
     /\bimport\.meta\.url\b/g,
     JSON.stringify(importMetaUrl ?? "file:///workspace/[eval]")
   ).replace(
-    /^\s*export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-    (_match, _quote, specifier) => {
+    statementPattern(String.raw`export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$`),
+    keepingLineBreaks((_match, _quote, specifier) => {
       const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
       return `const ${moduleName} = ${toRequireBinding(specifier)}; for (const __tracecode_key of Object.keys(${moduleName})) { if (__tracecode_key !== "default") exports[__tracecode_key] = ${moduleName}[__tracecode_key]; }`;
-    }
+    })
   ).replace(
-    /^\s*export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, namedExports, _quote, specifier) => {
+    statementPattern(String.raw`export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+    keepingLineBreaks((_match, namedExports, _quote, specifier) => {
       const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
       return `const ${moduleName} = ${toRequireBinding(specifier)}; ${namedExportAssignments(namedExports, moduleName)}`;
-    }
+    })
   ).replace(
-    /^\s*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-    (_match, defaultName, namespaceName, _quote, specifier) => {
+    statementPattern(String.raw`import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$`),
+    keepingLineBreaks((_match, defaultName, namespaceName, _quote, specifier) => {
       const required = toRequireBinding(specifier);
       const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
       return `const ${namespaceName} = ${required}; const ${moduleName} = ${namespaceName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-    }
+    })
   ).replace(
-    /^\s*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-    (_match, defaultName, namedImports, _quote, specifier) => {
+    statementPattern(String.raw`import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$`),
+    keepingLineBreaks((_match, defaultName, namedImports, _quote, specifier) => {
       const required = toRequireBinding(specifier);
       const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
       return `const ${moduleName} = ${required}; const { ${transformNamedBindings(namedImports)} } = ${moduleName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-    }
+    })
   ).replace(
-    /^\s*import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, namespaceName, _quote, specifier) => `const ${namespaceName} = ${toRequireBinding(specifier)};`
+    statementPattern(String.raw`import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+    keepingLineBreaks((_match, namespaceName, _quote, specifier) => `const ${namespaceName} = ${toRequireBinding(specifier)};`)
   ).replace(
     /\bimport\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?/g,
-    (_match, namedImports, _quote, specifier) => `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`
+    keepingLineBreaks((_match, namedImports, _quote, specifier) => `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`)
   ).replace(
-    /^\s*import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-    (_match, defaultName, _quote, specifier) => defaultImportBinding(defaultName, specifier, defaultImportIndex++)
+    statementPattern(String.raw`import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+    keepingLineBreaks((_match, defaultName, _quote, specifier) => defaultImportBinding(defaultName, specifier, defaultImportIndex++))
   ).replace(
-    /^\s*import\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-    (_match, _quote, specifier) => `${toRequireBinding(specifier)};`
+    statementPattern(String.raw`import\s+(['"])([^'"]+)\1\s*;?\s*$`),
+    keepingLineBreaks((_match, _quote, specifier) => `${toRequireBinding(specifier)};`)
   ).replace(
-    /^\s*export\s+function\s+([\w$]+)\s*\(/gm,
-    (_match, name) => `exports.${name} = function ${name}(`
+    statementPattern(String.raw`export\s+function\s+([\w$]+)\s*\(`),
+    keepingLineBreaks((_match, name) => `exports.${name} = function ${name}(`)
   ).replace(
-    /^\s*export\s+class\s+([\w$]+)\s*/gm,
-    (_match, name) => `exports.${name} = class ${name} `
+    statementPattern(String.raw`export\s+class\s+([\w$]+)\s*`),
+    keepingLineBreaks((_match, name) => `exports.${name} = class ${name} `)
   ).replace(
-    /^\s*export\s+(const|let|var)\s+([\w$]+)\s*=/gm,
-    (_match, declaration, name) => `${declaration} ${name} = exports.${name} =`
+    statementPattern(String.raw`export\s+(const|let|var)\s+([\w$]+)\s*=`),
+    keepingLineBreaks((_match, declaration, name) => `${declaration} ${name} = exports.${name} =`)
   ).replace(
-    /^\s*export\s+default\s+/gm,
-    "exports.default = "
+    statementPattern(String.raw`export\s+default\s+`),
+    keepingLineBreaks(() => "exports.default = ")
   ).replace(
-    /^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm,
-    (_match, namedExports) => namedExportAssignments(namedExports)
+    statementPattern(String.raw`export\s+\{([^}]+)\}\s*;?\s*$`),
+    keepingLineBreaks((_match, namedExports) => namedExportAssignments(namedExports))
   );
 }
 function resolveModulePath(modules, specifier, parentPath, nodePathSearchEntries = [], condition = "require") {
@@ -6778,7 +6992,7 @@ function moduleSearchPaths(parentPath, workspaceRoot = "/workspace") {
 function formatConsoleValues(values) {
   return values.map((value) => {
     if (typeof value === "string") return value;
-    if (value instanceof Error) return value.stack ?? value.message;
+    if (value instanceof Error) return errorTextWithMessage(value);
     try {
       return JSON.stringify(value);
     } catch {
@@ -6801,24 +7015,37 @@ function isBrowserJavaScriptUserStackFrame(line, sourcePath) {
 function isBrowserJavaScriptInternalStackFrame(line) {
   return line.includes("/@fs/") || line.includes("/packages/harness-") || line.includes("/workers/javascript-project-worker.js") || line.includes("javascript-project-worker.js:") || line.includes("blob:") || line.includes("runBrowserJavaScriptProjectRequest") || line.includes("executeEntrypoint") || line.includes("executeModule") || line.includes("resolveModulePath") || line.includes("requireModule") || line.includes("createHttpApi") || line.includes("registerHttpListener") || line.includes("at new Function") || line.includes("at new AsyncFunction");
 }
-function sanitizeBrowserJavaScriptStack(error, sourcePath) {
+function sanitizeBrowserJavaScriptStack(error, sourcePath, stackFrames) {
   if (!(error instanceof Error) || typeof error.stack !== "string" || !error.stack.trim()) {
     return error;
   }
-  const mappedStack = error.stack.replace(
-    /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
-    (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
-  );
-  const stackLines = mappedStack.split("\n");
-  const lines = [stackLines[0] ?? error.message];
-  for (const line of stackLines.slice(1)) {
-    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
+  if (isWorkspaceFormattedStack(error)) return error;
+  const stack = error.stack;
+  const header = errorMessageHeader(error);
+  let messageLines;
+  let frameLines;
+  if (stack === header || stack.startsWith(`${header}
+`)) {
+    messageLines = header.split("\n");
+    frameLines = stack.slice(header.length + 1).split("\n");
+  } else if (isEngineFrameOnlyStack(stack)) {
+    messageLines = header.split("\n");
+    frameLines = stack.split("\n");
+  } else {
+    const stackLines = stack.split("\n");
+    const firstFrame = stackLines.findIndex((line, index) => index > 0 && /^\s+at /.test(line));
+    messageLines = firstFrame === -1 ? stackLines.slice(0, 1) : stackLines.slice(0, firstFrame);
+    frameLines = firstFrame === -1 ? stackLines.slice(1) : stackLines.slice(firstFrame);
+  }
+  const lines = [...messageLines];
+  for (const line of frameLines) {
+    if (stackFrames ? stackFrames.isWorkspaceFrame(line) : isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
       lines.push(line);
       continue;
     }
     if (isBrowserJavaScriptInternalStackFrame(line)) continue;
   }
-  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
+  if (lines.length === messageLines.length) lines.push(`    at ${sourcePath}:1:1`);
   Object.defineProperty(error, "stack", {
     configurable: true,
     value: lines.join("\n")
@@ -6830,11 +7057,6 @@ function sanitizeBrowserJavaScriptStack(error, sourcePath) {
 function requireModulesForRequest(request) {
   return Array.isArray(request.options?.require) ? request.options.require.filter((item) => typeof item === "string") : [];
 }
-
-// packages/runtime-javascript/src/modules/constructors.ts
-var AsyncFunction = Object.getPrototypeOf(async function noop() {
-}).constructor;
-var BrowserFunction = Function;
 
 // packages/runtime-javascript/src/kernel/filesystem-identity.ts
 function inodeForPath(path) {
@@ -7171,7 +7393,7 @@ function createEventsApi() {
 function createUtilApi() {
   const inspect = (value) => {
     if (typeof value === "string") return `'${value}'`;
-    if (value instanceof Error) return value.stack ?? value.message;
+    if (value instanceof Error) return errorTextWithMessage(value);
     try {
       return JSON.stringify(value);
     } catch {
@@ -14119,6 +14341,7 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
     options.projectUserAuthorityMode ?? "temporary"
   );
   const restoreTimerGlobals = installBrowserTimerGlobals(eventLoopApi);
+  const stackFrames = createWorkspaceStackFrames();
   let hostGlobalsRestored = false;
   const restoreHostGlobals = () => {
     if (hostGlobalsRestored) return;
@@ -14127,6 +14350,7 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
     netApi.closeAll();
     restoreTimerGlobals();
     restoreHttpGlobals();
+    stackFrames.release();
   };
   executionState.cleanupHostGlobals = restoreHostGlobals;
   if (executionState.cancelled) {
@@ -14252,22 +14476,17 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
     const localRequire = createWorkspaceRequire(normalizedPath, module);
     module.require = localRequire;
     const localImport = (specifier) => importModule(specifier, normalizedPath);
-    const executableCode = isEsmModule(modules, normalizedPath) ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot)) : code;
+    const esm = isEsmModule(modules, normalizedPath);
+    const executableCode = esm ? transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot)) : code;
     try {
-      const fn = new BrowserFunction(
-        "require",
-        "__import",
-        "module",
-        "exports",
-        "console",
-        "process",
-        "Buffer",
-        "__filename",
-        "__dirname",
-        executableCode
+      const fn = stackFrames.compile(
+        executableCode,
+        esm ? workspaceFileUrl(normalizedPath, workspaceRoot) : workspaceFilename(normalizedPath, workspaceRoot),
+        esm ? "module" : "commonjs",
+        { parameters: MODULE_WRAPPER_PARAMETERS }
       );
       fn.call(
-        isEsmModule(modules, normalizedPath) ? void 0 : module.exports,
+        esm ? void 0 : module.exports,
         localRequire,
         localImport,
         module,
@@ -14279,7 +14498,7 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
         workspaceDirname(normalizedPath, workspaceRoot)
       );
     } catch (error) {
-      throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+      throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot), stackFrames);
     }
     module.loaded = true;
     return module.exports;
@@ -14311,17 +14530,11 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
     const localImport = (specifier) => importModule(specifier, normalizedPath);
     const executableCode = transformStaticEsmToCommonJs(code, workspaceFileUrl(normalizedPath, workspaceRoot));
     try {
-      const fn = new AsyncFunction(
-        "require",
-        "__import",
+      const fn = stackFrames.compile(
+        executableCode,
+        workspaceFileUrl(normalizedPath, workspaceRoot),
         "module",
-        "exports",
-        "console",
-        "process",
-        "Buffer",
-        "__filename",
-        "__dirname",
-        executableCode
+        { parameters: MODULE_WRAPPER_PARAMETERS, async: true }
       );
       await fn.call(
         void 0,
@@ -14336,7 +14549,7 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
         workspaceDirname(normalizedPath, workspaceRoot)
       );
     } catch (error) {
-      throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot));
+      throw sanitizeBrowserJavaScriptStack(error, workspaceFilename(normalizedPath, workspaceRoot), stackFrames);
     }
     module.loaded = true;
     await Promise.resolve();
@@ -14350,7 +14563,8 @@ function createBrowserModuleRuntime(requestState, filesystemState, fsApi, fsProm
     netApi,
     preloadParentPath,
     requireModule,
-    restoreHostGlobals
+    restoreHostGlobals,
+    stackFrames
   };
 }
 
@@ -14501,7 +14715,8 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     netApi,
     preloadParentPath,
     requireModule,
-    restoreHostGlobals
+    restoreHostGlobals,
+    stackFrames
   } = moduleRuntime;
   try {
     for (const moduleName of requireModulesForRequest(request)) {
@@ -14524,17 +14739,11 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
       const importFromRoot = (specifier) => importModule(specifier, replPath);
       const evalCode = request.options?.inputType === "module" ? transformStaticEsmToCommonJs(request.code, workspaceFileUrl("[eval]", workspaceRoot)) : request.code;
       try {
-        const fn = new AsyncFunction(
-          "require",
-          "__import",
-          "module",
-          "exports",
-          "console",
-          "process",
-          "Buffer",
-          "__filename",
-          "__dirname",
-          transformDynamicImports(evalCode)
+        const fn = stackFrames.compile(
+          transformDynamicImports(evalCode),
+          `${workspaceRoot}/[eval]`,
+          "script",
+          { parameters: MODULE_WRAPPER_PARAMETERS, async: true }
         );
         await fn.call(
           module.exports,
@@ -14549,7 +14758,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
           cwdPath ? `${workspaceRoot}/${cwdPath}` : workspaceRoot
         );
       } catch (error) {
-        throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`);
+        throw sanitizeBrowserJavaScriptStack(error, `${workspaceRoot}/[eval]`, stackFrames);
       }
       await Promise.resolve();
     }
@@ -14621,7 +14830,7 @@ async function runBrowserJavaScriptProjectRequest(request, options, executionSta
     httpApi.closeAll();
     eventLoopApi.clearAll();
     const sourcePath = processArgvForRequest(request)[1] ?? `${request.project.workspaceRoot ?? request.project.cwd ?? "/workspace"}/[eval]`;
-    const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath);
+    const displayError = sanitizeBrowserJavaScriptStack(error, sourcePath, stackFrames);
     const exitCode = typeof displayError.exitCode === "number" ? displayError.exitCode : 1;
     const stderrSuffix = displayError.suppressStderr ? "" : formatBrowserJavaScriptErrorForStderr(displayError);
     const hostIo = createRuntimeProjectIoBridge(request.onEvent);

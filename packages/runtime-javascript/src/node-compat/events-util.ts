@@ -1,3 +1,7 @@
+import {
+  errorTextWithMessage,
+} from "../modules/stack-frames";
+
 
 
 export class BrowserEventEmitter {
@@ -69,7 +73,7 @@ export function createEventsApi() {
 export function createUtilApi() {
   const inspect = (value: unknown): string => {
     if (typeof value === 'string') return `'${value}'`;
-    if (value instanceof Error) return value.stack ?? value.message;
+    if (value instanceof Error) return errorTextWithMessage(value);
     try {
       return JSON.stringify(value);
     } catch {

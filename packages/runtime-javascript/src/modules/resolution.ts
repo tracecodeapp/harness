@@ -25,6 +25,14 @@ import {
   PackageResolutionCondition,
 } from "./contracts";
 
+import {
+  errorMessageHeader,
+  errorTextWithMessage,
+  isEngineFrameOnlyStack,
+  isWorkspaceFormattedStack,
+  type WorkspaceStackFrames,
+} from "./stack-frames";
+
 export function moduleDefault(value: unknown): unknown {
   return (value as Record<string, unknown>).default;
 }
@@ -283,8 +291,32 @@ export function toDynamicImportBinding(specifier: string): string {
 export function transformDynamicImports(code: string): string {
   return code.replace(
     /\bimport\s*\(\s*(['"])([^'"]+)\1\s*\)/g,
-    (_match, _quote: string, specifier: string) => toDynamicImportBinding(specifier)
+    keepingLineBreaks((_match, _quote: string, specifier: string) => toDynamicImportBinding(specifier))
   );
+}
+
+type LineReplacer = (match: string, ...groups: any[]) => string;
+
+const LINE_BREAKS = /\r\n|[\r\n\u2028\u2029]/g;
+
+/**
+ * A rewrite that keeps the source's line count, so the lines of a rewritten
+ * module are the lines of its file and its stack frames point at them. Line
+ * breaks a match spanned (a multi-line import list, trailing blank lines) are
+ * put back after the replacement.
+ */
+function keepingLineBreaks(replacer: LineReplacer): LineReplacer {
+  return (match, ...groups) => {
+    const replacement = replacer(match, ...groups);
+    // A function replacer's last two arguments are the offset and the source.
+    const offset = groups[groups.length - 2] as number;
+    const source = groups[groups.length - 1] as string;
+    let breaks = match.match(LINE_BREAKS)?.length ?? 0;
+    // A match that ends inside a CRLF pair leaves the LF, which still ends the line.
+    if (match.endsWith('\r') && source[offset + match.length] === '\n') breaks -= 1;
+    const missing = breaks - (replacement.match(LINE_BREAKS)?.length ?? 0);
+    return missing > 0 ? `${replacement}${'\n'.repeat(missing)}` : replacement;
+  };
 }
 
 export function serializableKernelHttpRequest(request: RuntimeKernelHttpRequest): RuntimeKernelHttpRequest {
@@ -326,6 +358,13 @@ export function namedExportAssignments(bindings: string, moduleName?: string): s
     .join(' ');
 }
 
+// Leading whitespace on the statement's own line; never an earlier line.
+const STATEMENT_INDENT = '[^\\S\\r\\n\\u2028\\u2029]*';
+
+function statementPattern(pattern: string): RegExp {
+  return new RegExp(`^${STATEMENT_INDENT}${pattern}`, 'gm');
+}
+
 export function transformStaticEsmToCommonJs(code: string, importMetaUrl?: string): string {
   let defaultImportIndex = 0;
   let reExportIndex = 0;
@@ -335,73 +374,73 @@ export function transformStaticEsmToCommonJs(code: string, importMetaUrl?: strin
       JSON.stringify(importMetaUrl ?? 'file:///workspace/[eval]')
     )
     .replace(
-      /^\s*export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-      (_match, _quote: string, specifier: string) => {
+      statementPattern(String.raw`export\s+\*\s+from\s+(['"])([^'"]+)\1\s*;?\s*$`),
+      keepingLineBreaks((_match, _quote: string, specifier: string) => {
         const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
         return `const ${moduleName} = ${toRequireBinding(specifier)}; for (const __tracecode_key of Object.keys(${moduleName})) { if (__tracecode_key !== "default") exports[__tracecode_key] = ${moduleName}[__tracecode_key]; }`;
-      }
+      })
     )
     .replace(
-      /^\s*export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-      (_match, namedExports: string, _quote: string, specifier: string) => {
+      statementPattern(String.raw`export\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+      keepingLineBreaks((_match, namedExports: string, _quote: string, specifier: string) => {
         const moduleName = `__tracecode_esm_reexport_${reExportIndex++}`;
         return `const ${moduleName} = ${toRequireBinding(specifier)}; ${namedExportAssignments(namedExports, moduleName)}`;
-      }
+      })
     )
     .replace(
-      /^\s*import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-      (_match, defaultName: string, namespaceName: string, _quote: string, specifier: string) => {
+      statementPattern(String.raw`import\s+([\w$]+)\s*,\s*\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\3\s*;?\s*$`),
+      keepingLineBreaks((_match, defaultName: string, namespaceName: string, _quote: string, specifier: string) => {
         const required = toRequireBinding(specifier);
         const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
         return `const ${namespaceName} = ${required}; const ${moduleName} = ${namespaceName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-      }
+      })
     )
     .replace(
-      /^\s*import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$/gm,
-      (_match, defaultName: string, namedImports: string, _quote: string, specifier: string) => {
+      statementPattern(String.raw`import\s+([\w$]+)\s*,\s*\{([^}]+)\}\s+from\s+(['"])([^'"]+)\3\s*;?\s*$`),
+      keepingLineBreaks((_match, defaultName: string, namedImports: string, _quote: string, specifier: string) => {
         const required = toRequireBinding(specifier);
         const moduleName = `__tracecode_esm_default_${defaultImportIndex++}`;
         return `const ${moduleName} = ${required}; const { ${transformNamedBindings(namedImports)} } = ${moduleName}; const ${defaultName} = ${moduleName} && typeof ${moduleName} === "object" && "default" in ${moduleName} ? ${moduleName}.default : ${moduleName};`;
-      }
+      })
     )
     .replace(
-      /^\s*import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-      (_match, namespaceName: string, _quote: string, specifier: string) =>
-        `const ${namespaceName} = ${toRequireBinding(specifier)};`
+      statementPattern(String.raw`import\s+\*\s+as\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+      keepingLineBreaks((_match, namespaceName: string, _quote: string, specifier: string) =>
+        `const ${namespaceName} = ${toRequireBinding(specifier)};`)
     )
     .replace(
       /\bimport\s+\{([^}]+)\}\s+from\s+(['"])([^'"]+)\2\s*;?/g,
-      (_match, namedImports: string, _quote: string, specifier: string) =>
-        `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`
+      keepingLineBreaks((_match, namedImports: string, _quote: string, specifier: string) =>
+        `const { ${transformNamedBindings(namedImports)} } = ${toRequireBinding(specifier)};`)
     )
     .replace(
-      /^\s*import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$/gm,
-      (_match, defaultName: string, _quote: string, specifier: string) =>
-        defaultImportBinding(defaultName, specifier, defaultImportIndex++)
+      statementPattern(String.raw`import\s+([\w$]+)\s+from\s+(['"])([^'"]+)\2\s*;?\s*$`),
+      keepingLineBreaks((_match, defaultName: string, _quote: string, specifier: string) =>
+        defaultImportBinding(defaultName, specifier, defaultImportIndex++))
     )
     .replace(
-      /^\s*import\s+(['"])([^'"]+)\1\s*;?\s*$/gm,
-      (_match, _quote: string, specifier: string) => `${toRequireBinding(specifier)};`
+      statementPattern(String.raw`import\s+(['"])([^'"]+)\1\s*;?\s*$`),
+      keepingLineBreaks((_match, _quote: string, specifier: string) => `${toRequireBinding(specifier)};`)
     )
     .replace(
-      /^\s*export\s+function\s+([\w$]+)\s*\(/gm,
-      (_match, name: string) => `exports.${name} = function ${name}(`
+      statementPattern(String.raw`export\s+function\s+([\w$]+)\s*\(`),
+      keepingLineBreaks((_match, name: string) => `exports.${name} = function ${name}(`)
     )
     .replace(
-      /^\s*export\s+class\s+([\w$]+)\s*/gm,
-      (_match, name: string) => `exports.${name} = class ${name} `
+      statementPattern(String.raw`export\s+class\s+([\w$]+)\s*`),
+      keepingLineBreaks((_match, name: string) => `exports.${name} = class ${name} `)
     )
     .replace(
-      /^\s*export\s+(const|let|var)\s+([\w$]+)\s*=/gm,
-      (_match, declaration: string, name: string) => `${declaration} ${name} = exports.${name} =`
+      statementPattern(String.raw`export\s+(const|let|var)\s+([\w$]+)\s*=`),
+      keepingLineBreaks((_match, declaration: string, name: string) => `${declaration} ${name} = exports.${name} =`)
     )
     .replace(
-      /^\s*export\s+default\s+/gm,
-      'exports.default = '
+      statementPattern(String.raw`export\s+default\s+`),
+      keepingLineBreaks(() => 'exports.default = ')
     )
     .replace(
-      /^\s*export\s+\{([^}]+)\}\s*;?\s*$/gm,
-      (_match, namedExports: string) => namedExportAssignments(namedExports)
+      statementPattern(String.raw`export\s+\{([^}]+)\}\s*;?\s*$`),
+      keepingLineBreaks((_match, namedExports: string) => namedExportAssignments(namedExports))
     );
 }
 
@@ -450,7 +489,7 @@ export function formatConsoleValues(values: unknown[]): string {
   return values
     .map((value) => {
       if (typeof value === 'string') return value;
-      if (value instanceof Error) return value.stack ?? value.message;
+      if (value instanceof Error) return errorTextWithMessage(value);
       try {
         return JSON.stringify(value);
       } catch {
@@ -496,19 +535,41 @@ export function isBrowserJavaScriptInternalStackFrame(line: string): boolean {
   );
 }
 
-export function sanitizeBrowserJavaScriptStack(error: unknown, sourcePath: string): unknown {
+export function sanitizeBrowserJavaScriptStack(
+  error: unknown,
+  sourcePath: string,
+  stackFrames?: WorkspaceStackFrames
+): unknown {
   if (!(error instanceof Error) || typeof error.stack !== 'string' || !error.stack.trim()) {
     return error;
   }
+  // The workspace formatter already built this stack from the error's own
+  // frames, with each frame's file and line and nothing from the host.
+  if (isWorkspaceFormattedStack(error)) return error;
 
-  const mappedStack = error.stack.replace(
-    /\(eval at [^,]+ \([^)]*\), <anonymous>:(\d+):(\d+)\)/g,
-    (_match, line, column) => `(${sourcePath}:${Math.max(1, Number(line) - 2)}:${column})`
-  );
-  const stackLines = mappedStack.split('\n');
-  const lines: string[] = [stackLines[0] ?? error.message];
-  for (const line of stackLines.slice(1)) {
-    if (isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
+  // Keep the whole message, then only workspace frames. A V8-shaped stack
+  // starts with the message (the error's header, or a learner formatter's
+  // lines before its first frame); a Firefox or WebKit stack has frames only,
+  // so the header goes first.
+  const stack = error.stack;
+  const header = errorMessageHeader(error);
+  let messageLines: string[];
+  let frameLines: string[];
+  if (stack === header || stack.startsWith(`${header}\n`)) {
+    messageLines = header.split('\n');
+    frameLines = stack.slice(header.length + 1).split('\n');
+  } else if (isEngineFrameOnlyStack(stack)) {
+    messageLines = header.split('\n');
+    frameLines = stack.split('\n');
+  } else {
+    const stackLines = stack.split('\n');
+    const firstFrame = stackLines.findIndex((line, index) => index > 0 && /^\s+at /.test(line));
+    messageLines = firstFrame === -1 ? stackLines.slice(0, 1) : stackLines.slice(0, firstFrame);
+    frameLines = firstFrame === -1 ? stackLines.slice(1) : stackLines.slice(firstFrame);
+  }
+  const lines: string[] = [...messageLines];
+  for (const line of frameLines) {
+    if (stackFrames ? stackFrames.isWorkspaceFrame(line) : isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
       lines.push(line);
       continue;
     }
@@ -516,7 +577,7 @@ export function sanitizeBrowserJavaScriptStack(error: unknown, sourcePath: strin
     // Browser engine frames and host URLs are implementation details. Keep
     // only frames that can be attributed to the submitted workspace.
   }
-  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
+  if (lines.length === messageLines.length) lines.push(`    at ${sourcePath}:1:1`);
   Object.defineProperty(error, 'stack', {
     configurable: true,
     value: lines.join('\n'),
