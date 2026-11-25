@@ -1137,13 +1137,13 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
         },
         kernelProcessGroupId: parentContext.process.pgid,
         kernelSessionId: parentContext.process.sid,
-        execute: (context, fs) => {
+        execute: async (context, fs) => {
           const exec = ctx.exec;
           if (!exec) return execute({ ...ctx, fs });
           // Commands this child runs (a package script) belong to it, and
           // their routes are relative to its own output.
           this.runtimeParentContexts.add(context);
-          return execute({
+          const result = await execute({
             ...ctx,
             fs,
             exec: (script, options) => exec(script, {
@@ -1152,6 +1152,11 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
               runtimeParent: context,
             }),
           });
+          // A package manager returns only its script's bytes and status; keep
+          // the last runtime invocation's structured outcome, as a direct run does.
+          return result.error || !context.runtimeInvocationError
+            ? result
+            : { ...result, error: context.runtimeInvocationError };
         },
       }
     );
