@@ -97,6 +97,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   - Trace and observer serialization, direct (non-Judge) execution and
     `'<accessor>'`/`'<function>'` members are unchanged.
 
+- A C++ judged case returns `serialization-limit` without a value when its
+  answer exceeds the byte, item, node, or nesting bound. A set counts as one
+  level of nesting, and containers inside it add their own levels.
+
 ### Fixed
 
 - Ordinary Java batches report each finished case before the batch reply and distinguish client transport deadlines from worker loss when reporting an interrupted batch.
