@@ -1377,7 +1377,10 @@ function journalledBatchCall(
         new Promise<undefined>((resolve) => { timer = setTimeout(resolve, SERVICE_DEADLINE_SETTLE_MS); }),
       ]);
       clearTimeout(timer);
-      if (late && !late.ok && late.error instanceof InterruptedCodeBatchError) journal.reconcile(late.error, offset);
+      // `in` narrowing, which the package's declaration build (not strict) accepts.
+      if (late && 'error' in late && late.error instanceof InterruptedCodeBatchError) {
+        journal.reconcile(late.error, offset);
+      }
     })();
     return Effect.tryPromise({
       try: async (signal): Promise<JournalledBatchReply> => {
@@ -1389,7 +1392,7 @@ function journalledBatchCall(
         const expired = journal.expiredPromise().then((): typeof SERVICE_DEADLINE => SERVICE_DEADLINE);
         const first = await Promise.race([pending, expired]);
         if (first !== SERVICE_DEADLINE) {
-          if (first.ok) return first.value;
+          if ('value' in first) return first.value;
           throw first.error;
         }
         local.abort(new DOMException('The service deadline expired.', 'TimeoutError'));
