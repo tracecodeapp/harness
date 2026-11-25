@@ -157,7 +157,7 @@ function assertConsoleResults(
 }
 
 function assertJudgedOutputPolicy(
-  { rows, markers, batch, restoredResult, opsResult }: Awaited<ReturnType<typeof globalThis.javaJudgedOutputProbe>>,
+  { rows, markers, legacyNode, batch, profile, restoredResult, opsResult }: Awaited<ReturnType<typeof globalThis.javaJudgedOutputProbe>>,
 ): void {
   const failures: string[] = [];
   for (const id of ['ascii-2048', 'snow-over', 'emoji-over', 'lone-over', 'depth-65',
@@ -173,7 +173,12 @@ function assertJudgedOutputPolicy(
     'node-edge', 'scalar-root', 'node-cycle', 'map-depth-64', 'set-depth-64', 'list-depth-64',
     'map-key-collision']) {
     const row = rows.find((item) => item.id === id);
-    if (row?.verdict !== 'passed') failures.push(`${id} passes comparison`);
+    if (row?.verdict !== 'passed') failures.push(`${id} passes comparison: ${JSON.stringify(row)}`);
+  }
+  const judgedNode = rows.find((row) => row.id === 'node-cycle');
+  if (legacyNode.kind !== 'completed' || judgedNode?.status !== 'completed' ||
+      JSON.stringify(legacyNode.output) !== JSON.stringify(judgedNode.value)) {
+    failures.push(`legacy and judged cyclic nodes have the same wire shape: ${JSON.stringify({ legacyNode, judgedNode })}`);
   }
   if (!rows.find((row) => row.id === 'shared')?.hasValue) {
     failures.push('acyclic sharing still emits a value');
@@ -185,8 +190,9 @@ function assertJudgedOutputPolicy(
     recovered.output !== 'x'.repeat(64)) {
     failures.push('cycle refusal followed by a completed case in one batch');
   }
-  if ((refusal?.timings as { runnerProcessCount?: number } | undefined)?.runnerProcessCount !== 1) {
-    failures.push('both cases use one runner JVM');
+  const runnerProcessCount = (refusal?.timings as { runnerProcessCount?: number } | undefined)?.runnerProcessCount;
+  if (profile?.tier !== 'algorithm-fast' || runnerProcessCount !== 1) {
+    failures.push(`both cases use one runner JVM: ${JSON.stringify({ profile, runnerProcessCount })}`);
   }
   for (const [label, result] of [['restored artifact', restoredResult], ['ops-class', opsResult]] as const) {
     if (result.kind !== 'limit' || result.reason !== 'serialization-limit' || Object.hasOwn(result, 'output')) {

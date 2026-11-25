@@ -163,10 +163,18 @@ async function runJavaJudgedOutputPolicy() {
       rows.push(...receipt.evaluation.cases.map((row) => ({
         id: row.caseId, verdict: row.verdict.kind, status: row.status,
         failure: row.failure, hasValue: row.value !== undefined && row.value !== null,
+        ...(row.caseId === 'node-cycle' ? { value: row.value } : {}),
       })));
     }
 
     const judgedOutputPolicy = { maxBytes: 1024, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64 };
+    const legacy = await client.prepareRuntimeProgram({ ...method, mode: 'code' });
+    if (!legacy.success || !legacy.programId) throw new Error(legacy.error);
+    const legacyNode = await client.executePreparedCode(legacy.programId, {
+      inputs: input('node-cycle', 0),
+    });
+    await client.disposePreparedRuntimeProgram(legacy.programId);
+
     const call: JudgedPreparationCall = { ...method, mode: 'code', judgedOutputPolicy };
     const prepared = await client.prepareRuntimeProgram(call);
     if (!prepared.success || !prepared.programId) throw new Error(prepared.error);
@@ -195,7 +203,7 @@ async function runJavaJudgedOutputPolicy() {
     const opsResult = await client.executePreparedCode(ops.programId, {
       inputs: { operations: ['Counter', 'value'], arguments: [[], []] },
     });
-    return { rows, markers, batch, restoredResult, opsResult };
+    return { rows, markers, legacyNode, batch, profile: prepared.algorithmIsolationProfile, restoredResult, opsResult };
   } finally {
     client.terminate();
     host.dispose();
