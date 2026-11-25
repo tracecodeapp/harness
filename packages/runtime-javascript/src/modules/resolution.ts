@@ -26,6 +26,9 @@ import {
 } from "./contracts";
 
 import {
+  errorMessageHeader,
+  errorTextWithMessage,
+  isEngineFrameOnlyStack,
   isWorkspaceFormattedStack,
   type WorkspaceStackFrames,
 } from "./stack-frames";
@@ -486,7 +489,7 @@ export function formatConsoleValues(values: unknown[]): string {
   return values
     .map((value) => {
       if (typeof value === 'string') return value;
-      if (value instanceof Error) return value.stack ?? value.message;
+      if (value instanceof Error) return errorTextWithMessage(value);
       try {
         return JSON.stringify(value);
       } catch {
@@ -544,9 +547,28 @@ export function sanitizeBrowserJavaScriptStack(
   // frames, with each frame's file and line and nothing from the host.
   if (isWorkspaceFormattedStack(error)) return error;
 
-  const stackLines = error.stack.split('\n');
-  const lines: string[] = [stackLines[0] ?? error.message];
-  for (const line of stackLines.slice(1)) {
+  // Keep the whole message, then only workspace frames. A V8-shaped stack
+  // starts with the message (the error's header, or a learner formatter's
+  // lines before its first frame); a Firefox or WebKit stack has frames only,
+  // so the header goes first.
+  const stack = error.stack;
+  const header = errorMessageHeader(error);
+  let messageLines: string[];
+  let frameLines: string[];
+  if (stack === header || stack.startsWith(`${header}\n`)) {
+    messageLines = header.split('\n');
+    frameLines = stack.slice(header.length + 1).split('\n');
+  } else if (isEngineFrameOnlyStack(stack)) {
+    messageLines = header.split('\n');
+    frameLines = stack.split('\n');
+  } else {
+    const stackLines = stack.split('\n');
+    const firstFrame = stackLines.findIndex((line, index) => index > 0 && /^\s+at /.test(line));
+    messageLines = firstFrame === -1 ? stackLines.slice(0, 1) : stackLines.slice(0, firstFrame);
+    frameLines = firstFrame === -1 ? stackLines.slice(1) : stackLines.slice(firstFrame);
+  }
+  const lines: string[] = [...messageLines];
+  for (const line of frameLines) {
     if (stackFrames ? stackFrames.isWorkspaceFrame(line) : isBrowserJavaScriptUserStackFrame(line, sourcePath)) {
       lines.push(line);
       continue;
@@ -555,7 +577,7 @@ export function sanitizeBrowserJavaScriptStack(
     // Browser engine frames and host URLs are implementation details. Keep
     // only frames that can be attributed to the submitted workspace.
   }
-  if (lines.length === 1) lines.push(`    at ${sourcePath}:1:1`);
+  if (lines.length === messageLines.length) lines.push(`    at ${sourcePath}:1:1`);
   Object.defineProperty(error, 'stack', {
     configurable: true,
     value: lines.join('\n'),

@@ -46,6 +46,10 @@ interface WorkspaceModuleSource {
   lineOffset: number;
   /** Engine columns before the body on its first line. */
   firstLineColumnOffset: number;
+  /** The module body, to read a frame's function at its source position. */
+  code: string;
+  /** Offsets of the body's line starts, filled on first use. */
+  lineStarts?: number[];
 }
 
 /** The parameters of every module wrapper, in the order the loader passes them. */
@@ -70,10 +74,16 @@ export interface WorkspaceModuleCompileOptions {
 
 interface V8CallSite {
   getFunctionName(): string | null;
+  getMethodName?(): string | null;
+  getTypeName?(): string | null;
   getLineNumber(): number | null;
   getColumnNumber(): number | null;
+  getEnclosingLineNumber?(): number | null;
+  getEnclosingColumnNumber?(): number | null;
   getScriptNameOrSourceURL?(): string | null | undefined;
   isAsync?(): boolean;
+  isConstructor?(): boolean;
+  isToplevel?(): boolean;
   toString(): string;
 }
 
@@ -117,6 +127,52 @@ function lookupModuleSource(sourceUrl: string): WorkspaceModuleSource | undefine
   return undefined;
 }
 
+/** The body offset of an engine position, or null inside the wrapper's header. */
+function bodyIndex(source: WorkspaceModuleSource, line: number, column: number): number | null {
+  const bodyLine = line - source.lineOffset;
+  const bodyColumn = column - 1 - (bodyLine === 1 ? source.firstLineColumnOffset : 0);
+  if (bodyLine < 1 || bodyColumn < 0) return null;
+  if (!source.lineStarts) {
+    const starts = [0];
+    for (const match of source.code.matchAll(/\r\n|[\r\n\u2028\u2029]/g)) starts.push(match.index + match[0].length);
+    source.lineStarts = starts;
+  }
+  const start = source.lineStarts[bodyLine - 1];
+  return start === undefined ? null : start + bodyColumn;
+}
+
+// The function starts here: `eval(`, `async eval(`, `*eval(`, `function eval(`.
+const EVAL_NAMED_START = /^(?:(?:async|static)\s+)*(?:function\b\s*)?\*?\s*eval\s*\(/;
+// Or it is the value of an `eval` key or field: `eval: function`, `eval = () =>`.
+const EVAL_NAMED_KEY = /(?:\beval|(["'])eval\1)\s*[:=]\s*(?:async\s+)?$/;
+
+/**
+ * Whether the function a frame is in is really named `eval`. V8 reports
+ * `eval` for every function without a name in eval'd code, the module
+ * wrapper included, so read the function's start in the module's source:
+ * the wrapper starts inside the header, and a named function names itself.
+ */
+function namedEval(source: WorkspaceModuleSource, site: V8CallSite): boolean {
+  const line = site.getEnclosingLineNumber?.();
+  const column = site.getEnclosingColumnNumber?.();
+  if (line === null || line === undefined || column === null || column === undefined) return false;
+  const index = bodyIndex(source, line, column);
+  if (index === null) return false;
+  return EVAL_NAMED_START.test(source.code.slice(index, index + 80)) ||
+    EVAL_NAMED_KEY.test(source.code.slice(Math.max(0, index - 80), index));
+}
+
+/** A frame in a function with no name, as V8 prints one (and Node shows it). */
+function anonymousFrame(site: V8CallSite, location: string): string {
+  const prefix = site.isAsync?.() ? 'async ' : '';
+  if (site.isConstructor?.()) return `${prefix}new <anonymous> (${location})`;
+  if (site.isToplevel?.() === false) {
+    const typeName = site.getTypeName?.();
+    return `${prefix}${typeName ? `${typeName}.` : ''}${site.getMethodName?.() || '<anonymous>'} (${location})`;
+  }
+  return `${prefix}${location}`;
+}
+
 function workspaceFrame(site: V8CallSite): string | null {
   const sourceUrl = site.getScriptNameOrSourceURL?.();
   const source = sourceUrl ? lookupModuleSource(sourceUrl) : undefined;
@@ -128,13 +184,11 @@ function workspaceFrame(site: V8CallSite): string | null {
   const fileLine = Math.max(1, bodyLine);
   const fileColumn = bodyLine === 1 ? Math.max(1, column - source.firstLineColumnOffset) : column;
   const location = `${source.location}:${fileLine}:${fileColumn}`;
-  // V8 names the wrapper function `eval`. That function is the module's
-  // top-level code, which Node shows as `Object.<anonymous>` for CommonJS and
-  // as a bare location for ES modules and `node -e`.
-  if (site.getFunctionName() === 'eval') {
-    if (source.kind === 'commonjs') return `Object.<anonymous> (${location})`;
-    return `${site.isAsync?.() ? 'async ' : ''}${location}`;
-  }
+  // The module wrapper and every other function without a name read `eval`
+  // here. Node shows them without a name: the CommonJS wrapper, called on
+  // module.exports, as `Object.<anonymous>`; an ES module's top-level code and
+  // a callback as a bare location.
+  if (site.getFunctionName() === 'eval' && !namedEval(source, site)) return anonymousFrame(site, location);
   const engineLocation = `${sourceUrl}:${line}:${column}`;
   const frame = String(site);
   const index = frame.lastIndexOf(engineLocation);
@@ -192,6 +246,30 @@ function restoreStackHook(): void {
   }
 }
 
+/** The error's first lines, as an engine's own stack begins: `Name: message`. */
+export function errorMessageHeader(error: unknown): string {
+  return errorHeader(error);
+}
+
+/**
+ * Whether a stack is in the Firefox and WebKit shape: frames only, as
+ * `name@location`, with no `Name: message` lines before them.
+ */
+export function isEngineFrameOnlyStack(stack: string): boolean {
+  const lines = stack.split('\n');
+  return (lines[0] ?? '').includes('@') && !lines.some((line) => /^\s+at /.test(line));
+}
+
+/** An error's stack with its whole message first, as Node prints an error. */
+export function errorTextWithMessage(error: Error): string {
+  const header = errorHeader(error);
+  const stack = error.stack;
+  if (typeof stack !== 'string' || !stack.trim()) return header;
+  return isEngineFrameOnlyStack(stack) && !stack.startsWith(`${header}\n`)
+    ? `${header}\n${stack.replace(/\n+$/, '')}`
+    : stack;
+}
+
 /**
  * Whether the workspace formatter built this error's current stack. Such a
  * stack already names every frame's file and holds only workspace frames.
@@ -225,13 +303,13 @@ export function createWorkspaceStackFrames(): WorkspaceStackFrames {
       try {
         const compiled = browserIndirectEval(`${header}${code}\n})\n//# sourceURL=${sourceUrl}`);
         if (typeof compiled === 'function' && functionToString.call(compiled) === `${header.slice(1)}${code}\n}`) {
-          sources.set(sourceUrl, { location, kind, lineOffset: 0, firstLineColumnOffset: header.length });
+          sources.set(sourceUrl, { location, kind, lineOffset: 0, firstLineColumnOffset: header.length, code });
           return compiled as (...args: unknown[]) => unknown;
         }
       } catch {
         // Keep the constructed function below.
       }
-      sources.set(sourceUrl, { location, kind, lineOffset: FUNCTION_BODY_LINE_OFFSET, firstLineColumnOffset: 0 });
+      sources.set(sourceUrl, { location, kind, lineOffset: FUNCTION_BODY_LINE_OFFSET, firstLineColumnOffset: 0, code });
       return constructed;
     },
     isWorkspaceFrame(line) {
