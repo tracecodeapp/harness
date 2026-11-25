@@ -14,7 +14,11 @@ import type { TraceKernelSyscallRequest, TraceKernelSyscallResult } from '../pac
 // equal the live streams, so a renderer never replays output.
 const program = (input: string) => [[1, 'out1\n'], [2, 'err1\n'], [1, 'out2\n'], [2, 'err2\n'], [1, `${input}\n`]] as const;
 
+const RUNNER_ERROR = { code: 'EIO', errno: 5, message: 'runner transport failed' };
+
 const descriptorRunner: JavaScriptProjectCommandRunner = Object.assign(async (request: Parameters<JavaScriptProjectCommandRunner>[0]) => {
+  // A run whose runner reports a structured error (here at exit 0, as a transport failure can).
+  if (request.scriptPath.endsWith('failing.js')) return { stdout: '', stderr: '', exitCode: 0, error: RUNNER_ERROR };
   if (request.scriptPath.endsWith('legacy.js')) {
     // A runner without descriptor stdio streams through onEvent and returns its output.
     let stdout = '';
@@ -99,6 +103,26 @@ const cases: Array<[command: string, expected: Expected]> = [
   // Main printed these twice: npm replayed its script's output at exit.
   ['echo a | npm test', { screen: `${banner('test', 'node main.js')}${interleaved('A')}`, stdout: `${banner('test', 'node main.js')}${outOnly('A')}`, stderr: errOnly }],
   ['npm run quiet < input.txt', { screen: `${banner('quiet', 'node nostdin.js')}${interleaved('')}`, stdout: `${banner('quiet', 'node nostdin.js')}${outOnly('')}`, stderr: errOnly }],
+  // Redirects held on the shell's own descriptors by `exec` apply to later commands.
+  // (just-bash also applies a held stdout to the writer of a pipe, so these read a file.)
+  ['exec > std.out; node main.js < input.txt', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('IGNORED') } }],
+  ['exec 2> std.err; node main.js < input.txt', { screen: outOnly('IGNORED'), stdout: outOnly('IGNORED'), stderr: '', files: { 'std.err': errOnly } }],
+  ['exec 1>&2; node main.js < input.txt', { screen: interleaved('IGNORED'), stdout: '', stderr: interleaved('IGNORED') }],
+  // Sourced files and eval'd strings route like typed lines.
+  ['source redirect.sh', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
+  ['. redirect.sh', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
+  ["eval 'echo a | node main.js > std.out'", { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
+  // (A pipe into a redirected `source`/`eval`, and a redirected `if`, are not
+  // redirected by just-bash at all: a separate shell gap, shown as before.)
+  ['source quiet.sh > std.out', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('') } }],
+  // Main stopped the line after a runtime inside source or eval.
+  ['source quiet.sh; eval node nostdin.js; echo after', { screen: `${interleaved('')}${interleaved('')}after\n`, stdout: `${outOnly('')}${outOnly('')}after\n`, stderr: `${errOnly}${errOnly}` }],
+  ['eval node main.js < input.txt 2> std.err', { screen: outOnly('IGNORED'), stdout: outOnly('IGNORED'), stderr: '', files: { 'std.err': errOnly } }],
+  // More redirect shapes.
+  ['echo a | node main.js 1>&2 2>&1', { screen: interleaved('A'), stdout: '', stderr: interleaved('A') }],
+  ['echo a | node main.js >> std.out', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
+  ['for i in 1; do echo a | node main.js; done > std.out', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
+  ['node main.js <<< a | grep A', { screen: `${errOnly}A\n`, stdout: 'A\n', stderr: errOnly }],
   // Unchanged: an unredirected program streams everything.
   ['echo a | node main.js', { screen: interleaved('A'), stdout: outOnly('A'), stderr: errOnly }],
   ['npm run quiet', { screen: `${banner('quiet', 'node nostdin.js')}${interleaved('')}`, stdout: `${banner('quiet', 'node nostdin.js')}${outOnly('')}`, stderr: errOnly }],
@@ -114,8 +138,11 @@ const workspace = await createRuntimeWorkspace({
     { path: 'nostdin.js', contents: '' },
     { path: 'legacy.js', contents: '' },
     { path: 'input.txt', contents: 'ignored\n' },
+    { path: 'failing.js', contents: '' },
     { path: 'run.sh', contents: 'node main.js\n' },
-    { path: 'package.json', contents: JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node main.js', quiet: 'node nostdin.js' } }) },
+    { path: 'redirect.sh', contents: 'echo a | node main.js > std.out\n' },
+    { path: 'quiet.sh', contents: 'node nostdin.js\n' },
+    { path: 'package.json', contents: JSON.stringify({ name: 'demo', version: '1.0.0', scripts: { test: 'node main.js', quiet: 'node nostdin.js', fail: 'node failing.js' } }) },
   ],
 });
 const failures: string[] = [];
@@ -160,11 +187,24 @@ try {
   } catch {
     failures.push(`workspace.runCommand pipe: ${JSON.stringify({ apiLive, stdout: api.stdout })}`);
   }
+
+  // A script's structured runtime error reaches the terminal result as a direct run's does.
+  for (const command of ['node failing.js', 'npm run fail', 'npm run fail | cat', 'npm run fail > std.out', 'echo a | npm run fail']) {
+    const result = await workspace.createTerminalSession().run(command);
+    try {
+      assert.equal(result.exitCode, 0, `${command} exit`);
+      assert.equal(result.error?.code, RUNNER_ERROR.code, `${command} error code`);
+      assert.equal(result.error?.message, RUNNER_ERROR.message, `${command} error message`);
+    } catch {
+      failures.push(`${command}: structured error ${JSON.stringify(result.error)} (exit ${result.exitCode})`);
+    }
+  }
 } finally {
   workspace.dispose();
 }
+const total = cases.length + 6;
 if (failures.length > 0) {
-  console.error(`${failures.length} of ${cases.length + 1} output routing cases differ from Bash:\n${failures.join('\n')}`);
+  console.error(`${failures.length} of ${total} output routing cases differ from Bash:\n${failures.join('\n')}`);
   process.exit(1);
 }
-console.log(`workspace output routing: ${cases.length + 1} piped, redirected and composed lines match Bash`);
+console.log(`workspace output routing: ${total} piped, redirected and composed lines match Bash`);

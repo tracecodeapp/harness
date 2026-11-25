@@ -123,6 +123,9 @@ const banner = '\n> demo@1.0.0 test\n> node main.js\n\n';
 const npmCases: Array<[string, Expected]> = [
   ['echo a | npm test | grep A', { screen: `${errOnly}A\n`, stdout: 'A\n', stderr: errOnly }],
   ['echo a | npm test > std.out', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': `${banner}${outOnly('A')}` } }],
+  // A redirect held by `exec`, and one inside a sourced file.
+  ['exec > std.out; node main.js < input.txt', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('IGNORED') } }],
+  ['source redirect.sh', { screen: errOnly, stdout: '', stderr: errOnly, files: { 'std.out': outOnly('A') } }],
 ];
 
 const LANGUAGES = {
@@ -130,7 +133,11 @@ const LANGUAGES = {
     path: 'main.js',
     contents: 'const fs = require("node:fs");\nconsole.log("out1"); console.error("err1"); console.log("out2"); console.error("err2");\nconsole.log(fs.readFileSync(0, "utf8").trim().toUpperCase());\n',
     run: 'node main.js',
-    extraFiles: [{ path: 'package.json', contents: '{"name":"demo","version":"1.0.0","scripts":{"test":"node main.js"}}\n' }],
+    extraFiles: [
+      { path: 'package.json', contents: '{"name":"demo","version":"1.0.0","scripts":{"test":"node main.js"}}\n' },
+      { path: 'input.txt', contents: 'ignored\n' },
+      { path: 'redirect.sh', contents: 'echo a | node main.js > std.out\n' },
+    ],
     extraCases: npmCases,
   },
   python: {
