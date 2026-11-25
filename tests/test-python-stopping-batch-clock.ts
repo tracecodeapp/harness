@@ -783,12 +783,13 @@ test('Python traced stopping batch whose final reply is late keeps every streame
   assert.equal(log.terminated, log.created, 'Every worker is terminated');
 });
 
-test('Python stopping batch whose worker stalls between cases reaches the Judge as a provider failure on every case', async () => {
+test('Python stopping batch whose worker stalls between cases keeps case 1 and fails the rest as the provider', async () => {
   // End to end: the real Python provider and worker client, a worker that
-  // stalls after case 1 with no case running, and the Judge. The evaluation
-  // completes with each case the provider's failure; it neither rejects nor
-  // gives any case a time limit, and a consumer converting a case gets
-  // RuntimeProviderError.
+  // stalls after case 1 with no case running, and the Judge. Case 1's finish
+  // was streamed to the Judge's journal before the stall, so it stands
+  // (D-WATCH). Every later case is the provider's failure: the evaluation
+  // neither rejects nor gives any case a time limit, and a consumer
+  // converting one of them gets RuntimeProviderError.
   const log = newLog();
   const provider = createPythonPreparedExecutionProvider({
     createWorkerClient: () =>
@@ -848,7 +849,11 @@ test('Python stopping batch whose worker stalls between cases reaches the Judge 
     if (evaluation.status !== 'completed') return;
     assert.equal(log.batchRequests.length, 1, 'One stopping batch request');
     assert.equal(evaluation.cases.length, 3);
-    for (const judged of evaluation.cases) {
+    const [first, ...rest] = evaluation.cases;
+    assert.equal(first?.status, 'completed', JSON.stringify(first));
+    assert.equal(first?.value, 1);
+    assert.equal(first?.verdict.kind, 'passed');
+    for (const judged of rest) {
       assert.equal(judged.status, 'runtime-error', JSON.stringify(judged));
       if (judged.status !== 'runtime-error') continue;
       assert.equal(judged.failure.origin, 'provider');

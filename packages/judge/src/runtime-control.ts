@@ -3,14 +3,25 @@ import {
   JudgeRuntimeProtocolError,
 } from './errors';
 import type {
+  JudgeRuntimeBatchCaseOutput,
+  JudgeRuntimeCaseProgress,
   JudgeRuntimeControlPort,
   JudgeRuntimeInvocationInput,
   JudgeRuntimeInvocationOutput,
+  JudgeRuntimeProgressDisposition,
 } from './port';
 
 interface InvocationRecord {
   readonly input: JudgeRuntimeInvocationInput;
   output?: JudgeRuntimeInvocationOutput;
+  /** Batch invocations only: the accepted per-case progress. */
+  readonly journal?: {
+    readonly caseIds: ReadonlySet<string>;
+    readonly started: string[];
+    readonly finished: Map<string, JudgeRuntimeBatchCaseOutput>;
+    /** True once the invocation's process was stopped. */
+    stopped?: () => boolean;
+  };
 }
 
 /**
@@ -31,6 +42,15 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
       const id = `judge-invocation-${this.nextId++}`;
       this.invocations.set(id, {
         input: Object.freeze({ ...input }),
+        ...(input.phase === 'batch'
+          ? {
+              journal: {
+                caseIds: new Set((input.cases ?? []).map(({ caseId }) => caseId)),
+                started: [],
+                finished: new Map(),
+              },
+            }
+          : {}),
       });
       return id;
     });
@@ -68,8 +88,10 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
           message: `Judge invocation ${JSON.stringify(invocationId)} already published a result.`,
         }));
       }
+      // The journal is the control port's own record; a runtime cannot forge it.
+      const { journal: _forged, ...published } = output;
       record.output = Object.freeze({
-        ...output,
+        ...published,
         diagnostics: Object.freeze([...(output.diagnostics ?? [])]),
         ...(output.timings
           ? { timings: Object.freeze({ ...output.timings }) }
@@ -79,13 +101,65 @@ export class InMemoryJudgeRuntimeControl implements JudgeRuntimeControlPort {
     });
   }
 
+  record(
+    invocationId: string,
+    progress: JudgeRuntimeCaseProgress
+  ): Effect.Effect<JudgeRuntimeProgressDisposition> {
+    return Effect.sync(() => {
+      const record = this.invocations.get(invocationId);
+      // A taken (or discarded) invocation's process has ended; a published
+      // one has its result. Either way its journal is sealed.
+      if (!record || record.output) return 'fenced';
+      const journal = record.journal;
+      if (!journal) return 'unknown-case';
+      const prefix = progress.kind === 'finished' && progress.prefix === true;
+      if (!prefix && journal.stopped?.() === true) return 'fenced';
+      const caseId = progress.kind === 'started' ? progress.caseId : progress.output.caseId;
+      if (!journal.caseIds.has(caseId)) return 'unknown-case';
+      if (journal.finished.has(caseId)) return 'duplicate';
+      if (progress.kind === 'started') {
+        if (journal.started.includes(caseId)) return 'duplicate';
+        journal.started.push(caseId);
+        return 'accepted';
+      }
+      if (journal.started.length > 0 && !journal.started.includes(caseId)) {
+        return 'out-of-order';
+      }
+      journal.finished.set(caseId, Object.freeze({
+        ...progress.output,
+        diagnostics: Object.freeze([...(progress.output.diagnostics ?? [])]),
+        ...(progress.output.timings
+          ? { timings: Object.freeze({ ...progress.output.timings }) }
+          : {}),
+      }));
+      return 'accepted';
+    });
+  }
+
+  sealWhen(invocationId: string, stopped: () => boolean): Effect.Effect<void> {
+    return Effect.sync(() => {
+      const journal = this.invocations.get(invocationId)?.journal;
+      if (journal) journal.stopped = stopped;
+    });
+  }
+
   take(
     invocationId: string
   ): Effect.Effect<JudgeRuntimeInvocationOutput | undefined, Error> {
     return Effect.sync(() => {
       const record = this.invocations.get(invocationId);
       this.invocations.delete(invocationId);
-      return record?.output;
+      const journal = record?.journal;
+      if (!journal || (journal.started.length === 0 && journal.finished.size === 0)) {
+        return record?.output;
+      }
+      return Object.freeze({
+        ...(record.output ?? { diagnostics: Object.freeze([]) }),
+        journal: Object.freeze({
+          started: Object.freeze([...journal.started]),
+          finished: Object.freeze([...journal.finished.values()]),
+        }),
+      });
     });
   }
 

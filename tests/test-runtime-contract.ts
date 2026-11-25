@@ -1554,6 +1554,10 @@ function assertJavaScriptObservationProtocol(): void {
   // The trusted Judge journal is a page callback, not a Worker request.
   type BridgeEvent = Parameters<JudgeTestBridge['onEvent']>[0];
   const journal = {
+    'ordinary-case-started': prepared,
+    'ordinary-case-accepted': prepared,
+    'ordinary-case-rejected': prepared,
+    'service-deadline': prepared,
     'ordinary-write-attempt': prepared,
     'ordinary-commit': prepared,
     'observer-start': prepared,
@@ -1572,6 +1576,7 @@ function assertJavaScriptObservationProtocol(): void {
   const faults = {
     prepare: true, runtime: true, deadline: true, encode: true, 'no-recorder': true,
   } satisfies Record<Fault, true>;
+  assertCondition(prepared.includes(`point: 'service'`), 'Missing Judge bridge fault evidence for the service point');
   for (const fault of Object.keys(faults)) {
     assertCondition(prepared.includes(`'${fault}'`), `Missing Judge bridge fault evidence for "${fault}"`);
   }

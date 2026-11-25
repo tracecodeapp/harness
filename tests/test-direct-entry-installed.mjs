@@ -74,6 +74,10 @@ const ENTRY_SPECS = {
 const SCHEDULE_PHASES = new Set([
   'ordinary-write-attempt', 'ordinary-commit', 'observer-start', 'observer-end',
   'attachment-bind', 'observation-cache-hit', 'public-resolve',
+  // D-WATCH's journal of a healthy batch. A healthy run never rejects
+  // progress or meets the service deadline, so 'ordinary-case-rejected' and
+  // 'service-deadline' stay undefined here and fail this check if they occur.
+  'ordinary-case-started', 'ordinary-case-accepted',
 ]);
 
 /*

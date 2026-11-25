@@ -24,11 +24,16 @@ export interface JudgeProcessPlan {
   readonly env?: Readonly<Record<string, string>>;
   readonly timeoutMs?: number;
   /**
-   * What `timeoutMs` is. `limit` (the default): the program's time limit; a
-   * process the watchdog stops ran out of time. `backstop`: a guard behind a
-   * runtime that enforces its own per-case limits; the watchdog firing means
-   * the runtime failed to honour them, which is the provider's failure, and no
-   * per-case limit is fabricated for cases the runtime did not report.
+   * What `timeoutMs` is. `limit` (the default): for a single-case process,
+   * the program's time limit; a case the watchdog stops ran out of time.
+   * `backstop`: a guard behind a runtime that enforces its own per-case
+   * limits; the watchdog firing means the runtime failed to honour them,
+   * which is the provider's failure.
+   *
+   * For a provider-isolated batch the role does not matter: a batch-wide
+   * clock is no case's own limit. Whichever role stops a batch, each case
+   * whose finish the control port accepted keeps it, and every other case is
+   * the provider's failure. No per-case limit is fabricated.
    */
   readonly timeoutRole?: 'limit' | 'backstop';
 }

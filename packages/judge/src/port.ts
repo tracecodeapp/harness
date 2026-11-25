@@ -47,6 +47,56 @@ export interface JudgeRuntimeBatchCaseOutput<Result = unknown> {
   readonly notRun?: JudgeNotRun;
 }
 
+/**
+ * One per-case progress event of a batch, which the runtime adapter accepted
+ * from its worker and records on the control port as it arrives.
+ */
+export type JudgeRuntimeCaseProgress<Result = unknown> =
+  | { readonly kind: 'started'; readonly caseId: string }
+  | {
+      readonly kind: 'finished';
+      readonly output: JudgeRuntimeBatchCaseOutput<Result>;
+      /**
+       * The finish comes from the provider's interrupted prefix, which the
+       * runtime adapter delivers within its grace after the batch was
+       * stopped. The stop fence (`sealWhen`) does not apply to it;
+       * publication and `take` still do.
+       */
+      readonly prefix?: true;
+    };
+
+/**
+ * What the control port did with a progress event. Only `accepted` changes
+ * the journal.
+ * - `duplicate`: the case already started (or finished, for a finish).
+ * - `out-of-order`: a finish without its start, once the batch has recorded
+ *   a start. A runtime that acknowledges starts must check its own first
+ *   finish (the browser dispatch does).
+ * - `unknown-case`: not a case of this batch, or not a batch invocation.
+ * - `fenced`: the batch already published its result, its process ended,
+ *   or its process was stopped (`sealWhen`).
+ */
+export type JudgeRuntimeProgressDisposition =
+  | 'accepted'
+  | 'duplicate'
+  | 'out-of-order'
+  | 'unknown-case'
+  | 'fenced';
+
+/**
+ * The accepted progress of one batch invocation. A finish here is durable:
+ * if the batch ends without publishing per-case outcomes (its process was
+ * stopped, or the runtime published only a provider failure), Judge
+ * publishes these rows unchanged and makes every other case the provider's
+ * failure.
+ */
+export interface JudgeRuntimeBatchJournal<Result = unknown> {
+  /** Case IDs whose start was accepted, in acceptance order. */
+  readonly started: readonly string[];
+  /** Accepted finishes, in acceptance order. */
+  readonly finished: readonly JudgeRuntimeBatchCaseOutput<Result>[];
+}
+
 export interface JudgeRuntimeInvocationOutput<Result = unknown> {
   readonly value?: Result;
   /**
@@ -63,6 +113,11 @@ export interface JudgeRuntimeInvocationOutput<Result = unknown> {
    * only for processes that publish nothing (see `processFailure`).
    */
   readonly failure?: JudgeFailure;
+  /**
+   * Set only by the control port's `take`, from progress it recorded. A
+   * runtime cannot publish it.
+   */
+  readonly journal?: JudgeRuntimeBatchJournal<Result>;
 }
 
 export interface JudgeRuntimeControlPort {
@@ -76,6 +131,25 @@ export interface JudgeRuntimeControlPort {
     invocationId: string,
     output: JudgeRuntimeInvocationOutput
   ): Effect.Effect<void, Error>;
+  /**
+   * Journal one batch case's progress while the batch runs. Optional: a
+   * port without it keeps no journal, and a batch that ends without
+   * per-case outcomes fails every case as before.
+   */
+  record?(
+    invocationId: string,
+    progress: JudgeRuntimeCaseProgress
+  ): Effect.Effect<JudgeRuntimeProgressDisposition>;
+  /**
+   * Seal the journal at the moment its process is stopped: from the first
+   * record at which `stopped()` is true, progress is `fenced`, except an
+   * interrupted-prefix finish (`prefix: true`). Progress recorded before the
+   * stop counts. The TraceKernel Judge port reports the actual kill (the
+   * process has a pending terminating signal, or has ended), not the
+   * watchdog's scheduled instant. Optional, like `record`.
+   */
+  sealWhen?(invocationId: string, stopped: () => boolean): Effect.Effect<void>;
+  /** The published output, with the recorded journal. Seals the journal. */
   take(
     invocationId: string
   ): Effect.Effect<JudgeRuntimeInvocationOutput | undefined, Error>;
@@ -94,6 +168,8 @@ export interface JudgeKernelProcessOutcome {
   readonly trace?: unknown;
   readonly batch?: readonly JudgeRuntimeBatchCaseOutput[];
   readonly failure?: JudgeFailure;
+  /** The batch's accepted per-case progress (see `JudgeRuntimeBatchJournal`). */
+  readonly journal?: JudgeRuntimeBatchJournal;
   readonly timedOut: boolean;
   /**
    * A backstop watchdog (`timeoutRole: 'backstop'`) stopped the process: the

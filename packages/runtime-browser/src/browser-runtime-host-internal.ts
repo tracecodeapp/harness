@@ -63,7 +63,19 @@ export interface JudgeOrdinaryBatchCall extends RuntimePreparedCodeBatchCall {
   readonly onCaseFinished?: (index: number, result: CodeExecutionResult) => void;
 }
 
+/**
+ * Journal markers (D-WATCH):
+ * - `ordinary-case-started` / `ordinary-case-accepted`: the coordinator
+ *   journalled a case's start / finish. An accepted finish is durable.
+ * - `ordinary-case-rejected`: a start or finish it refused (`reason`).
+ * - `service-deadline`: the service watchdog stopped a batch and sealed its
+ *   journal (the service-deadline ACK).
+ */
 export type JudgeSchedulePhase =
+  | 'ordinary-case-started'
+  | 'ordinary-case-accepted'
+  | 'ordinary-case-rejected'
+  | 'service-deadline'
   | 'ordinary-write-attempt'
   | 'ordinary-commit'
   | 'observer-start'
@@ -80,6 +92,20 @@ export interface JudgeScheduleMarker {
   readonly generation: number;
   readonly caseId?: string;
   readonly attemptToken?: string;
+  /** Journal markers: the case's index in its batch. */
+  readonly caseIndex?: number;
+  /** Journal markers: the evaluation's ordinary batch dispatch, from 1. */
+  readonly dispatchGeneration?: number;
+  /** Journal markers: monotone over accepted starts and finishes. */
+  readonly sequence?: number;
+  /** `ordinary-case-rejected`: which progress was refused. */
+  readonly progress?: 'started' | 'finished';
+  /** `ordinary-case-rejected`: why. */
+  readonly reason?: 'duplicate' | 'out-of-order' | 'unknown-case' | 'fenced';
+  /** `service-deadline`: the real backstop, or the trusted test control. */
+  readonly cause?: 'backstop' | 'injected';
+  /** `service-deadline`: accepted finishes the stopped batch publishes. */
+  readonly accepted?: number;
   readonly at: number;
 }
 

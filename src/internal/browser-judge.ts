@@ -22,7 +22,10 @@ import {
   isExecutionLimitReason,
   RuntimeProviderError,
 } from '../../packages/runtime-contracts/src/execution-outcome';
-import { InterruptedCodeBatchError } from '../../packages/runtime-browser/src/worker-errors';
+import {
+  InterruptedCodeBatchError,
+  interruptedCodeBatchMessage,
+} from '../../packages/runtime-browser/src/worker-errors';
 import { assertRuntimeRequestSupported } from '../../packages/runtime-browser/src/runtime-capability-guards';
 import { getLanguageRuntimeProfile } from '../../packages/runtime-browser/src/runtime-profiles';
 import type {
@@ -88,7 +91,9 @@ import {
   type JudgeAlgorithmReceipt,
   JudgeInfrastructureError,
   JudgePlanError,
+  type JudgeRuntimeCaseProgress,
   type JudgeRuntimeControlPort,
+  type JudgeRuntimeProgressDisposition,
   type JudgeRuntimeInvocationInput,
   type JudgeRuntimeInvocationOutput,
   type JudgeRuntimeBatchCaseOutput,
@@ -105,6 +110,7 @@ import {
   JudgeObservationSchedule,
   RuntimePreparedProgramRegistry,
   judgeAbortError,
+  type OrdinaryBatchProgress,
 } from './judge-prepared-program';
 import {
   judgedOutputPolicyForPrepare,
@@ -219,6 +225,319 @@ interface OwnedRuntimeDispatch {
   readonly overlapObservationWithInitialization?: true;
   recordPrepare(call: RuntimeProgramPreparationCall): void;
   admit(caseId: string): void;
+  /** The evaluation's case-progress journal. */
+  readonly journal: EvaluationProgressJournal;
+}
+
+/** The schedule's journal markers and its trusted service-deadline control. */
+type JournalMarks = Pick<
+  JudgeObservationSchedule<unknown, unknown>,
+  'beginDispatch' | 'journalled' | 'journalRejected' | 'serviceDeadlineInjected' | 'serviceDeadline'
+>;
+
+/** Every ordinary batch dispatch of one evaluation, by invocation. */
+class EvaluationProgressJournal {
+  private readonly batches = new Map<string, BatchProgressJournal>();
+
+  constructor(readonly marks: JournalMarks) {}
+
+  open(
+    control: JudgeRuntimeControlPort,
+    invocationId: string,
+    cases: readonly { readonly caseId: string }[],
+    runtime: string
+  ): BatchProgressJournal {
+    const journal = new BatchProgressJournal(this.marks, control, invocationId, cases, runtime);
+    this.batches.set(invocationId, journal);
+    return journal;
+  }
+
+  /** The dispatch publishes its own result for this invocation. */
+  publishing(invocationId: string): void {
+    this.batches.get(invocationId)?.publishing();
+  }
+
+  /**
+   * The batch process ended and the control port gave back its output. A
+   * batch that never published was stopped by the service watchdog: in a
+   * Judge evaluation the dispatch always publishes unless the watchdog
+   * killed its process (a caller abort never reaches `take`).
+   */
+  taken(invocationId: string): void {
+    const journal = this.batches.get(invocationId);
+    this.batches.delete(invocationId);
+    journal?.processEnded();
+  }
+}
+
+/** Raised inside a dispatch when the injected service deadline wins. */
+const SERVICE_DEADLINE = Symbol('service-deadline');
+
+const SERVICE_DEADLINE_MESSAGE =
+  'The runtime did not finish within its own deadline, so the Judge stopped it.';
+
+/** The grade-bearing fields of two ordinary outcomes agree (timings aside). */
+function sameOrdinaryOutcome(a: CodeExecutionResult, b: CodeExecutionResult): boolean {
+  const fields = (outcome: CodeExecutionResult) => {
+    const { timings: _timings, executionTimeMs: _elapsed, ...rest } = outcome as CodeExecutionResult & {
+      readonly executionTimeMs?: unknown;
+    };
+    return rest;
+  };
+  return sameData(fields(a), fields(b));
+}
+
+/** Structural equality for plain data, keeping absent apart from undefined. */
+function sameData(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keys = Object.keys(a);
+  if (keys.length !== Object.keys(b).length) return false;
+  return keys.every((key) => Object.hasOwn(b, key) &&
+    sameData((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
+
+/**
+ * The coordinator's journal of one ordinary batch dispatch: it records each
+ * start and finish a provider attests on the control port, emits the
+ * journal markers, and expires the service watchdog when the trusted test
+ * control asks. An accepted finish is durable: whatever ends the batch,
+ * Judge publishes it unchanged, and it stands against a different terminal
+ * reply. Once the batch is stopped (the injected deadline, the watchdog's
+ * kill, a caller abort) or publishes, the journal is sealed.
+ */
+class BatchProgressJournal implements OrdinaryBatchProgress {
+  readonly generation: number;
+  /** Accepted finishes, as the provider streamed them. */
+  private readonly accepted = new Map<number, CodeExecutionResult>();
+  private readonly startedEntries = new Set<number>();
+  private readonly expiry = new AbortController();
+  private published = false;
+  /** No further progress is accepted. */
+  private sealed = false;
+  /**
+   * The case running when the journal was sealed: the last journalled start,
+   * when its finish was not journalled. (In an in-order batch a later start
+   * shows that every earlier case had finished.) A grace-prefix entry for it
+   * may have been built from the abort itself, so it is never kept.
+   */
+  private runningAtSeal: number | undefined;
+  /** `service-deadline` has been marked for this dispatch. */
+  private deadlineMarked = false;
+  /** Every entry's start is journalled (worker ACKs, or the coordinator sends each case). */
+  private startsAcknowledged = false;
+  private portFailed = false;
+  /** Index translation for a dispatch that sends one entry at a time. */
+  private offset = 0;
+
+  constructor(
+    private readonly marks: JournalMarks,
+    private readonly control: JudgeRuntimeControlPort,
+    private readonly invocationId: string,
+    private readonly cases: readonly { readonly caseId: string }[],
+    private readonly runtime: string
+  ) {
+    this.generation = marks.beginDispatch();
+  }
+
+  /**
+   * Whether this dispatch keeps a journal: the control port records, and
+   * records synchronously (the journal must be current before the
+   * provider's next message). Otherwise the provider's own interrupted
+   * prefix is published as before.
+   */
+  get recording(): boolean {
+    return typeof this.control.record === 'function' && !this.portFailed;
+  }
+
+  get acceptedCount(): number {
+    return this.accepted.size;
+  }
+
+  get expiredAlready(): boolean {
+    return this.expiry.signal.aborted;
+  }
+
+  acknowledgesStarts(): void {
+    this.startsAcknowledged = true;
+  }
+
+  /** The progress callbacks for a one-entry call that runs case `index`. */
+  forEntry(index: number): OrdinaryBatchProgress {
+    const local = (entry: number, run: () => void, progress: 'started' | 'finished') =>
+      entry === 0
+        ? this.withOffset(index, run)
+        : this.marks.journalRejected(progress, undefined, index + entry, this.generation, 'unknown-case');
+    return {
+      acknowledgesStarts: () => this.acknowledgesStarts(),
+      started: (entry) => local(entry, () => this.started(0), 'started'),
+      finished: (entry, result) => local(entry, () => this.finished(0, result), 'finished'),
+      fenced: (progress, entry) => local(entry, () => this.fenced(progress, 0), progress),
+    };
+  }
+
+  started(index: number): void {
+    this.record('started', index);
+  }
+
+  finished(index: number, result: CodeExecutionResult): void {
+    this.record('finished', index, result);
+  }
+
+  /** Progress that arrived once its batch call was stopped or settled. */
+  fenced(progress: 'started' | 'finished', localIndex: number): void {
+    const index = localIndex + this.offset;
+    this.marks.journalRejected(progress, this.cases[index]?.caseId, index, this.generation,
+      this.cases[index] ? 'fenced' : 'unknown-case');
+  }
+
+  hasFinished(index: number): boolean {
+    return this.accepted.has(index);
+  }
+
+  /** The batch call was stopped: take no further progress. */
+  seal(): void {
+    if (this.sealed) return;
+    this.sealed = true;
+    const lastStart = Math.max(-1, ...this.startedEntries);
+    this.runningAtSeal = lastStart >= 0 && !this.accepted.has(lastStart) ? lastStart : undefined;
+  }
+
+  /** Resolves when the trusted control expires the service watchdog. */
+  expiredPromise(): Promise<void> {
+    return new Promise((resolve) => {
+      if (this.expiry.signal.aborted) resolve();
+      else this.expiry.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+  }
+
+  /**
+   * Bring a provider's interrupted prefix into the journal before
+   * publishing. A prefix entry is the provider's authenticated finish.
+   * - Before any stop (a worker loss), it also evidences its own start.
+   * - After a watchdog stop (the injected deadline or the real kill), the
+   *   one keep rule applies: the entry stands only if, where this dispatch
+   *   records starts, the journal recorded that case's start, and the case
+   *   was not the one running at the stop (the last journalled start
+   *   without a journalled finish, or the entry the provider names as
+   *   interrupted). A provider can build the running case's entry from the
+   *   abort itself, so that case keeps only a finish journalled before the
+   *   seal. Any other entry is fenced. The dispatch calls this only within
+   *   its grace.
+   * An entry for a case already accepted never replaces it.
+   */
+  reconcile(error: InterruptedCodeBatchError, offset = 0): void {
+    this.withOffset(offset, () => {
+      error.prefix.forEach((result, local) => {
+        const index = local + offset;
+        if (this.accepted.has(index)) return;
+        const startKnown = !this.startsAcknowledged || this.startedEntries.has(index);
+        const runningAtStop = this.runningAtSeal === index || error.interruptedIndex === local;
+        if (this.sealed && (!startKnown || runningAtStop)) {
+          this.fenced('finished', local);
+          return;
+        }
+        if (!startKnown) this.record('started', local, undefined, true);
+        this.record('finished', local, result, true);
+      });
+    });
+  }
+
+  /**
+   * The terminal reply, with each streamed finish kept where the reply
+   * disagrees on a grade-bearing field. Each disagreement is marked as a
+   * rejected duplicate finish.
+   */
+  settle(outcomes: readonly CodeExecutionResult[], offset = 0): readonly CodeExecutionResult[] {
+    return outcomes.map((outcome, local) => {
+      const index = local + offset;
+      const streamed = this.accepted.get(index);
+      if (!streamed || sameOrdinaryOutcome(streamed, outcome)) return outcome;
+      this.marks.journalRejected('finished', this.cases[index]?.caseId, index, this.generation, 'duplicate');
+      return streamed;
+    });
+  }
+
+  /** The provider failure a stopped dispatch publishes; the journal supplies the prefix. */
+  serviceStopped(): MappedRuntimeOutcome {
+    return providerFailure(this.runtime, SERVICE_DEADLINE_MESSAGE);
+  }
+
+  /** The dispatch is about to publish its own result. */
+  publishing(): void {
+    this.published = true;
+    this.seal();
+  }
+
+  processEnded(): void {
+    this.seal();
+    if (this.published || this.deadlineMarked) return;
+    this.deadlineMarked = true;
+    this.marks.serviceDeadline(this.generation, 'backstop', this.accepted.size);
+  }
+
+  private withOffset(index: number, run: () => void): void {
+    const previous = this.offset;
+    this.offset = index;
+    try { run(); } finally { this.offset = previous; }
+  }
+
+  private expire(): void {
+    this.seal();
+    this.deadlineMarked = true;
+    this.marks.serviceDeadline(this.generation, 'injected', this.accepted.size);
+    this.expiry.abort();
+  }
+
+  private record(
+    progress: 'started' | 'finished',
+    localIndex: number,
+    result?: CodeExecutionResult,
+    reconciling = false
+  ): void {
+    if (!this.recording) return;
+    const index = localIndex + this.offset;
+    const caseId = Number.isSafeInteger(index) && index >= 0 ? this.cases[index]?.caseId : undefined;
+    if (caseId === undefined) {
+      this.marks.journalRejected(progress, undefined, index, this.generation, 'unknown-case');
+      return;
+    }
+    if (this.sealed && !reconciling) {
+      this.marks.journalRejected(progress, caseId, index, this.generation, 'fenced');
+      return;
+    }
+    if (progress === 'finished' && this.startsAcknowledged && !this.startedEntries.has(index)) {
+      this.marks.journalRejected(progress, caseId, index, this.generation, 'out-of-order');
+      return;
+    }
+    const entry = progress === 'started'
+      ? { kind: 'started' as const, caseId }
+      : {
+          kind: 'finished' as const,
+          output: batchCaseOutput(caseId, mappedCodeOutcome(this.runtime, result!)),
+          // A reconciled finish is the provider's interrupted prefix, which
+          // the port admits after its process was stopped.
+          ...(reconciling ? { prefix: true as const } : {}),
+        };
+    const recorded = Effect.runSyncExit(this.control.record!(this.invocationId, entry));
+    if (Exit.isFailure(recorded)) {
+      // An asynchronous (or failing) port keeps no journal for this dispatch.
+      this.portFailed = true;
+      return;
+    }
+    const disposition = recorded.value;
+    if (disposition !== 'accepted') {
+      this.marks.journalRejected(progress, caseId, index, this.generation, disposition);
+      return;
+    }
+    if (progress === 'started') this.startedEntries.add(index);
+    else this.accepted.set(index, result!);
+    this.marks.journalled(progress, caseId, index, this.generation);
+    if (!reconciling && this.marks.serviceDeadlineInjected(progress, caseId, index, this.generation)) {
+      this.expire();
+    }
+  }
 }
 
 interface RuntimeJudgeProviderOptions {
@@ -984,7 +1303,7 @@ function interruptedCodeBatchOutcome(
       reason: 'protocol',
     }));
   }
-  const unavailable = providerFailure(runtime, error.message);
+  const unavailable = interruptedFailure(runtime, error);
   const batch = Object.freeze(cases.map(({ caseId }, index) => {
     const outcome = error.prefix[index];
     if (outcome) return batchCaseOutput(caseId, mappedCodeOutcome(runtime, outcome));
@@ -997,41 +1316,163 @@ function interruptedCodeBatchOutcome(
   }));
 }
 
+/**
+ * The provider failure for the cases an interrupted batch did not finish. It
+ * keeps the interruption's own reason: a malformed reply is `protocol`.
+ */
+function interruptedFailure(runtime: string, error: InterruptedCodeBatchError): MappedRuntimeOutcome {
+  return providerFailure(
+    runtime,
+    interruptedCodeBatchMessage(error),
+    PROVIDER_ERROR_CODE,
+    error.reason === 'protocol' ? 'protocol' : 'runtime-failure'
+  );
+}
+
 function keepInterruptedPrefix(
   error: Error
 ): Effect.Effect<InterruptedCodeBatchError, Error> {
   return error instanceof InterruptedCodeBatchError ? Effect.succeed(error) : Effect.fail(error);
 }
 
+type JournalledBatchReply =
+  | readonly CodeExecutionResult[]
+  | InterruptedCodeBatchError
+  | typeof SERVICE_DEADLINE;
+
+/**
+ * How long a provider stopped by a watchdog (the injected deadline or the
+ * real kill) may take to surface the authenticated prefix it already holds.
+ */
+const SERVICE_DEADLINE_SETTLE_MS = 2_000;
+
+type Settled<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: unknown };
+
+function settled<T>(promise: Promise<T>): Promise<Settled<T>> {
+  return promise.then((value) => ({ ok: true as const, value }), (error: unknown) => ({ ok: false as const, error }));
+}
+
+/**
+ * One provider batch call under the batch's journal.
+ * - The journal's seal is the first abort listener on the provider's
+ *   signal, so once the call is stopped (the injected deadline, the
+ *   watchdog's kill, a caller abort) no provider abort handler can report
+ *   progress into it.
+ * - The trusted service deadline can win the race; the real watchdog's
+ *   kill interrupts the call. Either way the aborted provider gets the same
+ *   short grace to surface its authenticated prefix, which is reconciled
+ *   under the one keep rule (see `BatchProgressJournal.reconcile`).
+ * `offset` is the case index of entry 0 (one-case calls).
+ */
+function journalledBatchCall(
+  journal: BatchProgressJournal,
+  call: (signal: AbortSignal) => Promise<readonly CodeExecutionResult[]>,
+  offset = 0
+): Effect.Effect<JournalledBatchReply, Error> {
+  if (!journal.recording) {
+    return Effect.tryPromise({ try: call, catch: errorFromUnknown }).pipe(
+      Effect.catchAll(keepInterruptedPrefix)
+    );
+  }
+  return Effect.suspend(() => {
+    let pending: Promise<Settled<readonly CodeExecutionResult[]>> | undefined;
+    let graced: Promise<void> | undefined;
+    // After a watchdog stop (the injected deadline, or the real kill that
+    // interrupts this call), the aborted provider gets the same grace to
+    // surface the authenticated prefix it holds. TraceKernel awaits this
+    // call's interruption before the process ends, so the grace completes
+    // before the batch is taken.
+    const grace = () => graced ??= (async () => {
+      if (!pending) return;
+      let timer: number | ReturnType<typeof setTimeout> | undefined;
+      const late = await Promise.race([
+        pending,
+        new Promise<undefined>((resolve) => { timer = setTimeout(resolve, SERVICE_DEADLINE_SETTLE_MS); }),
+      ]);
+      clearTimeout(timer);
+      // `in` narrowing, which the package's declaration build (not strict) accepts.
+      if (late && 'error' in late && late.error instanceof InterruptedCodeBatchError) {
+        journal.reconcile(late.error, offset);
+      }
+    })();
+    return Effect.tryPromise({
+      try: async (signal): Promise<JournalledBatchReply> => {
+        if (journal.expiredAlready) return SERVICE_DEADLINE;
+        const local = new AbortController();
+        const linked = AbortSignal.any([signal, local.signal]);
+        linked.addEventListener('abort', () => journal.seal(), { once: true });
+        pending = settled(call(linked));
+        const expired = journal.expiredPromise().then((): typeof SERVICE_DEADLINE => SERVICE_DEADLINE);
+        const first = await Promise.race([pending, expired]);
+        if (first !== SERVICE_DEADLINE) {
+          if ('value' in first) return first.value;
+          throw first.error;
+        }
+        local.abort(new DOMException('The service deadline expired.', 'TimeoutError'));
+        await grace();
+        return SERVICE_DEADLINE;
+      },
+      catch: errorFromUnknown,
+    }).pipe(
+      Effect.onInterrupt(() => Effect.promise(grace)),
+      Effect.catchAll(keepInterruptedPrefix)
+    );
+  });
+}
+
+/**
+ * A batch the service deadline stopped, or a provider interrupted, is
+ * published as the provider's failure; the control port's journal supplies
+ * its accepted prefix to Judge. Without a journal, the provider's own prefix
+ * is published as rows.
+ */
+function stoppedBatchOutcome(
+  runtime: string,
+  journal: BatchProgressJournal,
+  cases: ReturnType<typeof runtimeBatchCases>,
+  reply: InterruptedCodeBatchError | typeof SERVICE_DEADLINE
+): Effect.Effect<MappedRuntimeOutcome, Error> {
+  if (reply === SERVICE_DEADLINE) return Effect.succeed(journal.serviceStopped());
+  if (!journal.recording) return interruptedCodeBatchOutcome(runtime, cases, reply);
+  if (reply.prefix.length > cases.length) {
+    return Effect.fail(new RuntimeProviderError('Prepared runtime returned too many batch outcomes.', {
+      reason: 'protocol',
+    }));
+  }
+  journal.reconcile(reply);
+  // A control port that cannot record keeps no journal: publish the prefix itself.
+  if (!journal.recording) return interruptedCodeBatchOutcome(runtime, cases, reply);
+  return Effect.succeed(interruptedFailure(runtime, reply));
+}
+
 function executePreparedProviderBatch(
   options: RuntimeJudgeDispatch,
   programs: RuntimePreparedProgramRegistry,
-  invocation: JudgeRuntimeInvocationInput
+  invocation: JudgeRuntimeInvocationInput,
+  invocationId: string
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
     const cases = yield* Effect.try({
       try: () => runtimeBatchCases(invocation),
       catch: errorFromUnknown,
     });
+    const journal = options.owned.journal.open(options.runtimeControl, invocationId, cases, options.runtime);
     if (invocation.stopAtFirstRunaway === true) {
       return programs.stopsAtFirstRunaway(evaluationId(invocation))
-        ? yield* executeProviderStoppingBatch(options, programs, invocation, cases)
-        : yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases);
+        ? yield* executeProviderStoppingBatch(options, programs, invocation, cases, journal)
+        : yield* executeProviderBatchUntilRunaway(options, programs, invocation, cases, journal);
     }
-    const reply = yield* Effect.tryPromise({
-      try: (signal) =>
-        programs.executeCodeBatch(evaluationId(invocation), {
-          inputBatch: cases.map((testCase) => testCase.inputs),
-          signal,
-          limits: options.binding.limits,
-        }, (index) => options.owned.admit(cases[index]!.caseId),
-          options.owned.acknowledgeNonStoppingBatchStarts),
-      catch: errorFromUnknown,
-    }).pipe(Effect.catchAll(keepInterruptedPrefix));
-    if (reply instanceof InterruptedCodeBatchError) {
-      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    const reply = yield* journalledBatchCall(journal, (signal) =>
+      programs.executeCodeBatch(evaluationId(invocation), {
+        inputBatch: cases.map((testCase) => testCase.inputs),
+        signal,
+        limits: options.binding.limits,
+      }, (index) => options.owned.admit(cases[index]!.caseId),
+        options.owned.acknowledgeNonStoppingBatchStarts, journal));
+    if (reply === SERVICE_DEADLINE || reply instanceof InterruptedCodeBatchError) {
+      return yield* stoppedBatchOutcome(options.runtime, journal, cases, reply);
     }
-    const outcomes = reply;
+    const outcomes = journal.settle(reply);
     if (outcomes.length !== cases.length) {
       return yield* Effect.fail(
         new Error(
@@ -1089,24 +1530,22 @@ function executeProviderStoppingBatch(
   options: RuntimeJudgeDispatch,
   programs: RuntimePreparedProgramRegistry,
   invocation: JudgeRuntimeInvocationInput,
-  cases: ReturnType<typeof runtimeBatchCases>
+  cases: ReturnType<typeof runtimeBatchCases>,
+  journal: BatchProgressJournal
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
-    const reply = yield* Effect.tryPromise({
-      try: (signal) =>
-        programs.executeCodeBatch(evaluationId(invocation), {
-          inputBatch: cases.map((testCase) => testCase.inputs),
-          signal,
-          limits: options.binding.limits,
-          stopAtFirstRunaway: true,
-        }, (index) => options.owned.admit(cases[index]!.caseId),
-          options.owned.acknowledgeStoppingBatchStarts),
-      catch: errorFromUnknown,
-    }).pipe(Effect.catchAll(keepInterruptedPrefix));
-    if (reply instanceof InterruptedCodeBatchError) {
-      return yield* interruptedCodeBatchOutcome(options.runtime, cases, reply);
+    const reply = yield* journalledBatchCall(journal, (signal) =>
+      programs.executeCodeBatch(evaluationId(invocation), {
+        inputBatch: cases.map((testCase) => testCase.inputs),
+        signal,
+        limits: options.binding.limits,
+        stopAtFirstRunaway: true,
+      }, (index) => options.owned.admit(cases[index]!.caseId),
+        options.owned.acknowledgeStoppingBatchStarts, journal));
+    if (reply === SERVICE_DEADLINE || reply instanceof InterruptedCodeBatchError) {
+      return yield* stoppedBatchOutcome(options.runtime, journal, cases, reply);
     }
-    const outcomes = reply;
+    const outcomes = journal.settle(reply);
     const runawayIndex = outcomes.findIndex((outcome) =>
       outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)
     );
@@ -1158,34 +1597,58 @@ function executeProviderBatchUntilRunaway(
   options: RuntimeJudgeDispatch,
   programs: RuntimePreparedProgramRegistry,
   invocation: JudgeRuntimeInvocationInput,
-  cases: ReturnType<typeof runtimeBatchCases>
+  cases: ReturnType<typeof runtimeBatchCases>,
+  journal: BatchProgressJournal
 ): Effect.Effect<MappedRuntimeOutcome, Error> {
   return Effect.gen(function* () {
     const batch: JudgeRuntimeBatchCaseOutput[] = [];
     let stoppedBy: { readonly caseId: string; readonly limit: ExecutionLimitReason } | undefined;
-    for (const testCase of cases) {
+    // The coordinator sends each case itself, so it journals every start.
+    journal.acknowledgesStarts();
+    for (const [index, testCase] of cases.entries()) {
       if (stoppedBy) {
         batch.push(notRunCaseOutput(testCase.caseId, stoppedBy));
         continue;
       }
       // Each case runs as a one-case provider batch, so it gets exactly the
       // bounds it gets in a whole batch (Python's guest guard, per-case
-      // deadlines), and the provider replaces a worker that hit one.
-      const outcomes: readonly CodeExecutionResult[] = yield* Effect.tryPromise({
-        try: (signal) =>
-          programs.executeCodeBatch(evaluationId(invocation), {
-            inputBatch: [testCase.inputs],
-            signal,
-            limits: options.binding.limits,
-          }, () => options.owned.admit(testCase.caseId)),
-        catch: errorFromUnknown,
-      });
+      // deadlines), and the provider replaces a worker that hit one. The
+      // coordinator dispatched it, so it journals the start itself.
+      const entry = journal.forEntry(index);
+      if (journal.expiredAlready) return journal.serviceStopped();
+      entry.started(0);
+      const reply = yield* journalledBatchCall(journal, (signal) =>
+        programs.executeCodeBatch(evaluationId(invocation), {
+          inputBatch: [testCase.inputs],
+          signal,
+          limits: options.binding.limits,
+        }, () => options.owned.admit(testCase.caseId), false, {
+          acknowledgesStarts: () => undefined,
+          started: () => undefined,
+          finished: entry.finished,
+          fenced: entry.fenced,
+        }), index);
+      if (reply === SERVICE_DEADLINE) return journal.serviceStopped();
+      if (reply instanceof InterruptedCodeBatchError) {
+        // Earlier cases are journalled; this call's prefix is this case.
+        if (!journal.recording) return yield* Effect.fail(reply);
+        const finished = reply.prefix[0];
+        if (reply.prefix.length > 1) {
+          return yield* Effect.fail(new RuntimeProviderError(
+            'Prepared runtime returned too many batch outcomes.', { reason: 'protocol' }
+          ));
+        }
+        if (finished) journal.reconcile(reply, index);
+        return interruptedFailure(options.runtime, reply);
+      }
+      const outcomes = journal.settle(reply, index);
       const outcome = outcomes[0];
       if (outcomes.length !== 1 || !outcome) {
         return yield* Effect.fail(
           new Error(`Prepared runtime returned ${outcomes.length} batch outcomes for 1 case.`)
         );
       }
+      if (!journal.hasFinished(index)) entry.finished(0, outcome);
       batch.push(batchCaseOutput(testCase.caseId, mappedCodeOutcome(options.runtime, outcome)));
       if (outcome.kind === 'limit' && RUNAWAY_LIMIT_REASONS.has(outcome.reason)) {
         stoppedBy = { caseId: testCase.caseId, limit: outcome.reason };
@@ -1280,7 +1743,7 @@ function executeProviderProcess(
       const execute = invocation.phase === 'compile'
         ? prepareProviderProgram(dispatch, programs, context, invocation, overlap ? initialize : undefined)
         : invocation.phase === 'batch'
-          ? executePreparedProviderBatch(dispatch, programs, invocation)
+          ? executePreparedProviderBatch(dispatch, programs, invocation, invocationId)
           : executePreparedProviderCase(dispatch, programs, invocation);
       const readiness = overlap ? Effect.void : initialize;
       return readiness.pipe(
@@ -1291,9 +1754,10 @@ function executeProviderProcess(
           PROVIDER_ERROR_CODE,
           providerFailureReason(error)
         ))),
-        Effect.flatMap((mapped) =>
-          options.runtimeControl.publish(invocationId, mapped.output).pipe(Effect.as(mapped.process))
-        )
+        Effect.flatMap((mapped) => {
+          owned.journal.publishing(invocationId);
+          return options.runtimeControl.publish(invocationId, mapped.output).pipe(Effect.as(mapped.process));
+        })
       );
     })
   );
@@ -1383,7 +1847,8 @@ class EvaluationJudgeRuntimeControl
   implements JudgeRuntimeControlPort {
   constructor(
     private readonly delegate: JudgeRuntimeControlPort,
-    private readonly evaluationId: string
+    private readonly evaluationId: string,
+    private readonly journal: EvaluationProgressJournal
   ) {}
 
   begin(
@@ -1408,10 +1873,25 @@ class EvaluationJudgeRuntimeControl
     return this.delegate.publish(invocationId, output);
   }
 
+  record(
+    invocationId: string,
+    progress: JudgeRuntimeCaseProgress
+  ): Effect.Effect<JudgeRuntimeProgressDisposition> {
+    return this.delegate.record
+      ? this.delegate.record(invocationId, progress)
+      : Effect.succeed('unknown-case' as const);
+  }
+
+  sealWhen(invocationId: string, stopped: () => boolean): Effect.Effect<void> {
+    return this.delegate.sealWhen ? this.delegate.sealWhen(invocationId, stopped) : Effect.void;
+  }
+
   take(
     invocationId: string
   ): Effect.Effect<JudgeRuntimeInvocationOutput | undefined, Error> {
-    return this.delegate.take(invocationId);
+    return this.delegate.take(invocationId).pipe(
+      Effect.tap(() => Effect.sync(() => this.journal.taken(invocationId)))
+    );
   }
 
   discard(invocationId: string): Effect.Effect<void> {
@@ -1776,9 +2256,10 @@ class RuntimeJudgeComposition
         this.testBridge, this.runtime as Language
       );
       const plan = preparedEvaluationPlan(request.plan, true, this.lifecycleAllowanceMs, true);
+      const journal = new EvaluationProgressJournal(schedule);
       const port = new TraceKernelJudgePort({
         host: this.host,
-        runtimeControl: new EvaluationJudgeRuntimeControl(this.runtimeControl, evaluationId),
+        runtimeControl: new EvaluationJudgeRuntimeControl(this.runtimeControl, evaluationId, journal),
         readableFiles: [codeBinding.sourcePath],
       });
       const operation = Effect.gen(function* () {
@@ -1804,6 +2285,7 @@ class RuntimeJudgeComposition
           overlapObservationWithInitialization: this.receiptProvider.capabilities.overlapObservationWithInitialization,
           recordPrepare: (call) => schedule.recordPrepare(call),
           admit: (caseId) => schedule.admit(caseId),
+          journal,
         });
         const outcome = yield* Effect.exit(restore(operation));
         if (Exit.isFailure(outcome)) {

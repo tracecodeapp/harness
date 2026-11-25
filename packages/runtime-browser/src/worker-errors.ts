@@ -62,17 +62,26 @@ export class WorkerCrashedError extends Data.TaggedError('WorkerCrashedError')<{
   }
 }
 
-/** What interrupted an ordinary batch after execution began. */
+/**
+ * What interrupted an ordinary batch:
+ * - `worker-loss`: the worker crashed or was terminated;
+ * - `transport-deadline`: the client's own deadline for a reply expired;
+ * - `service-deadline`: the service watchdog above the client stopped it.
+ */
 export type CodeBatchInterruption = 'worker-loss' | 'transport-deadline' | 'service-deadline';
 
 /**
  * A provider failure interrupted an ordinary batch after case execution began.
- * Judge can publish the settled prefix and fail only the remaining cases.
+ * Judge can publish the settled prefix and fail only the remaining cases,
+ * saying what interrupted the batch.
  */
 export class InterruptedCodeBatchError extends RuntimeProviderError {
   declare readonly cause: Error;
   readonly interruption: CodeBatchInterruption;
-  /** The entry that was running, when the provider knows one was. */
+  /**
+   * The entry that was running, when the provider knows one was. Absent
+   * when the loss came between entries; Judge infers no start from it.
+   */
   readonly interruptedIndex: number | undefined;
 
   constructor(
@@ -87,6 +96,21 @@ export class InterruptedCodeBatchError extends RuntimeProviderError {
     this.interruption = options.interruption ?? 'worker-loss';
     this.interruptedIndex = options.interruptedIndex;
   }
+}
+
+const INTERRUPTION_DESCRIPTIONS: Readonly<Record<CodeBatchInterruption, string>> = {
+  'worker-loss': 'The runtime worker was lost during the batch.',
+  'transport-deadline': 'The runtime worker did not answer within its deadline.',
+  'service-deadline': 'The service deadline expired during the batch.',
+};
+
+/** The provider-failure message for the cases an interrupted batch did not finish. */
+export function interruptedCodeBatchMessage(error: InterruptedCodeBatchError): string {
+  const description = INTERRUPTION_DESCRIPTIONS[error.interruption] ??
+    INTERRUPTION_DESCRIPTIONS['worker-loss'];
+  const detail = error.message.trim();
+  if (!detail || detail === description) return description;
+  return /[.!?]$/u.test(detail) ? `${description} ${detail}` : `${description} ${detail}.`;
 }
 
 /** A bootstrap failure before this worker could accept learner code. */

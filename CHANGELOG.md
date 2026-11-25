@@ -47,7 +47,57 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   gets no policy and keeps its own ceilings. The policy can't be set from a
   request, a binding or `execution.limits`.
 
+- **Batch case-progress journal** (additive, low-level). The runtime control
+  port can journal a batch's per-case progress: `JudgeRuntimeControlPort.record?`
+  takes a `JudgeRuntimeCaseProgress` (`started` or `finished`) and returns a
+  `JudgeRuntimeProgressDisposition` (`accepted`, `duplicate`, `out-of-order`,
+  `unknown-case` or `fenced`). `InMemoryJudgeRuntimeControl` implements it.
+  `take` returns the accepted progress as `journal`. Publication, the end of
+  the process, and the moment the process is actually stopped (`sealWhen?`,
+  which the TraceKernel Judge port sets) seal it, so progress reported by a
+  batch that was stopped is refused, and progress recorded before the stop
+  counts. A finish from the provider's interrupted prefix (`prefix: true`)
+  is still admitted after the stop. A runtime cannot publish a `journal`
+  itself.
+- `InterruptedCodeBatchError` takes an optional third argument,
+  `{ interruption, interruptedIndex }`: what interrupted the batch
+  (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and,
+  when the provider knows, which entry was running. The unfinished cases'
+  provider failure says what interrupted the batch.
+
 ### Changed
+
+- **A batch that ends without per-case results keeps what finished.** When a
+  batch watchdog stops a provider batch, the provider fails it, or it ends
+  without a valid terminal reply, every case whose finish was journalled
+  keeps its own result, unchanged. Every other case is the provider's
+  failure (`origin: 'provider'`), never a time limit or a verdict:
+  - a case whose start was journalled says `The case had started, and its
+    completion is uncertain.`;
+  - in a batch that journals every start, a case with no journalled start says
+    `As far as the runtime reported, the case had not started.`;
+  - in a stopping batch, every case after a journalled runaway stays
+    `not-run`.
+  - **Breaking, low-level:** a batch watchdog with `timeoutRole: 'limit'` no
+    longer reports `client-timeout` on every case of the batch. A batch-wide
+    clock is not any one case's time limit, so each unfinished case is the
+    provider's failure. A single case's own watchdog is unchanged.
+  - A terminal batch that lists too few cases, beside journalled progress, is
+    the provider's `protocol` failure and keeps the journalled finishes. Without
+    journalled progress it is still a `JudgeInfrastructureError`.
+  - Browser Judge, by language:
+    - **Run in JavaScript, TypeScript, C# and C++** sends one call per case, so
+      the Judge journals each case itself. If the worker is lost or the
+      watchdog stops the run, the cases that finished keep their results.
+      Before, every case was the provider's failure.
+    - **Submit in JavaScript, TypeScript, C# and C++** runs one batch that
+      reports no per-case finishes. A lost or stopped batch still fails every
+      case as the provider's failure, as before.
+    - **Python and Java** run Run and Submit as one batch, and their providers
+      report each finished case as it happens. When the worker is lost or the
+      watchdog stops the batch, every case whose finish was reported before
+      the stop keeps its result. The case running at the stop is the
+      provider's failure, and later cases say they had not started.
 
 - **Every Judge entry grades from the ordinary program.** `createJudge(...)`
   `evaluate`, `execute` (one-shot, interactive and continuation) and

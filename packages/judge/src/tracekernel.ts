@@ -102,6 +102,9 @@ class TraceKernelJudgeProcess implements JudgeKernelProcess {
             ...(controlOutput?.failure
               ? { failure: controlOutput.failure }
               : {}),
+            ...(controlOutput?.journal
+              ? { journal: controlOutput.journal }
+              : {}),
             timedOut:
               this.timeoutDeadlineAt !== undefined &&
               snapshot.termination?.kind === 'signal' &&
@@ -189,6 +192,15 @@ class TraceKernelJudgeSession
           ),
           Effect.tapError(() => this.runtimeControl.discard(invocationId))
         );
+      if (watchdog && this.runtimeControl.sealWhen) {
+        // Progress the runtime reports once its process was actually stopped
+        // is fenced. The watchdog's kill sets the pending signal in the same
+        // step as it fires, so a report before the kill still counts.
+        yield* this.runtimeControl.sealWhen(invocationId, () => {
+          const snapshot = process.snapshot();
+          return snapshot.pendingSignal !== undefined || snapshot.termination !== undefined;
+        });
+      }
       return new TraceKernelJudgeProcess(
         this.id,
         process,
