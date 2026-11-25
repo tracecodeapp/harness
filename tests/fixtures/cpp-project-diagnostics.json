@@ -1,0 +1,206 @@
+{
+  "clangVersion": "Apple clang version 21.0.0 (clang-2100.3.34.1)",
+  "beforeSources": "First four: launch report browser receipts for Harness 0.20.1. Remaining: native Clang with the generated include wrapper and the two compiler mount paths reproduced.",
+  "cases": [
+    {
+      "name": "main-error",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "files": {
+        "main.cpp": "#include <stdexcept>\nint main() { throw std::runtime_error(\"main probe\"); }\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\n/workspace/main.cpp:2:14: error: cannot use 'throw' with exceptions disabled\n    2 | int main() { throw std::runtime_error(\"main probe\"); }\n      |              ^\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "clangStderr": "",
+      "matchingClangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-fno-exceptions",
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "matchingClangStderr": "main.cpp:2:14: error: cannot use 'throw' with exceptions disabled\n    2 | int main() { throw std::runtime_error(\"main probe\"); }\n      |              ^\n1 error generated.\n",
+      "expectedStderr": "main.cpp:2:14: error: cannot use 'throw' with exceptions disabled\n    2 | int main() { throw std::runtime_error(\"main probe\"); }\n      |              ^\n1 error generated.\n"
+    },
+    {
+      "name": "second-file-error",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "-std=c++17",
+        "main.cpp",
+        "helper.cpp"
+      ],
+      "files": {
+        "main.cpp": "void fail();\nint main() { fail(); }\n",
+        "helper.cpp": "#include <stdexcept>\nvoid fail() { throw std::runtime_error(\"helper probe\"); }\n"
+      },
+      "traceccCommandIndex": 1,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-1.cpp:5:\n/workspace/helper.cpp:2:15: error: cannot use 'throw' with exceptions disabled\n    2 | void fail() { throw std::runtime_error(\"helper probe\"); }\n      |               ^\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-std=c++17",
+        "main.cpp",
+        "helper.cpp"
+      ],
+      "clangStderr": "",
+      "matchingClangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-fno-exceptions",
+        "-std=c++17",
+        "main.cpp",
+        "helper.cpp"
+      ],
+      "matchingClangStderr": "helper.cpp:2:15: error: cannot use 'throw' with exceptions disabled\n    2 | void fail() { throw std::runtime_error(\"helper probe\"); }\n      |               ^\n1 error generated.\n",
+      "expectedStderr": "helper.cpp:2:15: error: cannot use 'throw' with exceptions disabled\n    2 | void fail() { throw std::runtime_error(\"helper probe\"); }\n      |               ^\n1 error generated.\n"
+    },
+    {
+      "name": "syntax",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "files": {
+        "main.cpp": "int main() { int x = ; }\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\n/workspace/main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "clangStderr": "main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "expectedStderr": "main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n"
+    },
+    {
+      "name": "warning-default",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "files": {
+        "main.cpp": "#warning warning probe\nint main() {}\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 0,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\n/workspace/main.cpp:1:2: warning: warning probe\n    1 | #warning warning probe\n      |  ^\n1 warning generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "clangStderr": "main.cpp:1:2: warning: warning probe [-W#warnings]\n    1 | #warning warning probe\n      |  ^\n1 warning generated.\n",
+      "matchingClangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-fno-diagnostics-show-option",
+        "-std=c++17",
+        "main.cpp"
+      ],
+      "matchingClangStderr": "main.cpp:1:2: warning: warning probe\n    1 | #warning warning probe\n      |  ^\n1 warning generated.\n",
+      "expectedStderr": "main.cpp:1:2: warning: warning probe\n    1 | #warning warning probe\n      |  ^\n1 warning generated.\n"
+    },
+    {
+      "name": "header-and-note",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "main.cpp"
+      ],
+      "files": {
+        "main.cpp": "#define DEMO 0\n#include \"helper.hpp\"\nint main() {}\n",
+        "helper.hpp": "int helper(int value);\nint result = helper();\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\nIn file included from /workspace/main.cpp:2:\n/workspace/helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\n/workspace/helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "main.cpp"
+      ],
+      "clangStderr": "In file included from main.cpp:2:\n./helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\n./helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n",
+      "expectedStderr": "In file included from main.cpp:2:\n./helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\n./helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n"
+    },
+    {
+      "name": "nested-cwd",
+      "cwd": "/home/guest/playground/src",
+      "args": [
+        "./main.cpp"
+      ],
+      "files": {
+        "src/main.cpp": "int main() { int x = ; }\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\n/workspace/src/main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "./main.cpp"
+      ],
+      "clangStderr": "./main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "expectedStderr": "./main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n"
+    },
+    {
+      "name": "absolute-source",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "/home/guest/playground/src/workspace/main.cpp"
+      ],
+      "files": {
+        "src/workspace/main.cpp": "int main() { int x = ; }\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\n/workspace/src/workspace/main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "/home/guest/playground/src/workspace/main.cpp"
+      ],
+      "clangStderr": "/home/guest/playground/src/workspace/main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n",
+      "expectedStderr": "/home/guest/playground/src/workspace/main.cpp:1:22: error: expected expression\n    1 | int main() { int x = ; }\n      |                      ^\n1 error generated.\n"
+    },
+    {
+      "name": "include-search-path",
+      "cwd": "/home/guest/playground",
+      "args": [
+        "-Iinclude",
+        "main.cpp"
+      ],
+      "files": {
+        "main.cpp": "#define DEMO 0\n#include <helper.hpp>\nint main() {}\n",
+        "include/helper.hpp": "int helper(int value);\nint result = helper();\n"
+      },
+      "traceccCommandIndex": 0,
+      "exitCode": 1,
+      "before": "In file included from /usr/share/tracecc/project/source-0.cpp:5:\nIn file included from /workspace/main.cpp:2:\n/usr/include/helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\n/usr/include/helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n",
+      "clangCommand": [
+        "clang++",
+        "-fsyntax-only",
+        "-Iinclude",
+        "main.cpp"
+      ],
+      "clangStderr": "In file included from main.cpp:2:\ninclude/helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\ninclude/helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n",
+      "expectedStderr": "In file included from main.cpp:2:\ninclude/helper.hpp:2:14: error: no matching function for call to 'helper'\n    2 | int result = helper();\n      |              ^~~~~~\ninclude/helper.hpp:1:5: note: candidate function not viable: requires single argument 'value', but no arguments were provided\n    1 | int helper(int value);\n      |     ^      ~~~~~~~~~\n1 error generated.\n"
+    }
+  ]
+}
