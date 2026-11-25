@@ -76,7 +76,8 @@ async function startServer(root: string) {
 
 /** The seeded control: both synced workers ignore any policy they receive. */
 async function dropPolicy(workersRoot: string): Promise<void> {
-  for (const file of ['javascript/javascript-worker.js', 'javascript/javascript-ses-algorithm-worker.js']) {
+  // sync-assets writes the language workers flat at the asset root.
+  for (const file of ['javascript-worker.js', 'javascript-ses-algorithm-worker.js']) {
     const path = join(workersRoot, file);
     const source = await readFile(path, 'utf8');
     const seeded = source.replaceAll(
