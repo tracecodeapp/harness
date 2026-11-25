@@ -449,6 +449,8 @@ try {
     join(stage, 'measurement-shapes.mjs'));
   await cp(new URL('../shape-captures.mjs', import.meta.url),
     join(stage, 'shape-captures.mjs'));
+  await cp(new URL('../csharp-shape-captures.mjs', import.meta.url),
+    join(stage, 'csharp-shape-captures.mjs'));
   await cp(new URL('../python-experiment-plan.mjs', import.meta.url),
     join(stage, 'python-experiment-plan.mjs'));
   await cp(new URL('../java-runner/version-preparation.mjs', import.meta.url),
