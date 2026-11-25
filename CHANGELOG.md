@@ -103,6 +103,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- JS/TS: clicking a case after a Run that drew nothing now draws it, instead
+  of being refused after 30 s.
 - Ordinary Java batches report each finished case before the batch reply and distinguish client transport deadlines from worker loss when reporting an interrupted batch.
 - Ordinary Python batches time each case separately. When a case runs past
   its client deadline, only that case receives `client-timeout`. Unless
