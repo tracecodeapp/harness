@@ -3,11 +3,11 @@
   "harness": {
     "name": "@tracecode/harness",
     "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.7f6a8c6888c28a659cf6737363c1b5961db75f9b1dc8aa174cb6230e3a2d1ee3"
+    "releaseId": "@tracecode/harness@0.20.2+sha256.2c22ca4e08e6bd2481c8c4fb8e0b4f3cecfaf863d02f6e37fa3ddbb3d118a5cc"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "7f6a8c6888c28a659cf6737363c1b5961db75f9b1dc8aa174cb6230e3a2d1ee3",
-  "totalPackagedRuntimeBytes": 152718498,
+  "packageTreeSha256": "2c22ca4e08e6bd2481c8c4fb8e0b4f3cecfaf863d02f6e37fa3ddbb3d118a5cc",
+  "totalPackagedRuntimeBytes": 152734800,
   "components": {
     "cpp": {
       "releaseId": "cpp+sha256.1dcc9177386a9db477dce1ba6b4822416f9c2edd7e2d90dc9fb19c9cd8b4fb5f",
@@ -1886,9 +1886,9 @@
       ]
     },
     "python": {
-      "releaseId": "python+sha256.1eb72b55b9ad8e6f966990c8d5a6c178e192452b3844c3ce35d2162d1d6d20b3",
-      "treeSha256": "1eb72b55b9ad8e6f966990c8d5a6c178e192452b3844c3ce35d2162d1d6d20b3",
-      "totalBytes": 76066467,
+      "releaseId": "python+sha256.4c661b21dc15eca1f790d86b4c55e4ae2a05d88ca2dda6240f421561c1d6c18c",
+      "treeSha256": "4c661b21dc15eca1f790d86b4c55e4ae2a05d88ca2dda6240f421561c1d6c18c",
+      "totalBytes": 76082769,
       "files": [
         {
           "path": "workers/python/generated-python-harness-snippets.js",
@@ -1983,9 +1983,9 @@
         },
         {
           "path": "workers/python/python-worker.js",
-          "size": 393674,
-          "sha256": "53d75cae3f141c3b2bf4d302ef605d400f319ee155c0223adf039d538ab5d001",
-          "integrity": "sha256-U9dcrj8UHDsr9NMC72BdQA8xnuFVwCI63wOdU4q10AE=",
+          "size": 409976,
+          "sha256": "c5d7b730a36f91b81617f719f17a80a4473b3af4f80455594350a08af06c25fe",
+          "integrity": "sha256-xde3MKNvkbgWF/cZ8XqApEc7OvT4BFVZQ1CgivBsJf4=",
           "mediaType": "text/javascript"
         },
         {
@@ -2262,11 +2262,11 @@
   "stagedInventory": {
     "description": "Files `tracecode-harness sync-assets <dir>` stages for every language. A consumer adds only its own files (such as a commit marker).",
     "files": 608,
-    "bytes": 428583306,
+    "bytes": 428599608,
     "byClass": {
       "locked": {
         "files": 349,
-        "bytes": 425840263
+        "bytes": 425856565
       },
       "alias": {
         "files": 1,
@@ -2370,7 +2370,7 @@
       {
         "path": "python-worker.js",
         "files": 1,
-        "bytes": 393674
+        "bytes": 409976
       },
       {
         "path": "shared",
