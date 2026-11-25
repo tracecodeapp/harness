@@ -14889,6 +14889,59 @@ function sanitizeCppProjectDiagnostics(value, request) {
     .join('\n');
 }
 
+function cppProjectDiagnosticRelativePath(path, cwd) {
+  let prefix = '';
+  while (cwd && !path.startsWith(`${cwd}/`)) {
+    cwd = cwd.slice(0, Math.max(0, cwd.lastIndexOf('/')));
+    prefix += '../';
+  }
+  return prefix + (cwd ? path.slice(cwd.length + 1) : path);
+}
+
+function formatTraceccProjectDiagnostics(stderr, plan, commandIndex) {
+  const source = plan.sources[commandIndex];
+  const sourceDirectory = source ? dirname(`/${source.workspacePath}`).slice(1) : '';
+  const displayPath = source?.diagnosticPath || '';
+  const displayDirectory = displayPath.slice(0, displayPath.lastIndexOf('/') + 1) || './';
+  const sourceRoot = `${plan.compilerSourceRoot}/`;
+
+  return stderr
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .filter((line) => !/^(?:In file included from |[ \t]+from )\/usr\/share\/tracecc\/project\/source-\d+\.c(?:pp)?:\d+[:,]$/.test(line))
+    .map((line) => line.replace(
+      /^((?:In file included from |[ \t]+from )?)(\/[^\n]+?):(\d+)(?=[:,])/,
+      (match, prefix, file, lineNumber) => {
+        if (file.startsWith('/usr/include/')) {
+          const includedPath = plan.diagnosticIncludePaths.get(file.slice('/usr/include/'.length));
+          return includedPath === undefined ? match : `${prefix}${includedPath}:${lineNumber}`;
+        }
+        const mount = file.startsWith(sourceRoot) ? sourceRoot : '/workspace/';
+        if (!file.startsWith(mount)) return match;
+        const path = file.slice(mount.length);
+        if (path === source?.workspacePath) {
+          return `${prefix}${displayPath}:${lineNumber}`;
+        }
+        // For a quoted include Clang spells the directory from the input
+        // operand, including "./" when the source is a bare filename.
+        if (source && (!sourceDirectory || path.startsWith(`${sourceDirectory}/`))) {
+          const relative = path.slice(sourceDirectory ? sourceDirectory.length + 1 : 0);
+          return `${prefix}${displayDirectory}${relative}:${lineNumber}`;
+        }
+        const display = displayPath.startsWith('/')
+          ? `${plan.visibleRoot}/${path}`
+          : cppProjectDiagnosticRelativePath(path, plan.cwd);
+        return `${prefix}${display}:${lineNumber}`;
+      }
+    ))
+    .join('\n')
+    // Paths also appear inside messages, for example in linker diagnostics.
+    .replace(/(^|[\s'"(<>=])\/workspace\//g, (_, prefix) =>
+      prefix + (plan.visibleRoot ? `${plan.visibleRoot}/` : '')
+    )
+    .replace(/(^|[\s'"(<>=])\/usr\/share\/tracecc\//g, '$1<TraceCC>/');
+}
+
 function createProjectEventBridge(messageId, sanitizeOutput) {
   const budget = createProjectEventBudget('C++');
   const eventStdout = [];
@@ -15181,7 +15234,7 @@ function loadTraceccReactor(toolchain, request) {
   return toolchain.reactorPromise;
 }
 
-async function handleTraceccCompile(request) {
+async function handleTraceccCompile(request, projectPlan) {
   const loadStartedAt = now();
   const toolchain = await loadTraceccCompiler(request);
   const loadMs = elapsedMs(loadStartedAt);
@@ -15210,6 +15263,11 @@ async function handleTraceccCompile(request) {
     };
   }
   const projectFiles = request?.project?.files || [];
+  const compilerSourceRoot = projectPlan?.compilerSourceRoot;
+  if (compilerSourceRoot && compilerSourceRoot !== '/workspace') {
+    const parentDepth = dirname(compilerSourceRoot).split('/').filter(Boolean).length;
+    fs.addSymlink(compilerSourceRoot, `${'../'.repeat(parentDepth)}workspace`);
+  }
   for (const file of request?.trustedFiles || []) {
     const path = normalizePath(String(file?.path || ''));
     if (!path.startsWith('/')) {
@@ -15354,7 +15412,10 @@ async function handleTraceccCompile(request) {
       totalMs,
     },
     stdout: commands.map((command) => command.stdout).join(''),
-    stderr: commands.map((command) => command.stderr).join(''),
+    stderr: commands.map((command, index) => projectPlan
+      ? formatTraceccProjectDiagnostics(command.stderr, projectPlan, index)
+      : command.stderr
+    ).join(''),
   };
 }
 
@@ -15469,6 +15530,22 @@ async function handleProjectCpp(
 function buildTraceccProjectCompilePlan(projectRequest) {
   const compilerCommand = projectCompilerCommand(projectRequest);
   const cwd = requestCwdRelative(projectRequest);
+  const visibleRoot = projectWorkspaceRoots(projectRequest).find((root) => root !== '/workspace') || '';
+  // Keep the learner alias away from the compiler's own mounts.
+  const compilerSourceRoot = visibleRoot &&
+    normalizePath(visibleRoot) === visibleRoot &&
+    !/^\/(?:usr|tmp|workspace|tracecc-assets|tracecode_runtime\.hpp|tracecode_pch\.hpp|dev|etc|proc)(?:\/|$)/.test(visibleRoot)
+    ? visibleRoot
+    : '/workspace';
+  const diagnosticPath = (operand, workspacePath) => {
+    if (!operand.startsWith('/')) return operand;
+    if (visibleRoot && (operand === visibleRoot || operand.startsWith(`${visibleRoot}/`))) {
+      return operand;
+    }
+    return visibleRoot
+      ? `${visibleRoot}/${workspacePath}`
+      : cppProjectDiagnosticRelativePath(workspacePath, cwd);
+  };
   const rawArgs =
     Array.isArray(projectRequest.args) && projectRequest.args.length > 0
       ? projectRequest.args.map(String)
@@ -15583,6 +15660,7 @@ function buildTraceccProjectCompilePlan(projectRequest) {
       const stdinPath = cwd ? `${cwd}/${stdinName}` : stdinName;
       sources.push({
         workspacePath: stdinPath,
+        diagnosticPath: '<stdin>',
         language:
           forcedLanguage === 'c' || stdinName.endsWith('.c') ? 'c' : 'c++',
         contents: String(projectRequest.code || ''),
@@ -15596,6 +15674,7 @@ function buildTraceccProjectCompilePlan(projectRequest) {
       );
       sources.push({
         workspacePath,
+        diagnosticPath: diagnosticPath(arg, workspacePath),
         language:
           forcedLanguage === 'c' ||
           (
@@ -15703,10 +15782,10 @@ function buildTraceccProjectCompilePlan(projectRequest) {
       contents: CPP_KERNEL_CONTROL_HEADER_SOURCE,
     },
   ];
-  const normalizedIncludePaths = includePaths.map((path) =>
-    projectPathRelativeToWorkspace(projectRequest, path)
-  );
-  for (const includePath of normalizedIncludePaths) {
+  const diagnosticIncludePaths = new Map();
+  for (const operand of includePaths) {
+    const includePath = projectPathRelativeToWorkspace(projectRequest, operand);
+    const display = diagnosticPath(operand, includePath).replace(/\/$/, '');
     for (const [path, file] of projectFileByPath) {
       const relative =
         path.startsWith(`${includePath}/`)
@@ -15717,6 +15796,7 @@ function buildTraceccProjectCompilePlan(projectRequest) {
         path: `/usr/include/${relative}`,
         contents: projectPathBytes(file),
       });
+      diagnosticIncludePaths.set(relative, display ? `${display}/${relative}` : relative);
     }
   }
 
@@ -15725,7 +15805,7 @@ function buildTraceccProjectCompilePlan(projectRequest) {
       projectRequest,
       path
     );
-    return `#include ${JSON.stringify(`/workspace/${workspacePath}`)}`;
+    return `#include ${JSON.stringify(`${compilerSourceRoot}/${workspacePath}`)}`;
   });
   const definitionLines = definitions.map((definition) => {
     const separator = definition.indexOf('=');
@@ -15774,7 +15854,7 @@ function buildTraceccProjectCompilePlan(projectRequest) {
         ? `/workspace/${outputWorkspacePath}`
         : `/workspace/.tracecc-build/user-${objects.length}.o`;
     addCompileCommand(
-      `/workspace/${source.workspacePath}`,
+      `${compilerSourceRoot}/${source.workspacePath}`,
       source.language,
       objectPath
     );
@@ -15834,6 +15914,10 @@ function buildTraceccProjectCompilePlan(projectRequest) {
     linkerArgs,
     outputWorkspacePath,
     cwd,
+    visibleRoot,
+    compilerSourceRoot,
+    sources,
+    diagnosticIncludePaths,
   };
 }
 
@@ -15867,14 +15951,10 @@ async function handleTrustedTraceccCompile(request) {
       traceccCwd: '/',
       outputPath: `/workspace/${plan.outputWorkspacePath}`,
       nonSeekableOutputPaths: ['/workspace'],
-    });
+    }, plan);
     return {
       ...result,
       outputPath: plan.outputWorkspacePath,
-      stderr: sanitizeCppProjectDiagnostics(
-        String(result.stderr || ''),
-        projectRequest
-      ),
     };
   }
   if (request?.source !== 'tracecc-compile-v1') {
