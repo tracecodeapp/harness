@@ -1,4 +1,5 @@
 import type {
+  CodeExecutionResult,
   Language,
   RuntimePreparedCodeBatchCall,
   RuntimePreparedExecutionProvider,
@@ -52,6 +53,14 @@ export interface JudgeObservationLease extends RuntimeObservationProvider {
 export interface JudgeOrdinaryBatchCall extends RuntimePreparedCodeBatchCall {
   /** Called only when the worker has admitted this entry to execute. */
   readonly onCaseStarted?: (index: number) => void;
+  /**
+   * Called once for each entry the provider has an authenticated finish for,
+   * as it arrives and before the batch reply. Judge journals it: from then on
+   * that row is published unchanged, even if the batch is later lost or
+   * stopped. Never call it for an entry the batch did not finish. A provider
+   * that cannot attest per-case finishes leaves it uncalled.
+   */
+  readonly onCaseFinished?: (index: number, result: CodeExecutionResult) => void;
 }
 
 export type JudgeSchedulePhase =

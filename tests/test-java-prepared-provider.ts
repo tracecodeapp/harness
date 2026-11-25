@@ -12,6 +12,7 @@ import {
   isTraceUnavailableError,
   RuntimeProviderError,
   TRACE_UNAVAILABLE_CODE,
+  type CodeExecutionResult,
   type RuntimeProgramPreparationCall,
 } from '../packages/runtime-contracts/src/index';
 import {
@@ -1286,13 +1287,18 @@ function scriptedJavaBatch() {
   const begin = (stopAtFirstRunaway = false) => {
     const command = deferred<ScriptedBatch>();
     const starts: number[] = [];
+    const finishes: Array<[number, CodeExecutionResult]> = [];
     commands.push(command);
-    const outcome = client.executePreparedCodeBatch('prepared', {
+    const call = {
       inputBatch: [{}, {}, {}], stopAtFirstRunaway,
-    }, (index) => starts.push(index));
+      onCaseFinished: (index: number, result: CodeExecutionResult) => {
+        finishes.push([index, result]);
+      },
+    };
+    const outcome = client.executePreparedCodeBatch('prepared', call, (index) => starts.push(index));
     // The test attaches its assertion after it has sent the scripted messages.
     void outcome.catch(() => undefined);
-    return { command: command.promise, outcome, starts };
+    return { command: command.promise, outcome, starts, finishes };
   };
   const waitForBatch = () => {
     const command = deferred<ScriptedBatch>();
@@ -1305,6 +1311,43 @@ function scriptedJavaBatch() {
 const finishedA = { success: true, output: { answer: 7 }, consoleOutput: ['A printed'] };
 const finishedB = { success: true, output: 8, consoleOutput: [] };
 const runaway = { success: false, error: 'guest ran out of time', timeoutReason: 'client-timeout', consoleOutput: [] };
+
+test('Java prepared provider forwards accepted finishes in case order before the terminal', async (t) => {
+  const { client, waitForBatch } = scriptedJavaBatch();
+  const provider = createJavaPreparedExecutionProvider({ createWorkerClient: () => client });
+  t.after(() => provider.dispose());
+  const preparation = await provider.prepareProgram({
+    mode: 'code',
+    code: 'class Solution { int value(int value) { return value; } }',
+    functionName: 'value',
+    executionStyle: 'solution-method',
+  });
+  assert(preparation.kind === 'prepared' && preparation.program.mode === 'code');
+  const program = preparation.program;
+  t.after(() => program.dispose());
+  const finishes: Array<[number, CodeExecutionResult]> = [];
+  const command = waitForBatch();
+  const call = {
+    inputBatch: [{ value: 7 }, { value: 8 }],
+    onCaseFinished: (index: number, result: CodeExecutionResult) => {
+      finishes.push([index, result]);
+    },
+  };
+  const outcome = program.executeBatchIsolated!(call);
+  void outcome.catch(() => undefined);
+  const worker = await command;
+  worker.start(0);
+  worker.finish(0, finishedA);
+  assert.deepEqual(finishes.map(([index]) => index), [0]);
+  worker.start(1);
+  worker.finish(1, finishedB);
+  assert.deepEqual(finishes.map(([index]) => index), [0, 1]);
+  worker.terminal({ success: true, resultsStreamed: 2 });
+  const results = await outcome;
+  assert.deepEqual(results.map(completedOutput), [{ answer: 7 }, 8]);
+  assert.deepEqual(results[0]?.consoleOutput, ['A printed']);
+  assert.deepEqual(finishes, results.map((result, index) => [index, result]));
+});
 
 for (const failure of ['deadline', 'crash', 'failed-terminal'] as const) {
   test(`Java ordinary batch keeps A after ${failure} during B`, { timeout: 5_000 }, async (t) => {
@@ -1328,6 +1371,11 @@ for (const failure of ['deadline', 'crash', 'failed-terminal'] as const) {
     await assert.rejects(first.outcome, (error) => {
       assert(error instanceof InterruptedCodeBatchError);
       assert.match(error.message, failure === 'deadline' ? /transport deadline/ : /service loss, completion uncertain/);
+      assert.equal(
+        'interruption' in error ? error.interruption : undefined,
+        failure === 'deadline' ? 'transport-deadline' : 'worker-loss',
+      );
+      assert.equal('interruptedIndex' in error ? error.interruptedIndex : undefined, 1);
       prefix = error.prefix;
       assert.deepEqual(prefix.map((row) => [row.kind, completedOutput(row), row.consoleOutput]),
         [['completed', { answer: 7 }, ['A printed']]]);
@@ -1347,37 +1395,45 @@ for (const failure of ['deadline', 'crash', 'failed-terminal'] as const) {
       assert.deepEqual((await next.outcome).map((row) => row.kind), ['limit']);
       assert.deepEqual(next.starts, [0]);
     }
+    assert.deepEqual(first.finishes, [[0, prefix?.[0]]]);
   });
 }
 
 test('Java stopping batch keeps its guest runaway even if the terminal is lost', async (t) => {
   const { client, begin } = scriptedJavaBatch();
   t.after(() => client.terminate());
-  const { command, outcome, starts } = begin(true);
+  const { command, outcome, starts, finishes } = begin(true);
   const worker = await command;
   worker.start(0);
   worker.finish(0, finishedA);
   worker.start(1);
   worker.finish(1, runaway);
+  assert.deepEqual(finishes.map(([index, row]) => [index, row.kind]), [[0, 'completed'], [1, 'limit']]);
   worker.crash();
   const results = await outcome;
   assert.deepEqual(results.map((row) => row.kind), ['completed', 'limit']);
   assert.deepEqual(starts, [0, 1]);
+  assert.deepEqual(finishes, results.map((result, index) => [index, result]));
 });
 
 for (const invalid of ['changed result', 'count', 'out of order', 'duplicate', 'wrong admission', 'unadmitted'] as const) {
   test(`Java batch rejects ${invalid} as a protocol error`, async (t) => {
     const { client, begin } = scriptedJavaBatch();
     t.after(() => client.terminate());
-    const { command, outcome } = begin(true);
+    const { command, outcome, finishes } = begin(invalid !== 'duplicate');
     const worker = await command;
     if (invalid !== 'unadmitted') worker.start(0);
-    worker.finish(invalid === 'out of order' ? 1 : 0, runaway, invalid === 'wrong admission' ? 12345 : undefined);
-    if (invalid === 'duplicate') worker.finish(0, runaway);
+    const result = invalid === 'duplicate' ? finishedA : runaway;
+    worker.finish(invalid === 'out of order' ? 1 : 0, result, invalid === 'wrong admission' ? 12345 : undefined);
+    if (invalid === 'duplicate') worker.finish(0, result);
     worker.terminal(invalid === 'count'
       ? { success: false, resultsStreamed: 2 }
-      : { success: false, results: [invalid === 'changed result' ? { ...runaway, error: 'changed' } : runaway] });
+      : { success: false, results: [invalid === 'changed result' ? { ...runaway, error: 'changed' } : result] });
     await assert.rejects(outcome, { name: 'RuntimeProviderError', reason: 'protocol' });
+    assert.deepEqual(finishes.map(([index, row]) => [index, row.kind]),
+      invalid === 'duplicate' ? [[0, 'completed']]
+      : invalid === 'count' || invalid === 'changed result' ? [[0, 'limit']]
+      : []);
   });
 }
 

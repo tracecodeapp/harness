@@ -67,6 +67,7 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- Ordinary Java batches report each finished case before the batch reply and distinguish client transport deadlines from worker loss when reporting an interrupted batch.
 - Ordinary Python batches time each case separately. When a case runs past
   its client deadline, only that case receives `client-timeout`. Unless
   `stopAtFirstRunaway` is set, a fresh worker resumes at the next case,

@@ -2,7 +2,6 @@ import type {
   CodeExecutionResult,
   Drawing,
   ExecutionResult,
-  RuntimePreparedCodeBatchCall,
   RuntimePreparedCodeCall,
   RuntimePreparedCodeProgram,
   RuntimePreparedExecutionProvider,
@@ -24,7 +23,10 @@ import {
 import { getLanguageRuntimeProfile } from '@tracecode/runtime-browser/internal';
 import { assertRuntimeRequestSupported } from '@tracecode/runtime-browser/internal';
 import { isExecutionTimeoutError } from '@tracecode/runtime-browser/internal';
-import type { JudgeReceiptProvider } from '../../runtime-browser/src/browser-runtime-host-internal';
+import type {
+  JudgeOrdinaryBatchCall,
+  JudgeReceiptProvider,
+} from '../../runtime-browser/src/browser-runtime-host-internal';
 import {
   JavaWorkerClient,
   type JavaWorkerClientOptions,
@@ -242,7 +244,7 @@ class JavaPreparedCodeProgramImpl
   }
 
   executeBatchIsolated(
-    call: RuntimePreparedCodeBatchCall & { onCaseStarted?: (index: number) => void }
+    call: JudgeOrdinaryBatchCall
   ): Promise<readonly CodeExecutionResult[]> {
     return this.executeWithClient(
       (client) =>
