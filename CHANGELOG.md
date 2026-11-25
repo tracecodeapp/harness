@@ -170,7 +170,13 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   `/tracecode_project` mount. Tracebacks no longer include the runner's own
   frames. Warnings and tracebacks show the source of the current run, not a
   previous run's. `sys.argv[0]` is the script relative to the working
-  directory, and `python -m package` gives `package/__main__.py`. Algorithm
+  directory, and `python -m package` gives `package/__main__.py`. An error
+  from opening or stat-ing a workspace path names the learner's path, and a
+  missing script prints `python3: can't open file '<absolute path>': [Errno
+  2] No such file or directory`. `traceback.print_stack()`, `inspect.stack()`,
+  `logging.exception` and pdb start at the script. As in CPython, the main
+  script's `__spec__` and `__package__` are `None` and its `__loader__` is a
+  `SourceFileLoader`; `io.FileIO` and `os.open` open workspace paths. Algorithm
   runs, verdicts and traces are unchanged.
 - C# judged answers preserve built-in `TreeNode` and `ListNode` shapes,
   including shared references. On those nodes, `value` reads and writes `val`
