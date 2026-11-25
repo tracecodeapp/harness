@@ -93,7 +93,7 @@ test('a case whose recorded result became a time limit while it was encoded ends
     'def _test_perf_counter():',
     '    frame = _test_sys._getframe(1)',
     '    while frame is not None:',
-    "        if frame.f_code.co_name == '_tracecode_batch_append_result' and frame.f_globals.get('_tracecode_batch_case_index') == 0:",
+    "        if frame.f_code.co_name == '_tracecode_batch_encode_case_result' and frame.f_globals.get('_tracecode_batch_case_index') == 0:",
     '            return _test_real_perf_counter() + 1e6',
     '        frame = frame.f_back',
     '    return _test_real_perf_counter()',

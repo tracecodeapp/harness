@@ -440,7 +440,6 @@ function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport)
       startedCaseIndexes.push(index);
     },
     finished(index, result) {
-      finishedCount += 1;
       const transported = traceEventTransport
         ? prepareTraceEventTransfer(result, traceEventTransport, 'trace.events')
         : null;
@@ -459,6 +458,7 @@ function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport)
       } else {
         trustedPythonWorkerPostMessage(message);
       }
+      finishedCount += 1;
     },
   };
 }
@@ -470,6 +470,12 @@ function createBatchCaseProgressReporter(id, protocolToken, traceEventTransport)
 function batchReplyWithProgress(result, caseProgress) {
   if (!result || !caseProgress) return result;
   const startedCaseIndexes = caseProgress.startedCaseIndexes;
+  if (result.resultsStreamed !== undefined) {
+    if (result.results !== undefined || result.resultsStreamed !== caseProgress.finishedCount) {
+      throw new Error('Prepared Python batch returned an invalid streamed result count.');
+    }
+    return { ...result, startedCaseIndexes };
+  }
   if (
     result.algorithmFastBatchUnavailable === true ||
     !Array.isArray(result.results) ||
