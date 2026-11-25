@@ -16,10 +16,11 @@ function assertCondition(condition: unknown, message: string): asserts condition
 }
 
 interface PostedMessage {
-  id?: string;
+  id?: string | number;
   type: string;
   payload?: Record<string, unknown>;
   protocolToken?: string;
+  javascriptLibrariesUrl?: string;
 }
 
 const MINIMAL_WASM = new Uint8Array([
@@ -34,15 +35,26 @@ class CapturingWorker {
   readonly fetchesAtMessage = new Map<string, string[]>();
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
+  private readonly usesSesControlProtocol: boolean;
 
   constructor(readonly url: string | URL, readonly options?: WorkerOptions) {
+    this.usesSesControlProtocol = String(url).includes('/javascript/algorithm-worker.js');
     CapturingWorker.instances.push(this);
-    queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+    if (!this.usesSesControlProtocol) {
+      queueMicrotask(() => this.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+    }
   }
 
   postMessage(message: PostedMessage): void {
     this.messages.push(message);
     this.fetchesAtMessage.set(message.type, [...CapturingWorker.fetches]);
+    if (this.usesSesControlProtocol) {
+      assertCondition(message.type === 'init' && Number.isSafeInteger(message.id), 'Expected an SES init request with a numeric id');
+      queueMicrotask(() => this.onmessage?.({
+        data: { id: message.id, ok: true, value: { mode: 'ses', hardened: true } },
+      } as MessageEvent));
+      return;
+    }
     if (message.type === 'build-runtime-image') {
       void WebAssembly.compile(MINIMAL_WASM).then((compiledModule) => {
         this.onmessage?.({
@@ -160,6 +172,7 @@ function consumerManifests(): BrowserRuntimeAssetManifests {
       originPolicy,
       assets: {
         worker: descriptor('worker.js'),
+        algorithmWorker: descriptor('algorithm-worker.js'),
         projectWorker: descriptor('project-worker.js'),
         libraries: descriptor('javascript-libraries.js'),
       },
@@ -339,6 +352,13 @@ async function testManifestAssetsReachWorkerInitialization(): Promise<void> {
     javascriptPayload?.javascriptLibrariesUrl ===
       'https://cdn.consumer.example/javascript/javascript-libraries.js',
     'The persistent JavaScript coordinator must receive consumer runtime libraries'
+  );
+  const algorithmWorker = findInitializedWorker('/javascript/algorithm-worker.js');
+  assertCondition(algorithmWorker.options?.type === 'module', 'The SES algorithm worker must start as a module worker');
+  assertCondition(
+    initMessage(algorithmWorker).javascriptLibrariesUrl ===
+      'https://cdn.consumer.example/javascript/javascript-libraries.js',
+    'The SES algorithm worker must receive consumer runtime libraries'
   );
 
   const javaPayload = initMessage(findWorker('/java/worker.js')).payload;

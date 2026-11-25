@@ -8,7 +8,10 @@ import { extname, join, normalize, resolve, sep } from 'node:path';
 import { build } from 'esbuild';
 import { chromium, firefox, webkit } from 'playwright';
 import { runCommand } from './example-app-smoke';
-import type { PythonInteractiveWorker } from './fixtures/browser-algorithm-batch-entry';
+import type {
+  DisposableObserverWorker,
+  PythonInteractiveWorker,
+} from './fixtures/browser-algorithm-batch-entry';
 
 type BatchLanguage =
   | 'python'
@@ -37,10 +40,12 @@ interface BatchLanguageResult {
   readonly plainMs: number;
   readonly plainMaximumActiveWorkers: number;
   readonly plainWorkerUrls: readonly string[];
+  readonly plainObservers: readonly DisposableObserverWorker[];
   readonly trace: ReceiptSummary;
   readonly traceMs: number;
   readonly traceMaximumActiveWorkers: number;
   readonly traceWorkerUrls: readonly string[];
+  readonly traceObservers: readonly DisposableObserverWorker[];
   readonly interactive: {
     readonly initialMs: number;
     readonly compileTimings?: unknown;
@@ -57,6 +62,7 @@ interface BatchLanguageResult {
     readonly backgroundTraceEventCounts: readonly number[];
     readonly maximumActiveWorkers: number;
     readonly workerUrls: readonly string[];
+    readonly observerWorkers: readonly DisposableObserverWorker[];
     readonly pythonWorkers?: readonly PythonInteractiveWorker[];
   };
   readonly compatibilityIsolation?: ReceiptSummary;
@@ -240,11 +246,12 @@ function assertReceipt(
 
 function assertBoundedWorkers(
   language: BatchLanguage,
-  scope: string,
+  scope: 'code batch' | 'trace batch' | 'interactive execution',
   workerUrls: readonly string[],
   requireWorker: boolean,
   maximumActiveWorkers: number,
-  configuredCSharpConcurrency?: number
+  configuredCSharpConcurrency: number | undefined,
+  observerWorkers: readonly DisposableObserverWorker[]
 ): void {
   const languageWorkers = workerUrls.filter((url) =>
     language === 'typescript'
@@ -267,10 +274,27 @@ function assertBoundedWorkers(
     );
     return;
   }
+  let preparationAndExecutionWorkers = languageWorkers.length;
+  if (language === 'javascript' || language === 'typescript' || language === 'cpp') {
+    // Judge serializes observations, and each attempt retires its executor.
+    // Count those lifetimes separately from preparation and ordinary execution.
+    const expectedObservations = scope === 'code batch' ? 0 : algorithmCaseCount;
+    assertCondition(
+      observerWorkers.length === expectedObservations &&
+        observerWorkers.every(({ created, observations, retired }, index) => {
+          const previous = observerWorkers[index - 1];
+          return observations === 1 && retired !== undefined && retired > created &&
+            (previous === undefined || (previous.retired !== undefined && previous.retired < created));
+        }),
+      `${language} ${scope} should run each drawing in one disposable executor, one at a time: ${JSON.stringify(observerWorkers)}`
+    );
+    preparationAndExecutionWorkers -= observerWorkers.length;
+  }
   const maximumWorkers = 3;
   assertCondition(
     (!requireWorker || languageWorkers.length > 0) &&
-      languageWorkers.length <= maximumWorkers,
+      preparationAndExecutionWorkers >= 0 &&
+      preparationAndExecutionWorkers <= maximumWorkers,
     `${language} ${scope} should use a bounded preparation/execution worker set, not one worker per case: ${JSON.stringify(workerUrls)}`
   );
 }
@@ -470,7 +494,8 @@ async function main(): Promise<void> {
           languageResult.plainWorkerUrls,
           false,
           languageResult.plainMaximumActiveWorkers,
-          languageResult.csharpBatchConcurrency
+          languageResult.csharpBatchConcurrency,
+          languageResult.plainObservers
         );
         assertBoundedWorkers(
           language,
@@ -478,7 +503,8 @@ async function main(): Promise<void> {
           languageResult.traceWorkerUrls,
           false,
           languageResult.traceMaximumActiveWorkers,
-          languageResult.csharpBatchConcurrency
+          languageResult.csharpBatchConcurrency,
+          languageResult.traceObservers
         );
         if (language === 'python') {
           assertPythonInteractiveWorkers(languageResult);
@@ -489,7 +515,8 @@ async function main(): Promise<void> {
             languageResult.interactive.workerUrls,
             languageResult.warmMode === 'cold',
             languageResult.interactive.maximumActiveWorkers,
-            languageResult.csharpBatchConcurrency
+            languageResult.csharpBatchConcurrency,
+            languageResult.interactive.observerWorkers
           );
         }
         console.log(
