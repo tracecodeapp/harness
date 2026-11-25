@@ -17,7 +17,11 @@ import {
   JudgePlanError,
   type JudgeComparator,
   type JudgeEvaluationPlan,
+  type JudgeEvaluationResult,
+  type JudgeRuntimeBatchCaseOutput,
+  type JudgeRuntimeCaseProgress,
   type JudgeRuntimeInvocationInput,
+  type JudgeRuntimeProgressDisposition,
 } from '../src/index';
 import {
   JUDGE_INVOCATION_ID_ENV,
@@ -115,6 +119,9 @@ function executeFakeProcess(
       }
       if (invocation.phase === 'batch') {
         state.invocations.push(invocation);
+        if (context.command.startsWith('journal-')) {
+          return executeFakeJournalBatch(control, invocationId, invocation, context.command);
+        }
         return executeFakeBatch(control, invocationId, context.command);
       }
       return executeFakeCase(control, state, invocationId, invocation);
@@ -134,6 +141,7 @@ function executeFakeBatch(
   command: string
 ): Effect.Effect<TraceKernelRuntimeResult, Error> {
   const failed = { exitCode: 1, stdout: '', stderr: `${FAKE_PROVIDER_FAILURE}\n` };
+  if (command === 'batch-silent-hang') return Effect.never;
   if (command === 'batch-provider-failure') {
     return control.publish(invocationId, {
       diagnostics: [{
@@ -150,6 +158,88 @@ function executeFakeBatch(
     }).pipe(Effect.as(failed));
   }
   return Effect.succeed(failed);
+}
+
+/** Every batch invocation a journalling fake ran, with what each record returned. */
+const journalRuns: {
+  readonly invocationId: string;
+  readonly dispositions: JudgeRuntimeProgressDisposition[];
+}[] = [];
+
+function fakeFinish(
+  caseId: string,
+  value: number,
+  overrides: Partial<JudgeRuntimeBatchCaseOutput> = {}
+): JudgeRuntimeBatchCaseOutput {
+  return {
+    caseId,
+    termination: { kind: 'exit', exitCode: 0 },
+    stdout: `learner stdout ${value}\n`,
+    stderr: '',
+    diagnostics: [],
+    timings: { runMs: value },
+    value: { doubled: value * 2, caseId },
+    timedOut: false,
+    ...overrides,
+  };
+}
+
+const FAKE_RUNAWAY_FAILURE = {
+  origin: 'limit',
+  reason: 'client-timeout',
+  message: 'The fake case ran out of time.',
+} as const;
+
+/**
+ * A batch that journals per-case progress on the control port, then stops
+ * without publishing a terminal batch. Commands:
+ * - `journal-hang`: A starts and finishes, B starts, then the runtime hangs.
+ * - `journal-duplicate`: as hang, with a second, different finish for A.
+ * - `journal-runaway`: A starts and finishes at its own time limit, then hangs.
+ * - `journal-protocol`: A finishes, B starts, then the runtime publishes a
+ *   protocol failure without a batch.
+ */
+function executeFakeJournalBatch(
+  control: InMemoryJudgeRuntimeControl,
+  invocationId: string,
+  invocation: JudgeRuntimeInvocationInput,
+  command: string
+): Effect.Effect<TraceKernelRuntimeResult, Error> {
+  const [a, b] = (invocation.cases ?? []).map(({ caseId }) => caseId);
+  const run = { invocationId, dispositions: [] as JudgeRuntimeProgressDisposition[] };
+  journalRuns.push(run);
+  const record = (progress: JudgeRuntimeCaseProgress) =>
+    control.record(invocationId, progress).pipe(
+      Effect.tap((disposition) => Effect.sync(() => run.dispositions.push(disposition)))
+    );
+  return Effect.gen(function* () {
+    yield* record({ kind: 'started', caseId: a! });
+    yield* record({
+      kind: 'finished',
+      output: command === 'journal-runaway'
+        ? fakeFinish(a!, 1, {
+            termination: { kind: 'exit', exitCode: 1 },
+            value: undefined,
+            timedOut: true,
+            diagnostics: [{ severity: 'error', code: 'client-timeout', message: FAKE_RUNAWAY_FAILURE.message }],
+            failure: FAKE_RUNAWAY_FAILURE,
+          })
+        : fakeFinish(a!, 1),
+    });
+    if (command === 'journal-runaway') return yield* Effect.never;
+    if (command === 'journal-duplicate') {
+      yield* record({ kind: 'finished', output: fakeFinish(a!, 999) });
+    }
+    yield* record({ kind: 'started', caseId: b! });
+    if (command === 'journal-protocol') {
+      yield* control.publish(invocationId, {
+        diagnostics: [{ severity: 'error', code: 'runtime-provider-error', message: 'malformed reply', source: 'fake' }],
+        failure: { origin: 'provider', reason: 'protocol', message: 'malformed reply' },
+      });
+      return { exitCode: 1, stdout: '', stderr: '' };
+    }
+    return yield* Effect.never;
+  });
 }
 
 function executeFakeCase(
@@ -1087,4 +1177,176 @@ test('B8 ledger: the core Judge validates a trace selection but never asks a run
       }
     }
   }
+});
+
+function journalPlan(command: string, run: Partial<JudgeEvaluationPlan['run']> = {}) {
+  return makePlan([{ value: 1 }, { value: 2 }, { value: 3 }], {
+    compile: undefined,
+    run: { command, timeoutMs: 60, timeoutRole: 'backstop', ...run },
+    isolation: { mode: 'provider-isolated-batch' },
+  });
+}
+
+function evaluateJournalled(
+  plan: JudgeEvaluationPlan<FakeCaseInput>,
+  stopAtFirstRunaway = false
+) {
+  return Effect.runPromise(Effect.scoped(
+    Effect.gen(function* () {
+      const control = new InMemoryJudgeRuntimeControl();
+      const state = yield* makeState();
+      const host = yield* makeTraceKernelHost({ providers: [fakeProvider(control, state)] });
+      const port = new TraceKernelJudgePort({ host, runtimeControl: control });
+      const result = yield* evaluateJudgePlan(port, plan, { stopAtFirstRunaway });
+      assert.equal(control.activeInvocationCount(), 0);
+      const run = journalRuns.at(-1)!;
+      return { result, control, run };
+    })
+  ));
+}
+
+function assertServiceFailure(
+  row: JudgeEvaluationResult['cases'][number] | undefined,
+  reason: 'runtime-failure' | 'protocol',
+  uncertain: boolean
+) {
+  assert.ok(row);
+  assert.equal(row.status, 'runtime-error', `${row.caseId}: status`);
+  assert.equal(row.timedOut, false, `${row.caseId}: no time limit`);
+  assert.equal(row.verdict.kind, 'not-evaluated', `${row.caseId}: no learner verdict`);
+  assert.equal(row.failure?.origin, 'provider', `${row.caseId}: provider origin`);
+  assert.equal(row.failure?.origin === 'provider' ? row.failure.reason : undefined, reason);
+  assert.equal(Object.hasOwn(row, 'value'), false, `${row.caseId}: no value`);
+  assert.equal(row.notRun, undefined);
+  assert.equal(
+    /completion is uncertain/u.test(row.failure?.message ?? ''),
+    uncertain,
+    `${row.caseId}: completion uncertainty is stated only for a started case`
+  );
+  assert.ok(
+    !row.diagnostics.some((diagnostic) => diagnostic.code === 'client-timeout'),
+    `${row.caseId}: no client-timeout diagnostic`
+  );
+}
+
+test('D-WATCH: a batch watchdog with no published outcomes is the provider failure, never client-timeout on every case', async () => {
+  for (const timeoutRole of ['limit', 'backstop'] as const) {
+    const { result } = await evaluateJournalled(makePlan([{ value: 1, block: true }, { value: 2 }], {
+      compile: undefined,
+      run: { command: 'batch-silent-hang', timeoutMs: 40, timeoutRole },
+      isolation: { mode: 'provider-isolated-batch' },
+    }));
+    assert.equal(result.status, 'completed');
+    assert.equal(result.cases.length, 2);
+    for (const row of result.cases) {
+      assert.equal(row.status, 'runtime-error', `${timeoutRole} ${row.caseId}: status`);
+      assert.equal(row.timedOut, false, `${timeoutRole} ${row.caseId}: timedOut`);
+      assert.equal(row.failure?.origin, 'provider', `${timeoutRole} ${row.caseId}: origin`);
+      assert.ok(!row.diagnostics.some((diagnostic) => diagnostic.code === 'client-timeout'));
+    }
+  }
+});
+
+test('D-WATCH: a backstop after A\'s accepted finish publishes A unchanged and the rest as provider failures', async () => {
+  const { result, run } = await evaluateJournalled(journalPlan('journal-hang'));
+  assert.deepEqual(run.dispositions, ['accepted', 'accepted', 'accepted']);
+  assert.equal(result.status, 'completed');
+  const [a, b, c] = result.cases;
+  assert.equal(a?.caseId, 'case-1');
+  assert.equal(a?.status, 'completed');
+  assert.deepEqual(a?.value, { doubled: 2, caseId: 'case-1' });
+  assert.equal(a?.stdout, 'learner stdout 1\n');
+  assert.deepEqual(a?.timings, { runMs: 1 });
+  assertServiceFailure(b, 'runtime-failure', true);
+  assertServiceFailure(c, 'runtime-failure', false);
+  assert.match(b!.failure!.message, /did not finish within its own deadline/u);
+});
+
+test('D-WATCH: a late finish from the killed generation is fenced and changes nothing', async () => {
+  const { result, control, run } = await evaluateJournalled(journalPlan('journal-hang'));
+  const late = await Effect.runPromise(control.record(run.invocationId, {
+    kind: 'finished',
+    output: fakeFinish('case-1', 999),
+  }));
+  assert.equal(late, 'fenced');
+  const lateB = await Effect.runPromise(control.record(run.invocationId, {
+    kind: 'finished',
+    output: fakeFinish('case-2', 2),
+  }));
+  assert.equal(lateB, 'fenced');
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assert.equal(result.cases[1]?.status, 'runtime-error');
+});
+
+test('D-WATCH: a duplicate finish is rejected and the first accepted finish stands', async () => {
+  const { result, run } = await evaluateJournalled(journalPlan('journal-duplicate'));
+  assert.deepEqual(run.dispositions, ['accepted', 'accepted', 'duplicate', 'accepted']);
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assertServiceFailure(result.cases[1], 'runtime-failure', true);
+});
+
+test('D-WATCH: a runtime may not forge a journal through publish', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const id = await Effect.runPromise(control.begin({
+    phase: 'batch', planId: 'p', cases: [{ caseId: 'case-1', value: 1 }],
+  }));
+  await Effect.runPromise(control.publish(id, {
+    diagnostics: [],
+    journal: { started: ['case-1'], finished: [fakeFinish('case-1', 7)] },
+  } as never));
+  const output = await Effect.runPromise(control.take(id));
+  assert.equal(output?.journal, undefined);
+});
+
+test('D-WATCH: progress is checked against the batch it belongs to', async () => {
+  const control = new InMemoryJudgeRuntimeControl();
+  const id = await Effect.runPromise(control.begin({
+    phase: 'batch', planId: 'p', cases: [{ caseId: 'A', value: 1 }, { caseId: 'B', value: 2 }],
+  }));
+  const record = (progress: JudgeRuntimeCaseProgress) => Effect.runPromise(control.record(id, progress));
+  assert.equal(await record({ kind: 'started', caseId: 'Z' }), 'unknown-case');
+  assert.equal(await record({ kind: 'started', caseId: 'A' }), 'accepted');
+  assert.equal(await record({ kind: 'started', caseId: 'A' }), 'duplicate');
+  assert.equal(await record({ kind: 'finished', output: fakeFinish('B', 2) }), 'out-of-order');
+  assert.equal(await record({ kind: 'finished', output: fakeFinish('A', 1) }), 'accepted');
+  assert.equal(await record({ kind: 'started', caseId: 'A' }), 'duplicate');
+  const caseId = await Effect.runPromise(control.begin({ phase: 'case', planId: 'p', caseId: 'A', value: 1 }));
+  assert.equal(
+    await Effect.runPromise(control.record(caseId, { kind: 'started', caseId: 'A' })),
+    'unknown-case',
+    'only batch invocations keep a journal'
+  );
+  await Effect.runPromise(control.publish(id, { diagnostics: [] }));
+  assert.equal(await record({ kind: 'started', caseId: 'B' }), 'fenced', 'publication seals the journal');
+});
+
+test('D-WATCH: a stopping batch whose accepted prefix ends at a runaway keeps its not-run suffix when the backstop fires', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-runaway'), true);
+  const [a, b, c] = result.cases;
+  assert.equal(a?.status, 'timed-out');
+  assert.equal(a?.failure?.origin, 'limit');
+  for (const row of [b, c]) {
+    assert.equal(row?.status, 'not-run');
+    assert.deepEqual(row?.notRun, {
+      reason: 'run-stopped-after-limit',
+      stoppedByCaseId: 'case-1',
+      limit: 'client-timeout',
+    });
+  }
+});
+
+test('D-WATCH: without stopping, a runaway in the accepted prefix does not excuse the suffix', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-runaway'), false);
+  assert.equal(result.cases[0]?.failure?.origin, 'limit');
+  assertServiceFailure(result.cases[1], 'runtime-failure', false);
+  assertServiceFailure(result.cases[2], 'runtime-failure', false);
+});
+
+test('D-WATCH: a provider failure published after an accepted finish keeps the prefix and its own reason', async () => {
+  const { result } = await evaluateJournalled(journalPlan('journal-protocol', { timeoutMs: 1_000 }));
+  assert.equal(result.cases[0]?.status, 'completed');
+  assert.deepEqual(result.cases[0]?.value, { doubled: 2, caseId: 'case-1' });
+  assertServiceFailure(result.cases[1], 'protocol', true);
+  assertServiceFailure(result.cases[2], 'protocol', false);
+  assert.equal(result.cases[2]?.failure?.message, 'malformed reply');
 });
