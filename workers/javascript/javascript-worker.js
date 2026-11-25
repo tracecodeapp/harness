@@ -623,7 +623,9 @@ function judgedOutputLimit(limit, bound) {
     limit,
     message: limit === 'cycle'
       ? 'The answer contains a cycle, which a judged answer cannot represent.'
-      : `The answer is larger than the judged-output ${limit} limit (${bound}).`,
+      : limit === 'unrepresentable'
+        ? 'The answer contains a value the judged output cannot read.'
+        : `The answer is larger than the judged-output ${limit} limit (${bound}).`,
   };
   judgedOutputLimits.add(failure);
   return failure;
@@ -635,13 +637,40 @@ function isJudgedOutputLimit(value) {
 
 function normalizeJudgedOutputPolicy(policy) {
   if (!policy || typeof policy !== 'object') return null;
-  const bound = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : Number.POSITIVE_INFINITY);
+  // A malformed bound fails closed: it refuses rather than disables.
+  const bound = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
   return {
     maxBytes: bound(policy.maxBytes),
     maxItems: bound(policy.maxItems),
     maxNodes: bound(policy.maxNodes),
     maxDepth: bound(policy.maxDepth),
   };
+}
+
+// Before a judged container is read or copied: its entries against maxItems,
+// and the JSON values they must add (at least valuesPerEntry each) against
+// maxNodes. Both only refuse what the exact measure would.
+function assertJudgedContainerFits(judged, entries, valuesPerEntry = 1) {
+  if (!judged) return;
+  if (entries > judged.policy.maxItems) throw judgedOutputLimit('item', judged.policy.maxItems);
+  if (judged.values + entries * valuesPerEntry > judged.policy.maxNodes) {
+    throw judgedOutputLimit('node', judged.policy.maxNodes);
+  }
+}
+
+// Drain a judged Set's or Map's built-in iterator, at most one entry past
+// maxItems. A collection that can't be read is a typed limit, not a value.
+function judgedBuiltinIteratorValues(judged, iterate, size, valuesPerEntry) {
+  if (size !== undefined) assertJudgedContainerFits(judged, size, valuesPerEntry);
+  let limited;
+  try {
+    limited = limitedBuiltinIteratorValues(iterate(), judged.policy.maxItems);
+  } catch (_error) {
+    throw judgedOutputLimit('unrepresentable', 0);
+  }
+  if (!limited.exhausted) throw judgedOutputLimit('item', judged.policy.maxItems);
+  assertJudgedContainerFits(judged, limited.values.length, valuesPerEntry);
+  return limited;
 }
 
 function cycleMarker() {
@@ -683,6 +712,8 @@ function judgedJsonStringBytes(text) {
 // here: maxDepth counts language values (a Map is one level, not its three
 // JSON wrappers), which serializeValue checks as it walks them.
 function judgedOutputExceeds(value, policy) {
+  // JSON.stringify(undefined) writes no text: a root undefined is zero bytes.
+  if (value === undefined) return null;
   const measure = (exact) => {
     let values = 0;
     let bytes = 0;
@@ -849,6 +880,7 @@ function serializeValue(
   }
   if (Array.isArray(value)) {
     if (seen.has(value)) return cycleMarker();
+    assertJudgedContainerFits(judged, value.length);
     seen.add(value);
     const limited = limitedEntries(value, activeSerializationLimits.maxItems);
     const result = limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState));
@@ -860,6 +892,7 @@ function serializeValue(
   }
   if (typeof ArrayBuffer !== 'undefined' && ArrayBuffer.isView(value)) {
     if (seen.has(value)) return cycleMarker();
+    assertJudgedContainerFits(judged, value instanceof DataView ? value.byteLength : value.length);
     seen.add(value);
     const result = value instanceof DataView
       ? serializeIndexedValues(value.byteLength, (index) => value.getUint8(index), depth, seen, nodeRefState)
@@ -869,6 +902,7 @@ function serializeValue(
   }
   if (typeof ArrayBuffer !== 'undefined' && value instanceof ArrayBuffer) {
     if (seen.has(value)) return cycleMarker();
+    assertJudgedContainerFits(judged, value.byteLength);
     seen.add(value);
     const bytes = new Uint8Array(value);
     const result = serializeIndexedValues(bytes.byteLength, (index) => bytes[index], depth, seen, nodeRefState);
@@ -879,12 +913,16 @@ function serializeValue(
     if (seen.has(value)) return cycleMarker();
     seen.add(value);
     let limited;
-    try {
-      limited = limitedBuiltinIteratorValues(Set.prototype.values.call(value), activeSerializationLimits.maxItems);
-    } catch (_error) {
-      return '<unserializable Set>';
-    }
     const size = builtinCollectionSize(value, Set.prototype);
+    if (judged) {
+      limited = judgedBuiltinIteratorValues(judged, () => Set.prototype.values.call(value), size, 1);
+    } else {
+      try {
+        limited = limitedBuiltinIteratorValues(Set.prototype.values.call(value), activeSerializationLimits.maxItems);
+      } catch (_error) {
+        return '<unserializable Set>';
+      }
+    }
     const result = {
       __type__: 'set',
       values: limited.values.map((item) => serializeValue(item, depth + 1, seen, nodeRefState)),
@@ -903,12 +941,17 @@ function serializeValue(
     if (seen.has(value)) return cycleMarker();
     seen.add(value);
     let limited;
-    try {
-      limited = limitedBuiltinIteratorValues(Map.prototype.entries.call(value), activeSerializationLimits.maxItems);
-    } catch (_error) {
-      return '<unserializable Map>';
-    }
     const size = builtinCollectionSize(value, Map.prototype);
+    if (judged) {
+      // Each entry is a [key, value] pair: at least three JSON values.
+      limited = judgedBuiltinIteratorValues(judged, () => Map.prototype.entries.call(value), size, 3);
+    } else {
+      try {
+        limited = limitedBuiltinIteratorValues(Map.prototype.entries.call(value), activeSerializationLimits.maxItems);
+      } catch (_error) {
+        return '<unserializable Map>';
+      }
+    }
     const result = {
       __type__: 'map',
       entries: limited.values.map(([k, v]) => [

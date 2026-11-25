@@ -9,10 +9,12 @@ import type { RuntimeProgramPreparationCall } from './runtime-calls';
  * - `maxItems`: entries in any one container (array elements, object members,
  *   set values, map entries);
  * - `maxNodes`: JSON values in the whole answer, containers and scalars;
- * - `maxDepth`: container nesting (a scalar root is 0, `[]` and `{}` are 1).
+ * - `maxDepth`: nesting of the language value (a scalar root is 0; an array,
+ *   object, node, set or map is one deeper than its container; a set's or
+ *   map's JSON wrappers don't count).
  *
  * An answer over any bound, or one the serializer cannot represent completely
- * (a cycle), is the case's typed `serialization-limit` with no value. No
+ * (a cycle, or a set or map it cannot read), is the case's typed `serialization-limit` with no value. No
  * placeholder such as `'<max depth>'` or `'<cycle>'` may reach a judged value.
  * See harness-artifacts C-SEAM-CONTRACT.md.
  */
@@ -24,7 +26,7 @@ export interface JudgedOutputPolicy {
 }
 
 /** @internal Which bound a refused judged answer crossed. */
-export type JudgedOutputLimit = 'byte' | 'item' | 'node' | 'depth' | 'cycle';
+export type JudgedOutputLimit = 'byte' | 'item' | 'node' | 'depth' | 'cycle' | 'unrepresentable';
 
 /**
  * @internal The ordinary (`code`) prepare call as the Judge composition sends

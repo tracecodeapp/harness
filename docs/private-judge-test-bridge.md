@@ -42,7 +42,7 @@ Except for the worker-confirmed `no-recorder` control, these ACKs attest schedul
 
 ## Judged-output policy
 
-Every ordinary (code-mode) prepare for JavaScript, TypeScript, Java, C# and C++ carries the product's judged-output policy: `maxBytes` (UTF-8 bytes of the answer's compact JSON), `maxItems` (entries in any one container), `maxNodes` (JSON values in the answer) and `maxDepth` (container nesting). An answer over a bound, or one with a cycle, is the case's typed `serialization-limit`, with no value. Python has no policy in this release. The contract is in `packages/runtime-contracts/src/judged-output-policy.ts`.
+Every ordinary (code-mode) prepare for JavaScript, TypeScript, Java, C# and C++ carries the product's judged-output policy: `maxBytes` (UTF-8 bytes of the answer's compact JSON), `maxItems` (entries in any one container), `maxNodes` (JSON values in the answer) and `maxDepth` (nesting of the language value, so a Set or Map is one level, not its JSON wrappers). An answer over a bound, one with a cycle, or one with a Set or Map that can't be read, is the case's typed `serialization-limit`, with no value. Python has no policy in this release. The contract is in `packages/runtime-contracts/src/judged-output-policy.ts`.
 
 A bridge may lower the policy with an optional third callback:
 
