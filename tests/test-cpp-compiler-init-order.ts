@@ -42,6 +42,8 @@ function deliver(handler: MessageHandler, data: WorkerMessage): void {
  */
 class StrictCompilerWorker {
   static instances: StrictCompilerWorker[] = [];
+  /** The next Worker answers its init with the worker's failure reply (`postFailure`). */
+  static failNextInit: string | null = null;
 
   onmessage: MessageHandler = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -73,6 +75,12 @@ class StrictCompilerWorker {
           deliver(this.onmessage, { id: message.id, type, protocolToken: message.protocolToken, payload });
         }
       });
+    if (message.type === 'init' && StrictCompilerWorker.failNextInit !== null) {
+      const error = StrictCompilerWorker.failNextInit;
+      StrictCompilerWorker.failNextInit = null;
+      reply({ error }, 'error');
+      return;
+    }
     if (message.type === 'init') {
       const integrity = (message.payload?.assets as { toolchainIntegrity?: { assets?: { url?: string; sha256?: string }[] } } | undefined)
         ?.toolchainIntegrity;
@@ -166,6 +174,7 @@ function routedWorkerFactory(url: string | URL): StrictCompilerWorker | LearnerW
 
 function resetFakes(): void {
   StrictCompilerWorker.instances = [];
+  StrictCompilerWorker.failNextInit = null;
   LearnerWorker.instances = [];
   LearnerWorker.compileRequests = 0;
 }
@@ -199,7 +208,9 @@ const SHARD = {
   runtimeObjectUrl: '/workers/cpp/tracecc/narrow.o',
 };
 
-function createService(): TraceCCCompilerService {
+function createService(
+  workerFactory: (url: string) => unknown = (url) => new StrictCompilerWorker(url)
+): TraceCCCompilerService {
   return new TraceCCCompilerService({
     workerUrl: '/workers/cpp-worker.js',
     compilerUrl: COMPILER_URL,
@@ -207,7 +218,7 @@ function createService(): TraceCCCompilerService {
     runtimeHeaderUrl: '/workers/cpp/tracecc/tracecode_runtime.hpp',
     compilerIntegrity: { assets: [{ url: COMPILER_URL, sha256: 'a'.repeat(64) }] },
     shards: { narrow: SHARD, broad: SHARD, map: SHARD },
-    workerFactory: (url) => new StrictCompilerWorker(url) as never,
+    workerFactory: (url) => workerFactory(url) as never,
   });
 }
 
@@ -360,6 +371,83 @@ test('a reset while the compiler Worker boots releases its waiters and spares th
     assertCondition(
       replacement.received.join(',') === 'init,prewarm-trusted-tracecc-assets' && !replacement.terminated,
       `the replacement Worker must initialize, then serve: ${replacement.received.join(', ')}`
+    );
+  } finally {
+    service.terminate();
+  }
+});
+
+test('a compiler Worker whose init fails is replaced by the next request', async () => {
+  resetFakes();
+  const service = createService();
+  try {
+    StrictCompilerWorker.failNextInit = 'TraceCC compiler Worker initialization failed in the worker.';
+    const first = service.prewarmAssets().then(
+      () => 'prewarmed',
+      (error: Error) => `rejected: ${error.message}`
+    );
+    const failed = StrictCompilerWorker.instances[0];
+    assertCondition(failed, 'the asset prewarm should start the trusted compiler Worker');
+    failed.finishBoot();
+    const outcome = await first;
+    assertCondition(
+      outcome === 'rejected: TraceCC compiler Worker initialization failed in the worker.',
+      `the caller that hit the failed init must get its error: ${outcome}`
+    );
+
+    const next = service.prewarmAssets().then(
+      () => 'prewarmed',
+      (error: Error) => `rejected: ${error.message}`
+    );
+    const replacement = StrictCompilerWorker.instances[1];
+    replacement?.finishBoot();
+    const recovered = await next;
+    assertCondition(
+      replacement !== undefined && recovered === 'prewarmed',
+      `the next request must start a fresh Worker and succeed: ${recovered} (${StrictCompilerWorker.instances.length} Workers)`
+    );
+    assertCondition(
+      failed.terminated,
+      'the Worker whose init failed must be terminated, not left running'
+    );
+    assertCondition(
+      replacement.received.join(',') === 'init,prewarm-trusted-tracecc-assets',
+      `the replacement Worker must initialize, then serve: ${replacement.received.join(', ')}`
+    );
+  } finally {
+    service.terminate();
+  }
+});
+
+test('a compiler Worker that cannot be constructed is retried by the next request', async () => {
+  resetFakes();
+  let constructions = 0;
+  const service = createService((url) => {
+    constructions += 1;
+    if (constructions === 1) throw new Error('Worker construction failed.');
+    return new StrictCompilerWorker(url);
+  });
+  try {
+    const first = await service.prewarmAssets().then(
+      () => 'prewarmed',
+      (error: Error) => `rejected: ${error.message}`
+    );
+    assertCondition(
+      first === 'rejected: Worker construction failed.',
+      `the caller that hit the constructor failure must get its error: ${first}`
+    );
+
+    const next = service.prewarmAssets().then(
+      () => 'prewarmed',
+      (error: Error) => `rejected: ${error.message}`
+    );
+    // Let the retried startup construct its Worker before releasing the boot.
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    StrictCompilerWorker.instances[0]?.finishBoot();
+    const recovered = await next;
+    assertCondition(
+      constructions === 2 && recovered === 'prewarmed',
+      `the next request must construct a fresh Worker and succeed: ${recovered} (${constructions} constructions)`
     );
   } finally {
     service.terminate();
