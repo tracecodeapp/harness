@@ -71,6 +71,27 @@ function testJournalReads(): void {
   );
 }
 
+function testJournalTimestamps(): void {
+  const start = Date.UTC(2026, 10, 18);
+  let time = start;
+  const state = new WorkspaceEventState(undefined, () => time++);
+  const entries: KernelJournalEntry[] = [
+    processEntry(1),
+    { kind: 'fs', op: 'write', path: 'output.txt', actor: 'runtime:shell', pid: 1 },
+    { kind: 'http', op: 'request', method: 'GET', host: 'example.test', path: '/', via: 'external', pid: 1, authPresent: false },
+    { kind: 'process', op: 'exit', pid: 1, exitCode: 0 },
+  ];
+  for (const entry of entries) state.recordJournal(entry);
+
+  const journal = state.journal();
+  assertEqual(journal.length, entries.length, 'every entry should be recorded');
+  for (const [index, record] of journal.entries()) {
+    assertEqual(record.seq, index + 1, 'journal should preserve sequence order');
+    assertEqual(record.ts, new Date(start + index).toISOString(), 'journal should record the injected time');
+    assertEqual(Object.keys(record).slice(0, 2).join(','), 'seq,ts', 'journal should put seq and ts first');
+  }
+}
+
 function testWatchLifecycle(): void {
   const state = new WorkspaceEventState();
   const phases: string[] = [];
@@ -96,6 +117,7 @@ function testWatchLifecycle(): void {
 
 testBoundedKernelEvents();
 testJournalReads();
+testJournalTimestamps();
 testWatchLifecycle();
 
 console.log('workspace event state tests passed');

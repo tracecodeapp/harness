@@ -39,7 +39,10 @@ export class WorkspaceEventState {
   private nextKernelEventSeq = 1;
   private nextJournalSeq = 1;
 
-  constructor(limit = DEFAULT_WORKSPACE_EVENT_LOG_LIMIT) {
+  constructor(
+    limit = DEFAULT_WORKSPACE_EVENT_LOG_LIMIT,
+    private readonly now: () => number = Date.now
+  ) {
     this.limit = Math.max(1, Math.trunc(limit));
   }
 
@@ -59,6 +62,7 @@ export class WorkspaceEventState {
   recordJournal(entry: KernelJournalEntry): KernelJournalRecord {
     const record = {
       seq: this.nextJournalSeq++,
+      ts: new Date(this.now()).toISOString(),
       ...entry,
     } as KernelJournalRecord;
     this.kernelJournalLog.push(record);

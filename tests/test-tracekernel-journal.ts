@@ -51,6 +51,27 @@ async function testAbsoluteCrossKindOrdering(): Promise<void> {
       `journal should preserve the redirect truncate, payload write, request, and exit sequence`
     );
     assertDeepEqual(journal.map((record) => record.seq), [1, 2, 3, 4, 5], 'journal seq should be contiguous for this run');
+
+    function recordedTime(record: KernelJournalRecord): number {
+      const time = Date.parse(record.ts ?? '');
+      assertCondition(Number.isFinite(time), `journal record ${record.seq} should have a parseable ts: ${JSON.stringify(record)}`);
+      return time;
+    }
+
+    const [startedAt, ...times] = journal.map(recordedTime);
+    const completedAt = times.pop();
+    const exec = journal[0]!;
+    const exit = journal.at(-1)!;
+    assertCondition(startedAt !== undefined && completedAt !== undefined, 'command should record start and completion times');
+    assertCondition(exec.pid !== undefined && exit.pid === exec.pid, 'exec and exit should belong to the same process');
+    for (const [index, observation] of journal.slice(1, -1).entries()) {
+      assertCondition(observation.pid === exec.pid, `observation ${observation.seq} should belong to the command PID`);
+      const observedAt = times[index]!;
+      assertCondition(
+        startedAt <= observedAt && observedAt <= completedAt,
+        `observation ${observation.seq} should fall between exec and exit`
+      );
+    }
   } finally {
     await workspace.destroy();
   }
