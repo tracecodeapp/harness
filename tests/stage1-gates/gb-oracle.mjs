@@ -24,6 +24,10 @@ function serviceCut(fixture, route) {
   return fixture.name === 'transport' && /^(?:cut|deadline|during)-/u.test(route);
 }
 
+function pythonWorkerLoss(fixture, route) {
+  return fixture.language === 'python' && fixture.name === 'transport' && /^(cut|during)-(keep|stop)$/u.test(route);
+}
+
 function required(fixture, route) {
   const ids = ['compile', 'order', 'correlation'];
   if (!route.startsWith('run-') && !continuation(route)) ids.push('aggregate', 'counts');
@@ -391,6 +395,16 @@ export function ledgerFor(fixture, route, sample) {
   };
 }
 
+export function seedReplayedAStart(sample) {
+  const starts = sample.transcript;
+  const start = starts.find(({ kind, caseId }) => kind === 'python-clock-start' && caseId === 'A') ??
+    starts.find(({ kind, caseId }) => kind === 'worker-started' && caseId === 'A');
+  if (!start) return 0;
+  const sequence = starts.reduce((last, event) => Math.max(last, event.sequence ?? 0), 0) + 1;
+  starts.push({ ...start, generation: start.generation + 1, sequence });
+  return 1;
+}
+
 function checkJavaTransport(fixture, route, sample, published, wire, assert) {
   const releases = wire.filter(({ kind }) => kind === 'java-release');
   const command = releases[0];
@@ -498,6 +512,114 @@ function checkJavaTransport(fixture, route, sample, published, wire, assert) {
   }
 }
 
+function pythonStoredBatch(fixture, sample, wire, afterSequence) {
+  const marks = wire.filter(({ kind, phase }) => kind === 'schedule' &&
+    ['ordinary-commit', 'ordinary-write-attempt', 'public-resolve'].includes(phase));
+  if (!marks.length) return;
+  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
+  const resolves = marks.filter(({ phase }) => phase === 'public-resolve');
+  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
+  const [commit] = commits;
+  const digest = sample.stimulus?.bundle.workspaceDigest;
+  const stored = commits.length === 1 && resolves.length === 1 &&
+    typeof commit.evaluationId === 'string' && commit.evaluationId.length > 0 &&
+    Number.isSafeInteger(commit.generation) && commit.generation > 0 &&
+    typeof digest === 'string' && commit.workspaceDigest === digest && sample.result?.workspaceDigest === digest &&
+    afterSequence < commit.sequence && commit.sequence < resolves[0].sequence &&
+    marks.every((event) => (event.language === undefined || event.language === 'python') && scopeMatches(event, commit)) &&
+    isDeepStrictEqual(writes.map(({ caseId }) => caseId), fixture.cases.map(({ id }) => id)) &&
+    writes.every((event) => afterSequence < event.sequence && event.sequence < commit.sequence && event.origin !== 'observer');
+  return { stored, marks };
+}
+
+function retainsPythonA(fixture, row, result) {
+  return result?.success === true && row?.status === 'completed' &&
+    isDeepStrictEqual(row.value, result.output) && row.verdict?.kind === fixture.cases[0].grade &&
+    row.stdout === fixture.cases[0].stdout && row.stderr === '' && row.failure === undefined &&
+    row.termination?.kind === 'exit' && row.termination.exitCode === 0 && row.timedOut === false;
+}
+
+function hasPythonWorkerLossWitness(wire) {
+  // A legacy scripted slice could finish without delivering progress.
+  return wire.find(({ kind }) => kind === 'ordinary-dispatch')?.reportsStarts === true &&
+    wire.some(({ kind }) => kind === 'forwarded-progress') &&
+    wire.some(({ kind }) => kind === 'subbatch-reply');
+}
+
+function checkPythonWorkerLoss(fixture, route, sample, published, wire, assert) {
+  const events = (kind) => wire.filter((event) => event.kind === kind);
+  const dispatches = events('ordinary-dispatch');
+  const [command] = dispatches;
+  const releases = events('release-row');
+  const starts = events('worker-started');
+  const finishes = events('worker-finished');
+  const deliveries = events('forwarded-progress');
+  const hits = events('injection');
+  const [hit] = hits;
+  const sliceReplies = events('subbatch-reply');
+  const [reply] = sliceReplies;
+  const [workerFinish] = finishes;
+  const terminals = events('ordinary-terminal');
+  const [terminal] = terminals;
+  const [entry] = events('ordinary-start');
+  const sameGeneration = (event) => event && event.generation === command?.generation;
+  const sameCommand = (event) => sameGeneration(event) && event.commandId === command?.commandId;
+  const ids = fixture.cases.map(({ id }) => id);
+  const cases = route.startsWith('during-') ? ['A', 'B'] : ['A'];
+  const ordinaryWire = events('dispatch').filter(({ mode }) => mode !== 'trace');
+  const oneDispatch = dispatches.length === 1 && ordinaryWire.length === 1 &&
+    sameGeneration(ordinaryWire[0]) && command.sequence + 1 === ordinaryWire[0].sequence &&
+    isDeepStrictEqual(command.rows, ids) && isDeepStrictEqual(ordinaryWire[0].rows, ids);
+  const delivered = (phase, event) => deliveries.find((delivery) => delivery.phase === phase &&
+    delivery.caseId === event.caseId && sameGeneration(delivery) && event.sequence < delivery.sequence);
+  const beforeHit = (event) => sameGeneration(event) && event.sequence < hit?.sequence;
+  const actualStarts = starts.map(({ caseId }) => caseId);
+  const actualReleases = releases.map(({ caseId }) => caseId);
+  const anchoredA = sameCommand(entry) && entry.caseId === 'A' && entry.index === 0 &&
+    entry.sequence + 1 === starts[0]?.sequence;
+  const startCoverage = oneDispatch && anchoredA && isDeepStrictEqual(actualReleases, cases) &&
+    isDeepStrictEqual(actualStarts, cases) && releases.every((release, index) =>
+      beforeHit(release) && release.sequence < starts[index].sequence &&
+      beforeHit(starts[index]) && beforeHit(delivered('started', starts[index])));
+  const aFinished = finishes.length === 1 && workerFinish.caseId === 'A' && beforeHit(workerFinish) &&
+    workerFinish.detail?.success === true && isDeepStrictEqual(workerFinish.detail.output, fixture.cases[0].actual) &&
+    isDeepStrictEqual(workerFinish.detail.consoleOutput, []) &&
+    starts[0]?.sequence < workerFinish.sequence && beforeHit(delivered('finished', workerFinish)) &&
+    delivered('finished', workerFinish).sequence < reply.sequence && sliceReplies.length === 1 &&
+    reply.caseId === 'A' && beforeHit(reply) && reply.payload?.success === true &&
+    reply.payload.resultsStreamed === 1 && terminals.length === 1 && sameCommand(terminal) &&
+    isDeepStrictEqual(terminal.startedCaseIndices, [0]) &&
+    workerFinish.sequence < terminal.sequence && terminal.sequence < reply.sequence;
+  const injected = hits.length === 1 && hit.fault === route && sameGeneration(hit) &&
+    (!releases[1] || reply.sequence < releases[1].sequence) && !events('test-transport-failure').length;
+  const proof = { dispatches, releases, starts, finishes, deliveries, hits };
+  assert('injection-ack', injected && startCoverage && aFinished, proof);
+  assert('A/ordinary-start-count', oneDispatch && anchoredA && starts.filter(({ caseId }) => caseId === 'A').length === 1, proof);
+  assert('A/start-proof', startCoverage, proof);
+  assert('A/worker-finish', aFinished, { workerFinish, terminal, reply });
+  for (const id of ['B', 'C']) {
+    assert(`${id}/start-proof`, startCoverage && actualStarts.includes(id) === cases.includes(id), proof);
+  }
+  assert('generation-fence', injected && startCoverage && aFinished &&
+    deliveries.length === cases.length + 1 && deliveries.every(beforeHit) &&
+    events('ordinary-start').length === 1, proof);
+  const storage = pythonStoredBatch(fixture, sample, wire, hit?.sequence);
+  if (storage && workerFinish) {
+    const a = published.find(({ caseId }) => caseId === 'A');
+    const stored = storage.stored && injected && aFinished;
+    assert('A/coordinator-commit', stored && retainsPythonA(fixture, a, workerFinish.detail),
+      { a, workerFinish, ...storage });
+    if (sample.conversions?.cases) {
+      const suffix = ids.slice(1).map((id) => published.find(({ caseId }) => caseId === id));
+      assert('suffix/storage', stored && suffix.every((row) => row?.failure?.origin === 'provider' &&
+        row.failure.reason === 'runtime-failure' && row.verdict?.kind === 'not-evaluated' &&
+        row.timedOut === false && row.notRun === undefined && !Object.hasOwn(row, 'value') &&
+        sample.conversions.cases[published.indexOf(row)]?.rejected?.name === 'RuntimeProviderError'),
+      { suffix, ...storage });
+    }
+  }
+}
+
 function checkPythonClock(fixture, route, sample, published, wire, assert) {
   const ofKind = (kind) => wire.filter((event) => event.kind === kind);
   const timeout = route === 'timeout-fanout';
@@ -588,20 +710,11 @@ function checkPythonClock(fixture, route, sample, published, wire, assert) {
     aStarts[0]?.sequence < aFinish.sequence && aFinish.result?.success === true &&
     isDeepStrictEqual(aFinish.result.output, fixture.cases[0].actual);
   assert('A/worker-finish', aFinished, aFinishes);
-  const marks = ofKind('schedule').filter(({ language }) => language === 'python');
-  if (!marks.length) return;
-  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
-  const resolves = marks.filter(({ phase }) => phase === 'public-resolve');
-  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
-  const [commit] = commits;
+  const storage = pythonStoredBatch(fixture, sample, wire, terminal?.sequence);
+  if (!storage) return;
   const a = published.find(({ caseId }) => caseId === 'A');
-  assert('A/coordinator-commit', aFinished && a?.status === 'completed' &&
-    isDeepStrictEqual(a.value, aFinish.result.output) && a.verdict?.kind === fixture.cases[0].grade &&
-    a.stdout === fixture.cases[0].stdout && a.stderr === '' &&
-    commits.length === 1 && resolves.length === 1 && aFinish.sequence < commit.sequence &&
-    commit.sequence < resolves[0].sequence && commit.workspaceDigest === sample.result?.workspaceDigest &&
-    marks.every((event) => scopeMatches(event, commit)) && isDeepStrictEqual(idsOf(writes), ids),
-  { a, aFinish, commits, writes, resolves });
+  assert('A/coordinator-commit', aFinished && streamed && storage.stored &&
+    retainsPythonA(fixture, a, aFinish.result), { a, aFinish, ...storage });
 }
 
 function checkServiceDeadline(fixture, sample, published, wire, assert) {
@@ -751,7 +864,10 @@ function check(fixture, route, sample, assert) {
   }
   if (!route.startsWith('run-') && !continuation(route)) {
     const passed = rows.filter((row) => desiredRow(fixture, route, row) === 'completed').length;
-    const verdict = serviceCut(fixture, route) ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
+    // These Python routes use allCasesPassed == true. Provider failures
+    // contribute a concrete non-passing row while preserving its ungraded verdict.
+    const verdict = serviceCut(fixture, route) && !pythonWorkerLoss(fixture, route)
+      ? 'indeterminate' : passed === rows.length ? 'passed' : 'failed';
     const ok = verdict === 'indeterminate' ? 'unknown' : verdict === 'passed';
     assert('aggregate', receipt?.verdict === verdict && receipt?.policy?.result === ok, [receipt?.verdict, receipt?.policy]);
     assert('counts', receipt?.passedCount === passed && receipt?.totalCount === rows.length, [receipt?.passedCount, receipt?.totalCount]);
@@ -760,12 +876,14 @@ function check(fixture, route, sample, assert) {
     assert('interrupt-unavailable', sample.crossOriginIsolated === false, sample.crossOriginIsolated);
   }
 
+  const routeWire = wire.filter(({ request }) => request === route);
   const javaTransport = fixture.language === 'java' && fixture.name === 'transport' &&
-    wire.some(({ kind, request }) => kind === 'java-release' && request === route);
+    routeWire.some(({ kind }) => kind === 'java-release');
   const pythonClock = pythonTransportClock(fixture, route);
   const serviceDeadline = serviceDeadlineRoute(fixture, route);
-  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock && !serviceDeadline
-    ? completeOrdinaryStarts(wire.filter(({ request }) => request === route)) : undefined;
+  const pythonLoss = pythonWorkerLoss(fixture, route) && hasPythonWorkerLossWitness(routeWire);
+  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock &&
+    !serviceDeadline && !pythonLoss ? completeOrdinaryStarts(routeWire) : undefined;
   for (const expected of rows) {
     const row = published.find(({ caseId }) => caseId === expected.id);
     const status = desiredRow(fixture, route, expected);
@@ -809,11 +927,13 @@ function check(fixture, route, sample, assert) {
   }
 
   if (serviceDeadline) {
-    checkServiceDeadline(fixture, sample, published, wire.filter(({ request }) => request === route), assert);
+    checkServiceDeadline(fixture, sample, published, routeWire, assert);
   } else if (pythonClock) {
-    checkPythonClock(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
+    checkPythonClock(fixture, route, sample, published, routeWire, assert);
   } else if (javaTransport) {
-    checkJavaTransport(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
+    checkJavaTransport(fixture, route, sample, published, routeWire, assert);
+  } else if (pythonLoss) {
+    checkPythonWorkerLoss(fixture, route, sample, published, routeWire, assert);
   } else if (fixture.name === 'transport' && route !== 'submit-stop') {
     const hit = wire.filter((event) => event.kind === 'injection' && event.fault === route);
     const starts = wire.filter((event) => event.caseId === 'A' && event.kind === 'worker-started');

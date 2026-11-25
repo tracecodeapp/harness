@@ -9,7 +9,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { ledgerFor, ordinaryProjection } from './gb-oracle.mjs';
+import { ledgerFor, ordinaryProjection, seedReplayedAStart } from './gb-oracle.mjs';
 import { schedulerInjection } from './gb-probe.mjs';
 import { loadMux, runMux } from './gb-mux.mjs';
 import { summarize } from './checks.mjs';
@@ -178,12 +178,9 @@ function controls(samples) {
 
   const transport = fixtures.fixtures.find(({ language, name }) => language === 'python' && name === 'transport');
   const clock = samples.get(key(transport, 'clock-virtual'));
-  if (requestedKeys.has(key(transport, 'clock-virtual'))) seed(transport, 'clock-virtual', clock, 'restart A in a fresh generation', 'A/ordinary-start-count', (sample) => {
-    const start = sample.transcript.find((event) => event.kind === 'worker-started' && event.caseId === 'A');
-    if (!start) return 0;
-    sample.transcript.push({ ...start, generation: start.generation + 1 });
-    return 1;
-  });
+  if (requestedKeys.has(key(transport, 'clock-virtual'))) {
+    seed(transport, 'clock-virtual', clock, 'restart A in a fresh generation', 'A/ordinary-start-count', seedReplayedAStart);
+  }
 
   const g5 = fixtures.fixtures.find(({ gate, language, name }) => gate === 'G5' && language === 'javascript' && name === 'stdout');
   if (requestedKeys.has(key(g5, 'submit-omitted'))) seed(g5, 'submit-omitted', samples.get(key(g5, 'submit-omitted')), 'observer output replaces judged value', 'A/value', (sample) => {

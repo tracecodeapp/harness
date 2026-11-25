@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { ledgerFor } from './gb-oracle.mjs';
+import { ledgerFor, seedReplayedAStart } from './gb-oracle.mjs';
 
 const { fixtures } = JSON.parse(await readFile(new URL('./gb-fixtures.json', import.meta.url), 'utf8'));
 
@@ -59,6 +59,71 @@ test('G4 rejects replay across generations when A keeps its value', () => {
     assert.equal(mutant.result.evaluation.cases[0].value, 11);
     return 1;
   });
+});
+
+test('Python loss checks the bound commit, the sealed suffix, exact starts and the all-cases aggregate', () => {
+  const spec = fixture('python', 'transport');
+  for (const route of ['cut-keep', 'cut-stop', 'during-keep', 'during-stop']) {
+    const sample = referenceReceipt(spec);
+    Object.assign(sample.result, {
+      verdict: 'failed', policy: { result: false }, workspaceDigest: 'digest', totalCount: 3, passedCount: 1,
+    });
+    sample.stimulus = { bundle: { workspaceDigest: 'digest' } };
+    sample.conversions = { cases: [{ kind: 'completed', output: 11 }] };
+    for (const row of sample.result.evaluation.cases.slice(1)) {
+      delete row.value;
+      row.status = 'runtime-error';
+      row.failure = { origin: 'provider', reason: 'runtime-failure' };
+      row.verdict = { kind: 'not-evaluated' };
+      sample.conversions.cases.push({ rejected: { name: 'RuntimeProviderError' } });
+    }
+    const push = (kind, fields) => sample.transcript.push({
+      kind, request: route, generation: 2, sequence: sample.transcript.length + 1, ...fields,
+    });
+    const rows = ['A', 'B', 'C'];
+    push('ordinary-dispatch', { commandId: '4', rows, reportsStarts: true });
+    push('dispatch', { rows, mode: 'code' });
+    push('release-row', { caseId: 'A' });
+    push('ordinary-start', { commandId: '4', caseId: 'A', index: 0 });
+    push('worker-started', { caseId: 'A' });
+    push('forwarded-progress', { caseId: 'A', phase: 'started' });
+    push('worker-finished', { caseId: 'A', detail: { success: true, output: 11, consoleOutput: [] } });
+    push('forwarded-progress', { caseId: 'A', phase: 'finished' });
+    push('ordinary-terminal', { commandId: '4', startedCaseIndices: [0] });
+    push('subbatch-reply', { caseId: 'A', payload: { resultsStreamed: 1, success: true } });
+    if (route.startsWith('during-')) {
+      push('release-row', { caseId: 'B' });
+      push('worker-started', { caseId: 'B' });
+      push('forwarded-progress', { caseId: 'B', phase: 'started' });
+    }
+    push('injection', { fault: route });
+    const mark = (phase, caseId) => push('schedule', {
+      phase, caseId, generation: 1, evaluationId: 'evaluation', workspaceDigest: 'digest',
+    });
+    rows.forEach((id) => mark('ordinary-write-attempt', id));
+    mark('ordinary-commit');
+    mark('public-resolve');
+
+    const check = (value, suffix) => ledgerFor(spec, route, value).receipts
+      .find(({ id }) => id.endsWith('/' + suffix))?.status;
+    for (const id of ['aggregate', 'A/coordinator-commit', 'B/start-proof', 'C/start-proof',
+      'suffix/storage', 'generation-fence']) assert.equal(check(sample, id), 'passed', `${route} ${id}`);
+    const foreign = structuredClone(sample);
+    foreign.transcript.find(({ phase }) => phase === 'ordinary-commit').workspaceDigest = 'other';
+    assert.equal(check(foreign, 'A/coordinator-commit'), 'failed');
+    const suffix = structuredClone(sample);
+    suffix.conversions.cases[2] = { rejected: { name: 'TypeError' } };
+    assert.equal(check(suffix, 'suffix/storage'), 'failed');
+    const escaped = structuredClone(sample);
+    escaped.transcript.push({ kind: 'worker-started', request: route, caseId: 'C',
+      generation: 3, sequence: 100 });
+    assert.equal(check(escaped, 'C/start-proof'), 'failed');
+    assert.equal(check(escaped, 'generation-fence'), 'failed');
+    const unknown = structuredClone(sample);
+    unknown.result.verdict = 'indeterminate';
+    unknown.result.policy.result = 'unknown';
+    assert.equal(check(unknown, 'aggregate'), 'failed');
+  }
 });
 
 test('G5 rejects observer output written to the judge receipt', () => {
@@ -217,6 +282,7 @@ for (const route of ['timeout-fanout', 'clock-virtual', 'clock-real']) {
         assert.equal(state(sample, check), 'passed', check);
       }
       if (!timeout) assert.equal(state(sample, 'clock/three-advances'), 'passed');
+      requireDetected(spec, route, sample, 'A/ordinary-start-count', seedReplayedAStart);
       const mutant = structuredClone(sample);
       if (timeout) {
         mutant.transcript.find(({ kind }) => kind === 'python-case-timer-fired').caseId = 'A';
