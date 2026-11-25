@@ -162,6 +162,13 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Fixed
 
+- C++ Project compile diagnostics use learner paths and retain the learner's
+  include chain. TraceCC's temporary wrapper frame is omitted. `__FILE__`
+  and assertions use the absolute learner path for source files, including
+  for relative commands. Headers found through `-I` still report their
+  `/usr/include` path in `__FILE__`. Compiling preserves the original
+  source bytes read by `#embed`.
+
 - Python project commands name workspace files by the path the terminal
   shows, as CPython does for the same command in that directory. Tracebacks
   (syntax and runtime errors, in the main file and in imported project

@@ -1,0 +1,32 @@
+{
+  "source": "#include <cstdio>\nint main() {\n  std::printf(\"%s\\n\", \"/usr/share/tracecc/project/source-0.cpp\");\n  std::printf(\"%s\\n\", \"/workspace/main.cpp\");\n  std::printf(\"%s\\n\", __FILE__);\n}\n",
+  "literalStdout": "/usr/share/tracecc/project/source-0.cpp\n/workspace/main.cpp\n",
+  "assertSource": "#include <cassert>\nint main() { assert(false); }\n",
+  "embedSource": "// Embed this file exactly as it was saved.\n#include <cstdio>\nconst unsigned char source[] = {\n#embed \"main.cpp\"\n};\nint main() { return std::fwrite(source, 1, sizeof(source), stdout) != sizeof(source); }\n",
+  "cases": [
+    {
+      "name": "relative",
+      "cwd": "/home/guest/playground",
+      "operand": "main.cpp",
+      "path": "main.cpp",
+      "clangFile": "main.cpp",
+      "traceccFile": "/home/guest/playground/main.cpp"
+    },
+    {
+      "name": "relative from a nested cwd",
+      "cwd": "/home/guest/playground/src",
+      "operand": "./main.cpp",
+      "path": "src/main.cpp",
+      "clangFile": "./main.cpp",
+      "traceccFile": "/home/guest/playground/src/main.cpp"
+    },
+    {
+      "name": "absolute",
+      "cwd": "/home/guest/playground",
+      "operand": "/home/guest/playground/src/main.cpp",
+      "path": "src/main.cpp",
+      "clangFile": "/home/guest/playground/src/main.cpp",
+      "traceccFile": "/home/guest/playground/src/main.cpp"
+    }
+  ]
+}

@@ -17,6 +17,8 @@ import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
 import { cppExceptionOracleCases } from './fixtures/cpp-exception-cases';
+import cppProjectDiagnostics from './fixtures/cpp-project-diagnostics.json';
+import cppProjectFileIdentity from './fixtures/cpp-project-file-identity.json';
 
 function assertCondition(
   condition: unknown,
@@ -609,6 +611,66 @@ async function main(): Promise<void> {
             },
           })
         : null;
+      const projectDiagnostics = [];
+      for (const { name, args, cwd, files } of ${JSON.stringify(cppProjectDiagnostics.cases.map(
+        ({ name, args, cwd, files }) => ({ name, args, cwd, files })
+      ))}) {
+        const stderrEvents = [];
+        const compiled = await projectClient.executeProjectCpp({
+          code: '',
+          source: 'compile',
+          scriptPath: args.find((arg) => arg.endsWith('.cpp')),
+          args,
+          cwd,
+          env: {},
+          project: {
+            workspaceRoot: '/home/guest/playground',
+            cwd: '/home/guest/playground',
+            files: Object.entries(files).map(([path, contents]) => ({ path, contents })),
+          },
+        }, undefined, (event) => {
+          if (event.type === 'output' && event.stream === 'stderr') stderrEvents.push(event.data);
+        });
+        projectDiagnostics.push({
+          name, stderr: compiled.stderr, exitCode: compiled.exitCode, stderrEvents,
+        });
+      }
+      const projectFileIdentity = [];
+      const identity = ${JSON.stringify(cppProjectFileIdentity)};
+      for (const { name, operand, cwd, path } of identity.cases) {
+        const runIdentityProgram = async (contents) => {
+          const files = [{ path, contents }];
+          const project = { workspaceRoot: '/home/guest/playground', files };
+          const compiled = await projectClient.executeProjectCpp({
+            code: '', source: 'compile', scriptPath: operand, args: [operand], cwd, env: {}, project,
+          });
+          if (compiled.exitCode !== 0) throw new Error('File identity fixture failed to compile: ' + compiled.stderr);
+          const outputPath = './a.out';
+          const stdoutEvents = [];
+          const stderrEvents = [];
+          try {
+            const result = await projectClient.executeProjectCpp({
+              code: '', source: 'run', scriptPath: outputPath, args: [], cwd, env: {},
+              project: { ...project, files: [...files, ...(compiled.files || [])] },
+            }, undefined, (event) => {
+              if (event.type !== 'output') return;
+              if (event.stream === 'stdout') stdoutEvents.push(event.data);
+              if (event.stream === 'stderr') stderrEvents.push(event.data);
+            });
+            return { stdout: result.stdout, stderr: stderrEvents.join('') || result.stderr, exitCode: result.exitCode, stdoutEvents };
+          } catch (error) {
+            // LLVM's WASI abort can trap after assert has written to stderr.
+            if (contents !== identity.assertSource || stderrEvents.length === 0) throw error;
+            return { stderr: stderrEvents.join(''), error: String(error) };
+          }
+        };
+        projectFileIdentity.push({
+          name,
+          printed: await runIdentityProgram(identity.source),
+          assertion: await runIdentityProgram(identity.assertSource),
+          embedded: await runIdentityProgram(identity.embedSource),
+        });
+      }
       projectClient.terminate();
       provider.terminate();
       const { assertCppOrdinaryReceiptPaths, assertCppProductReceiptPaths } =
@@ -765,6 +827,8 @@ async function main(): Promise<void> {
           })),
         },
         projectRun,
+        projectDiagnostics,
+        projectFileIdentity,
         objectCompile: {
           ...objectCompile,
           files: objectCompile.files?.map((file) => ({
@@ -843,6 +907,18 @@ async function main(): Promise<void> {
         stderr: string;
         exitCode: number;
       } | null;
+      projectDiagnostics: Array<{
+        name: string;
+        stderr: string;
+        exitCode: number;
+        stderrEvents: string[];
+      }>;
+      projectFileIdentity: Array<{
+        name: string;
+        printed: { stdout: string; exitCode: number; stdoutEvents: string[] };
+        assertion: { stderr: string; exitCode?: number; error?: string };
+        embedded: { stdout: string; exitCode: number; stdoutEvents: string[] };
+      }>;
       objectCompile: {
         stdout: string;
         stderr: string;
@@ -872,6 +948,33 @@ async function main(): Promise<void> {
         exitCode: number;
       } | null;
     };
+    for (const fixture of cppProjectDiagnostics.cases) {
+      const actual = result.projectDiagnostics.find(({ name }) => name === fixture.name);
+      assertCondition(actual?.exitCode === fixture.exitCode,
+        `TraceCC Project diagnostic exit changed: ${JSON.stringify(actual)}`);
+      assertCondition(actual.stderr === fixture.expectedStderr,
+        `TraceCC Project diagnostic differs from Clang for ${fixture.name}: ${JSON.stringify(actual.stderr)}`);
+      assertCondition(actual.stderrEvents.join('') === actual.stderr,
+        `TraceCC Project stderr events differ from the result for ${fixture.name}`);
+      console.log(`TraceCC Project diagnostic ${fixture.name}:\n${actual.stderr.trimEnd()}`);
+    }
+    for (const fixture of cppProjectFileIdentity.cases) {
+      const actual = result.projectFileIdentity.find(({ name }) => name === fixture.name);
+      const expected = cppProjectFileIdentity.literalStdout + fixture.traceccFile + '\n';
+      assertCondition(actual?.printed.exitCode === 0 && actual.printed.stdout === expected,
+        `TraceCC Project stdout used the wrong learner path for ${fixture.name}: ${JSON.stringify(actual)}`);
+      assertCondition(actual.printed.stdoutEvents.join('') === expected,
+        `TraceCC Project stdout events changed literal bytes for ${fixture.name}`);
+      assertCondition(actual.assertion.stderr.includes(`(${fixture.traceccFile}: main: 2)`) &&
+        !actual.assertion.stderr.startsWith('/workspace/') &&
+        !actual.assertion.stderr.includes('/usr/share/tracecc/'),
+        `TraceCC Project assert used the wrong source location for ${fixture.name}: ${JSON.stringify(actual.assertion)}`);
+      assertCondition(actual.embedded.exitCode === 0 &&
+        actual.embedded.stdout === cppProjectFileIdentity.embedSource &&
+        actual.embedded.stdoutEvents.join('') === cppProjectFileIdentity.embedSource,
+        `TraceCC Project #embed changed the source bytes for ${fixture.name}: ${JSON.stringify(actual.embedded)}`);
+      console.log(`TraceCC Project file identity ${fixture.name}:\n${actual.printed.stdout}${actual.assertion.stderr}`);
+    }
     assertCondition(result.exceptionOracle.length === cppExceptionOracleCases.length, 'TraceCC oracle omitted cases');
     const differences = [];
     for (const [index, { source, expectedDifference }] of cppExceptionOracleCases.entries()) {
