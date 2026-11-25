@@ -315,7 +315,6 @@ import {
 } from './fs-observed';
 import {
   decodeCommandStdin,
-  leadingPersistentCdTarget,
   parseSimpleCommandWords,
   parseTerminalCommandList,
   rewriteKernelShellCommandInvocationsInAst,
@@ -5882,6 +5881,7 @@ export class RuntimeProjectWorkspace implements RuntimeWorkspace {
           signal: abortController.signal,
           args: options.args,
           ...(shellStdin !== undefined ? { stdin: shellStdin } : {}),
+          ...(Number.isInteger(options.lastExitCode) ? { lastExitCode: options.lastExitCode } : {}),
         });
         if (baselineEnv && options.onEnvChanges) {
           options.onEnvChanges(runtimeCommandEnvChanges(baselineEnv, result.env));

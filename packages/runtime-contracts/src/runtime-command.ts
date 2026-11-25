@@ -54,6 +54,12 @@ export interface RuntimeCommandOptions {
   terminalSessionId?: string;
   /** Process file-creation mask. Defaults to 0022 for a fresh shell. */
   umask?: number;
+  /**
+   * Status `$?` reports before the shell command's first statement runs.
+   * Terminal sessions pass the previous submission's status, as an
+   * interactive shell does. Defaults to 0; nested shells always start at 0.
+   */
+  lastExitCode?: number;
   foreground?: boolean;
   retainOnExit?: boolean;
   includeHiddenFiles?: boolean;

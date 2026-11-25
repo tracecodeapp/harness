@@ -166,8 +166,26 @@ export function traceKernelCommandPath(command: string): string {
 }
 
 
+// The interpreter keeps its own bookkeeping in the same map as variables:
+// special and positional parameters, IFS, getopts and option state, and
+// arrays encoded as NAME__length plus NAME_<index or key>. Bash never exports
+// these, so programs must not receive them. The just-bash patch filters `env`
+// and `printenv` output with the same rule.
+const SHELL_INTERNAL_ENV_NAME =
+  /^(?:[?#$!@*-]|\d+|IFS|OPTIND|OPTARG|SHELLOPTS|BASHOPTS|OSTYPE|MACHTYPE|HOSTTYPE|PIPESTATUS(?:_\d+)?|BASH_REMATCH(?:_\d+)?|__.*|.+__length)$/;
+
+export function isShellInternalEnvName(name: string, env: ReadonlyMap<string, string>): boolean {
+  if (SHELL_INTERNAL_ENV_NAME.test(name)) return true;
+  for (let index = name.indexOf('_', 1); index > 0; index = name.indexOf('_', index + 1)) {
+    if (env.has(`${name.slice(0, index)}__length`)) return true;
+  }
+  return false;
+}
+
 export function commandEnv(ctx: CommandContext): Record<string, string> {
-  return Object.fromEntries(ctx.env.entries());
+  return Object.fromEntries(
+    [...ctx.env.entries()].filter(([name]) => !isShellInternalEnvName(name, ctx.env))
+  );
 }
 
 

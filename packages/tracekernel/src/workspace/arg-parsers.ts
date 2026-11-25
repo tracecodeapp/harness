@@ -819,16 +819,28 @@ function parseTerminalStatements(command: string): TerminalAstStatement[] | null
   }
 }
 
+export interface TerminalWordOptions {
+  /**
+   * Expand a leading unquoted `~` or `~/…` to this directory, as Bash does
+   * with $HOME. Without it, such words are not static.
+   */
+  home?: string;
+}
+
 // Static value of a word that needs no expansion at runtime: literals,
 // single-quoted text, and double-quoted text without substitutions.
-export function terminalStaticWordValue(word: unknown): string | null {
+export function terminalStaticWordValue(word: unknown, options: TerminalWordOptions = {}): string | null {
   const candidate = word as {
     type?: unknown;
-    parts?: Array<{ type?: unknown; value?: unknown; pattern?: unknown; parts?: unknown[] }>;
+    parts?: Array<{ type?: unknown; value?: unknown; pattern?: unknown; parts?: unknown[]; user?: unknown }>;
   };
   if (candidate?.type !== 'Word' || !Array.isArray(candidate.parts)) return null;
   let value = '';
-  for (const part of candidate.parts) {
+  for (const [index, part] of candidate.parts.entries()) {
+    if (part?.type === 'TildeExpansion' && part.user === null && index === 0 && options.home) {
+      value += options.home;
+      continue;
+    }
     if (part?.type === 'Literal' && typeof part.value === 'string') {
       value += part.value;
       continue;
@@ -868,7 +880,7 @@ function terminalLoneSimpleCommand(statement: TerminalAstStatement | undefined):
   return command;
 }
 
-export function parseSimpleCommandWords(command: string): string[] | null {
+export function parseSimpleCommandWords(command: string, options: TerminalWordOptions = {}): string[] | null {
   const statements = parseTerminalStatements(command);
   if (!statements || statements.length !== 1) return null;
   const statement = statements[0];
@@ -879,30 +891,11 @@ export function parseSimpleCommandWords(command: string): string[] | null {
   if (name === null || name.length === 0) return null;
   const words = [name];
   for (const arg of simpleCommand.args ?? []) {
-    const value = terminalStaticWordValue(arg);
+    const value = terminalStaticWordValue(arg, options);
     if (value === null) return null;
     words.push(value);
   }
   return words;
-}
-
-
-export function leadingPersistentCdTarget(command: string): string | undefined | null {
-  const statements = parseTerminalStatements(command);
-  if (!statements || statements.length === 0) return null;
-  const first = statements[0];
-  const pipelines = first?.pipelines ?? [];
-  // Only `cd …` followed by more work in the same submission persists; a bare
-  // `cd …` is handled directly by the terminal session.
-  if (statements.length === 1 && pipelines.length <= 1) return null;
-  const headCommand = terminalLoneSimpleCommand(first);
-  if (!headCommand) return null;
-  if (terminalStaticWordValue(headCommand.name) !== 'cd') return null;
-  const args = headCommand.args ?? [];
-  if (args.length > 1) return null;
-  if (args.length === 0) return undefined;
-  const target = terminalStaticWordValue(args[0]);
-  return target === null ? null : target;
 }
 
 
