@@ -93,46 +93,145 @@ test('the clock fixtures omit custom limits and retain independent row oracles',
   }
 });
 
-test('the scripted Python transport releases three healthy rows before expiring the production clock', async () => {
-  const { installJournal } = await import('./gb-transport.mjs');
-  const originalWorker = globalThis.Worker;
-  const wire = [];
-  globalThis.Worker = class FixtureWorker extends EventTarget {
-    postMessage(message) { wire.push(message); }
+function pythonClockCommand(inputs, wallClockMs, protocolToken) {
+  return {
+    id: 'batch', type: 'execute-prepared-program-batch', protocolToken,
+    payload: { mode: 'code', inputBatch: inputs.map((n) => ({ n })),
+      limits: { wallClockMs }, reportCaseProgress: true },
   };
-  const journal = installJournal(fixture('python', 'transport'));
-  const expire = [];
-  try {
-    journal.track('clock-virtual', 'clock-virtual');
-    setTimeout(() => expire.push(30000), 30000);
-    const worker = new Worker('fixture-worker.js');
-    worker.postMessage({
-      id: 'batch', type: 'execute-prepared-program-batch',
-      payload: {
-        mode: 'code', artifact: { isolationProfile: { tier: 'algorithm-fast' } },
-        inputBatch: [{ n: 11 }, { n: 22 }, { n: 33 }],
-      },
-    });
-    for (const n of [11, 22, 33]) {
-      assert.deepEqual(wire.at(-1).payload.inputBatch, [{ n }]);
-      for (const phase of ['started', 'finished']) {
-        worker.dispatchEvent(new MessageEvent('message', {
-          data: { id: 'batch', type: 'batch-case-progress', payload: { index: 0, phase } },
-        }));
-      }
-      worker.dispatchEvent(new MessageEvent('message', {
-        data: { id: 'batch', type: 'execute-result', payload: { resultsStreamed: 1 } },
-      }));
-    }
-    assert.deepEqual(expire, [30000]);
-    const events = journal.since(0);
-    assert.deepEqual(events.filter((event) => event.kind === 'worker-started').map((event) => event.caseId), ['A', 'B', 'C']);
-    assert.deepEqual(events.filter((event) => event.kind === 'advance-clock').map((event) => event.virtualTime), [11000, 22000, 33000]);
-  } finally {
-    journal.restore();
-    globalThis.Worker = originalWorker;
+}
+
+function clockTransportSample(spec, route, transcript) {
+  const sample = referenceReceipt(spec);
+  const timeout = route === 'timeout-fanout';
+  sample.result.verdict = timeout ? 'failed' : 'passed';
+  sample.result.policy = { result: !timeout };
+  sample.result.totalCount = 3;
+  sample.result.passedCount = timeout ? 2 : 3;
+  sample.stimulus = { bundle: { execution: timeout ? { limits: { wallClockMs: 4000 } } : {} } };
+  if (timeout) {
+    const row = sample.result.evaluation.cases[1];
+    delete row.value;
+    row.status = 'timed-out';
+    row.timedOut = true;
+    row.verdict = { kind: 'not-evaluated' };
+    row.failure = { origin: 'limit', reason: 'client-timeout' };
+    row.stderr = 'Execution timed out\n';
+    row.diagnostics = [{ code: 'client-timeout', severity: 'error', message: 'Execution timed out' }];
   }
-});
+  sample.transcript = transcript;
+  return sample;
+}
+
+for (const route of ['timeout-fanout', 'clock-virtual', 'clock-real']) {
+  test(`Python ${route} binds production timers to authenticated starts and preserves native streams`, async () => {
+    const { installJournal } = await import('./gb-transport.mjs');
+    const { Worker: originalWorker, setTimeout: originalSetTimeout, clearTimeout: originalClearTimeout } = globalThis;
+    const native = new Map();
+    let nextTimer = 0;
+    globalThis.Worker = transportFixtureWorker();
+    globalThis.setTimeout = (run, ms) => {
+      native.set(++nextTimer, { run, ms });
+      return nextTimer;
+    };
+    globalThis.clearTimeout = (token) => native.delete(token);
+    const spec = fixture('python', 'transport');
+    const journal = installJournal(spec);
+    const timeout = route === 'timeout-fanout';
+    const wall = timeout ? 4000 : 30000;
+    const fired = [];
+    const attachClient = (worker) => {
+      let token;
+      worker.onDelivery = ({ type, payload }) => {
+        if (type !== 'batch-case-progress') return;
+        if (payload.phase === 'started') {
+          token = setTimeout(() => {
+            fired.push(payload.index);
+            worker.terminate();
+          }, wall + 1000);
+        } else {
+          clearTimeout(token);
+        }
+      };
+    };
+    const reply = (command, phase, index, result) => ({
+      id: command.id, protocolToken: command.protocolToken, type: 'batch-case-progress',
+      payload: { index, phase, ...(result ? { result } : {}) },
+    });
+    const terminal = (command, resultsStreamed) => ({
+      id: command.id, protocolToken: command.protocolToken, type: 'execute-result',
+      payload: { success: true, resultsStreamed },
+    });
+    try {
+      journal.track(route, route);
+      setTimeout(() => fired.push('unrelated'), 17300);
+      const worker = new Worker('fixture-worker.js');
+      attachClient(worker);
+      const command = pythonClockCommand([11, 22, 33], wall, 'initial');
+      worker.postMessage(command);
+      assert.deepEqual(worker.sent, [command]);
+      const firstStart = reply(command, 'started', 0);
+      worker.reply(firstStart, false);
+      worker.reply({ ...firstStart, protocolToken: 'foreign' });
+      worker.reply(reply(command, 'started', 1));
+      const finishes = [11, 22, 33].map((output, index) =>
+        reply(command, 'finished', index, { success: true, output, consoleOutput: [] }));
+      for (const [index, finish] of finishes.entries()) {
+        worker.reply(reply(command, 'started', index));
+        worker.reply(finish);
+      }
+      const firstTerminal = terminal(command, 3);
+      worker.reply(firstTerminal);
+      if (timeout) {
+        assert.deepEqual(fired, [1]);
+        assert(worker.terminated);
+        assert.deepEqual(worker.delivered.map(({ payload }) => [payload.phase, payload.index]),
+          [['started', 0], ['finished', 0], ['started', 1]]);
+        const recovered = new Worker('fixture-worker.js');
+        attachClient(recovered);
+        const suffix = pythonClockCommand([33], wall, 'fresh');
+        recovered.postMessage(suffix);
+        recovered.reply(reply(suffix, 'started', 0));
+        recovered.reply(reply(suffix, 'finished', 0, { success: true, output: 33 }));
+        const suffixTerminal = terminal(suffix, 1);
+        recovered.reply(suffixTerminal);
+        assert.equal(recovered.delivered.at(-1), suffixTerminal);
+      } else {
+        if (route === 'clock-real') {
+          assert.deepEqual(worker.delivered, [firstStart]);
+          for (let index = 0; index < 3; index++) {
+            const hold = [...native].find(([, { ms }]) => ms === 11000);
+            assert(hold, 'native hold for the active case');
+            native.delete(hold[0]);
+            hold[1].run();
+          }
+        }
+        assert.equal(worker.delivered.at(-1), firstTerminal);
+        assert.deepEqual(fired, []);
+      }
+      const sample = clockTransportSample(spec, route, journal.since(0));
+      const state = (value, check) => ledgerFor(spec, route, value).receipts
+        .find(({ id }) => id.endsWith('/' + check))?.status;
+      for (const check of ['injection-ack', 'A/ordinary-start-count', 'A/worker-finish',
+        'A/start-proof', 'B/start-proof', 'C/start-proof', 'B/status', 'B/console', 'counts']) {
+        assert.equal(state(sample, check), 'passed', check);
+      }
+      if (!timeout) assert.equal(state(sample, 'clock/three-advances'), 'passed');
+      const mutant = structuredClone(sample);
+      if (timeout) {
+        mutant.transcript.find(({ kind }) => kind === 'python-case-timer-fired').caseId = 'A';
+      } else {
+        mutant.transcript.find(({ kind }) => kind === 'python-clock-terminal').resultsStreamed = 2;
+      }
+      assert.equal(state(mutant, 'injection-ack'), 'failed');
+    } finally {
+      journal.restore();
+      globalThis.Worker = originalWorker;
+      globalThis.setTimeout = originalSetTimeout;
+      globalThis.clearTimeout = originalClearTimeout;
+    }
+  });
+}
 
 function observedReceipt(spec, { route = 'run-first', status = 'drawn', reason, events, attemptedEvents } = {}) {
   const sample = referenceReceipt(spec);
@@ -651,7 +750,7 @@ test('Java starts require the command token and admission ID, and nested observa
   }
 });
 
-function javaFaultWorker() {
+function transportFixtureWorker() {
   return class FixtureWorker {
     sent = [];
     delivered = [];
@@ -662,6 +761,7 @@ function javaFaultWorker() {
       if (event.type === 'message') {
         this.read(event);
         this.delivered.push(event.data);
+        this.onDelivery?.(event.data);
       }
     }
     reply(data, isTrusted = true) {
@@ -689,7 +789,7 @@ function javaFaultProgress(command, phase, caseIndex, result, admissionId = comm
 test('Java loss transport forwards only bound starts and finishes and translates the next slice', async () => {
   const { installJournal } = await import('./gb-transport.mjs');
   const { Worker: originalWorker, ErrorEvent: originalErrorEvent } = globalThis;
-  globalThis.Worker = javaFaultWorker();
+  globalThis.Worker = transportFixtureWorker();
   globalThis.ErrorEvent ??= Event;
   const spec = fixture('java', 'transport');
   const journal = installJournal(spec);
@@ -733,7 +833,7 @@ test('Java timeout transport discards finishes arriving after the production wat
   const { installJournal } = await import('./gb-transport.mjs');
   const { Worker: originalWorker, setTimeout: originalSetTimeout, clearTimeout: originalClearTimeout } = globalThis;
   let fire;
-  globalThis.Worker = javaFaultWorker();
+  globalThis.Worker = transportFixtureWorker();
   globalThis.setTimeout = (callback) => { fire = callback; return 1; };
   globalThis.clearTimeout = () => {};
   const spec = fixture('java', 'transport');

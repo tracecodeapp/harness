@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { schedulerInjection } from './gb-probe.mjs';
+import { pythonClockRoute } from './gb-python-clock.mjs';
 
 const healthyChecks = ['identity', 'status', 'value', 'console', 'failure', 'verdict', 'termination', 'diagnostics', 'conversion'];
 const transportChecks = ['injection-ack', 'A/ordinary-start-count', 'A/worker-finish', 'A/coordinator-commit'];
@@ -55,9 +56,14 @@ function required(fixture, route) {
 
 function desiredRow(fixture, route, row) {
   if (serviceCut(fixture, route) && row.id !== 'A') return 'unavailable';
+  if (pythonTransportClock(fixture, route) && route === 'timeout-fanout' && row.id === 'B') return 'limit';
   if (row.id === 'C' && fixture.cases.some((candidate) => candidate.limitReasons) && stopRoute(route)) return 'not-run';
   if (row.limitReasons) return 'limit';
   return 'completed';
+}
+
+function pythonTransportClock(fixture, route) {
+  return fixture.language === 'python' && fixture.name === 'transport' && pythonClockRoute(route);
 }
 
 const processProjection = (row) => Object.fromEntries(Object.entries(row ?? {}).filter(([key]) =>
@@ -492,6 +498,112 @@ function checkJavaTransport(fixture, route, sample, published, wire, assert) {
   }
 }
 
+function checkPythonClock(fixture, route, sample, published, wire, assert) {
+  const ofKind = (kind) => wire.filter((event) => event.kind === kind);
+  const timeout = route === 'timeout-fanout';
+  if (!timeout) {
+    const limits = sample.stimulus?.bundle.execution.limits;
+    assert('clock/omitted-wall-budget', !!sample.stimulus && limits?.wallClockMs === undefined &&
+      !('stopAtFirstRunaway' in sample.stimulus), limits);
+  }
+  const commands = ofKind('python-clock-command');
+  if (!commands.length) return;
+  const [initial, resumed] = commands;
+  const starts = ofKind('python-clock-start');
+  const finishes = ofKind('python-clock-finish');
+  const terminals = ofKind('python-clock-terminal');
+  const armed = ofKind('python-case-timer-armed');
+  const cleared = ofKind('python-case-timer-cleared');
+  const fired = ofKind('python-case-timer-fired');
+  const hits = ofKind('injection');
+  const [hit] = hits;
+  const ids = fixture.cases.map(({ id }) => id);
+  const idsOf = (events) => events.map(({ caseId }) => caseId);
+  const sameCommand = (command, event) => command && command.commandId === event.commandId &&
+    command.generation === event.generation;
+  const exactlyDispatched = commands.every(({ reportsProgress }) => reportsProgress) &&
+    isDeepStrictEqual(commands.map(({ rows }) => rows), timeout ? [ids, ['C']] : [ids]) &&
+    ofKind('ordinary-dispatch').length === commands.length;
+  const startsInOrder = isDeepStrictEqual(idsOf(starts), ids) && starts.every((event, index) => {
+    const resumedC = timeout && event.caseId === 'C';
+    return sameCommand(resumedC ? resumed : initial, event) && event.index === (resumedC ? 0 : index);
+  });
+  const finishedIds = timeout ? ['A', 'C'] : ids;
+  const finishedInOrder = isDeepStrictEqual(idsOf(finishes), finishedIds) && finishes.every((finish) => {
+    const index = ids.indexOf(finish.caseId);
+    const start = starts[index];
+    return start && sameCommand(start, finish) && start.index === finish.index &&
+      start.sequence < finish.sequence && (!starts[index + 1] || finish.sequence < starts[index + 1].sequence) &&
+      finish.result?.success === true && isDeepStrictEqual(finish.result.output, fixture.cases[index].actual);
+  });
+  const [terminal] = terminals;
+  const streamed = terminals.length === 1 && sameCommand(timeout ? resumed : initial, terminal) &&
+    terminal.type === 'execute-result' && terminal.hasResults === false &&
+    terminal.resultsStreamed === (timeout ? 1 : ids.length) && finishes.at(-1)?.sequence < terminal.sequence;
+  const caseTimers = isDeepStrictEqual(idsOf(armed), ids) && armed.every((timer, index) =>
+    sameCommand(starts[index], timer) && starts[index].sequence < timer.sequence &&
+    timer.delay === (index === 2 && timeout ? resumed?.expectedDelay : initial.expectedDelay));
+  const clearedFinishes = isDeepStrictEqual(idsOf(cleared), finishedIds) && finishedIds.every((id, index) =>
+    sameCommand(finishes[index], cleared[index]) && cleared[index].sequence > finishes[index].sequence);
+
+  let clockWitness;
+  if (timeout) {
+    const [bTimer] = fired;
+    const retired = ofKind('python-clock-worker-retired').find((event) => sameCommand(initial, event));
+    clockWitness = fired.length === 1 && bTimer.caseId === 'B' && bTimer.delay === 5000 &&
+      sameCommand(initial, bTimer) && !!resumed && resumed.generation > initial.generation &&
+      hit?.caseId === 'B' && sameCommand(initial, hit) && armed[1]?.sequence < hit.sequence &&
+      hit.sequence < bTimer.sequence && bTimer.sequence < retired?.sequence && retired.sequence < resumed.sequence;
+  } else {
+    const advances = ofKind('advance-clock');
+    clockWitness = fired.length === 0 && isDeepStrictEqual(idsOf(advances), ids) &&
+      isDeepStrictEqual(advances.map(({ virtualTime }) => virtualTime), [11000, 22000, 33000]) &&
+      advances.every((advance, index) => sameCommand(initial, advance) && advance.delta === 11000 &&
+        armed[index]?.delay > advance.delta && armed[index].sequence < advance.sequence &&
+        advance.sequence < finishes[index]?.sequence);
+    assert('clock/three-advances', caseTimers && clearedFinishes && clockWitness && streamed,
+      { advances, armed, cleared, fired, terminals });
+  }
+  assert('injection-ack', exactlyDispatched && hits.length === 1 && hit.fault === route &&
+    startsInOrder && finishedInOrder && streamed && caseTimers && clearedFinishes && clockWitness &&
+    !ofKind('test-transport-failure').length,
+  { commands, starts, finishes, terminals, hits, armed, cleared, fired });
+  for (const [index, id] of ids.entries()) {
+    const matches = starts.filter(({ caseId }) => caseId === id);
+    if (matches.length) {
+      const expectedCommand = timeout && id === 'C' ? resumed : initial;
+      assert(`${id}/start-proof`, matches.length === 1 && sameCommand(expectedCommand, matches[0]) &&
+        matches[0].index === (expectedCommand === resumed ? 0 : index), matches);
+    }
+  }
+  const aStarts = starts.filter(({ caseId }) => caseId === 'A');
+  if (aStarts.length) {
+    assert('A/ordinary-start-count', exactlyDispatched && aStarts.length === 1 && sameCommand(initial, aStarts[0]),
+      { commands, starts });
+  }
+  const aFinishes = finishes.filter(({ caseId }) => caseId === 'A');
+  const [aFinish] = aFinishes;
+  if (!aFinish) return;
+  const aFinished = aFinishes.length === 1 && sameCommand(initial, aFinish) &&
+    aStarts[0]?.sequence < aFinish.sequence && aFinish.result?.success === true &&
+    isDeepStrictEqual(aFinish.result.output, fixture.cases[0].actual);
+  assert('A/worker-finish', aFinished, aFinishes);
+  const marks = ofKind('schedule').filter(({ language }) => language === 'python');
+  if (!marks.length) return;
+  const commits = marks.filter(({ phase }) => phase === 'ordinary-commit');
+  const resolves = marks.filter(({ phase }) => phase === 'public-resolve');
+  const writes = marks.filter(({ phase }) => phase === 'ordinary-write-attempt');
+  const [commit] = commits;
+  const a = published.find(({ caseId }) => caseId === 'A');
+  assert('A/coordinator-commit', aFinished && a?.status === 'completed' &&
+    isDeepStrictEqual(a.value, aFinish.result.output) && a.verdict?.kind === fixture.cases[0].grade &&
+    a.stdout === fixture.cases[0].stdout && a.stderr === '' &&
+    commits.length === 1 && resolves.length === 1 && aFinish.sequence < commit.sequence &&
+    commit.sequence < resolves[0].sequence && commit.workspaceDigest === sample.result?.workspaceDigest &&
+    marks.every((event) => scopeMatches(event, commit)) && isDeepStrictEqual(idsOf(writes), ids),
+  { a, aFinish, commits, writes, resolves });
+}
+
 function check(fixture, route, sample, assert) {
   const rows = selectedRows(fixture, route);
   const receipt = sample.result;
@@ -545,13 +657,16 @@ function check(fixture, route, sample, assert) {
 
   const javaTransport = fixture.language === 'java' && fixture.name === 'transport' &&
     wire.some(({ kind, request }) => kind === 'java-release' && request === route);
-  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport
+  const pythonClock = pythonTransportClock(fixture, route);
+  const ordinary = fixture.gate === 'G4' && !continuation(route) && !javaTransport && !pythonClock
     ? completeOrdinaryStarts(wire.filter(({ request }) => request === route)) : undefined;
   for (const expected of rows) {
     const row = published.find(({ caseId }) => caseId === expected.id);
     const status = desiredRow(fixture, route, expected);
     if (row) {
-      checkRow(fixture, expected, row, status, published, sample.conversions?.cases?.[published.indexOf(row)], assert, sample);
+      const rowOracle = pythonClock && status === 'limit'
+        ? { ...expected, limitReasons: ['client-timeout'] } : expected;
+      checkRow(fixture, rowOracle, row, status, published, sample.conversions?.cases?.[published.indexOf(row)], assert, sample);
     }
     if (expected.limitReasons && row) {
       const reason = row.failure?.reason;
@@ -587,7 +702,9 @@ function check(fixture, route, sample, assert) {
     }
   }
 
-  if (javaTransport) {
+  if (pythonClock) {
+    checkPythonClock(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
+  } else if (javaTransport) {
     checkJavaTransport(fixture, route, sample, published, wire.filter(({ request }) => request === route), assert);
   } else if (fixture.name === 'transport' && route !== 'submit-stop') {
     const hit = wire.filter((event) => event.kind === 'injection' && event.fault === route);
@@ -600,16 +717,6 @@ function check(fixture, route, sample, assert) {
     }
     if (starts.length) assert('A/ordinary-start-count', starts.length + replay.length === 1, { starts, replay });
     if (aFinish.length) assert('A/worker-finish', aFinish.length === 1, aFinish);
-    if (route.startsWith('clock-')) {
-      const omitted = sample.stimulus && sample.stimulus.bundle.execution.limits?.wallClockMs === undefined && !('stopAtFirstRunaway' in sample.stimulus);
-      assert('clock/omitted-wall-budget', omitted, sample.stimulus?.bundle.execution.limits);
-      const advances = wire.filter((event) => event.kind === 'advance-clock').map((event) => event.virtualTime);
-      const held = wire.some((event) => event.kind === 'held-terminal' && event.due === 33000);
-      const clockPassed = route === 'clock-real'
-        ? isDeepStrictEqual(advances, [11000, 22000]) && held
-        : isDeepStrictEqual(advances, [11000, 22000, 33000]);
-      assert('clock/three-advances', clockPassed, { advances, held });
-    }
   }
 
   if (fixture.gate === 'G5') {
@@ -749,7 +856,8 @@ function checkRow(fixture, oracle, row, status, published, converted, assert, { 
     : row.status === status, row.status);
   same('value', [Object.hasOwn(row, 'value'), row.value], [complete, complete ? oracle.actual : undefined]);
   const sameLimit = row.failure?.origin === 'limit' && oracle.limitReasons?.includes(row.failure.reason);
-  const limitConsoleFixture = ['three-rows', singleLineFixture, 'stopping-clock'].includes(fixture.name);
+  const limitConsoleFixture = ['three-rows', singleLineFixture, 'stopping-clock'].includes(fixture.name) ||
+    (fixture.language === 'python' && fixture.name === 'transport');
   if (fixture.gate === 'G4' && limitConsoleFixture && limit) {
     const diagnostics = Array.isArray(row.diagnostics) ? row.diagnostics : [];
     const messages = diagnostics.filter(({ code, severity }) =>

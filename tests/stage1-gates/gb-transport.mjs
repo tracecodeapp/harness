@@ -1,3 +1,5 @@
+import { createPythonClock } from './gb-python-clock.mjs';
+
 function recorderEvents(payload) {
   const events = payload.trace?.events;
   const transfer = payload.__traceEventTransport;
@@ -41,8 +43,8 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   let injected = false;
   let javaTimeoutWire;
   const scheduled = new Map();
-  let virtualTime = 0;
-  const linger = new Set();
+  const pythonClock = fixture.language === 'python' && fixture.name === 'transport'
+    ? createPythonClock({ record, nativeSetTimeout, nativeClearTimeout }) : undefined;
 
   function record(kind, fields) {
     journal.push({ sequence: journal.length + 1, kind, ...fields });
@@ -55,10 +57,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   }
 
   function deadlineMatches(ms) {
-    if (!fault) return false;
-    if (fault === 'timeout-fanout' && fixture.language === 'java') return ms === 132000;
-    if (fault === 'timeout-fanout') return ms === 17300;
-    return fault === 'clock-virtual' && ms === 30000;
+    return fault === 'timeout-fanout' && fixture.language === 'java' && ms === 132000;
   }
 
   function expire(at) {
@@ -72,6 +71,8 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
   }
 
   globalThis.setTimeout = function (handler, ms, ...args) {
+    const pythonTimer = pythonClock?.arm(handler, ms, args);
+    if (pythonTimer !== undefined) return pythonTimer;
     if (typeof handler !== 'function' || !deadlineMatches(ms)) {
       return nativeSetTimeout(handler, ms, ...args);
     }
@@ -87,10 +88,11 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       scheduled.delete(token);
       run();
     }, ms);
-    scheduled.set(token, { ms, due: virtualTime + ms, run });
+    scheduled.set(token, { ms, due: ms, run });
     return token;
   };
   globalThis.clearTimeout = function (token) {
+    if (pythonClock?.clear(token)) return;
     scheduled.delete(token);
     nativeClearTimeout(token);
   };
@@ -129,6 +131,12 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
           tracingEnabled: payload.tracingEnabled, traceEnabledBatch: payload.traceEnabledBatch,
           ...(javaObserver ? { observationOnly: true } : {}),
         });
+        wire.pythonClock = pythonClock?.dispatch(wire, this.#generation);
+        if (wire.pythonClock) {
+          wire.fault = wire.pythonClock.route;
+          super.postMessage(message, ...transfer);
+          return;
+        }
         const pythonBatch = fixture.language === 'python' && message.type === 'execute-prepared-program-batch' &&
           mode === 'code' && payload.artifact?.isolationProfile?.tier === 'algorithm-fast';
         const javaBatch = fixture.language === 'java' && !javaObserver &&
@@ -214,6 +222,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       }
       for (const wire of this.#wire.values()) {
         if (wire.java) wire.closed = true;
+        if (wire.pythonClock) pythonClock.retire(wire.pythonClock);
       }
       this.#judgeWire.clear();
       super.terminate();
@@ -385,6 +394,17 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       if (this.#forwardingProgress) return;
       const { id, type, payload } = event.data ?? {};
       const wire = this.#wire.get(id);
+      if (wire?.pythonClock) {
+        pythonClock.receive(wire.pythonClock, event, (data) => {
+          this.#forwardingProgress = true;
+          try {
+            this.dispatchEvent(new MessageEvent('message', { data }));
+          } finally {
+            this.#forwardingProgress = false;
+          }
+        }, () => this.#lose(wire));
+        return;
+      }
       if (wire?.java) {
         this.#readJavaFault(event, wire);
         return;
@@ -438,42 +458,10 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
         this.#lose(wire);
         return;
       }
-      if (wire.fault === 'timeout-fanout') {
-        record('injection', { request: wire.request, generation: this.#generation, fault: wire.fault });
-        fault = undefined;
-        expire(Infinity);
-        return;
-      }
       if (wire.fault.startsWith('during-')) {
         wire.index += 1;
         this.#release(wire);
         return;
-      }
-      if (wire.fault === 'clock-virtual' || wire.fault === 'clock-real') {
-        if (wire.fault === 'clock-real' && wire.index === 2) {
-          record('injection', { request: wire.request, generation: this.#generation, fault: wire.fault });
-          record('held-terminal', { request: wire.request, generation: this.#generation, due: 33000 });
-        }
-        const advance = () => {
-          virtualTime += 11000;
-          record('advance-clock', { request: wire.request, generation: this.#generation, caseId: wire.rows[wire.index], virtualTime });
-          wire.index += 1;
-          if (wire.index < wire.rows.length) {
-            this.#release(wire);
-            return;
-          }
-          record('injection', { request: wire.request, generation: this.#generation, fault: wire.fault });
-          expire(virtualTime);
-        };
-        if (wire.fault === 'clock-virtual') {
-          advance();
-        } else {
-          const timer = nativeSetTimeout(() => {
-            linger.delete(timer);
-            advance();
-          }, 11000);
-          linger.add(timer);
-        }
       }
     }
   };
@@ -486,7 +474,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       request = route;
       fault = injectedFault;
       injected = false;
-      virtualTime = 0;
+      pythonClock?.track(injectedFault);
     },
     since(index) {
       return journal.slice(index);
@@ -498,7 +486,7 @@ export function installJournal(fixture, { decodeJavaObservation } = {}) {
       globalThis.Worker = NativeWorker;
       globalThis.setTimeout = nativeSetTimeout;
       globalThis.clearTimeout = nativeClearTimeout;
-      for (const timer of linger) nativeClearTimeout(timer);
+      pythonClock?.restore();
     },
   };
 }

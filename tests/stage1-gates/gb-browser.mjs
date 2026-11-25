@@ -39,7 +39,7 @@ function fixtureBundle(fixture, route, rows, trace, traceOptions = fixture.trace
   return createAlgorithmJudgeBundle({
     id: [fixture.gate, fixture.language, fixture.name, route].join('-'),
     language: fixture.language,
-    code: fixture.code,
+    code: route === 'timeout-fanout' ? fixture.timeoutCode ?? fixture.code : fixture.code,
     functionName: fixture.functionName,
     executionStyle: fixture.executionStyle,
     trace,
