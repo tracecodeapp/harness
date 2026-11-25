@@ -69,7 +69,9 @@ export async function runJavaStoppingBatchBrowserTest() {
     }
   };
 
-  // Keep the #77 mixed-artifact regression independent of receipt registration.
+  // Exercise #77's ordinary stopping batch without an observer registration:
+  // since step 8 every row is graded ordinarily and a requested drawing is
+  // refused (recorder-unavailable); nothing traced runs on the graded worker.
   const legacy = createJavaBrowserRuntimeProvider({ runtimeAssetBaseUrl: '/tracejvm/' });
   const providerRegistry = createBrowserRuntimeProviderRegistry([{
     ...legacy,

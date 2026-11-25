@@ -114,6 +114,7 @@ function executeFakeProcess(
         );
       }
       if (invocation.phase === 'batch') {
+        state.invocations.push(invocation);
         return executeFakeBatch(control, invocationId, context.command);
       }
       return executeFakeCase(control, state, invocationId, invocation);
@@ -1048,5 +1049,42 @@ test('a batch that publishes neither cases nor a provider failure is still a mal
   if (exit._tag === 'Failure') {
     assert.match(exit.cause.toString(), /JudgeInfrastructureError/);
     assert.match(exit.cause.toString(), /without publishing per-case outcomes/);
+  }
+});
+
+test('B8 ledger: the core Judge validates a trace selection but never asks a runtime to record', async () => {
+  for (const variant of [
+    { label: 'per-case', overrides: {}, stopAtFirstRunaway: false },
+    { label: 'per-case stopping', overrides: {}, stopAtFirstRunaway: true },
+    {
+      label: 'provider batch',
+      overrides: {
+        compile: undefined,
+        run: { command: 'batch-provider-failure', timeoutMs: 1_000 },
+        isolation: { mode: 'provider-isolated-batch' as const },
+      },
+      stopAtFirstRunaway: false,
+    },
+  ]) {
+    const state = await Effect.runPromise(Effect.scoped(
+      Effect.gen(function* () {
+        const control = new InMemoryJudgeRuntimeControl();
+        const state = yield* makeState();
+        const host = yield* makeTraceKernelHost({ providers: [fakeProvider(control, state)] });
+        const port = new TraceKernelJudgePort({ host, runtimeControl: control });
+        yield* evaluateJudgePlan(port, makePlan([{ value: 1 }, { value: 2 }], variant.overrides), {
+          tracing: { caseIds: ['case-1'] },
+          stopAtFirstRunaway: variant.stopAtFirstRunaway,
+        });
+        return state;
+      })
+    ));
+    assert.ok(state.invocations.length > 0, `${variant.label}: the runtime was invoked`);
+    for (const invocation of state.invocations) {
+      assert.equal(Object.hasOwn(invocation, 'recordTrace'), false, `${variant.label}: no recordTrace on ${invocation.phase}`);
+      for (const entry of invocation.cases ?? []) {
+        assert.equal(Object.hasOwn(entry, 'recordTrace'), false, `${variant.label}: no recordTrace on batch case`);
+      }
+    }
   }
 });
