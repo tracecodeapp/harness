@@ -9,6 +9,7 @@
  */
 
 import * as Effect from 'effect/Effect';
+import type { JudgedOutputLimit, JudgedOutputPolicy } from '../../runtime-contracts/src/judged-output-policy';
 import {
   RUNTIME_TRACE_SCHEMA_VERSION,
   withRuntimeTraceOptions,
@@ -155,11 +156,32 @@ export type CSharpProjectCommandResult = RuntimeCommandResult;
 
 const judgedOutputEncoder = new TextEncoder();
 
-function judgedOutputByteLength(output: unknown): number {
+function judgedOutputLimit(output: unknown, policy: JudgedOutputPolicy): JudgedOutputLimit | undefined {
+  let nodes = 1;
+  // C# sends dictionaries as objects and sets as arrays. The transport adds
+  // no container levels to a language value's depth.
+  function walk(value: unknown, depth: number): JudgedOutputLimit | undefined {
+    if (value === null || typeof value !== 'object') return;
+    if (depth > policy.maxDepth) return 'depth';
+
+    const children = Array.isArray(value) ? value
+      : value instanceof Set ? [...value] : Object.values(value);
+    if (children.length > policy.maxItems) return 'item';
+    nodes += children.length;
+    if (nodes > policy.maxNodes) return 'node';
+    for (const child of children) {
+      const limit = walk(child, depth + 1);
+      if (limit) return limit;
+    }
+  }
+
+  if (nodes > policy.maxNodes) return 'node';
+  const limit = walk(output, 0);
+  if (limit) return limit;
   const json = JSON.stringify(output, (_key, value) =>
     value instanceof Set ? [...value] : value
   );
-  return judgedOutputEncoder.encode(json).byteLength;
+  if (judgedOutputEncoder.encode(json).byteLength > policy.maxBytes) return 'byte';
 }
 
 interface CSharpWorkerExecuteResult {
@@ -680,7 +702,7 @@ export class CSharpWorkerClient {
   async executePreparedCode(
     prepared: CSharpPreparedProgramArtifact,
     call: RuntimePreparedCodeCall,
-    maxJudgedOutputBytes?: number
+    policy?: JudgedOutputPolicy
   ): Promise<CodeExecutionResult> {
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = call.limits?.wallClockMs ?? this.executionTimeoutMs;
@@ -760,19 +782,17 @@ export class CSharpWorkerClient {
         }
       }
       const outcome = this.toCodeExecutionResult(result);
-      if (
-        prepared.mode === 'code' &&
-        outcome.kind === 'completed' &&
-        maxJudgedOutputBytes !== undefined &&
-        judgedOutputByteLength(outcome.output) > maxJudgedOutputBytes
-      ) {
-        return {
-          kind: 'limit',
-          reason: 'serialization-limit',
-          error: `C# judged output exceeds ${maxJudgedOutputBytes} UTF-8 bytes.`,
-          consoleOutput: outcome.consoleOutput,
-          timings: outcome.timings,
-        };
+      if (prepared.mode === 'code' && outcome.kind === 'completed' && policy) {
+        const limit = judgedOutputLimit(outcome.output, policy);
+        if (limit) {
+          return {
+            kind: 'limit',
+            reason: 'serialization-limit',
+            error: `The answer is larger than the judged-output ${limit} limit.`,
+            consoleOutput: outcome.consoleOutput,
+            timings: outcome.timings,
+          };
+        }
       }
       return outcome;
     });

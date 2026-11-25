@@ -486,8 +486,8 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
   async prepareProgram(
     call: RuntimeProgramPreparationCall
   ): Promise<RuntimeProgramPreparationResult> {
-    const maxJudgedOutputBytes = call.mode === 'code'
-      ? (call as JudgedPreparationCall).judgedOutputPolicy?.maxBytes
+    const judgedOutputPolicy = call.mode === 'code'
+      ? (call as JudgedPreparationCall).judgedOutputPolicy
       : undefined;
     const preparation = await this.prepareArtifact(call);
     if (preparation.kind === 'failed') return preparation;
@@ -721,7 +721,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           executeIsolated: (preparedCall) =>
             executeOwned(preparedCall, (preparedArtifact, forwardedCall) =>
               withOwnedPreparedRunner(preparedArtifact.preparedRunnerTier, (runner) =>
-                runner.executePreparedCode(preparedArtifact, forwardedCall, maxJudgedOutputBytes)
+                runner.executePreparedCode(preparedArtifact, forwardedCall, judgedOutputPolicy)
               )
             ),
           executeBatchIsolated: (
@@ -736,7 +736,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
                     inputs,
                     signal: forwardedCall.signal,
                     limits: forwardedCall.limits,
-                  }, maxJudgedOutputBytes),
+                  }, judgedOutputPolicy),
                 forwardedCall.signal
               )
             ),

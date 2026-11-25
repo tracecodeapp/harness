@@ -1,4 +1,5 @@
 import type { RuntimeTrace } from '../../packages/runtime-contracts/src/runtime-trace';
+import type { JudgedOutputPolicy } from '../../packages/runtime-contracts/src/judged-output-policy';
 import {
   createAlgorithmJudgeBundle,
   createBrowserJudgeHost,
@@ -470,14 +471,14 @@ export async function probeCSharpJudgedOutputs(
       import('../../packages/runtime-contracts/src/runtime-calls').RuntimePreparedProgram['executeIsolated']
     >>) => void,
     inputs: Record<string, unknown> = {},
-    maxBytes?: number
+    policy?: Partial<JudgedOutputPolicy>
   ) {
     const call = {
       mode: 'code' as const,
       code,
       functionName: 'solve',
-      ...(maxBytes === undefined ? {} : {
-        judgedOutputPolicy: { maxBytes, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64 },
+      ...(policy === undefined ? {} : {
+        judgedOutputPolicy: { maxBytes: 8_388_608, maxItems: 250_000, maxNodes: 1_000_000, maxDepth: 64, ...policy },
       }),
     };
     const prepared = await runtime.prepareProgram(call);
@@ -654,7 +655,15 @@ export async function probeCSharpJudgedOutputs(
         (result) => {
           if (n === 64) equals(result.kind === 'completed' ? result.output : result, 'x'.repeat(n));
           else equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit');
-        }, { n }, 1_024);
+        }, { n }, { maxBytes: 1_024 });
+    }
+    const nestedArrays = 'public class Solution { public int[][] solve() => new[] { new[] { 1, 2 }, new[] { 3, 4 } }; }';
+    await check('judged items are per container and depth counts language containers', nestedArrays,
+      (result) => equals(result.kind === 'completed' ? result.output : result, [[1, 2], [3, 4]]),
+      {}, { maxItems: 2, maxNodes: 7, maxDepth: 1 });
+    for (const policy of [{ maxItems: 1 }, { maxNodes: 6 }, { maxDepth: 0 }]) {
+      await check(`judged nested arrays honor ${Object.keys(policy)[0]}`, nestedArrays,
+        (result) => equals(result.kind === 'limit' ? result.reason : result, 'serialization-limit'), {}, policy);
     }
     for (const length of [64, 65]) {
       await check(`compatibility ${length}-node chain completes`, boxCode, (result) => {

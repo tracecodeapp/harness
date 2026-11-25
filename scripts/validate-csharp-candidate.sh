@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run on a Linux build host with the repository's pinned Node, pnpm and Chromium.
 # Usage: bash scripts/validate-csharp-candidate.sh /path/to/new-report-directory
+# Set TRACECODE_VALIDATION_KEEP_PACKAGE=1 to retain the smoke-tested tarball in the report.
 set -uo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -177,6 +178,10 @@ try {
   server.closeAllConnections();
 }
 JS
+  if [[ ${TRACECODE_VALIDATION_KEEP_PACKAGE:-0} == 1 ]]; then
+    mv -- "$tarball" "$out/candidate.tgz"
+    tarball="$out/candidate.tgz"
+  fi
   sha256sum "$tarball" | tee "$out/package.sha256"
 )
 
