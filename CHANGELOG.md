@@ -53,9 +53,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   `JudgeRuntimeProgressDisposition` (`accepted`, `duplicate`, `out-of-order`,
   `unknown-case` or `fenced`). `InMemoryJudgeRuntimeControl` implements it.
   `take` returns the accepted progress as `journal`. Publication, the end of
-  the process, and the process watchdog's deadline (`sealAt?`, which the
-  TraceKernel Judge port sets) seal it, so progress reported by a batch that
-  was stopped is refused. A runtime cannot publish a `journal` itself.
+  the process, and the moment the process is actually stopped (`sealWhen?`,
+  which the TraceKernel Judge port sets) seal it, so progress reported by a
+  batch that was stopped is refused, and progress recorded before the stop
+  counts. A finish from the provider's interrupted prefix (`prefix: true`)
+  is still admitted after the stop. A runtime cannot publish a `journal`
+  itself.
 - `InterruptedCodeBatchError` takes an optional third argument,
   `{ interruption, interruptedIndex }`: what interrupted the batch
   (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and,
