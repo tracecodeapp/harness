@@ -136,8 +136,8 @@ assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
   'Select only one special measurement mode');
 assert.ok(!finalReleaseRemainder || finalRelease,
   'A final-release remainder requires final-release mode');
-assert.ok(finalReleaseTailFile === undefined || finalReleaseRemainder && outputTag === 'session3',
-  'A final-release tail requires remainder mode and the session3 output tag');
+assert.ok(finalReleaseTailFile === undefined || finalReleaseRemainder && /^session[34]$/u.test(outputTag),
+  'A final-release tail requires remainder mode and a supported tail-session output tag');
 assert.ok(outputTag === undefined || /^[a-z0-9][a-z0-9-]*$/u.test(outputTag),
   'Output tag must be a lowercase filename token');
 assert.ok(!phoneWarmAa || mode === 'run' && windowName === 'phone' && !candidateScope,
@@ -650,6 +650,8 @@ const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.f
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');
 const finalReleaseTail = finalReleaseTailFile === undefined ? undefined
   : JSON.parse(await readFile(finalReleaseTailFile, 'utf8'));
+if (finalReleaseTail) assert.equal(outputTag, `session${finalReleaseTail.sampleSession}`,
+  'Tail output tag must match the plan sample session');
 const tailSession = finalReleaseTail?.sessions.find(({ language, scope }) =>
   language === testedLanguage && scope === candidateScope);
 if (finalReleaseTail) assert.ok(tailSession, `Tail plan has no ${testedLanguage}/${candidateScope}`);
@@ -736,7 +738,7 @@ const report = {
     shippingPolicyByJourney: { run: 'candidate-main', submit: 'candidate-deploy',
       lesson: 'candidate-main' },
     alternatingOrderPerRound: true,
-    session: finalReleaseTail ? 3 : finalReleaseRemainder ? 2 : 1,
+    session: finalReleaseTail?.sampleSession ?? (finalReleaseRemainder ? 2 : 1),
     remainder: finalReleaseRemainder,
   } }),
   ...(groupSelector !== undefined && {

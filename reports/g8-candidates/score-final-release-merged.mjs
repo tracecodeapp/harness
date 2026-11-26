@@ -77,10 +77,12 @@ async function mergeGroupSessions({ sources, schedule, targetPrefix, merged, ori
   await writeRecords(join(merged, `${targetPrefix}-samples.jsonl`), outputRows);
 }
 
-export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedArg, session3Arg) {
+export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedArg, session3Arg,
+  session4Arg) {
   const session1 = resolve(session1Arg);
   const session2 = resolve(session2Arg);
   const session3 = session3Arg ? resolve(session3Arg) : undefined;
+  const session4 = session4Arg ? resolve(session4Arg) : undefined;
   const merged = resolve(mergedArg);
   await mkdir(merged, { recursive: false });
   for (const scope of ['phone', 'desktop']) {
@@ -92,8 +94,9 @@ export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedAr
   const csharpOld = await optionalSource(session1, 'final-csharp-desktop', 1);
   const csharpTwo = await optionalSource(session2, 'session2-final-csharp-desktop', 2);
   const csharpThree = await optionalSource(session3, 'session3-final-csharp-desktop', 3);
+  const csharpFour = await optionalSource(session4, 'session4-final-csharp-desktop', 4);
   assert.equal(csharpOld.metadata.complete, false);
-  await mergeGroupSessions({ sources: [csharpOld, csharpTwo, csharpThree],
+  await mergeGroupSessions({ sources: [csharpOld, csharpTwo, csharpThree, csharpFour],
     schedule: csharpOld.metadata.schedule, targetPrefix: 'final-csharp-desktop', merged,
     originalOffset: 16 });
 
@@ -101,11 +104,13 @@ export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedAr
     for (const scope of ['phone', 'desktop']) {
       const two = await optionalSource(session2, `session2-final-${language}-${scope}`, 2);
       const three = await optionalSource(session3, `session3-final-${language}-${scope}`, 3);
-      assert.ok(two || three, `Missing ${language}/${scope} from Sessions 2 and 3`);
-      const schedule = two?.metadata.schedule ?? [...three.metadata.schedule]
+      const four = await optionalSource(session4, `session4-final-${language}-${scope}`, 4);
+      assert.ok(two || three || four, `Missing ${language}/${scope} from Sessions 2, 3 and 4`);
+      const tailSource = three ?? four;
+      const schedule = two?.metadata.schedule ?? [...tailSource.metadata.schedule]
         .sort((a, b) => a.sourceGroupIndex - b.sourceGroupIndex)
         .map(({ sourceGroupIndex: _, ...group }) => group);
-      await mergeGroupSessions({ sources: [two, three], schedule,
+      await mergeGroupSessions({ sources: [two, three, four], schedule,
         targetPrefix: `final-${language}-${scope}`, merged });
     }
   }
@@ -174,6 +179,8 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
       2: { includesReference: 'phone-warm-aa' },
       ...(result.rows.some(({ sampleSession }) => sampleSession === 3) &&
         { 3: { source: 'final-release-tail' } }),
+      ...(result.rows.some(({ sampleSession }) => sampleSession === 4) &&
+        { 4: { source: 'final-release-tail' } }),
     },
   };
   write(JSON.stringify({ summary }));
@@ -181,10 +188,11 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [stage, session1, session2, merged, baseline, aaScore, session3] = process.argv.slice(2);
+  const [stage, session1, session2, merged, baseline, aaScore, session3, session4] =
+    process.argv.slice(2);
   assert.ok(stage && session1 && session2 && merged && baseline && aaScore,
     'Usage: score-final-release-merged.mjs <stage> <session1> <session2> <merged> <baseline> <aa-score>');
-  await buildMergedFinalRelease(session1, session2, merged, session3);
+  await buildMergedFinalRelease(session1, session2, merged, session3, session4);
   const { summary } = await scoreMergedFinalRelease(stage, merged, baseline, aaScore);
   if (!summary.pass) process.exitCode = 1;
 }

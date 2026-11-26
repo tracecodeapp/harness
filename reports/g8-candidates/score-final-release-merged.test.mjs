@@ -17,10 +17,12 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
   const session1 = join(root, 'one');
   const session2 = join(root, 'two');
   const session3 = join(root, 'three');
+  const session4 = join(root, 'four');
   const merged = join(root, 'merged');
   await Promise.all([import('node:fs/promises').then(({ mkdir }) => mkdir(session1)),
     import('node:fs/promises').then(({ mkdir }) => mkdir(session2)),
-    import('node:fs/promises').then(({ mkdir }) => mkdir(session3))]);
+    import('node:fs/promises').then(({ mkdir }) => mkdir(session3)),
+    import('node:fs/promises').then(({ mkdir }) => mkdir(session4))]);
   const packageSet = { '0.17.1': { sha256: 'old' }, 'candidate-main': { sha256: 'new' } };
   const schedule = Array.from({ length: 17 }, (_, group) =>
     ({ group, target: 1, versions: ['0.17.1', 'candidate-main'] }));
@@ -40,7 +42,7 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
   for (const language of ['javascript', 'typescript', 'cpp', 'java']) {
     for (const scope of ['phone', 'desktop']) {
       if (language === 'java' && scope === 'phone') {
-        const javaSchedule = Array.from({ length: 2 }, (_, groupIndex) =>
+        const javaSchedule = Array.from({ length: 3 }, (_, groupIndex) =>
           ({ groupIndex, target: 1, versions: ['0.17.1', 'candidate-main'] }));
         await session(session2, 'session2-final-java-phone',
           { complete: false, schedule: javaSchedule, packages: packageSet }, [
@@ -52,6 +54,10 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
           { complete: true, schedule: [{ ...javaSchedule[1], sourceGroupIndex: 1 }],
             packages: packageSet },
           javaSchedule[1].versions.map((version) => ({ groupIndex: 0, version, kept: true })));
+        await session(session4, 'session4-final-java-phone',
+          { complete: true, schedule: [{ ...javaSchedule[2], sourceGroupIndex: 2 }],
+            packages: packageSet },
+          javaSchedule[2].versions.map((version) => ({ groupIndex: 0, version, kept: true })));
         continue;
       }
       await session(session2, `session2-final-${language}-${scope}`,
@@ -59,7 +65,7 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
     }
   }
 
-  await buildMergedFinalRelease(session1, session2, merged, session3);
+  await buildMergedFinalRelease(session1, session2, merged, session3, session4);
   const metadata = JSON.parse(await readFile(
     join(merged, 'final-csharp-desktop-metadata.json'), 'utf8'));
   const rows = (await readFile(join(merged, 'final-csharp-desktop-samples.jsonl'), 'utf8'))
@@ -75,6 +81,8 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
     groupIndex === 0 && sampleSession === 2).length, 2);
   assert.equal(javaRows.filter(({ groupIndex, sampleSession }) =>
     groupIndex === 1 && sampleSession === 3).length, 2);
+  assert.equal(javaRows.filter(({ groupIndex, sampleSession }) =>
+    groupIndex === 2 && sampleSession === 4).length, 2);
 });
 
 test('merge rejects two complete sessions for the same original group', async () => {

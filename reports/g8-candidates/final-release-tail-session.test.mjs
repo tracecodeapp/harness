@@ -7,16 +7,16 @@ const wrapper = await readFile(
 const session = await readFile(new URL('./session-final-release-tail.sh', import.meta.url), 'utf8');
 const runner = await readFile(new URL('./java-runner/run-g8.mjs', import.meta.url), 'utf8');
 
-test('tail uses a unique Session 3 directory and prefix', () => {
-  assert.match(wrapper, /final-release-session3-\$\(date -u \+%Y%m%dT%H%M%SZ\)/u);
-  assert.match(session, /SPEED_G8_OUTPUT_TAG=session3/u);
-  assert.match(session, /session3-final-\$language-\$scope\.log/u);
-  assert.match(runner, /finalReleaseTail \? 3 : finalReleaseRemainder \? 2 : 1/u);
+test('tail derives a unique Session 3 or 4 directory and prefix from its plan', () => {
+  assert.match(wrapper, /final-release-session\$\{sample_session\}-\$\(date -u \+%Y%m%dT%H%M%SZ\)/u);
+  assert.match(session, /SPEED_G8_OUTPUT_TAG="\$output_tag"/u);
+  assert.match(session, /\$output_tag-final-\$language-\$scope\.log/u);
+  assert.match(runner, /session: finalReleaseTail\?\.sampleSession/u);
 });
 
 test('tail selection cannot run outside final-release remainder mode', () => {
   assert.match(runner,
-    /finalReleaseTailFile === undefined \|\| finalReleaseRemainder && outputTag === 'session3'/u);
+    /finalReleaseTailFile === undefined \|\| finalReleaseRemainder && \/\^session\[34\]\$\/u\.test\(outputTag\)/u);
   assert.match(runner, /sourceGroupIndex: originalGroupIndex/u);
 });
 

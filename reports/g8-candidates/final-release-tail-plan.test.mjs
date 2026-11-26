@@ -44,3 +44,37 @@ test('missing sessions select every group and C# retains original group 16', asy
   assert.deepEqual(csharp.groups, [{ scheduleIndex: 0, originalGroupIndex: 16 }]);
   assert.equal(plan.sessions.reduce((sum, session) => sum + session.groups.length, 0), 69);
 });
+
+test('Session 4 selects only groups incomplete across Sessions 2 and 3', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'g8-tail-four-'));
+  const two = join(root, 'two');
+  const three = join(root, 'three');
+  await Promise.all([mkdir(two), mkdir(three)]);
+  const descriptor = tailSessions.find(({ language, scope }) =>
+    language === 'java' && scope === 'phone');
+  const schedule = Array.from({ length: descriptor.groups }, (_, groupIndex) => ({
+    groupIndex, target: 1, versions: ['0.17.1', 'candidate-main'],
+  }));
+  await writeFile(join(two, 'session2-final-java-phone-metadata.json'),
+    JSON.stringify({ schedule }));
+  await writeFile(join(two, 'session2-final-java-phone-samples.jsonl'),
+    schedule[0].versions.map((version) => JSON.stringify({ groupIndex: 0, version, kept: true }))
+      .join('\n') + '\n');
+  await writeFile(join(three, 'session3-final-java-phone-metadata.json'), JSON.stringify({
+    schedule: [{ ...schedule[1], sourceGroupIndex: 1 }],
+  }));
+  await writeFile(join(three, 'session3-final-java-phone-samples.jsonl'),
+    schedule[1].versions.map((version) => JSON.stringify({ groupIndex: 0, version, kept: true }))
+      .join('\n') + '\n');
+
+  const plan = await buildTailPlan(two, three);
+  const javaPhone = plan.sessions.find(({ language, scope }) =>
+    language === 'java' && scope === 'phone');
+  assert.deepEqual(javaPhone.groups, [
+    { scheduleIndex: 2, originalGroupIndex: 2 },
+    { scheduleIndex: 3, originalGroupIndex: 3 },
+  ]);
+  assert.equal(plan.sampleSession, 4);
+  assert.deepEqual(plan.sourceSessions, [2, 3]);
+  assert.equal(javaPhone.prefix, 'session4-final-java-phone');
+});
