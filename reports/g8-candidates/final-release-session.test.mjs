@@ -33,3 +33,14 @@ test('ordinary preflight exercises every final version attempt without scoring',
   assert.match(preflightJob, /SPEED_G8_PREFLIGHT_ORDINARY=1/u);
   assert.doesNotMatch(preflightJob, /heavy-exclusive/u);
 });
+
+test('C# lesson continuation enables only the strict captured promotion shapes', () => {
+  assert.match(javaRunner,
+    /allowCsharpTrustedPromotion:[\s\S]*group\.journey === 'lesson'/u);
+  assert.match(javaRunner,
+    /csharpPromotedExecutionType:[\s\S]*group\.journey === 'lesson'[\s\S]*version\.startsWith\('candidate-'\)/u);
+  assert.match(javaRunner,
+    /csharpPromotedPrepareRole:[\s\S]*group\.journey === 'lesson'[\s\S]*\? 'ordinary'[\s\S]*: 'observer'/u);
+  assert.match(javaRunner,
+    /requireCsharpTrustedPromotionEvidence:[\s\S]*group\.journey === 'lesson'/u);
+});

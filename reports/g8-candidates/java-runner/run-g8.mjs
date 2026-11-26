@@ -412,6 +412,9 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
     }),
     ...(context.allowColdCompilerInitialization && { allowColdCompilerInitialization: true }),
     ...(context.allowPendingCsharpTrustedPrime && { allowPendingTrustedPrime: true }),
+    ...(context.requireCsharpTrustedPromotionEvidence && {
+      requireTrustedPromotionEvidence: true,
+    }),
     ...(previousObserverArtifactKey && { previousObserverArtifactKey }),
   } : undefined;
   const selectedReplenishmentOptions = replenishmentOptions &&
@@ -857,21 +860,26 @@ try {
                     allowCsharpTrustedPromotion: group.language === 'csharp' &&
                       (group.csharpWarmMode === csharpWarmModes.repeatRun ||
                         group.state === 'cold' ||
-                        group.state === 'switched' && group.journey === 'run'),
+                        group.state === 'switched' && group.journey === 'run' ||
+                        group.journey === 'lesson'),
                     csharpPromotedExecutionType: group.language === 'csharp' &&
                       (group.state === 'cold' ||
-                        group.state === 'switched' && group.journey === 'run')
+                        group.state === 'switched' && group.journey === 'run' ||
+                        group.journey === 'lesson')
                       ? group.journey === 'submit' || version.startsWith('candidate-')
                         ? 'execute-prepared-code'
                         : 'execute-prepared-trace'
                       : undefined,
                     csharpPromotedPrepareRole: group.language === 'csharp' &&
                       (group.state === 'cold' ||
-                        group.state === 'switched' && group.journey === 'run')
+                        group.state === 'switched' && group.journey === 'run' ||
+                        group.journey === 'lesson')
                       ? group.journey === 'submit' || version.startsWith('candidate-')
                         ? 'ordinary'
                         : 'observer'
                       : undefined,
+                    requireCsharpTrustedPromotionEvidence: group.language === 'csharp' &&
+                      group.journey === 'lesson',
                     allowColdCompilerInitialization: group.language === 'csharp' &&
                       group.state === 'cold',
                     allowPendingCsharpTrustedPrime: group.language === 'csharp' &&

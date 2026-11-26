@@ -64,6 +64,18 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) 
   const trustedPrimes = phases.filter((phase) =>
     isTrustedCsharpPrime(phase, trustedArtifactKey));
   if (trustedPrimes.length === 0) {
+    const unprovedPromotedWorker = options?.requireTrustedPromotionEvidence === true &&
+      [...new Set(phases.filter(({ workerKind, type }) =>
+        workerKind === 'runner' && ['init', 'warmup'].includes(type))
+        .map(({ worker }) => worker))].some((worker) => {
+        const workerPhases = phases.filter((phase) => phase.worker === worker);
+        return workerPhases.some(({ type }) => type === 'init') &&
+          workerPhases.some(({ type }) => type === 'warmup') &&
+          workerPhases.some(({ type }) => EXECUTION_TYPES.has(type));
+      });
+    if (unprovedPromotedWorker) {
+      return { error: 'C# trusted standby replenishment witness differs' };
+    }
     return {
       trustedWorkers: new Set(),
       promotedOrdinaryWorkers: new Set(),

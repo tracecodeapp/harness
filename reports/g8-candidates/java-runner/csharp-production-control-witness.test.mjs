@@ -25,9 +25,9 @@ test('rejects per-case worker replacement, missing replies and missing execution
 
 function trustedReplenishment(worker = 9, artifactKey = 'trusted-warmup') {
   return [
-    { worker, role: 'ordinary', type: 'init', received: 1 },
-    { worker, role: 'ordinary', type: 'warmup', received: 2 },
-    { worker, role: 'ordinary', type: 'execute-prepared-code', tier: 'compatibility',
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'init', received: 1 },
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'warmup', received: 2 },
+    { worker, workerKind: 'runner', role: 'ordinary', type: 'execute-prepared-code', tier: 'compatibility',
       artifactKey, received: 3 },
   ];
 }
@@ -80,6 +80,17 @@ test('accepts only the exact measured-path promotion of the trusted standby work
 
   result.csharp.phases.at(-1).artifactKey = 'other-learner-artifact';
   assert.equal(csharpProductionControlOutcome(result, 'trusted-warmup', { caseCount: 3 }),
+    'C# trusted standby replenishment witness differs');
+});
+
+test('lesson promotion requires the trusted prime when runner setup and learner work coexist', () => {
+  const result = promotedOrdinaryResult();
+  const options = { caseCount: 3, requireTrustedPromotionEvidence: true };
+  assert.equal(csharpProductionControlOutcome(result, 'trusted-warmup', options), undefined);
+
+  result.csharp.phases = result.csharp.phases.filter(({ artifactKey }) =>
+    artifactKey !== 'trusted-warmup');
+  assert.equal(csharpProductionControlOutcome(result, 'trusted-warmup', options),
     'C# trusted standby replenishment witness differs');
 });
 
