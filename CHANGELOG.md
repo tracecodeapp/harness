@@ -189,6 +189,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   from `source` or `eval` no longer ends the rest of the line. An npm
   script's runtime error reaches the result as a direct run's does. Verdicts,
   traces and drawings are unchanged.
+
+- The terminal keeps shell state between separately typed lines, as Bash
+  does. `$?` is the previous line's status: a failed command, a program's
+  exit code or uncaught exception, 130 after Ctrl-C, and a failed `cd`. A
+  blank line or a line of only comments keeps it. A bare `exit` closes the
+  terminal with that status. `cd -` returns to the
+  previous directory and prints it, `OLDPWD` holds that directory, and `cd ~`
+  and `cd ~/dir` go to the home directory. A line that changes directory
+  itself (`cd src && make`, `cd "$DIR"; ls`) leaves the terminal in the
+  shell's final directory. That directory and `OLDPWD` must be inside the
+  terminal's navigation limits; otherwise the prompt stays and `OLDPWD`
+  keeps the last allowed directory. `env`, `printenv` and the environment
+  of a program the terminal runs list variables only: no `?`, positional
+  parameters, `IFS`, `OPTIND`, `PIPESTATUS_*`, `BASHOPTS`, `SHELLOPTS`,
+  `OSTYPE`, `MACHTYPE`, `HOSTTYPE`, `BASH_REMATCH_*`, or the storage of an
+  array. Variables the learner names, such as `arr_backup` or `__TRACE`,
+  are listed. Shell expansion still sees everything, and exported variables
+  persist as before. A nested shell starts
+  with `$?` at 0.
 - Python project commands name workspace files by the path the terminal
   shows, as CPython does for the same command in that directory. Tracebacks
   (syntax and runtime errors, in the main file and in imported project
@@ -324,7 +343,16 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - In a JavaScript ES module, a frame on a line that starts with an `import` or
   `export` statement can report a shifted column; its line is right. Frames
   inside code the program passes to `eval` or `new Function` are left out.
-
+- The terminal still runs each typed line in a fresh shell that is given the
+  previous line's variables, directory and status. Functions, aliases,
+  `set -o` and `shopt` options, traps and positional parameters do not carry
+  to the next line. The shell does not tell exported variables from plain
+  ones, so a plain `X=1` shows in `env` and reaches the programs it runs.
+  An associative array is no longer associative on a later line, so its
+  elements show there as `NAME_key` variables; so do the elements of an
+  array filled by `read -a`, and an empty array's `NAME__length=0`.
+- `true && exit` and `false || exit` run `exit` in the shell but do not
+  close the terminal; only `exit` as its own statement does.
 - In an untraced case of a mixed trace batch (and in an untraced Run), a loop
   that runs only inside the learner's own `exec`/`eval` code is not seen by
   the untraced guard (it only examines `solution.py` frames), so the client's

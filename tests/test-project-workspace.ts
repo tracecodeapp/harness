@@ -35,7 +35,6 @@ import {
 import { getLanguageRuntimeInfo } from '../packages/runtime-contracts/src/runtime-language-info';
 import packageJson from '../package.json' with { type: 'json' };
 import {
-  leadingPersistentCdTarget,
   parseSimpleCommandWords,
   parseTerminalCommandList,
 } from '../packages/tracekernel/src/workspace/arg-parsers';
@@ -14477,23 +14476,6 @@ function testTerminalCommandParsingParity(): void {
   assertWords('cd a > out', null);
   assertWords('FOO=1 cd a', null);
   assertWords('cd a; cd b', null);
-
-  const assertLeadingCd = (command: string, expected: string | undefined | null): void => {
-    const actual = leadingPersistentCdTarget(command);
-    assertCondition(
-      JSON.stringify(actual) === JSON.stringify(expected),
-      `leading cd target mismatch for ${JSON.stringify(command)}: ${JSON.stringify(actual)}`
-    );
-  };
-  assertLeadingCd('cd src && make', 'src');
-  assertLeadingCd('cd "my dir" && make', 'my dir');
-  assertLeadingCd('cd src; make', 'src');
-  assertLeadingCd('cd || echo fail', undefined);
-  assertLeadingCd('cd $(pwd)/x && make', null);
-  assertLeadingCd('cd a b && make', null);
-  assertLeadingCd('cd src', null);
-  assertLeadingCd('make && cd src', null);
-  assertLeadingCd('cd src > log && make', null);
 
   console.log('PASS: terminal command parsing matches the just-bash parser');
 }

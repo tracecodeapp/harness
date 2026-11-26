@@ -725,6 +725,17 @@ async function main(): Promise<void> {
           const firstTerminalInline = await terminal.run(
             'python -c "print(\'python-first-terminal\')"'
           );
+          // Separately typed lines: Bash prints the program's status next.
+          const pythonStatus = {
+            raised: await terminal.run(
+              'python -c "raise ValueError(\'boom\')"'
+            ),
+            raisedStatus: await terminal.run('echo $?'),
+            exited: await terminal.run(
+              'python -c "import sys; sys.exit(4)"'
+            ),
+            exitedStatus: await terminal.run('echo $?'),
+          };
           const pathRuns: Array<{ cd: unknown; run: unknown }> = [];
           for (const entry of pathCases) {
             const cd = await terminal.run(`cd ${entry.cwd}`);
@@ -795,6 +806,7 @@ async function main(): Promise<void> {
           }
           return {
             firstTerminalInline,
+            pythonStatus,
             pathRuns,
             pathRunsCdBack,
             fsControl,
@@ -887,6 +899,18 @@ async function main(): Promise<void> {
           result.firstTerminalInline.stderr === '',
         `Python first terminal command did not preserve stdout: ${JSON.stringify(
           result.firstTerminalInline
+        )}`
+      );
+      // Bash: an uncaught exception exits 1 and sys.exit(4) exits 4; the next
+      // line's `echo $?` prints that status.
+      assertCondition(
+        result.pythonStatus.raised.exitCode === 1 &&
+          result.pythonStatus.raised.stderr.includes('ValueError: boom') &&
+          result.pythonStatus.raisedStatus.stdout === '1\n' &&
+          result.pythonStatus.exited.exitCode === 4 &&
+          result.pythonStatus.exitedStatus.stdout === '4\n',
+        `Python exit status did not carry to the next terminal line: ${JSON.stringify(
+          result.pythonStatus
         )}`
       );
       assertCondition(

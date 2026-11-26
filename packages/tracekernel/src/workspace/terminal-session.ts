@@ -115,7 +115,7 @@ import type {
 } from './index';
 import { normalizeTerminalAbsolutePath, terminalCwdLabel } from './paths';
 import {
-  leadingPersistentCdTarget,
+  isEmptyTerminalSubmission,
   parseSimpleCommandWords,
   parseTerminalCommandList,
   type TerminalCommandListSegment,
@@ -131,6 +131,14 @@ const TERMINAL_SESSION_TRANSIENT_ENV_KEYS = new Set([
   'BASHOPTS',
   '_',
 ]);
+
+// Special and positional parameters and the last pipeline's statuses are
+// interpreter state, not variables: an interactive shell never carries them
+// as environment from one line to the next.
+function isTerminalSessionTransientEnvKey(key: string): boolean {
+  return TERMINAL_SESSION_TRANSIENT_ENV_KEYS.has(key) ||
+    /^(?:[?#$!@*-]|\d+|PIPESTATUS(?:_\d+|__length)?)$/.test(key);
+}
 
 const TERMINAL_EXIT_MIN = -(2n ** 63n);
 const TERMINAL_EXIT_MAX = (2n ** 63n) - 1n;
@@ -185,6 +193,10 @@ function normalizeTerminalFilesystemStderr(stderr: string): string {
 
 export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTerminalSession {
   private currentCwd: string;
+  // Bash's OLDPWD: unset until the first change of directory.
+  private previousCwd: string | null = null;
+  // Bash's `$?` for the next line.
+  private lastExitCode = 0;
   private readonly env: Record<string, string>;
   private currentInputState: RuntimeProjectTerminalInputState;
   private activeStdinPipe: RuntimeCommandOptions['stdinPipe'] | null = null;
@@ -462,6 +474,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
 
     this.commandHistory.push(trimmed);
     if (this.commandHistory.length > 1000) this.commandHistory.shift();
+    // A line of only comments runs nothing and keeps `$?`, as in Bash.
+    if (isEmptyTerminalSubmission(trimmed)) return { stdout: '', stderr: '', exitCode: 0 };
 
     const commandList = parseTerminalCommandList(trimmed);
     if (commandList.some((segment) => segment.background)) {
@@ -512,6 +526,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
             options,
             this.currentCwd
           );
+          this.lastExitCode = 0;
           continue;
         }
         const result = await this.runForegroundTerminalCommand(segment.command, options, commandStdinPipe);
@@ -586,7 +601,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         { ...options, signal: commandAbortController.signal },
         commandStdinPipe
       );
-      this.closeFromCompletedCommandList(trimmed);
+      this.closeFromCompletedCommandList(trimmed, result.exitCode);
       return result;
     } finally {
       options.signal?.removeEventListener('abort', forwardExternalAbort);
@@ -606,7 +621,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     }
   }
 
-  private closeFromCompletedCommandList(command: string): void {
+  private closeFromCompletedCommandList(command: string, exitCode: number): void {
     if (this.sessionClosed) return;
     const segments = parseTerminalCommandList(command);
     if (segments.length <= 1) return;
@@ -614,8 +629,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       if (segment.background) continue;
       const words = parseSimpleCommandWords(segment.command);
       if (words?.[0] !== 'exit' || words.length > 2) continue;
-      const exitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]) ?? 2;
-      this.closeSession(exitCode);
+      // A bare `exit` in the list exited the shell with the status it saw.
+      this.closeSession(words[1] === undefined ? exitCode : parseTerminalExitCode(words[1]) ?? 2);
       return;
     }
   }
@@ -625,8 +640,59 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
     options: RuntimeProjectTerminalRunOptions,
     commandStdinPipe: RuntimeCommandOptions['stdinPipe']
   ): Promise<RuntimeCommandResult> {
+    const result = await this.executeForegroundTerminalCommand(trimmed, options, commandStdinPipe);
+    this.lastExitCode = result.exitCode;
+    return result;
+  }
+
+  private get homeDirectory(): string {
+    return this.env.HOME || this.options.kernelInfo.home;
+  }
+
+  // Every successful change of directory records the one it left, as Bash
+  // does with OLDPWD.
+  private changeCwd(cwd: string): void {
+    this.previousCwd = this.currentCwd;
+    this.currentCwd = cwd;
+  }
+
+  // A line that changed directory itself (`cd src && make`, `cd -; ls`,
+  // `cd "$DIR"`) leaves the terminal where the shell finished, with the
+  // shell's OLDPWD. Both pass the terminal's navigation check first:
+  // - a final directory outside the limits is not adopted, and the line
+  //   leaves the prompt and OLDPWD as they were;
+  // - an OLDPWD outside the limits is never stored. The terminal keeps the
+  //   last allowed directory instead: the one the prompt left, if the line
+  //   moved it, otherwise its previous OLDPWD.
+  private async adoptShellCwd(pwd: string | undefined, oldPwd: string | undefined): Promise<void> {
+    const startCwd = this.currentCwd;
+    let nextCwd = startCwd;
+    if (pwd !== undefined && pwd !== startCwd) {
+      try {
+        nextCwd = await this.options.resolveCwd(startCwd, pwd);
+      } catch {
+        return;
+      }
+    }
+    let nextPreviousCwd = this.previousCwd;
+    if (oldPwd !== undefined) {
+      try {
+        nextPreviousCwd = await this.options.resolveCwd(startCwd, oldPwd);
+      } catch {
+        if (nextCwd !== startCwd) nextPreviousCwd = startCwd;
+      }
+    }
+    this.currentCwd = nextCwd;
+    this.previousCwd = nextPreviousCwd;
+  }
+
+  private async executeForegroundTerminalCommand(
+    trimmed: string,
+    options: RuntimeProjectTerminalRunOptions,
+    commandStdinPipe: RuntimeCommandOptions['stdinPipe']
+  ): Promise<RuntimeCommandResult> {
     const outputTracker = new RuntimeProjectOutputTracker();
-    const words = parseSimpleCommandWords(trimmed);
+    const words = parseSimpleCommandWords(trimmed, { home: this.homeDirectory });
     if (words?.[0] === 'clear' && words.length === 1) {
       this.emitControlEvent('clear');
       return { stdout: '', stderr: '', exitCode: 0 };
@@ -636,7 +702,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       if (words.length > 2) {
         return { stdout: '', stderr: 'exit: too many arguments\n', exitCode: 1 };
       }
-      const requestedExitCode = words[1] === undefined ? 0 : parseTerminalExitCode(words[1]);
+      const requestedExitCode = words[1] === undefined ? this.lastExitCode : parseTerminalExitCode(words[1]);
       if (requestedExitCode === null) {
         this.closeSession(2);
         return {
@@ -653,13 +719,19 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       if (words.length > 2) {
         return { stdout: '', stderr: 'cd: too many arguments\n', exitCode: 1 };
       }
+      // `cd -` returns to OLDPWD and prints it.
+      const toPrevious = words[1] === '-';
+      if (toPrevious && this.previousCwd === null) {
+        return { stdout: '', stderr: 'cd: OLDPWD not set\n', exitCode: 1 };
+      }
+      const target = toPrevious ? this.previousCwd! : words[1] ?? this.options.workspaceRoot;
       try {
-        this.currentCwd = await this.options.resolveCwd(this.currentCwd, words[1] ?? this.options.workspaceRoot);
-        return { stdout: '', stderr: '', exitCode: 0 };
+        this.changeCwd(await this.options.resolveCwd(this.currentCwd, target));
+        return { stdout: toPrevious ? `${this.currentCwd}\n` : '', stderr: '', exitCode: 0 };
       } catch (error) {
         return {
           stdout: '',
-          stderr: `cd: ${words[1] ?? this.options.workspaceRoot}: ${terminalFilesystemErrorDetail(error)}\n`,
+          stderr: `cd: ${target}: ${terminalFilesystemErrorDetail(error)}\n`,
           exitCode: 1,
         };
       }
@@ -686,16 +758,8 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
       };
     }
 
-    let nextCwd: string | null = null;
-    const leadingCdTarget = leadingPersistentCdTarget(trimmed);
-    if (leadingCdTarget !== null) {
-      try {
-        nextCwd = await this.options.resolveCwd(this.currentCwd, leadingCdTarget ?? this.options.workspaceRoot);
-      } catch {
-        nextCwd = null;
-      }
-    }
-
+    let shellCwd: string | undefined;
+    let shellPreviousCwd: string | undefined;
     let pendingStdoutEvent: RuntimeCommandOutputEvent | undefined;
     const flushPendingStdout = (): void => {
       if (!this.activeStdinPrompt || !pendingStdoutEvent) return;
@@ -766,21 +830,28 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...this.env,
         ...(options.env ?? {}),
         PWD: this.currentCwd,
+        ...(this.previousCwd !== null ? { OLDPWD: this.previousCwd } : {}),
         TERM: this.terminalTerm,
         NO_COLOR: '1',
         COLUMNS: String(this.terminalColumns),
         LINES: String(this.terminalRows),
       },
+      lastExitCode: this.lastExitCode,
       terminal: this.terminal,
       onTerminalStdinRead: handleTerminalStdinRead,
       umask: this.currentUmask,
       onEvent: handleCommandEvent,
-      onEnvChanges: (changes) => this.applySessionEnvChanges(changes),
+      onEnvChanges: (changes) => {
+        if (typeof changes.PWD === 'string') shellCwd = changes.PWD;
+        if (typeof changes.OLDPWD === 'string') shellPreviousCwd = changes.OLDPWD;
+        this.applySessionEnvChanges(changes);
+      },
       onUmaskChange: (umask) => {
         this.currentUmask = this.normalizeUmask(umask);
       },
     });
     flushPendingStdout();
+    await this.adoptShellCwd(shellCwd, shellPreviousCwd);
     const completeOutput = outputTracker.completeFinalOutput(result);
     const completeResult = {
       ...result,
@@ -799,9 +870,6 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         stderr: completeResult.stderr,
       };
     }
-    if (nextCwd) {
-      this.currentCwd = nextCwd;
-    }
     return completeResult;
   }
 
@@ -810,7 +878,7 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
   // Path-state bookkeeping stays owned by the terminal's own cwd tracking.
   private applySessionEnvChanges(changes: Record<string, string | undefined>): void {
     for (const [key, value] of Object.entries(changes)) {
-      if (TERMINAL_SESSION_TRANSIENT_ENV_KEYS.has(key)) continue;
+      if (isTerminalSessionTransientEnvKey(key)) continue;
       if (value === undefined) {
         delete this.env[key];
       } else {
@@ -844,11 +912,13 @@ export class RuntimeProjectWorkspaceTerminalSession implements RuntimeProjectTer
         ...this.env,
         ...(options.env ?? {}),
         PWD: cwd,
+        ...(this.previousCwd !== null ? { OLDPWD: this.previousCwd } : {}),
         TERM: this.terminalTerm,
         NO_COLOR: '1',
         COLUMNS: String(this.terminalColumns),
         LINES: String(this.terminalRows),
       },
+      lastExitCode: this.lastExitCode,
       terminal: this.terminal,
       umask: this.currentUmask,
       onEvent: handleBackgroundEvent,

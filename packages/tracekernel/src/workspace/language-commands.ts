@@ -166,8 +166,61 @@ export function traceKernelCommandPath(command: string): string {
 }
 
 
+// The interpreter keeps its own bookkeeping in the same map as variables.
+// Bash never exports it, so programs must not receive it. The just-bash
+// patch filters `env` and `printenv` output with the same rule. Only these
+// are hidden:
+// - exact interpreter names: special and positional parameters, IFS,
+//   getopts and option state, OSTYPE/MACHTYPE/HOSTTYPE, PIPESTATUS and
+//   BASH_REMATCH;
+// - array storage in just-bash's key format: NAME_<index> elements of a
+//   NAME__length decimal count, that count once an element exists, and
+//   every NAME_<key> (and NAME__length) of an associative array the
+//   interpreter declared in this command's shell.
+// A learner name that only looks similar (arr_backup, __TRACE,
+// count__length=3) is never hidden.
+const SHELL_INTERNAL_ENV_NAME =
+  /^(?:[?#$!@*-]|\d+|IFS|OPTIND|OPTARG|SHELLOPTS|BASHOPTS|OSTYPE|MACHTYPE|HOSTTYPE|__GETOPTS_CHARINDEX|PIPESTATUS(?:_\d+|__length)|BASH_REMATCH(?:_\d+|__length))$/;
+const SHELL_ARRAY_LENGTH_KEY = /^([A-Za-z_][A-Za-z0-9_]*)__length$/;
+const SHELL_ARRAY_ELEMENT_KEY = /^([A-Za-z_][A-Za-z0-9_]*)_(\d+)$/;
+const DECIMAL_COUNT = /^\d+$/;
+
+export function shellInternalEnvNames(
+  env: ReadonlyMap<string, string>,
+  associativeArrays?: ReadonlySet<string>
+): Set<string> {
+  const hidden = new Set<string>();
+  const indexedArrays = new Set<string>();
+  for (const name of env.keys()) {
+    if (SHELL_INTERNAL_ENV_NAME.test(name)) hidden.add(name);
+    const element = SHELL_ARRAY_ELEMENT_KEY.exec(name);
+    if (element && DECIMAL_COUNT.test(env.get(`${element[1]}__length`) ?? '')) {
+      hidden.add(name);
+      indexedArrays.add(element[1]!);
+    }
+  }
+  for (const [name, value] of env) {
+    const length = SHELL_ARRAY_LENGTH_KEY.exec(name);
+    if (
+      length &&
+      DECIMAL_COUNT.test(value) &&
+      (indexedArrays.has(length[1]!) || associativeArrays?.has(length[1]!))
+    ) {
+      hidden.add(name);
+    }
+  }
+  for (const array of associativeArrays ?? []) {
+    if (!env.has(`${array}__length`)) continue;
+    for (const name of env.keys()) {
+      if (name.startsWith(`${array}_`)) hidden.add(name);
+    }
+  }
+  return hidden;
+}
+
 export function commandEnv(ctx: CommandContext): Record<string, string> {
-  return Object.fromEntries(ctx.env.entries());
+  const hidden = shellInternalEnvNames(ctx.env, ctx.tracecodeAssociativeArrays);
+  return Object.fromEntries([...ctx.env.entries()].filter(([name]) => !hidden.has(name)));
 }
 
 
