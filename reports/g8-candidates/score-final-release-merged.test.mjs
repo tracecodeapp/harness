@@ -76,3 +76,35 @@ test('merge preserves session 1 cells and replaces only incomplete C# group 16',
   assert.equal(javaRows.filter(({ groupIndex, sampleSession }) =>
     groupIndex === 1 && sampleSession === 3).length, 2);
 });
+
+test('merge rejects two complete sessions for the same original group', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'g8-merge-duplicate-'));
+  const one = join(root, 'one');
+  const two = join(root, 'two');
+  const three = join(root, 'three');
+  const merged = join(root, 'merged');
+  await Promise.all([one, two, three].map((directory) =>
+    import('node:fs/promises').then(({ mkdir }) => mkdir(directory))));
+  const packages = { '0.17.1': { sha256: 'old' }, 'candidate-main': { sha256: 'new' } };
+  const group = { target: 1, versions: ['0.17.1', 'candidate-main'] };
+  for (const scope of ['phone', 'desktop']) {
+    await session(one, `experiment-final-${scope}`, { complete: true, schedule: [] });
+  }
+  await session(one, 'final-csharp-phone', { complete: true, schedule: [] });
+  const csharpSchedule = Array.from({ length: 17 }, () => group);
+  await session(one, 'final-csharp-desktop',
+    { complete: false, schedule: csharpSchedule, packages },
+    Array.from({ length: 16 }, (_, groupIndex) => group.versions.map((version) =>
+      ({ groupIndex, version, kept: true }))).flat());
+  for (const [directory, prefix, sourceGroupIndex] of [
+    [two, 'session2-final-csharp-desktop', undefined],
+    [three, 'session3-final-csharp-desktop', 16],
+  ]) {
+    await session(directory, prefix,
+      { complete: true, schedule: [{ ...group, ...(sourceGroupIndex !== undefined &&
+        { sourceGroupIndex }) }], packages },
+      group.versions.map((version) => ({ groupIndex: 0, version, kept: true })));
+  }
+  await assert.rejects(buildMergedFinalRelease(one, two, merged, three),
+    /group 16 must have exactly one complete session/u);
+});

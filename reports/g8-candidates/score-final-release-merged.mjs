@@ -56,12 +56,14 @@ async function mergeGroupSessions({ sources, schedule, targetPrefix, merged, ori
   const outputRows = [];
   const provenance = {};
   for (let originalGroupIndex = 0; originalGroupIndex < schedule.length; originalGroupIndex++) {
-    const match = sources.filter(Boolean).map((source) => {
+    const matches = sources.filter(Boolean).map((source) => {
       const localIndex = source.metadata.schedule.findIndex((_, index) =>
         sourceGroupIndex(source, index, source.session === 1 ? 0 : originalOffset) === originalGroupIndex);
       return { source, localIndex };
-    }).find(({ source, localIndex }) => localIndex >= 0 && completeSourceGroup(source, localIndex));
-    assert.ok(match, `${targetPrefix} group ${originalGroupIndex} has no complete session`);
+    }).filter(({ source, localIndex }) => localIndex >= 0 && completeSourceGroup(source, localIndex));
+    assert.equal(matches.length, 1,
+      `${targetPrefix} group ${originalGroupIndex} must have exactly one complete session`);
+    const [match] = matches;
     const { source, localIndex } = match;
     provenance[originalGroupIndex] = { session: source.session, sourcePrefix: source.prefix };
     outputRows.push(...source.rows.filter((row) => row.groupIndex === localIndex)
