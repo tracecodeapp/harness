@@ -277,7 +277,7 @@ Every direct candidate median more than 10% slower than live 0.17.1 is visible a
 
 ## Tool faults
 
-1. **SSH cwd / esbuild.** The first final attempt depended on an esbuild install outside the session directory and failed after `/tmp` pruning. Commit `7ac5d86c` made the run directory self-contained and added the dependency/path preflight. It touched no timing samples.
+1. **SSH cwd / esbuild.** The first final attempt was launched by SSH with `/root` as its working directory, so its temporary runner was created outside the session directory and could not resolve the session's `node_modules/esbuild`. The earlier suspicion that `/tmp` pruning caused the failure was wrong. Commit `7ac5d86c` made the run directory self-contained, fixed the launch working directory, and added the dependency/path preflight. It touched no timing samples.
 2. **C# lesson Continue witness.** The accepted witness existed but was not enabled through the real run-g8 lesson option path. Commit `ed1f73b1` enabled the exact per-version promotion branch. Session 1 group 16 was incomplete and was retimed from zero in Session 3; it was never rescored.
 3. **Between-phase A/A scorer.** The scorer rejected rows already marked load-excluded and stopped after Session 2 sampling. Commit `b28d6ddd` skips only explicit pre-registered load exclusions while still rejecting invalid/refusal rows and preserving n=20 and every A/A tolerance. The stale malformed A/A score log then caused Session 3’s post-sampling merged scorer to fail; all sampling had already completed and the host was released. Commit `08fd969d` preserves each cell’s existing A/A pass/fail independently, so only rows that depend on a failed reference are held controlInvalid.
 
