@@ -870,7 +870,7 @@ try {
             }
             checkDeadline();
             sample.beforeInitial = pressure();
-            if (mode === 'run' && sample.beforeInitial.oneMinute > 2) {
+            if (mode === 'run' && !ordinaryPreflight && sample.beforeInitial.oneMinute > 2) {
               sample.excluded = 'initial load > 2.0';
             } else {
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
@@ -925,7 +925,7 @@ try {
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
-                if (mode === 'run' && sample.beforeSecond.oneMinute > 2) {
+                if (mode === 'run' && !ordinaryPreflight && sample.beforeSecond.oneMinute > 2) {
                   sample.excluded = 'continuation load > 2.0';
                 } else {
                   sample.second = await second(page, fixture.cases[1].id);
