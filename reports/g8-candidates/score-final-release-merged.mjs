@@ -124,6 +124,23 @@ function drift(actual, reference) {
   };
 }
 
+export function applyPhoneWarmReference(row, source, aaPass) {
+  assert.equal(typeof aaPass, 'boolean', `Missing A/A verdict for ${row.cell}`);
+  const control = row.controls.find(({ version }) => version === '0.17.1');
+  assert.ok(control, `Missing 0.17.1 control for ${row.cell}`);
+  const controlDrift = drift(control.result, source.reference);
+  const withinDrift = Math.abs(controlDrift.median) <= 0.10 &&
+    Math.abs(controlDrift.p90) <= 0.10;
+  const valid = aaPass && withinDrift;
+  control.reference = source.reference;
+  control.drift = { ...controlDrift, valid };
+  row.hostCheck = { mode: 'session2-phone-aa', valid, referenceSession: 2,
+    aaReferenceValid: aaPass, drift: controlDrift };
+  row.referenceSession = 2;
+  row.pass = row.complete && valid && row.medianPass;
+  return row;
+}
+
 export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, aaScoreArg,
   write = console.log) {
   const collected = [];
@@ -132,7 +149,8 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
   const aaLines = (await readFile(resolve(aaScoreArg), 'utf8')).trim().split('\n')
     .filter(Boolean).map(JSON.parse);
   const aaSummary = aaLines.find(({ summary }) => summary)?.summary;
-  assert.equal(aaSummary?.pass, true, 'Session 2 phone A/A did not produce a valid reference');
+  assert.ok(aaSummary, 'Session 2 phone A/A summary is missing');
+  const aaCells = new Map(aaLines.filter(({ cell }) => cell).map((row) => [row.cell, row]));
   const references = new Map(aaSummary.references.map((row) => [row.cell, row]));
 
   const sessionMetadata = new Map();
@@ -151,15 +169,7 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
         ['python', 'csharp'].includes(row.language)) {
       const source = references.get(row.cell);
       assert.ok(source, `Missing session 2 phone reference for ${row.cell}`);
-      const control = row.controls.find(({ version }) => version === '0.17.1');
-      const controlDrift = drift(control.result, source.reference);
-      const valid = Math.abs(controlDrift.median) <= 0.10 && Math.abs(controlDrift.p90) <= 0.10;
-      control.reference = source.reference;
-      control.drift = { ...controlDrift, valid };
-      row.hostCheck = { mode: 'session2-phone-aa', valid, referenceSession: 2,
-        drift: controlDrift };
-      row.referenceSession = 2;
-      row.pass = row.complete && valid && row.medianPass;
+      applyPhoneWarmReference(row, source, aaCells.get(row.cell)?.pass);
     } else {
       row.referenceSession = 'frozen-or-preregistered';
     }

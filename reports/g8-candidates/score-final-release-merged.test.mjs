@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { buildMergedFinalRelease } from './score-final-release-merged.mjs';
+import {
+  applyPhoneWarmReference,
+  buildMergedFinalRelease,
+} from './score-final-release-merged.mjs';
 
 async function session(root, prefix, metadata, rows = []) {
   await writeFile(join(root, `${prefix}-metadata.json`), JSON.stringify(metadata));
@@ -115,4 +118,27 @@ test('merge rejects two complete sessions for the same original group', async ()
   }
   await assert.rejects(buildMergedFinalRelease(one, two, merged, three),
     /group 16 must have exactly one complete session/u);
+});
+
+test('a failing per-cell A/A reference holds only its dependent row controlInvalid', () => {
+  const row = {
+    cell: 'python/4/permutations/warm/verdicts', complete: true, medianPass: true,
+    controls: [{ version: '0.17.1', result: { n: 20, median: 510, p90: 550 } }],
+  };
+  applyPhoneWarmReference(row,
+    { reference: { n: 40, median: 500, p90: 540 } }, false);
+  assert.equal(row.hostCheck.valid, false);
+  assert.equal(row.hostCheck.aaReferenceValid, false);
+  assert.equal(row.referenceSession, 2);
+  assert.equal(row.pass, false);
+
+  const sibling = {
+    cell: 'python/4/permutations/warm/repeatVerdicts', complete: true, medianPass: true,
+    controls: [{ version: '0.17.1', result: { n: 20, median: 510, p90: 550 } }],
+  };
+  applyPhoneWarmReference(sibling,
+    { reference: { n: 40, median: 500, p90: 540 } }, true);
+  assert.equal(sibling.hostCheck.valid, true);
+  assert.equal(sibling.hostCheck.aaReferenceValid, true);
+  assert.equal(sibling.pass, true);
 });
