@@ -7,6 +7,10 @@ test -r "$out/manifest.json"
 node --test \
   "$stage/final-release-plan.test.mjs" \
   "$stage/final-release-inventory.test.mjs" \
+  "$stage/final-release-session.test.mjs" \
+  "$stage/java-runner/candidate-witness-policy.test.mjs" \
+  "$stage/java-runner/csharp-candidate-witness.test.mjs" \
+  "$stage/java-runner/java-candidate-witness.test.mjs" \
   "$stage/python-experiment-plan.test.mjs" \
   "$stage/java-runner/version-preparation.test.mjs"
 bash "$stage/session-process-group.test.sh"

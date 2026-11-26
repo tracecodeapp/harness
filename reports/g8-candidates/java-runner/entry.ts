@@ -99,6 +99,13 @@ function measureCandidateRequests(language: string) {
     workerKind?: string; mode?: string; observation?: boolean; artifactKey?: string;
     cases?: number; tier?: string; stopAtFirstRunaway?: boolean;
     timings?: Record<string, unknown>;
+    admissionId?: number;
+    admissionProgress?: Array<{
+      stage?: string; caseIndex?: number; admissionId?: number; success?: boolean; tier?: string;
+    }>;
+    admissionTerminal?: {
+      resultsStreamed?: number; startedCaseIndexes?: number[]; runnerProcessCount?: number;
+    };
   };
   let nextWorker = 0;
   let requests: Request[] = [];
@@ -122,6 +129,24 @@ function measureCandidateRequests(language: string) {
       this.addEventListener('message', ({ data }) => {
         const request = pending.get(data?.id);
         if (!request || data.type === 'batch-case-progress') return;
+        if (language === 'java' && data.type === 'runtime-progress' &&
+            request.type === 'execute-prepared-runtime-program-batch') {
+          const { stage, detail } = data.payload ?? {};
+          if (stage === 'ordinary-case-started' || stage === 'ordinary-case-finished') {
+            request.admissionProgress ??= [];
+            request.admissionProgress.push({
+              stage,
+              caseIndex: detail?.caseIndex,
+              admissionId: detail?.admissionId,
+              ...(stage === 'ordinary-case-finished' && {
+                success: detail?.result?.success,
+                tier: detail?.result?.algorithmIsolationProfile?.tier,
+              }),
+            });
+            request.tier ??= detail?.result?.algorithmIsolationProfile?.tier;
+          }
+          return;
+        }
         const expected = language === 'python'
           ? request.type === 'prepare-program' ? 'prepare-result' : 'execute-result'
           : request.type;
@@ -131,6 +156,15 @@ function measureCandidateRequests(language: string) {
         request.timings = language === 'java'
           ? javaWorkerPhaseTimings(data.payload)
           : data.payload?.timings;
+        if (language === 'java' && request.type === 'execute-prepared-runtime-program-batch' &&
+            data.payload?.results === undefined &&
+            Number.isSafeInteger(data.payload?.resultsStreamed)) {
+          request.admissionTerminal = {
+            resultsStreamed: data.payload.resultsStreamed,
+            startedCaseIndexes: data.payload.startedCaseIndexes,
+            runnerProcessCount: data.payload.timings?.runnerProcessCount,
+          };
+        }
         request.tier ??= language === 'java'
           ? data.payload?.results?.[0]?.algorithmIsolationProfile?.tier
           : data.payload?.artifact?.isolationProfile?.tier ?? data.payload?.preparedRunnerTier;
@@ -181,6 +215,7 @@ function measureCandidateRequests(language: string) {
             cases: payload.inputBatch?.length ?? payload.rows?.length,
             tier: payload.prepared?.preparedRunnerTier ?? payload.artifact?.isolationProfile?.tier,
             stopAtFirstRunaway: payload.stopAtFirstRunaway,
+            admissionId: payload.admissionId,
           };
           pending.set(message.id, request);
           requests.push(request);

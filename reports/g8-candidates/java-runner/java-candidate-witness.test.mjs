@@ -43,6 +43,28 @@ function runResult(ordinaryWorker, observerWorker, caseCount) {
   };
 }
 
+function admissionRunResult(ordinaryWorker, observerWorker, caseCount) {
+  const result = runResult(ordinaryWorker, observerWorker, caseCount);
+  const batch = result.java.phases.find(({ role, type }) =>
+    role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
+  delete batch.timings.runnerProcessCount;
+  batch.stopAtFirstRunaway = true;
+  batch.admissionId = 77;
+  batch.admissionTerminal = {
+    resultsStreamed: caseCount,
+    startedCaseIndexes: Array.from({ length: caseCount }, (_, index) => index),
+    runnerProcessCount: 1,
+  };
+  batch.admissionProgress = Array.from({ length: caseCount }, (_, index) => [
+    { stage: 'ordinary-case-started', caseIndex: index, admissionId: 77 },
+    {
+      stage: 'ordinary-case-finished', caseIndex: index, admissionId: 77,
+      success: true, tier: 'algorithm-fast',
+    },
+  ]).flat();
+  return result;
+}
+
 test('seeded #77 controls accept a separate observer without folding it into ordinary reuse', () => {
   const next = random(212026);
   for (let i = 0; i < 32; i++) {
@@ -102,6 +124,46 @@ test('ordinary batch rejects missing timings or runner-process evidence', () => 
     role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
   delete noCountBatch.timings.runnerProcessCount;
   assert.equal(javaCandidateOutcome(noRunnerProcessCount, 'run', 10, 'selected'),
+    'Java role, batch or worker-reuse witness differs');
+});
+
+test('admission-streamed ordinary batch requires exact positive reuse evidence', () => {
+  const next = random(212026);
+  for (let i = 0; i < 32; i++) {
+    const caseCount = 2 + Math.floor(next() * 30);
+    const valid = admissionRunResult(i + 1, i + 101, caseCount);
+    assert.equal(javaCandidateOutcome(valid, 'run', caseCount, 'selected'), undefined);
+
+    for (const mutate of [
+      (batch) => { delete batch.admissionTerminal.runnerProcessCount; },
+      (batch) => { batch.admissionTerminal.runnerProcessCount = caseCount; },
+      (batch) => { batch.admissionTerminal.resultsStreamed--; },
+      (batch) => { batch.admissionTerminal.startedCaseIndexes.pop(); },
+      (batch) => { batch.admissionProgress.pop(); },
+      (batch) => { batch.admissionProgress[0].admissionId++; },
+      (batch) => { batch.admissionProgress.at(-1).tier = 'compatibility'; },
+      (batch) => { batch.stopAtFirstRunaway = false; },
+    ]) {
+      const rejected = admissionRunResult(i + 1, i + 101, caseCount);
+      const batch = rejected.java.phases.find(({ role, type }) =>
+        role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
+      mutate(batch);
+      assert.equal(javaCandidateOutcome(rejected, 'run', caseCount, 'selected'),
+        'Java role, batch or worker-reuse witness differs');
+    }
+  }
+});
+
+test('admission-streamed Submit requires the non-stopping policy and no observer', () => {
+  const result = admissionRunResult(1, 2, 10);
+  result.java.phases = result.java.phases.filter(({ role }) => role !== 'observer');
+  const batch = result.java.phases.find(({ role, type }) =>
+    role === 'ordinary' && type === 'execute-prepared-runtime-program-batch');
+  batch.stopAtFirstRunaway = false;
+  assert.equal(javaCandidateOutcome(result, 'submit', 10), undefined);
+
+  batch.stopAtFirstRunaway = true;
+  assert.equal(javaCandidateOutcome(result, 'submit', 10),
     'Java role, batch or worker-reuse witness differs');
 });
 

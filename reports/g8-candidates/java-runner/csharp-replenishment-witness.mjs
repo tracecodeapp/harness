@@ -38,6 +38,24 @@ function isPromotedOrdinaryWorker(phases, workerPhases, trustedPrime, options) {
       phases.indexOf(phase) > primeIndex);
 }
 
+function isPromotedObserverWorker(phases, workerPhases, trustedPrime) {
+  const learner = workerPhases.filter((phase) => phase !== trustedPrime &&
+    !['init', 'warmup'].includes(phase.type));
+  if (learner.length !== 1) return false;
+  const [observation] = learner;
+  const matchingPrepare = phases.filter(({ type, role, workerKind, artifactKey }) =>
+    type === 'prepare-program' && role === 'observer' && workerKind === 'compiler' &&
+    artifactKey === observation.artifactKey);
+  return observation.type === 'execute-prepared-trace' && observation.role === 'observer' &&
+    observation.workerKind === 'runner' && observation.observation === true &&
+    observation.tier === 'algorithm-fast' &&
+    typeof observation.artifactKey === 'string' && observation.artifactKey.length > 0 &&
+    observation.artifactKey !== trustedPrime.artifactKey && matchingPrepare.length === 1 &&
+    Number.isFinite(observation.received) && phases.indexOf(observation) > phases.indexOf(trustedPrime) &&
+    (observation.timings === undefined ||
+      observation.timings.executionRealm === 'retained-worker-collectible-context');
+}
+
 // The trusted artifact key is captured from this page's completed, untimed
 // provider warmup. A compatibility label alone is never enough. A recognized
 // replenishment worker may only initialize, warm and execute that exact trusted
@@ -46,11 +64,17 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) 
   const trustedPrimes = phases.filter((phase) =>
     isTrustedCsharpPrime(phase, trustedArtifactKey));
   if (trustedPrimes.length === 0) {
-    return { trustedWorkers: new Set(), promotedOrdinaryWorkers: new Set(), trustedPrimes };
+    return {
+      trustedWorkers: new Set(),
+      promotedOrdinaryWorkers: new Set(),
+      promotedObserverWorkers: new Set(),
+      trustedPrimes,
+    };
   }
   const recognizedWorkers = new Set(trustedPrimes.map(({ worker }) => worker));
   const trustedWorkers = new Set();
   const promotedOrdinaryWorkers = new Set();
+  const promotedObserverWorkers = new Set();
   const validWorkers = [...recognizedWorkers].every((worker) => {
     const workerPhases = phases.filter((phase) => phase.worker === worker);
     const init = workerPhases.filter(({ type }) => type === 'init');
@@ -78,6 +102,10 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) 
       promotedOrdinaryWorkers.add(worker);
       return true;
     }
+    if (isPromotedObserverWorker(phases, workerPhases, primes[0])) {
+      promotedObserverWorkers.add(worker);
+      return true;
+    }
     return false;
   });
   if (!validWorkers) return { error: 'C# trusted standby replenishment witness differs' };
@@ -87,7 +115,7 @@ export function csharpReplenishmentOutcome(phases, trustedArtifactKey, options) 
   if (learnerOnTrustedWorker) {
     return { error: 'C# trusted standby worker received a learner command' };
   }
-  return { trustedWorkers, promotedOrdinaryWorkers, trustedPrimes };
+  return { trustedWorkers, promotedOrdinaryWorkers, promotedObserverWorkers, trustedPrimes };
 }
 
 export function csharpTrustedArtifactKey(warmResult) {

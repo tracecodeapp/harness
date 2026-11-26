@@ -81,6 +81,9 @@ import {
 import { capturedShapeKeys } from '../shape-captures.mjs';
 import { csharpMeasurementPlan } from '../csharp-measurement-plan.mjs';
 import { finalReleasePlan } from '../final-release-plan.mjs';
+import {
+  shouldValidateCandidateWitness,
+} from './candidate-witness-policy.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -139,6 +142,14 @@ assert.ok(!pythonLocalDiagnostic || liveControl && candidate && testedLanguage =
 if (pythonLocalDiagnostic) assert.notEqual(hostname(), 'agentrunner', 'Run the phase diagnostic locally');
 async function jsonCandidate() {
   return JSON.parse(await readFile(join(out, releaseVersion ? 'vrelease' : 'vcandidate', 'candidate.json'), 'utf8'));
+}
+function runnerSourceCommit() {
+  const supplied = process.env.SPEED_G8_RUNNER_COMMIT;
+  if (supplied !== undefined) {
+    assert.match(supplied, /^[0-9a-f]{40}$/u, 'Expected an exact staged runner commit');
+    return supplied;
+  }
+  return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 }
 assert.ok(mode === 'smoke' || Object.hasOwn(windowLanguages, windowName));
 assert.ok(Number.isSafeInteger(seed) && Number.isFinite(runMinutes) && runMinutes > 0);
@@ -372,11 +383,11 @@ async function openPage(context, version, url, group) {
   }, {
     language: group.language,
     stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main',
-    candidate: version.startsWith('candidate-') && group.language === testedLanguage ||
+    candidate: shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
       isLiveWitnessControl(version, group.language) &&
         ['java', 'csharp', 'python'].includes(group.language) ||
       fixedWarmWitness && repeatPenaltyLanguages.includes(group.language),
-    candidateRuntime: version.startsWith('candidate-') && group.language === testedLanguage,
+    candidateRuntime: shouldValidateCandidateWitness(version, group.language, testedLanguage),
   });
     return page;
   } catch (error) {
@@ -422,19 +433,21 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
       result.python?.phases ?? [], role, caseCount);
     return;
   }
-  if (testedLanguage === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
-  if (testedLanguage === 'csharp') {
+  if (language === 'java') return javaCandidateOutcome(result, role, caseCount, caseId);
+  if (language === 'csharp') {
     return csharpCandidateOutcome(result, role, caseCount, caseId, trustedArtifactKey,
       selectedReplenishmentOptions);
   }
-  return pythonCandidateOutcome(result, role, caseCount,
-    role === 'run' || version === 'candidate-main');
+  if (language === 'python') {
+    return pythonCandidateOutcome(result, role, caseCount,
+      role === 'run' || version === 'candidate-main');
+  }
 }
 
 function candidateCacheReceipt(result, language = testedLanguage, trustedArtifactKey) {
   if (language === 'java') return javaCandidateCacheReceipt(result);
   if (language === 'csharp') return csharpCandidateCacheReceipt(result, trustedArtifactKey);
-  return pythonCandidateCacheReceipt(result);
+  if (language === 'python') return pythonCandidateCacheReceipt(result);
 }
 
 function initial(page, fixture, journey, cold) {
@@ -624,9 +637,8 @@ if (inventoryOnly) {
 const report = {
   schema: 'tracecode.speed-baseline.v1',
   mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
-  ...(staged && { candidateScope, ...(releaseVersion && { releaseVersion }), runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], {
-    encoding: 'utf8',
-  }).trim() }),
+  ...(staged && { candidateScope, ...(releaseVersion && { releaseVersion }),
+    runnerCommit: runnerSourceCommit() }),
   ...(aaControl && { aaControl: { languages: aaLanguages, versions: aaVersions, interleavedPerRound: true } }),
   ...(aaClosing && { aaClosing: {
     languages: aaLanguages, versions: aaClosingAllVersions, fixedOrderPerRound: true,
@@ -648,18 +660,18 @@ const report = {
     languages: ['python', 'csharp'], freshPagePerSample: true,
     repeatRun: true, alternatingOrderPerRound: true,
     tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
-  }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
+  }, runnerCommit: runnerSourceCommit() }),
   ...(submitAa && { submitAa: {
     sourceVersions: Object.keys(submitAaLabelPairs), labelPairs: submitAaLabelPairs,
     target: 20, languages: ['python', 'csharp'], freshPagePerSample: true,
     submitAfterRun: true, alternatingOrderPerRound: true,
     tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
-  }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
+  }, runnerCommit: runnerSourceCommit() }),
   ...(javaClosing && { javaClosing: {
     target: 20, lessonReference: '0.17.1', pairedCandidateControls: true,
     freshPageSpotLanguages: ['python', 'csharp'], alternatingOrderPerRound: true,
     ...(javaClosingPhase && { phase: javaClosingPhase }),
-  }, runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }),
+  }, runnerCommit: runnerSourceCommit() }),
   ...(liveControl && { liveControl: {
     control: '0.17.1', candidateVersions, alternatingOrderPerRound: true,
     ...(['phone', 'spot'].includes(candidateScope) && { pairedCandidateControls: true }),
@@ -678,7 +690,7 @@ const report = {
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,
-    runnerCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    runnerCommit: runnerSourceCommit(),
   }),
   ...(shapeProbeFile && { shapeProbe: { keys: JSON.parse(await readFile(shapeProbeFile, 'utf8')) } }),
   host: { hostname: hostname(), logicalCpus: availableParallelism(), kernel: release() },
@@ -774,7 +786,7 @@ try {
                   const primeError = outcome(prime, fixture.cases.map((c) => c.id));
                   if (primeRefusal || primeError) throw new Error(primeRefusal ?? primeError);
                   if ((candidate || fixedWarmWitness) &&
-                      (version.startsWith('candidate-') && group.language === testedLanguage ||
+                      (shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
                         isLiveWitnessControl(version, group.language) &&
                           repeatPenaltyLanguages.includes(group.language) ||
                         fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {
@@ -832,7 +844,7 @@ try {
                 sample.invalid = 'No first-case trace';
               }
               if ((candidate || fixedWarmWitness) &&
-                  (version.startsWith('candidate-') && group.language === testedLanguage ||
+                  (shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
                     isLiveWitnessControl(version, group.language) &&
                       ['java', 'csharp', 'python'].includes(group.language) ||
                     fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
@@ -877,7 +889,7 @@ try {
                   sample.invalid = outcome(sample.second, [fixture.cases[1].id]);
                   if (!sample.invalid && !sample.second.evaluation.cases[0]?.traceEvents) sample.invalid = 'No second-case trace';
                   if ((candidate || fixedWarmWitness) &&
-                      (version.startsWith('candidate-') && group.language === testedLanguage ||
+                      (shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
                         isLiveWitnessControl(version, group.language) &&
                           ['java', 'csharp', 'python'].includes(group.language) ||
                         fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
@@ -904,7 +916,8 @@ try {
             }
           }
 
-          if ((group.language === testedLanguage && candidate && version.startsWith('candidate-')) ||
+          if ((candidate &&
+                shouldValidateCandidateWitness(version, group.language, testedLanguage)) ||
               (isLiveWitnessControl(version, group.language) &&
                 ['java', 'csharp', 'python'].includes(group.language)) ||
               (fixedWarmWitness && repeatPenaltyLanguages.includes(group.language))) {

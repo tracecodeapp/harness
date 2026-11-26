@@ -131,6 +131,7 @@ export function csharpCandidateOutcome(result, role, caseCount, caseId, trustedA
     ['ordinary', 'observer'].includes(phaseRole) && !expectedTypes.has(type) &&
     !((replenishment.trustedWorkers.has(worker) ||
       replenishment.promotedOrdinaryWorkers.has(worker) ||
+      replenishment.promotedObserverWorkers.has(worker) ||
       witnessOptions?.allowColdCompilerInitialization === true &&
         worker === ordinaryCompilerWorker) &&
       ['init', 'warmup'].includes(type)));

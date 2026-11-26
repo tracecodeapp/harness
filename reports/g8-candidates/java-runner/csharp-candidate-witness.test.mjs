@@ -263,6 +263,44 @@ test('rejects a learner command sent to the trusted replenishment worker', () =>
     /trusted standby|assembly, reset/);
 });
 
+function observerPromotedReplenishmentResult() {
+  const result = runResult(2, 3, 10);
+  const observerIndex = result.csharp.phases.findIndex(({ role, type }) =>
+    role === 'observer' && type === 'execute-prepared-trace');
+  const [observer] = result.csharp.phases.splice(observerIndex, 1);
+  observer.received = 4;
+  addTrustedReplenishment(result, 3);
+  result.csharp.phases.push(observer);
+  return result;
+}
+
+test('accepts only an exact observer promotion of a replenishment worker', () => {
+  const result = observerPromotedReplenishmentResult();
+  assert.equal(csharpCandidateOutcome(result, 'run', 10, 'selected', 'trusted-warmup'), undefined);
+
+  for (const mutate of [
+    (observer) => { observer.type = 'execute-prepared-code'; },
+    (observer) => { observer.role = 'ordinary'; },
+    (observer) => { observer.observation = false; },
+    (observer) => { observer.tier = 'compatibility'; },
+    (observer) => { observer.artifactKey = 'unprepared-observer'; },
+  ]) {
+    const rejected = observerPromotedReplenishmentResult();
+    const observer = rejected.csharp.phases.find(({ role, type }) =>
+      role === 'observer' && type === 'execute-prepared-trace');
+    mutate(observer);
+    assert.match(csharpCandidateOutcome(
+      rejected, 'run', 10, 'selected', 'trusted-warmup'), /trusted standby|assembly, reset/);
+  }
+
+  const twoCommands = observerPromotedReplenishmentResult();
+  const observer = twoCommands.csharp.phases.find(({ role, type }) =>
+    role === 'observer' && type === 'execute-prepared-trace');
+  twoCommands.csharp.phases.push({ ...observer });
+  assert.match(csharpCandidateOutcome(
+    twoCommands, 'run', 10, 'selected', 'trusted-warmup'), /trusted standby|assembly, reset/);
+});
+
 test('pending trusted prime is scoped to an explicit Submit-after-Run allowance', () => {
   const result = addTrustedReplenishment(runResult(2, 3, 10));
   result.csharp.phases = result.csharp.phases.filter(({ role }) => role !== 'observer');

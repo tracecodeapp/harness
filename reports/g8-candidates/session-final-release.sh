@@ -4,7 +4,13 @@ max_minutes="${1:?Expected total window minutes}"
 [[ "$max_minutes" =~ ^[1-9][0-9]*$ && "${SPEED_EXCLUSIVE_WINDOW:-}" == 1 ]] || exit 2
 stage="$(cd "$(dirname "$0")" && pwd)"
 out="$stage/final-release"
-test -r "$out/manifest.json" || exit 2
+test -r "$out/manifest.json" -a -r "$out/runner-dependencies.json" || exit 2
+test -d "$stage/node_modules" -a ! -L "$stage/node_modules" || exit 2
+runner_commit="$(node -e 'const r=require(process.argv[1]); process.stdout.write(r.runnerCommit)' \
+  "$out/runner-dependencies.json")"
+[[ "$runner_commit" =~ ^[0-9a-f]{40}$ ]] || exit 2
+export SPEED_G8_RUNNER_COMMIT="$runner_commit"
+cd "$stage"
 deadline=$((SECONDS + max_minutes * 60))
 status=0
 

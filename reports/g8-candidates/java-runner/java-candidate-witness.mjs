@@ -19,10 +19,32 @@ function isSingleWorker(workerSet) {
     Number.isSafeInteger(worker) && worker > 0);
 }
 
-function isStoppingBatch(batch, caseCount) {
+function isStoppingBatch(batch, caseCount, role) {
   return batch.cases === caseCount &&
     batch.tier === 'algorithm-fast' &&
-    batch.timings?.runnerProcessCount === 1;
+    (batch.timings?.runnerProcessCount === 1 || isAdmissionStoppingBatch(batch, caseCount, role));
+}
+
+function exactIndexes(values, caseCount) {
+  return Array.isArray(values) && values.length === caseCount &&
+    values.every((value, index) => value === index);
+}
+
+function isAdmissionStoppingBatch(batch, caseCount, role) {
+  const terminal = batch.admissionTerminal;
+  const progress = batch.admissionProgress;
+  if (!Number.isSafeInteger(batch.admissionId) ||
+      batch.stopAtFirstRunaway !== (role === 'run') ||
+      terminal?.runnerProcessCount !== 1 || terminal.resultsStreamed !== caseCount ||
+      !exactIndexes(terminal.startedCaseIndexes, caseCount) ||
+      !Array.isArray(progress) || progress.length !== caseCount * 2) return false;
+
+  const starts = progress.filter(({ stage }) => stage === 'ordinary-case-started');
+  const finishes = progress.filter(({ stage }) => stage === 'ordinary-case-finished');
+  return exactIndexes(starts.map(({ caseIndex }) => caseIndex).sort((a, b) => a - b), caseCount) &&
+    exactIndexes(finishes.map(({ caseIndex }) => caseIndex).sort((a, b) => a - b), caseCount) &&
+    progress.every(({ admissionId }) => admissionId === batch.admissionId) &&
+    finishes.every(({ success, tier }) => success === true && tier === 'algorithm-fast');
 }
 
 export function javaCandidateCacheReceipt(result) {
@@ -59,7 +81,7 @@ export function javaCandidateOutcome(result, role, caseCount, caseId) {
   const ordinaryValid = expectedOrdinary === 0
     ? ordinary.length === 0 && ordinaryPrepares.length === 0 && ordinaryWorkers.size === 0
     : ordinary.length === 1 && isSingleWorker(ordinaryWorkers) &&
-      ordinaryPrepares.length === 1 && isStoppingBatch(ordinary[0], caseCount);
+      ordinaryPrepares.length === 1 && isStoppingBatch(ordinary[0], caseCount, role);
   const observerValid = expectedObserver === 0
     ? observer.length === 0 && observerWorkers.size === 0
     : observer.length === 1 && isSingleWorker(observerWorkers) && observer[0].cases === 1;
