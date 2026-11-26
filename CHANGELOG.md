@@ -6,6 +6,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-26
+
 ### Added
 
 - A traced run that failed, or was stopped by a limit, after its trace stopped
@@ -63,6 +65,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   (`worker-loss`, the default, `transport-deadline` or `service-deadline`) and,
   when the provider knows, which entry was running. The unfinished cases'
   provider failure says what interrupted the batch.
+- Direct runtime callers can tell an untraceable program from a failure. A
+  runtime that cannot trace a program without changing what it computes
+  rejects with `RuntimeProviderError` whose optional `code` is
+  `'trace-unavailable'`. `TRACE_UNAVAILABLE_CODE` and
+  `isTraceUnavailableError(error)` are exported from
+  `@tracecode/harness/judge`. In a direct traced Java batch, such a case is a
+  `failed` result with `providerFailure: { code: 'trace-unavailable', message
+  }` and no trace events, and the batch's other cases keep their results.
+  Before, one such case rejected the whole traced batch. A trace budget that
+  trips inside an ops-class receiver's constructor is also `trace-unavailable`,
+  not a trace limit with no steps. `judgeCaseExecutionOutcome` and
+  `judgeCompileExecutionOutcome` throw the coded error when a stored result's
+  error diagnostic has that code. A Java trace reply whose events are not a
+  list of event strings is the provider's `protocol` failure, not
+  `trace-unavailable`.
+- `RuntimeCommandOptions.lastExitCode?: number` (optional, additive) sets the
+  status `$?` reports before a shell command's first statement runs. The
+  terminal passes the previous line's status. It defaults to 0, and nested
+  shells always start at 0.
 
 ### Changed
 
@@ -121,9 +142,9 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
     carry `attachment` (`drawn`, `truncated` or `refused`). `trace` is set only
     for `drawn` or `truncated`, to the attachment's trace.
   - A traced row no longer gets trace-budget warning diagnostics, and an
-    untraceable case is no longer a provider failure with code
-    `trace-unavailable`. Its attachment is refused instead, and the ordinary
-    result stands. Stored 0.20.x rows still decode as before.
+    untraceable case is no longer a provider failure. Its attachment is
+    refused instead, and the ordinary result stands. Stored 0.20.x rows still
+    decode as before.
   - Observation options such as `maxTraceBytes` are checked by name when the
     Judge is created. Whether the language's observer supports one is decided
     when drawing, so an unsupported one refuses the drawing instead of
@@ -159,6 +180,106 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 - A C++ judged case returns `serialization-limit` without a value when its
   answer exceeds the byte, item, node, or nesting bound. A set counts as one
   level of nesting, and containers inside it add their own levels.
+
+- **C++ Algorithm Run and Submit refuse programs that use exceptions before
+  they compile.** In Algorithm Run and Submit, a program that writes `throw`,
+  `try` or `catch` fails at the `compile` stage with `C++ exceptions are not
+  supported yet` and the diagnostic code `cpp-exceptions-unsupported`, at the
+  file, line and column of the first `throw`, `try` or `catch` token. C++
+  Project compiles are not checked. Before, when the old rewrite recognized
+  an uncaught `throw`, it reported it as an uncaught exception at its line.
+  A standard-library call that throws while the program runs (for example
+  `vector::at` out of range) is a runtime failure, and the output printed
+  before it is kept.
+
+- **C++ operation names defined with `#define` are refused before they
+  compile.** In Algorithm Run and Submit of an ops-class problem, a program
+  whose `#define` defines or redefines an operation name (a public method of
+  the class, `delete` or `deleteKey`) fails at the `compile` stage with `C++
+  operation names defined with #define are not supported yet. Write the
+  method name directly.` and the diagnostic code
+  `cpp-macro-operation-unsupported`, at the `#define`'s line. Comments,
+  literals and `#if 0` blocks are ignored, and `#undef` ends a macro. Other
+  macros are not refused. Before, the driver dispatched an operation by its
+  name without seeing the macro, so `#define delete removeKey` sent `delete`
+  to `deleteKey`, a wrong answer. The new type `JudgeSourceRefusalCode` from
+  `@tracecode/harness/judge` names both refusal codes,
+  `cpp-exceptions-unsupported` and `cpp-macro-operation-unsupported`.
+
+- **Breaking, low-level:** `judgeCaseExecutionOutcome(result, { trace: true
+  })` can return `{ kind: 'trace-refused' }` (`JudgeTraceRefusedOutcome`,
+  exported from `@tracecode/harness/judge`). It does so when the row's
+  drawing was refused or the row has no trace. Before, it returned the case's
+  outcome with an empty trace. The case's own outcome is still read with
+  `trace: false`. A truncated drawing sets `traceTruncated` to `trace-limit`
+  or, for the byte budget, `trace-byte-limit`.
+
+- **A drawing of a case stopped by its time limit no longer holds Run.** When
+  the ordinary run of a selected case ends with `client-timeout`, its pending
+  drawing gets the ordinary per-case time budget, counted from the drawing's
+  start (or from the ordinary result while it has not started), and is then
+  refused with `observer-timeout`. Run returns at the ordinary deadline
+  instead of the drawing's own backstop (20 s in JavaScript, TypeScript and
+  C++, 15 s in Python, 30 s in Java). A drawing, or part of one, already
+  delivered is kept. Clicking such a case later gets the same budget, and a
+  refused drawing is returned from the cache when it is clicked again. In C++
+  the pending drawing is refused once the ordinary result is committed,
+  because a C++ drawing must match a completed run. C# keeps the backstop,
+  because its drawing compiles after it starts. Verdicts are unchanged.
+- C++ drawings are checked against the committed ordinary result. A drawing
+  whose run printed different output or returned a different value, or one
+  for a case whose ordinary run did not complete, is refused with
+  `uncertified-drawing`. A drawing whose own run fails to compile, traps or
+  times out is refused with `observer-prepare`, `observer-runtime` or
+  `observer-timeout`. Verdicts are unchanged.
+
+- **Judge compares node graphs by identity.** When an answer or an expected
+  value contains `__id__`/`__ref__` node references, Judge compares which
+  nodes are the same node and how they link, not the reference labels. Two
+  answers that label the same graph differently match. A shared node does not
+  match two separate equal nodes, and a cycle does not match an acyclic tree.
+  This holds for `exact`, `unordered-array` and `unordered-nested-array`
+  comparisons. A comparison that exhausts its bounded search is that case's
+  `comparison-error` (`GRAPH_COMPARISON_LIMIT`), and an algorithm receipt with
+  such a case has the policy result `unknown`. Before, references were
+  compared as literal values.
+
+- Java Submit (`stopAtFirstRunaway`) runs its cases as one batch instead of
+  one request per case. The batch stops itself at the first case that runs
+  out of time or reaches a line limit, and the cases after it are `not-run`,
+  as before. Each case still starts from fresh case state; a runner JVM left
+  clean is reused for the next case, and one that is not is replaced. Traced
+  Java batches also run as one batch. A case whose program exits without
+  returning a result (for example `System.exit(0)`) is still the learner's
+  runtime failure, and the batch goes on.
+
+- Untraced Python cases track allocations only when the caller sets
+  `maxMemoryBytes`, in the per-case guard and in the algorithm-fast batch.
+  Without it, no memory limit applies and the case is never stopped with
+  `memory-limit`. Before, setting any other guard limit also applied a 96 MB
+  memory limit.
+
+- JavaScript and TypeScript: whether an ordinary case runs on the SES pool or
+  on a disposable worker depends only on its inputs and the execution
+  profile, never on earlier cases or programs. The pool captures console
+  output as the disposable worker does, so a case with a large console no
+  longer moves its batch to compatibility workers. A pool fault (a pool
+  worker that crashes, hangs or breaks the protocol) is the provider's
+  failure, and the case is not run again on a disposable worker. Before, such
+  a fault also moved later programs off the pool.
+
+- A browser runtime worker that fails to start (its script does not load, it
+  crashes before it is ready, or its `init` or warm-up step fails) rejects
+  with `RuntimeProviderError` (`<runtime> worker failed to initialize:
+  <cause>`), in every language, so the Judge reports it with `origin:
+  'provider'`. Before, callers got the worker's crash or reported error.
+
+- Project debugging: the `debugging.regression-test` claim cites evidence
+  whenever the submission changed a test, also when the claim is
+  `contradicted` or `insufficient`: the changed path, the starter replay step
+  (whether the submitted tests passed or failed against the starter
+  implementation) and, when the replay failed, the repository test step that
+  failed or did not finish. Before, only a `proven` claim cited evidence.
 
 ### Fixed
 
@@ -327,6 +448,41 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   guard. If the learner's code holds the PEP 669 tool id the guards use, the
   stop takes another free one.
 
+- C++ ops-class problems: the `delete` operation (a C++ keyword) calls the
+  learner's public `deleteKey` method in every Run and Submit case. Before, a
+  prepared case failed with `C++ ops-class method could not be resolved.`
+  Every other operation is dispatched by its exact name.
+- C++: a JSON scalar input for a learner-defined argument type (for example
+  `struct Value { Value(int); Value(std::string); };` given `3` or `"x"`)
+  builds the value through one of the type's one-argument constructors. The
+  JSON kind picks the constructor, and among several the one a C++ literal of
+  that value would select wins. Run and Submit decode alike. A value no
+  constructor accepts, or one that matches several constructors equally,
+  fails with a message naming the type. Before, the scalar became a
+  default-constructed value (a wrong answer), and a type without a default
+  constructor did not compile.
+
+- Java Run and Submit inputs resolve node references (`__id__` and
+  `{"__ref__": id}`) within a case: a list cycle, a tree back-edge, or a node
+  two parameters share is one object. A node its own input points back to is
+  constructed before its links, with `null` for any link to a node not yet
+  built. Each input node is constructed once, so a constructor that counts
+  instances or changes its argument sees one call per node. Before, prepared
+  cases did not resolve these references, and child nodes were constructed
+  again during field assignment, which made deep inputs exponentially slow.
+- Python judged answers keep node identity. A returned `ListNode` or
+  `TreeNode` that is reached twice, or that closes a cycle, is written once
+  with `__id__` and afterwards as `{"__ref__": id}`. Before, a shared node was
+  written at each occurrence, and a cycle was cut at the depth limit as
+  `'<max depth>'`. A program that defines its own `ListNode` or `TreeNode`
+  class and returns nodes from its input is now judged correctly. Before,
+  those nodes were written as plain objects with an extra `value` field, so a
+  correct answer failed.
+- JavaScript and TypeScript cases on the SES pool can assign a property that a
+  frozen built-in prototype also has, such as `counts.constructor = 1` or
+  `obj.toString = ...`. The assignment creates the object's own property, as
+  it does outside the pool. Before, it threw a `TypeError`.
+
 ### Changed
 
 - A healthy Python Submit now reports each case start to the caller's
@@ -371,6 +527,25 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   is a `serialization-limit`. Before, it was silently cut at 48. Stated
   constraints allow lists of up to 5,000 nodes in a learner's own Run input.
   The policy's default for C++ is 10,000.
+- **Run in C++ and C# is slower than in 0.17.1.** Measured side by side with
+  0.17.1, the first Run in C++ (on a new page and after switching problems)
+  and Run in C# return 0.15 to 0.3 s later. The verdict comes from the
+  ordinary run and is final when that run ends, but the first response still
+  waits for the first case's drawing. In C++ the drawing's compile waits
+  behind the ordinary compile; in C# the drawing needs its own compile and
+  runner. In the same measurement, Run in Java, JavaScript and TypeScript is
+  20% to 63% faster than 0.17.1. Returning the verdict before the drawing is
+  planned for 0.22.
+- Drawing the second case right after the first Run's drawing (an immediate
+  click on the second case) takes a little longer than in 0.17.1: about
+  15 ms in JavaScript and TypeScript, 33 to 39 ms in C++, and 3 to 5 ms in
+  C#. A warm Submit in C++, JavaScript and TypeScript takes 0.6 to 5.5 ms
+  longer.
+- The C++ exception check reads the words the learner wrote, not what the
+  compiler would use. A macro that is defined but never used, such as
+  `#define RAISE throw`, or a word inside an inactive `#if 0` block, is
+  refused like a real `throw`, and so is a stray `catch` with no `try`
+  (which does not compile in C++ either).
 
 ## [0.20.2] - 2026-11-17
 

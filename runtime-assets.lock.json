@@ -2,11 +2,11 @@
   "schema": "tracecode.runtime-assets-lock.v1",
   "harness": {
     "name": "@tracecode/harness",
-    "version": "0.20.2",
-    "releaseId": "@tracecode/harness@0.20.2+sha256.1bd681f573fac2742fd376d751d0fca855a758602ae57f63bbc00b40c276e041"
+    "version": "0.21.0",
+    "releaseId": "@tracecode/harness@0.21.0+sha256.a0c6f545eb3aa499be4c82c6289ae2488b810dcb1ea601d75697003388a3c594"
   },
   "treeSha256Algorithm": "sha256-path-nul-bytes-nul-v1",
-  "packageTreeSha256": "1bd681f573fac2742fd376d751d0fca855a758602ae57f63bbc00b40c276e041",
+  "packageTreeSha256": "a0c6f545eb3aa499be4c82c6289ae2488b810dcb1ea601d75697003388a3c594",
   "totalPackagedRuntimeBytes": 152748902,
   "components": {
     "cpp": {
@@ -1851,15 +1851,15 @@
       ]
     },
     "javascript": {
-      "releaseId": "javascript+sha256.57d800a984fcd721e8ba7da2eba37bbb1cc9dc6c0eefd4503922586815856b5d",
-      "treeSha256": "57d800a984fcd721e8ba7da2eba37bbb1cc9dc6c0eefd4503922586815856b5d",
+      "releaseId": "javascript+sha256.429a7ae5ce825ef2f2053e6a01dc21d3e69b1a81d4aa11525a8d13a33d1feef1",
+      "treeSha256": "429a7ae5ce825ef2f2053e6a01dc21d3e69b1a81d4aa11525a8d13a33d1feef1",
       "totalBytes": 1867422,
       "files": [
         {
           "path": "workers/javascript/javascript-project-worker.js",
           "size": 548783,
-          "sha256": "41f64851c1c35826a3bd5dbde78344a26ed617ebf0a0bce988d8e0bb7b579068",
-          "integrity": "sha256-QfZIUcHDWCajvV2954NEom7WF+vwoLzpiNjgu3tXkGg=",
+          "sha256": "8c2885720c0a1a0f3c93a6a2cc7c09d96a6a4912da62cb62c95d20431557f699",
+          "integrity": "sha256-jCiFcgwKGg88k6aizHwJ2WpqSRLaYstiyV0gQxVX9pk=",
           "mediaType": "text/javascript"
         },
         {
