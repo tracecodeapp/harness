@@ -35,3 +35,14 @@ export function phoneWarmAaFailFast(group, sample) {
   assert.ok(['python', 'csharp'].includes(group.language));
   return Boolean(sample.invalid || sample.refusal);
 }
+
+export function phoneWarmAaSampleDisposition(sample) {
+  assert.ok(!sample.invalid && !sample.refusal,
+    sample.invalid ?? sample.refusal ?? 'A/A sample rejected');
+  if (sample.excluded) {
+    assert.equal(sample.kept, false, 'A load-excluded A/A sample cannot be kept');
+    return 'excluded';
+  }
+  assert.equal(sample.kept, true);
+  return 'kept';
+}

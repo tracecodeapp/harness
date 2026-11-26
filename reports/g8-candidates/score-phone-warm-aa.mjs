@@ -6,6 +6,7 @@ import { metricEndpoints, stats } from './aa-score-lib.mjs';
 import {
   phoneWarmAaPlan,
   phoneWarmAaRoundOrder,
+  phoneWarmAaSampleDisposition,
   phoneWarmAaVersions,
 } from './phone-warm-aa.mjs';
 import {
@@ -46,8 +47,7 @@ const push = (key, value) => {
 };
 for (const sample of samples) {
   const group = metadata.schedule[sample.groupIndex];
-  assert.equal(sample.kept, true);
-  assert.ok(!sample.invalid && !sample.excluded && !sample.refusal);
+  if (phoneWarmAaSampleDisposition(sample) === 'excluded') continue;
   const expectedOrder = phoneWarmAaRoundOrder(group.versions, sample.round);
   assert.equal(sample.position, expectedOrder.indexOf(sample.version));
   assert.ok(sample.cache?.initial, 'Missing measured cache receipt');
