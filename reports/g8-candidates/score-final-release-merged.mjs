@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -23,13 +23,62 @@ async function copySession(from, sourcePrefix, to, targetPrefix, session) {
   const metadata = await json(join(from, `${sourcePrefix}-metadata.json`));
   metadata.sampleSession = session;
   await writeFile(join(to, `${targetPrefix}-metadata.json`), JSON.stringify(metadata, null, 2) + '\n');
-  await copyFile(join(from, `${sourcePrefix}-samples.jsonl`),
-    join(to, `${targetPrefix}-samples.jsonl`));
+  await writeRecords(join(to, `${targetPrefix}-samples.jsonl`),
+    (await records(join(from, `${sourcePrefix}-samples.jsonl`)))
+      .map((row) => ({ ...row, sampleSession: session })));
 }
 
-export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedArg) {
+async function optionalSource(directory, prefix, session) {
+  if (!directory) return undefined;
+  try {
+    return { directory, prefix, session,
+      metadata: await json(join(directory, `${prefix}-metadata.json`)),
+      rows: await records(join(directory, `${prefix}-samples.jsonl`)) };
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function sourceGroupIndex(source, localIndex, originalOffset = 0) {
+  return source.metadata.schedule[localIndex].sourceGroupIndex ?? localIndex + originalOffset;
+}
+
+function completeSourceGroup(source, localIndex) {
+  const group = source.metadata.schedule[localIndex];
+  return group.versions.every((version) => source.rows.filter((row) =>
+    row.groupIndex === localIndex && row.version === version && row.kept).length === group.target);
+}
+
+async function mergeGroupSessions({ sources, schedule, targetPrefix, merged, originalOffset = 0 }) {
+  const packages = sources.find(Boolean)?.metadata.packages;
+  for (const source of sources.filter(Boolean)) assert.deepEqual(source.metadata.packages, packages);
+  const outputRows = [];
+  const provenance = {};
+  for (let originalGroupIndex = 0; originalGroupIndex < schedule.length; originalGroupIndex++) {
+    const match = sources.filter(Boolean).map((source) => {
+      const localIndex = source.metadata.schedule.findIndex((_, index) =>
+        sourceGroupIndex(source, index, source.session === 1 ? 0 : originalOffset) === originalGroupIndex);
+      return { source, localIndex };
+    }).find(({ source, localIndex }) => localIndex >= 0 && completeSourceGroup(source, localIndex));
+    assert.ok(match, `${targetPrefix} group ${originalGroupIndex} has no complete session`);
+    const { source, localIndex } = match;
+    provenance[originalGroupIndex] = { session: source.session, sourcePrefix: source.prefix };
+    outputRows.push(...source.rows.filter((row) => row.groupIndex === localIndex)
+      .map((row) => ({ ...row, groupIndex: originalGroupIndex, sampleSession: source.session })));
+  }
+  const latest = sources.filter(Boolean).at(-1)?.metadata;
+  const metadata = { ...latest, schedule, packages, complete: true, sampleSession: 'merged',
+    sessionProvenance: { groups: provenance } };
+  await writeFile(join(merged, `${targetPrefix}-metadata.json`),
+    JSON.stringify(metadata, null, 2) + '\n');
+  await writeRecords(join(merged, `${targetPrefix}-samples.jsonl`), outputRows);
+}
+
+export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedArg, session3Arg) {
   const session1 = resolve(session1Arg);
   const session2 = resolve(session2Arg);
+  const session3 = session3Arg ? resolve(session3Arg) : undefined;
   const merged = resolve(mergedArg);
   await mkdir(merged, { recursive: false });
   for (const scope of ['phone', 'desktop']) {
@@ -38,37 +87,24 @@ export async function buildMergedFinalRelease(session1Arg, session2Arg, mergedAr
   }
   await copySession(session1, 'final-csharp-phone', merged, 'final-csharp-phone', 1);
 
-  const oldMetadata = await json(join(session1, 'final-csharp-desktop-metadata.json'));
-  const newMetadata = await json(join(session2, 'session2-final-csharp-desktop-metadata.json'));
-  assert.equal(oldMetadata.complete, false);
-  assert.equal(newMetadata.complete, true);
-  assert.equal(newMetadata.schedule.length, 1);
-  assert.deepEqual(newMetadata.schedule[0], oldMetadata.schedule[16]);
-  assert.deepEqual(newMetadata.packages, oldMetadata.packages);
-  const oldRows = (await records(join(session1, 'final-csharp-desktop-samples.jsonl')))
-    .filter(({ groupIndex }) => groupIndex < 16);
-  const newRows = (await records(join(session2,
-    'session2-final-csharp-desktop-samples.jsonl')))
-    .map((row) => ({ ...row, groupIndex: 16, sampleSession: 2 }));
-  const csharpMetadata = {
-    ...oldMetadata,
-    complete: true,
-    end: newMetadata.end,
-    sampleSession: 'merged',
-    sessionProvenance: {
-      groups0Through15: { session: 1, ended: '2026-11-26T07:49:55Z' },
-      group16: { session: 2, sourcePrefix: 'session2-final-csharp-desktop' },
-    },
-  };
-  await writeFile(join(merged, 'final-csharp-desktop-metadata.json'),
-    JSON.stringify(csharpMetadata, null, 2) + '\n');
-  await writeRecords(join(merged, 'final-csharp-desktop-samples.jsonl'),
-    [...oldRows.map((row) => ({ ...row, sampleSession: 1 })), ...newRows]);
+  const csharpOld = await optionalSource(session1, 'final-csharp-desktop', 1);
+  const csharpTwo = await optionalSource(session2, 'session2-final-csharp-desktop', 2);
+  const csharpThree = await optionalSource(session3, 'session3-final-csharp-desktop', 3);
+  assert.equal(csharpOld.metadata.complete, false);
+  await mergeGroupSessions({ sources: [csharpOld, csharpTwo, csharpThree],
+    schedule: csharpOld.metadata.schedule, targetPrefix: 'final-csharp-desktop', merged,
+    originalOffset: 16 });
 
   for (const language of laterLanguages) {
     for (const scope of ['phone', 'desktop']) {
-      await copySession(session2, `session2-final-${language}-${scope}`, merged,
-        `final-${language}-${scope}`, 2);
+      const two = await optionalSource(session2, `session2-final-${language}-${scope}`, 2);
+      const three = await optionalSource(session3, `session3-final-${language}-${scope}`, 3);
+      assert.ok(two || three, `Missing ${language}/${scope} from Sessions 2 and 3`);
+      const schedule = two?.metadata.schedule ?? [...three.metadata.schedule]
+        .sort((a, b) => a.sourceGroupIndex - b.sourceGroupIndex)
+        .map(({ sourceGroupIndex: _, ...group }) => group);
+      await mergeGroupSessions({ sources: [two, three], schedule,
+        targetPrefix: `final-${language}-${scope}`, merged });
     }
   }
   return merged;
@@ -92,9 +128,18 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
   assert.equal(aaSummary?.pass, true, 'Session 2 phone A/A did not produce a valid reference');
   const references = new Map(aaSummary.references.map((row) => [row.cell, row]));
 
+  const sessionMetadata = new Map();
+  for (const language of ['python', 'csharp', ...laterLanguages]) {
+    for (const scope of ['phone', 'desktop']) {
+      const prefix = language === 'python' ? `experiment-final-${scope}` : `final-${language}-${scope}`;
+      sessionMetadata.set(`${language}/${scope}`, await json(join(resolve(mergedArg),
+        `${prefix}-metadata.json`)));
+    }
+  }
   for (const row of result.rows) {
-    row.sampleSession = row.language === 'csharp' && row.scope === 'desktop' && row.group === 16 ||
-      laterLanguages.includes(row.language) ? 2 : 1;
+    const metadata = sessionMetadata.get(`${row.language}/${row.scope}`);
+    row.sampleSession = metadata.sampleSession === 'merged'
+      ? metadata.sessionProvenance.groups[row.group].session : metadata.sampleSession;
     if (row.scope === 'phone' && row.cell.includes('/warm/') &&
         ['python', 'csharp'].includes(row.language)) {
       const source = references.get(row.cell);
@@ -125,6 +170,8 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
     sessions: {
       1: { ended: '2026-11-26T07:49:55Z' },
       2: { includesReference: 'phone-warm-aa' },
+      ...(result.rows.some(({ sampleSession }) => sampleSession === 3) &&
+        { 3: { source: 'final-release-tail' } }),
     },
   };
   write(JSON.stringify({ summary }));
@@ -132,10 +179,10 @@ export async function scoreMergedFinalRelease(stageArg, mergedArg, baselineArg, 
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const [stage, session1, session2, merged, baseline, aaScore] = process.argv.slice(2);
+  const [stage, session1, session2, merged, baseline, aaScore, session3] = process.argv.slice(2);
   assert.ok(stage && session1 && session2 && merged && baseline && aaScore,
     'Usage: score-final-release-merged.mjs <stage> <session1> <session2> <merged> <baseline> <aa-score>');
-  await buildMergedFinalRelease(session1, session2, merged);
+  await buildMergedFinalRelease(session1, session2, merged, session3);
   const { summary } = await scoreMergedFinalRelease(stage, merged, baseline, aaScore);
   if (!summary.pass) process.exitCode = 1;
 }

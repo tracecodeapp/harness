@@ -120,6 +120,7 @@ const finalReleaseRemainder = process.env.SPEED_G8_FINAL_REMAINDER === '1';
 const phoneWarmAa = process.env.SPEED_G8_PHONE_WARM_AA === '1';
 const outputTag = process.env.SPEED_G8_OUTPUT_TAG;
 const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
+const finalReleaseTailFile = process.env.SPEED_G8_FINAL_TAIL_FILE;
 const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
 const ordinaryPreflight = process.env.SPEED_G8_PREFLIGHT_ORDINARY === '1';
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
@@ -135,6 +136,8 @@ assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
   'Select only one special measurement mode');
 assert.ok(!finalReleaseRemainder || finalRelease,
   'A final-release remainder requires final-release mode');
+assert.ok(finalReleaseTailFile === undefined || finalReleaseRemainder && outputTag === 'session3',
+  'A final-release tail requires remainder mode and the session3 output tag');
 assert.ok(outputTag === undefined || /^[a-z0-9][a-z0-9-]*$/u.test(outputTag),
   'Output tag must be a lowercase filename token');
 assert.ok(!phoneWarmAa || mode === 'run' && windowName === 'phone' && !candidateScope,
@@ -645,10 +648,22 @@ let browser;
 const fullSchedule = plan();
 const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');
-const schedule = shapeProbeFile
-  ? selectShapeProbeSchedule(candidateScope ?? windowName, baseSchedule,
-      JSON.parse(await readFile(shapeProbeFile, 'utf8')))
+const finalReleaseTail = finalReleaseTailFile === undefined ? undefined
+  : JSON.parse(await readFile(finalReleaseTailFile, 'utf8'));
+const tailSession = finalReleaseTail?.sessions.find(({ language, scope }) =>
+  language === testedLanguage && scope === candidateScope);
+if (finalReleaseTail) assert.ok(tailSession, `Tail plan has no ${testedLanguage}/${candidateScope}`);
+const tailSchedule = tailSession
+  ? tailSession.groups.map(({ scheduleIndex, originalGroupIndex }) => {
+      assert.ok(baseSchedule[scheduleIndex],
+        `Tail group ${testedLanguage}/${candidateScope}/${scheduleIndex} is out of range`);
+      return { ...baseSchedule[scheduleIndex], sourceGroupIndex: originalGroupIndex };
+    })
   : baseSchedule;
+const schedule = shapeProbeFile
+  ? selectShapeProbeSchedule(candidateScope ?? windowName, tailSchedule,
+      JSON.parse(await readFile(shapeProbeFile, 'utf8')))
+  : tailSchedule;
 if (groupSelector !== undefined) {
   assert.deepEqual(schedule.map(group => group.problem).sort(), [...problemIds].sort());
 }
@@ -721,7 +736,7 @@ const report = {
     shippingPolicyByJourney: { run: 'candidate-main', submit: 'candidate-deploy',
       lesson: 'candidate-main' },
     alternatingOrderPerRound: true,
-    session: finalReleaseRemainder ? 2 : 1,
+    session: finalReleaseTail ? 3 : finalReleaseRemainder ? 2 : 1,
     remainder: finalReleaseRemainder,
   } }),
   ...(groupSelector !== undefined && {
