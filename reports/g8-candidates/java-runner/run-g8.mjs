@@ -82,6 +82,12 @@ import { capturedShapeKeys } from '../shape-captures.mjs';
 import { csharpMeasurementPlan } from '../csharp-measurement-plan.mjs';
 import { finalReleasePlan } from '../final-release-plan.mjs';
 import {
+  phoneWarmAaFailFast,
+  phoneWarmAaPlan,
+  phoneWarmAaRoundOrder,
+  phoneWarmAaVersions,
+} from '../phone-warm-aa.mjs';
+import {
   shouldValidateCandidateWitness,
 } from './candidate-witness-policy.mjs';
 
@@ -110,9 +116,12 @@ const submitAa = process.env.SPEED_SUBMIT_AA === '1';
 const javaClosing = process.env.SPEED_JAVA_CLOSING === '1';
 const javaClosingPhase = process.env.SPEED_JAVA_CLOSING_PHASE;
 const finalRelease = process.env.SPEED_G8_FINAL_RELEASE === '1';
+const finalReleaseRemainder = process.env.SPEED_G8_FINAL_REMAINDER === '1';
+const phoneWarmAa = process.env.SPEED_G8_PHONE_WARM_AA === '1';
+const outputTag = process.env.SPEED_G8_OUTPUT_TAG;
 const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
 const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
-const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa;
+const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
 assert.ok(releaseVersion === undefined || releaseVersion === '0.17.3');
@@ -120,8 +129,15 @@ assert.ok(!aaControl || releaseVersion === '0.17.3', 'A/A control requires the p
 assert.ok(!aaClosing || releaseVersion === '0.17.3', 'Closing A/A control requires the pinned 0.17.3 release');
 assert.ok(!(aaControl && aaClosing), 'Select only one A/A control');
 assert.ok([aaControl, aaClosing, referenceRerecord, releasePythonWarm,
-  pythonLocalDiagnostic, pythonFreshAa, submitAa, javaClosing, finalRelease].filter(Boolean).length <= 1,
+  pythonLocalDiagnostic, pythonFreshAa, submitAa, javaClosing, finalRelease, phoneWarmAa]
+  .filter(Boolean).length <= 1,
   'Select only one special measurement mode');
+assert.ok(!finalReleaseRemainder || finalRelease,
+  'A final-release remainder requires final-release mode');
+assert.ok(outputTag === undefined || /^[a-z0-9][a-z0-9-]*$/u.test(outputTag),
+  'Output tag must be a lowercase filename token');
+assert.ok(!phoneWarmAa || mode === 'run' && windowName === 'phone' && !candidateScope,
+  'Phone warm A/A must use the phone run window without a candidate scope');
 assert.ok(!liveControl || pythonLocalDiagnostic ||
   ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa, submitAa].some(Boolean),
   'Live control cannot be combined with another special measurement mode');
@@ -176,7 +192,7 @@ const csharpWarmSubmitControl = liveControl && !finalRelease && testedLanguage =
 const isLiveWitnessControl = (version, language) => liveControl &&
   (version === '0.17.1' || csharpWarmSubmitControl && language === 'csharp' &&
     version === '0.20.1');
-const versions = submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = phoneWarmAa ? phoneWarmAaVersions : submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? [...liveControlVersions(candidateVersions),
       ...(csharpWarmSubmitControl ? ['0.20.1'] : [])] : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
@@ -184,12 +200,13 @@ const appLockIntegrity = {
   '0.20.1': 'sha512-a/vYibZedmvLZzBEwlt9eeV4LdCJFlDW+U8JLnc2hP6lZm9rzRd6h21Qf5cuqc7Yzvh3MdzBe6kStxRAZ1hlQA==',
 };
 const corpus = process.env.SPEED_CORPUS ?? '/root/ci/parity-app-data';
-const filePrefix = finalRelease ? `final-${testedLanguage}-${candidateScope}-` :
+const baseFilePrefix = phoneWarmAa ? 'phone-warm-aa-' : finalRelease ? `final-${testedLanguage}-${candidateScope}-` :
   shapeProbeFile ? `shape-probe-${testedLanguage}-${candidateScope}-` :
   javaClosing ? `java-closing${javaClosingPhase ? '-' + javaClosingPhase : ''}-` : submitAa ? 'submit-aa-' : pythonFreshAa ? 'python-fresh-aa-' : pythonLocalDiagnostic ? 'python-local-diagnostic-' : releasePythonWarm ? 'release-python-warm-' : referenceRerecord ? 'reference-rerecord-' : aaClosing ? 'aa-release-closing-' : aaControl ? 'aa-release-' : releaseVersion ? 'r-' + releaseVersion + '-' +
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
-  candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
+    candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
+const filePrefix = outputTag ? `${outputTag}-${baseFilePrefix}` : baseFilePrefix;
 const metadataPath = join(out, filePrefix + 'metadata.json');
 const samplesPath = join(out, filePrefix + 'samples.jsonl');
 const deadline = Date.now() + runMinutes * 60_000;
@@ -508,7 +525,12 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
-  if (finalRelease) return structuredClone(finalReleasePlan(testedLanguage, candidateScope));
+  if (phoneWarmAa) return structuredClone(phoneWarmAaPlan);
+  if (finalRelease) {
+    const groups = structuredClone(finalReleasePlan(testedLanguage, candidateScope));
+    return finalReleaseRemainder && testedLanguage === 'csharp' && candidateScope === 'desktop'
+      ? groups.slice(16) : groups;
+  }
   if (javaClosing) return structuredClone(javaClosingPhase === 'spot'
     ? javaClosingPlan.slice(2) : javaClosingPlan);
   if (submitAa) return structuredClone(submitAaPlan);
@@ -664,6 +686,12 @@ const report = {
     repeatRun: true, alternatingOrderPerRound: true,
     tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
   }, runnerCommit: runnerSourceCommit() }),
+  ...(phoneWarmAa && { phoneWarmAa: {
+    sourceVersion: '0.17.1', labels: phoneWarmAaVersions, target: 20,
+    languages: ['python', 'csharp'], cpu: 4, freshPagePerSample: true,
+    repeatRun: true, alternatingOrderPerRound: true,
+    tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
+  }, runnerCommit: runnerSourceCommit() }),
   ...(submitAa && { submitAa: {
     sourceVersions: Object.keys(submitAaLabelPairs), labelPairs: submitAaLabelPairs,
     target: 20, languages: ['python', 'csharp'], freshPagePerSample: true,
@@ -690,6 +718,8 @@ const report = {
     shippingPolicyByJourney: { run: 'candidate-main', submit: 'candidate-deploy',
       lesson: 'candidate-main' },
     alternatingOrderPerRound: true,
+    session: finalReleaseRemainder ? 2 : 1,
+    remainder: finalReleaseRemainder,
   } }),
   ...(groupSelector !== undefined && {
     groupSelector,
@@ -713,8 +743,9 @@ try {
       const sourceVersion = submitAaSourceVersion(version);
       const sourceLabels = submitAaLabelPairs[sourceVersion];
       prepared[version] = prepared[sourceLabels[0]] ?? await prepareVersion(sourceVersion);
-    } else if (pythonFreshAa) {
-      prepared[version] = prepared[pythonFreshAaVersions[0]] ?? await prepareVersion('0.17.1');
+    } else if (pythonFreshAa || phoneWarmAa) {
+      const firstAaLabel = phoneWarmAa ? phoneWarmAaVersions[0] : pythonFreshAaVersions[0];
+      prepared[version] = prepared[firstAaLabel] ?? await prepareVersion('0.17.1');
     } else {
       const sourceVersion = candidatePreparationSourceVersion(version, candidate);
       prepared[version] = prepared[sourceVersion] ?? await prepareVersion(sourceVersion);
@@ -724,7 +755,7 @@ try {
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   report.browser.version = browser.version();
-  if (staged || pythonFreshAa || submitAa) assert.match(report.browser.version, /^145\./,
+  if (staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
   await save();
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
@@ -744,6 +775,8 @@ try {
       for (let round = 1; group.versions.some((v) => counts[v].kept < target && counts[v].invalid < maxInvalid); round++) {
         const roundVersions = submitAa
           ? submitAaRoundOrder(group.versions, round)
+          : phoneWarmAa
+          ? phoneWarmAaRoundOrder(group.versions, round)
           : pythonFreshAa
           ? pythonFreshAaRoundOrder(group.versions, round)
           : aaClosing ? group.versions : releasePythonWarm
@@ -956,6 +989,10 @@ try {
           if (submitPreflight === 'capture') capturedSubmitAfterRun.add(group.language);
           if (pythonFreshAa && pythonFreshAaFailFast(groupIndex, group, sample)) {
             throw new Error('A/A C# repeat preflight rejected its first complete attempt: ' +
+              (sample.invalid ?? sample.refusal));
+          }
+          if (phoneWarmAa && phoneWarmAaFailFast(group, sample)) {
+            throw new Error('Phone warm A/A rejected its first completed attempt: ' +
               (sample.invalid ?? sample.refusal));
           }
           if (submitAa && submitAaFailFast(groupIndex, sample)) {
