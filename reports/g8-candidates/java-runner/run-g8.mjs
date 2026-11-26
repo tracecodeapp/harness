@@ -121,6 +121,7 @@ const phoneWarmAa = process.env.SPEED_G8_PHONE_WARM_AA === '1';
 const outputTag = process.env.SPEED_G8_OUTPUT_TAG;
 const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
 const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
+const ordinaryPreflight = process.env.SPEED_G8_PREFLIGHT_ORDINARY === '1';
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -138,6 +139,8 @@ assert.ok(outputTag === undefined || /^[a-z0-9][a-z0-9-]*$/u.test(outputTag),
   'Output tag must be a lowercase filename token');
 assert.ok(!phoneWarmAa || mode === 'run' && windowName === 'phone' && !candidateScope,
   'Phone warm A/A must use the phone run window without a candidate scope');
+assert.ok(!ordinaryPreflight || shapeProbeFile && outputTag === 'preflight',
+  'The ordinary preflight bypass requires an explicit shape probe and preflight output tag');
 assert.ok(!liveControl || pythonLocalDiagnostic ||
   ![aaControl, aaClosing, referenceRerecord, releasePythonWarm, pythonFreshAa, submitAa].some(Boolean),
   'Live control cannot be combined with another special measurement mode');
@@ -620,7 +623,7 @@ function checkDeadline() {
 
 async function waitForQuiet() {
   checkDeadline();
-  if (mode === 'smoke') return;
+  if (mode === 'smoke' || ordinaryPreflight) return;
   while (loadavg()[0] > 2) {
     checkDeadline();
     await delay(5_000);

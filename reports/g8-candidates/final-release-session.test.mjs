@@ -27,6 +27,9 @@ test('dependency staging copies a real tree and rejects links outside the stage'
 
 test('ordinary preflight exercises every final version attempt without scoring', () => {
   assert.match(preflight, /SPEED_G8_PREFLIGHT_ORDINARY/u);
+  assert.match(javaRunner,
+    /!ordinaryPreflight \|\| shapeProbeFile && outputTag === 'preflight'/u);
+  assert.match(javaRunner, /mode === 'smoke' \|\| ordinaryPreflight/u);
   assert.match(preflight, /assert\.equal\(kept, 206\)/u);
   assert.match(preflight, /local scope="\$1" dir window=phone left\n  dir=/u);
   assert.doesNotMatch(preflight, /heavy-exclusive|score-final-release/u);
