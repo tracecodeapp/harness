@@ -171,9 +171,9 @@ export function createCppBrowserRuntimeProvider(
             assets: context.assets,
             ...(workerFactory ? { workerFactory } : {}),
           });
-      const createWorkerClient = () => new CppWorkerClient({
+      const createWorkerClient = (role?: 'observer') => new CppWorkerClient({
         ...workerOptions,
-        ...(compilerService ? { trustedCompilerService: compilerService } : {}),
+        ...(compilerService ? { trustedCompilerService: compilerService, trustedCompilerRole: role } : {}),
       });
       // Receipt evaluations request code mode. The scoped createJudge().evaluate
       // entry still uses the legacy trace binding until the direct-entry migration.
@@ -188,11 +188,12 @@ export function createCppBrowserRuntimeProvider(
         RuntimePreparedExecutionProvider
       >([['cpp', preparedProvider]]);
       const observer = createCppObservationRegistration(
-        createLegacyCppDrawingProducer({ createObserverWorkerClient: createWorkerClient }),
+        createLegacyCppDrawingProducer({ createObserverWorkerClient: () => createWorkerClient('observer') }),
         {
           runtimeVersion: context.assets.runtimeManifests?.cpp?.runtimeVersion ?? `harness-${TRACECODE_HARNESS_VERSION}`,
           observationDeadlineMs: options.tracingTimeoutMs ?? 20_000,
           observationPrepareDeadlineMs: preparedProvider.lifecycleAllowanceMs,
+          ...(compilerService && { observationPreparationOrder: 'after-ordinary-compile' }),
         }
       );
       const terminateCompiler = () => {

@@ -51,6 +51,7 @@ export function createCppObservationRegistration(
     readonly runtimeVersion: string;
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
+    readonly observationPreparationOrder?: 'after-ordinary-compile';
   }
 ) {
   const { runtimeVersion, ...deadlines } = options;

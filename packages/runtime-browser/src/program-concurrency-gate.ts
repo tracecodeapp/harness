@@ -13,10 +13,31 @@ export function preparedRuntimeAbortError(
     : new Error('Prepared runtime operation was aborted.');
 }
 
+/** Stop waiting on a request whose owner must finish it after cancellation. */
+export function detachPreparedRuntimeRequest<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(preparedRuntimeAbortError(signal));
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error);
+      }
+    );
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 /** Shared backpressure for every owner of one prepared runtime program. */
 export class RuntimeProgramConcurrencyGate {
   private active = 0;
   private readonly waiting: ConcurrencyWaiter[] = [];
+  private readonly background: ConcurrencyWaiter[] = [];
 
   constructor(private readonly maximum: number) {
     if (!Number.isSafeInteger(maximum) || maximum < 1) {
@@ -28,9 +49,10 @@ export class RuntimeProgramConcurrencyGate {
 
   async run<Result>(
     signal: AbortSignal | undefined,
-    use: () => Promise<Result>
+    use: () => Promise<Result>,
+    priority: 'foreground' | 'background' = 'foreground'
   ): Promise<Result> {
-    const release = await this.acquire(signal);
+    const release = await this.acquire(signal, priority);
     try {
       return await use();
     } finally {
@@ -38,7 +60,10 @@ export class RuntimeProgramConcurrencyGate {
     }
   }
 
-  private acquire(signal: AbortSignal | undefined): Promise<() => void> {
+  private acquire(
+    signal: AbortSignal | undefined,
+    priority: 'foreground' | 'background'
+  ): Promise<() => void> {
     if (signal?.aborted) {
       return Promise.reject(preparedRuntimeAbortError(signal));
     }
@@ -46,6 +71,7 @@ export class RuntimeProgramConcurrencyGate {
       this.active += 1;
       return Promise.resolve(this.releasePermit());
     }
+    const waiting = priority === 'background' ? this.background : this.waiting;
     return new Promise<() => void>((resolve, reject) => {
       const waiter: ConcurrencyWaiter = {
         signal,
@@ -54,8 +80,8 @@ export class RuntimeProgramConcurrencyGate {
         ...(signal
           ? {
               onAbort: () => {
-                const index = this.waiting.indexOf(waiter);
-                if (index >= 0) this.waiting.splice(index, 1);
+                const index = waiting.indexOf(waiter);
+                if (index >= 0) waiting.splice(index, 1);
                 reject(preparedRuntimeAbortError(signal));
               },
             }
@@ -64,7 +90,7 @@ export class RuntimeProgramConcurrencyGate {
       if (signal && waiter.onAbort) {
         signal.addEventListener('abort', waiter.onAbort, { once: true });
       }
-      this.waiting.push(waiter);
+      waiting.push(waiter);
     });
   }
 
@@ -79,8 +105,9 @@ export class RuntimeProgramConcurrencyGate {
   }
 
   private resumeNext(): void {
-    while (this.active < this.maximum && this.waiting.length > 0) {
-      const waiter = this.waiting.shift()!;
+    while (this.active < this.maximum) {
+      const waiter = this.waiting.shift() ?? this.background.shift();
+      if (!waiter) return;
       if (waiter.signal?.aborted) {
         waiter.reject(preparedRuntimeAbortError(waiter.signal));
         continue;

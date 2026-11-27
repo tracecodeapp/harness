@@ -32,6 +32,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- C++ and C# Runs give ordinary compiles priority over queued drawing
+  compiles. A new Run can wait for one drawing compile already in progress.
+  Cancelling a drawing leaves the compiler running, and a C++ rerun can use
+  its cached ordinary compile while the compiler is busy. C# starts warming
+  the next runner as soon as the earlier Run releases its runner, independently
+  of compiler cleanup.
 - `BrowserJudgeHost` now rejects a typed Judge failure as the error itself.
   A plan error (a bad `drawingDelivery`, tracing selection or continuation
   selection, or an invalid bundle) rejects as `JudgePlanError`, and an

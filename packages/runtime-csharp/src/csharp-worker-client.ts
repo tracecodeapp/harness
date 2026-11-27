@@ -70,7 +70,11 @@ import {
   WorkerRequestTimeoutError,
   WorkerTerminatedError,
 } from '@tracecode/runtime-browser/internal';
-import { WorkerSessionCore } from '@tracecode/runtime-browser/internal';
+import {
+  detachPreparedRuntimeRequest,
+  RuntimeProgramConcurrencyGate,
+  WorkerSessionCore,
+} from '@tracecode/runtime-browser/internal';
 import type { WorkerSessionMessage } from '@tracecode/runtime-browser/internal';
 import { handleHostArtifactCacheRequest, HostArtifactCache } from '@tracecode/runtime-browser/internal';
 import {
@@ -298,6 +302,7 @@ export class CSharpWorkerClient {
    * C# runtime process generation.
    */
   private preparedOperationTail: Promise<void> = Promise.resolve();
+  private readonly compilerQueue = new RuntimeProgramConcurrencyGate(1);
   private readonly debug: boolean;
   private readonly initTimeoutMs: number;
   private readonly executionTimeoutMs: number;
@@ -684,8 +689,11 @@ export class CSharpWorkerClient {
   }
 
   async prepareProgram(
-    call: RuntimeProgramPreparationCall
+    call: RuntimeProgramPreparationCall,
+    role: 'ordinary' | 'observer' = 'ordinary'
   ): Promise<CSharpWorkerPrepareResult> {
+    const sharedCompiler = this.options.runtimeRole === 'compiler';
+    const observer = sharedCompiler && role === 'observer';
     const prepare = async () => {
       const functionName = call.functionName ?? '';
       const executionStyle = call.executionStyle ?? 'solution-method';
@@ -709,7 +717,7 @@ export class CSharpWorkerClient {
       );
 
       try {
-        return await this.core.runClientEffect(program, call.signal);
+        return await this.core.runClientEffect(program, observer ? undefined : call.signal);
       } catch (error) {
         if (call.signal?.aborted) throw error;
         if (taggedError(error, 'ExecutionTimeoutError') || taggedError(error, 'WorkerRequestTimeoutError')) {
@@ -721,9 +729,20 @@ export class CSharpWorkerClient {
         throw error;
       }
     };
-    return this.options.runtimeRole === 'compiler'
-      ? this.runPreparedExclusive(call.signal, prepare)
-      : this.runFreshPreparedGeneration(call.signal, prepare);
+    if (!sharedCompiler) return this.runFreshPreparedGeneration(call.signal, prepare);
+    const work = this.compilerQueue.run(call.signal, async () => {
+      call.signal?.throwIfAborted();
+      const result = await prepare();
+      if (observer && call.signal?.aborted) {
+        if (result.success && result.compiledArtifactKey) {
+          void this.disposePreparedProgram({ compiledArtifactKey: result.compiledArtifactKey })
+            .catch(() => undefined);
+        }
+        call.signal.throwIfAborted();
+      }
+      return result;
+    }, observer ? 'background' : 'foreground');
+    return observer ? detachPreparedRuntimeRequest(work, call.signal) : work;
   }
 
   async executePreparedCode(
@@ -969,6 +988,36 @@ export class CSharpWorkerClient {
   async disposePreparedProgram(
     prepared: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>
   ): Promise<void> {
+    if (this.options.runtimeRole === 'compiler') {
+      const session = this.core.currentSession;
+      if (!session) return;
+      let reply: Promise<unknown> | undefined;
+      await this.compilerQueue.run(undefined, async () => {
+        if (this.core.currentSession !== session) return;
+        let posted!: () => void;
+        const dispatched = new Promise<void>((resolve) => { posted = resolve; });
+        reply = this.core.runClientEffect(
+          this.core.sendMessageEffectWithOptions(
+            'dispose-prepared-program',
+            { compiledArtifactKey: prepared.compiledArtifactKey },
+            {
+              onRequestRegistered: posted,
+              validateLifecycle: () => {
+                if (this.core.currentSession !== session) {
+                  throw new WorkerTerminatedError('C# compiler closed before artifact release.');
+                }
+              },
+            }
+          )
+        );
+        // The Worker drops the key synchronously. A missing acknowledgement
+        // must neither hold the compile queue nor close its session.
+        void reply.then(posted, posted);
+        await dispatched;
+      }, 'background');
+      await reply;
+      return;
+    }
     await this.runPreparedExclusive(undefined, async () => {
       if (!this.core.isWorkerRunning) return;
       await this.core.runClientEffect(

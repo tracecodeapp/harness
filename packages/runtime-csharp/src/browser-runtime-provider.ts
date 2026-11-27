@@ -294,7 +294,10 @@ export function createCSharpBrowserRuntimeProvider(
             loadTimeMs: performance.now() - startedAt,
           };
         },
-        createRunner(_tier: CSharpPreparedRunnerTier): CSharpWorkerClient {
+        async createRunner(tier: CSharpPreparedRunnerTier): Promise<CSharpWorkerClient> {
+          if (tier === 'algorithm-fast' && !standbyRunner && standbyWarmup) {
+            await standbyWarmup.catch(() => undefined);
+          }
           if (disposed) {
             throw new Error('C# browser runtime provider has been disposed.');
           }
@@ -393,6 +396,7 @@ export function createCSharpBrowserRuntimeProvider(
         capabilities: {
           observationLease: 'separate',
           observationDeadlineMs: 35_000,
+          observationPrepareDeadlineMs: 30_000,
           // observePrepared builds each reply from one runner message: the
           // events arrive by structured clone (or JSON transfer), call stacks
           // are resolved in the worker, and createTrace maps them into new
@@ -407,7 +411,9 @@ export function createCSharpBrowserRuntimeProvider(
           runawayObservationRelease: 'backstop',
         },
         prepareObservation: (program, signal, traceOptions) =>
-          preparedProvider.prepareObservation(program, signal, traceOptions),
+          preparedProvider.prepareObservation(
+            program, signal, traceOptions, observation.capabilities.observationPrepareDeadlineMs
+          ),
       };
       return {
         preparedProviders,

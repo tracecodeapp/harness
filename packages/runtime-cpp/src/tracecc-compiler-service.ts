@@ -2,7 +2,11 @@ import type {
   BrowserWorkerFactory,
   BrowserWorkerLike,
 } from '@tracecode/runtime-browser/internal';
-import { createWorkerProtocolToken } from '@tracecode/runtime-browser/internal';
+import {
+  createWorkerProtocolToken,
+  detachPreparedRuntimeRequest,
+  RuntimeProgramConcurrencyGate,
+} from '@tracecode/runtime-browser/internal';
 import type {
   CppCompilerIntegrityManifest,
   CppTrustedCompilerService,
@@ -142,7 +146,7 @@ implements CppTrustedCompilerService {
   private worker: BrowserWorkerLike | null = null;
   private startup: Promise<BrowserWorkerLike> | null = null;
   private abandonBoot: ((reason: Error) => void) | null = null;
-  private operation: Promise<void> = Promise.resolve();
+  private readonly compilerQueue = new RuntimeProgramConcurrencyGate(1);
   private requestId = 0;
   private generation = 0;
   private compilesInGeneration = 0;
@@ -209,7 +213,8 @@ implements CppTrustedCompilerService {
 
   async compileTrusted(
     payload: unknown,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    role: 'ordinary' | 'observer' = 'ordinary'
   ): Promise<Record<string, unknown>> {
     const projectRequest =
       payload &&
@@ -234,133 +239,163 @@ implements CppTrustedCompilerService {
       };
     }
 
-    const prior = this.operation;
-    let release!: () => void;
-    this.operation = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    await prior;
-    try {
-      if (signal?.aborted) {
-        throw Object.assign(new Error('TraceCC compilation was cancelled.'), {
-          name: 'AbortError',
-        });
+    signal?.throwIfAborted();
+    const observer = role === 'observer';
+    const precheck = !observer && driverSource !== null && projectRequest === null
+      ? this.artifactKey(driverSource).then((key) => ({ key, cached: this.cachedArtifact(key) }))
+      : undefined;
+    const cacheHit = precheck && new AbortController();
+    const queuedSignal = cacheHit
+      ? AbortSignal.any(signal ? [signal, cacheHit.signal] : [cacheHit.signal])
+      : signal;
+    // Reserve a foreground place before hashing so a queued observer cannot
+    // overtake a cache miss. A cache hit resolves outside that reservation.
+    const work = this.compilerQueue.run(queuedSignal, async () => {
+      const checked = await precheck;
+      return checked?.cached ?? this.compileOnAuthority(
+        driverSource, projectRequest, signal, observer, checked?.key
+      );
+    }, observer ? 'background' : 'foreground');
+    if (precheck) {
+      void work.catch(() => {});
+      const { cached } = await precheck;
+      if (cached) {
+        cacheHit?.abort();
+        signal?.throwIfAborted();
+        return cached;
       }
-      const generation = this.generation;
-      const abort = () => {
-        if (generation === this.generation) {
-          this.reset(
-            Object.assign(new Error('TraceCC compilation was cancelled.'), {
-              name: 'AbortError',
-            })
-          );
-        }
-      };
-      signal?.addEventListener('abort', abort, { once: true });
-      try {
-        if (projectRequest) {
-          return await this.compileProject(
-            projectRequest,
-            signal,
-            generation
-          );
-        }
-        if (driverSource === null) {
-          throw new Error('TraceCC driver source is missing.');
-        }
-        const artifactKey = await this.artifactKey(driverSource);
-        const cached = this.cachedArtifact(artifactKey);
-        if (cached) return cached;
-        const strippedSource = driverSource.replace(
-          /^#include\s+["<]\/?tracecode_runtime\.hpp[">]\s*\r?\n/,
-          ''
+    }
+    return observer ? detachPreparedRuntimeRequest(work, signal) : work;
+  }
+
+  private async compileOnAuthority(
+    driverSource: string | null,
+    projectRequest: Record<string, unknown> | null,
+    signal: AbortSignal | undefined,
+    observer: boolean,
+    checkedKey: string | undefined
+  ): Promise<Record<string, unknown>> {
+    if (signal?.aborted) {
+      throw Object.assign(new Error('TraceCC compilation was cancelled.'), {
+        name: 'AbortError',
+      });
+    }
+    const generation = this.generation;
+    const abort = () => {
+      if (generation === this.generation) {
+        this.reset(
+          Object.assign(new Error('TraceCC compilation was cancelled.'), {
+            name: 'AbortError',
+          })
         );
-        const shard = traceccShardForDriver(strippedSource);
-        if (signal?.aborted || generation !== this.generation) {
-          throw Object.assign(
-            new Error('TraceCC compilation was cancelled.'),
-            { name: 'AbortError' }
-          );
-        }
-        const selected = this.options.shards[shard];
-        const pchPath = `/tracecc-assets/${shard}.pch`;
-        const runtimeObjectPath = `/tracecc-assets/${shard}.o`;
-        const objectPath = '/workspace/program.o';
-        const outputPath = '/workspace/program.wasm';
-        const compileStartedAt = performance.now();
-        const result = await this.send('compile-trusted-tracecc', {
-          ...this.traceccAssets(selected, pchPath, runtimeObjectPath),
-          source: 'tracecc-compile-v1',
-          args: traceccFrontendArgs(pchPath, objectPath),
-          linkerArgs: traceccLinkerArgs(
-            objectPath,
-            runtimeObjectPath,
-            outputPath
-          ),
-          directCommand: true,
-          outputPath,
-          bufferedFileWrites: true,
-          compileStreaming: true,
-          nonSeekableOutputPaths: ['/workspace'],
-          returnOutputBytes: true,
-          project: {
-            files: [
-              {
-                path: '/workspace/TraceCodeDriver.cpp',
-                contents: strippedSource,
-              },
-            ],
-          },
-        });
-        if (signal?.aborted || generation !== this.generation) {
-          throw Object.assign(
-            new Error('TraceCC compilation was cancelled.'),
-            { name: 'AbortError' }
-          );
-        }
-        const programBuffer = transferableProgramBuffer(result.outputBytes);
-        this.compilesInGeneration += 1;
-        if (
-          this.options.maxCompilesPerWorker !== undefined &&
-          this.compilesInGeneration >=
-            this.options.maxCompilesPerWorker
-        ) {
-          this.reset(
-            new Error(
-              'TraceCC compiler Worker reached its bounded generation.'
-            )
-          );
-        }
-        const timings =
-          result.timings && typeof result.timings === 'object'
-            ? result.timings as Record<string, unknown>
-            : {};
-        if (result.success !== true || !programBuffer) {
-          return {
-            success: false,
-            error:
-              typeof result.error === 'string'
-                ? result.error
-                : 'TraceCC compilation failed.',
-            stdout: typeof result.stdout === 'string' ? result.stdout : '',
-            stderr: typeof result.stderr === 'string' ? result.stderr : '',
-            compileMs: performance.now() - compileStartedAt,
-            timings: { ...timings, traceccShard: shard },
-          };
-        }
-        return this.storeArtifact(artifactKey, {
-          success: true,
-          programBuffer,
+      }
+    };
+    if (!observer) signal?.addEventListener('abort', abort, { once: true });
+    try {
+      if (projectRequest) {
+        return await this.compileProject(
+          projectRequest,
+          signal,
+          generation
+        );
+      }
+      if (driverSource === null) {
+        throw new Error('TraceCC driver source is missing.');
+      }
+      const artifactKey = checkedKey ?? await this.artifactKey(driverSource);
+      signal?.throwIfAborted();
+      const cached = this.cachedArtifact(artifactKey);
+      if (cached) return cached;
+      const strippedSource = driverSource.replace(
+        /^#include\s+["<]\/?tracecode_runtime\.hpp[">]\s*\r?\n/,
+        ''
+      );
+      const shard = traceccShardForDriver(strippedSource);
+      if (signal?.aborted || generation !== this.generation) {
+        throw Object.assign(
+          new Error('TraceCC compilation was cancelled.'),
+          { name: 'AbortError' }
+        );
+      }
+      const selected = this.options.shards[shard];
+      const pchPath = `/tracecc-assets/${shard}.pch`;
+      const runtimeObjectPath = `/tracecc-assets/${shard}.o`;
+      const objectPath = '/workspace/program.o';
+      const outputPath = '/workspace/program.wasm';
+      const compileStartedAt = performance.now();
+      const result = await this.send('compile-trusted-tracecc', {
+        ...this.traceccAssets(selected, pchPath, runtimeObjectPath),
+        source: 'tracecc-compile-v1',
+        args: traceccFrontendArgs(pchPath, objectPath),
+        linkerArgs: traceccLinkerArgs(
+          objectPath,
+          runtimeObjectPath,
+          outputPath
+        ),
+        directCommand: true,
+        outputPath,
+        bufferedFileWrites: true,
+        compileStreaming: true,
+        nonSeekableOutputPaths: ['/workspace'],
+        returnOutputBytes: true,
+        project: {
+          files: [
+            {
+              path: '/workspace/TraceCodeDriver.cpp',
+              contents: strippedSource,
+            },
+          ],
+        },
+      });
+      if (generation !== this.generation) {
+        throw Object.assign(
+          new Error('TraceCC compilation was cancelled.'),
+          { name: 'AbortError' }
+        );
+      }
+      // A detached compile used the same Wasm runtime budget as any other
+      // completed compile. Rotate only at the normal generation boundary.
+      this.compilesInGeneration += 1;
+      if (
+        this.options.maxCompilesPerWorker !== undefined &&
+        this.compilesInGeneration >=
+          this.options.maxCompilesPerWorker
+      ) {
+        this.reset(
+          new Error(
+            'TraceCC compiler Worker reached its bounded generation.'
+          )
+        );
+      }
+      signal?.throwIfAborted();
+      const programBuffer = transferableProgramBuffer(result.outputBytes);
+      const timings =
+        result.timings && typeof result.timings === 'object'
+          ? result.timings as Record<string, unknown>
+          : {};
+      if (result.success !== true || !programBuffer) {
+        return {
+          success: false,
+          error:
+            typeof result.error === 'string'
+              ? result.error
+              : 'TraceCC compilation failed.',
           stdout: typeof result.stdout === 'string' ? result.stdout : '',
           stderr: typeof result.stderr === 'string' ? result.stderr : '',
           compileMs: performance.now() - compileStartedAt,
           timings: { ...timings, traceccShard: shard },
-        });
-      } finally {
-        signal?.removeEventListener('abort', abort);
+        };
       }
+      return this.storeArtifact(artifactKey, {
+        success: true,
+        programBuffer,
+        stdout: typeof result.stdout === 'string' ? result.stdout : '',
+        stderr: typeof result.stderr === 'string' ? result.stderr : '',
+        compileMs: performance.now() - compileStartedAt,
+        timings: { ...timings, traceccShard: shard },
+      });
     } finally {
-      release();
+      signal?.removeEventListener('abort', abort);
     }
   }
 

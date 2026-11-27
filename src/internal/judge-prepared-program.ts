@@ -155,7 +155,10 @@ export class JudgeObservationSchedule<Result, Expected> {
       runtimeVersion: this.registration.runtimeVersion,
     });
     bindJudgeOrdinaryPreparation(this.program, call);
-    if (this.selected.size > 0) this.prepareObserver();
+    if (this.selected.size > 0 &&
+        this.registration.capabilities.observationPreparationOrder !== 'after-ordinary-compile') {
+      this.prepareObserver();
+    }
   }
 
   admit(caseId: string): void {

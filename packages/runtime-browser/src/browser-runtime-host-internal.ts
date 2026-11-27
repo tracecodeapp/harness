@@ -128,6 +128,8 @@ export interface JudgeReceiptProvider {
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
+    /** Wait for the first ordinary case admission before requesting a shared compiler. */
+    readonly observationPreparationOrder?: 'after-ordinary-compile';
     /** Observation can initialize concurrently with ordinary provider readiness. */
     readonly overlapObservationWithInitialization?: true;
     /** Native stopping batches can acknowledge admission before delivering rows. */
