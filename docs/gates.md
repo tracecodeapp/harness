@@ -24,10 +24,15 @@ The report groups jobs by lane, candidate, and cell, and sums run time by lane.
 
 Use `node scripts/gates/cell-hash.mjs <cell> --rev <commit>` to inspect a
 tree-only hash. It hashes sorted Git path and blob ID pairs for the cell and
-shared input globs, the sorted-key cell definition and pins, and the gate
-branch head for GA, GB, and W. The runner supplies `--host-pins` for the actual
+shared input globs, the root package fields the cell uses, the sorted-key cell
+definition and pins, and the gate branch head for GA, GB, and W. The runner supplies `--host-pins` for the actual
 lookup. Those pins include Node, pnpm, installed Playwright revisions, and
 the digests of any external inputs the cell uses, including a candidate tarball.
+
+Every cell uses the root manifest's dependency fields, `pnpm`, `packageManager`,
+`engines`, `exports`, `files`, `main`, `types`, `type`, and `version`. Other
+manifest inputs are limited to the scripts the cell's setup and command call,
+including nested `pnpm`, `pnpm run`, and `npm run` calls.
 
 List the files a cell actually loads, including each cross-language dependency
 explicitly in its inputs. Run `node --test tests/gates/*.test.mjs` to check
@@ -45,5 +50,6 @@ outside the list select every cell.
 | `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
 | `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
 | `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
-| `runtime-assets.lock.json` | The lock is generated from the workers and pinned engine assets. Lock checks declare the generator and workers as inputs. |
+| `runtime-assets.lock.json` | The lock is derived. Its worker, engine, and C# role inputs select the affected cells. Lock checks declare the generator and workers. |
+| `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
 | `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |

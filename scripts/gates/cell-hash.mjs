@@ -4,20 +4,12 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { blobs, loadCell, resolveCommit, tracksInput } from './inventory.mjs';
-
-function canonical(value) {
-  if (Array.isArray(value)) return '[' + value.map(canonical).join(',') + ']';
-  if (value !== null && typeof value === 'object') {
-    return '{' + Object.keys(value).sort().filter((key) => value[key] !== undefined)
-      .map((key) => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
-  }
-  return JSON.stringify(value);
-}
+import { canonical, packageAt, packageInputs } from './package-inputs.mjs';
 
 export function hashCell(cell, commit, hostPins, gateCommit) {
   const files = blobs(commit).filter(([path]) => tracksInput(cell, path));
   files.sort(([left], [right]) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
-  const inputs = { files, cell, gateCommit, hostPins };
+  const inputs = { files, package: packageInputs(cell, packageAt(commit)), cell, gateCommit, hostPins };
   return createHash('sha256').update(canonical(inputs)).digest('hex');
 }
 

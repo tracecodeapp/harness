@@ -112,3 +112,52 @@ test('regenerating the runtime asset lock after a Java edit preserves the Python
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('package scripts re-key callers and shared dependency fields re-key every cell', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gate-package-hash-'));
+  const cwd = process.cwd();
+  try {
+    process.chdir(root);
+    git('init', '--quiet');
+    const cells = [
+      { id: 'python', command: 'pnpm test:python', setup: 'pnpm prepare-python', inputs: [], pins: {} },
+      { id: 'java', command: 'pnpm test:java', inputs: [], pins: {} },
+    ];
+    const manifest = {
+      devDependencies: { tsx: '1.0.0' },
+      scripts: {
+        'test:python': 'pnpm run python-check',
+        'python-check': "npm run 'python-leaf'",
+        'python-leaf': 'node python-test.mjs',
+        'prepare-python': 'node prepare.mjs',
+        'test:java': 'node java-test.mjs',
+      },
+    };
+    function keys(message) {
+      change('package.json', JSON.stringify(manifest));
+      const rev = commit(message);
+      return cells.map((cell) => hashCell(cell, rev));
+    }
+
+    const baseline = keys('manifest baseline');
+    manifest.scripts['test:unrelated'] = 'node unrelated-test.mjs';
+    assert.deepEqual(keys('unrelated script'), baseline);
+
+    manifest.scripts['python-leaf'] += ' --strict';
+    const changed = keys('transitive test script');
+    assert.notEqual(changed[0], baseline[0]);
+    assert.equal(changed[1], baseline[1]);
+
+    manifest.scripts['prepare-python'] += ' --check';
+    const setup = keys('setup script');
+    assert.notEqual(setup[0], changed[0]);
+    assert.equal(setup[1], changed[1]);
+
+    manifest.devDependencies.tsx = '2.0.0';
+    const dependencies = keys('development dependency');
+    dependencies.forEach((hash, index) => assert.notEqual(hash, setup[index]));
+  } finally {
+    process.chdir(cwd);
+    rmSync(root, { recursive: true, force: true });
+  }
+});

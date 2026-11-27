@@ -43,7 +43,9 @@ function runtimeImports(entry, source, files, language) {
 }
 
 test('inventory claims named command files and reports unclaimed tracked paths', () => {
-  const { cells: inventory } = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
+  const { cells: inventory, noCell } = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
+  assert(noCell.includes('runtime-assets.lock.json'));
+  assert(noCell.includes('CHANGELOG.md'));
   const paths = git('ls-files', '-z').split('\0').filter(Boolean);
   const branches = new Map();
   const imports = new Map();
@@ -61,6 +63,9 @@ test('inventory claims named command files and reports unclaimed tracked paths',
     assert(cell.inputs.includes('scripts/gates/**'));
     assert(cell.inputs.includes('scripts/run-test-suite.ts'));
     assert(!tracksInput(cell, 'runtime-assets.lock.json'), `${cell.id} claims a generated lock`);
+    assert(!tracksInput(cell, 'CHANGELOG.md'), `${cell.id} claims the root changelog`);
+    assert(!cell.inputs.includes('package.json') && !cell.pins.files.includes('package.json'),
+      `${cell.id} must use the root manifest projection`);
     for (const pin of cell.pins.files) assert(paths.some((path) =>
       matchesInput(path, pin) && tracksInput(cell, path)), `${cell.id} has no input for pin ${pin}`);
     const ref = cell.pins.gateRef;
@@ -94,7 +99,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
   for (const script of Object.keys(scriptsAt('')).filter((name) => name.startsWith('test:'))) {
     if (!coveredScripts.has(script)) errors.push(`No cell for ${script}`);
   }
-  const missing = paths.filter((path) => !inventory.some((cell) => tracksInput(cell, path)));
+  const missing = paths.filter((path) => path !== 'package.json' && !inventory.some((cell) => tracksInput(cell, path)));
   console.log(`Unclaimed tracked files (${missing.length}):\n${missing.join('\n')}`);
   assert.equal(errors.length, 0, [...new Set(errors)].join('\n'));
 });

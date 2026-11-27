@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 
 export const sharedGlobs = [
   'src/**', 'packages/tracekernel/**', 'packages/runtime-contracts/**',
-  'package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig*', 'tsup*',
+  'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig*', 'tsup*',
   '.nvmrc', '.npmrc',
 ];
 
@@ -40,6 +40,8 @@ export function matchesInput(path, glob) {
 }
 
 export function tracksInput(cell, path) {
+  // The root manifest is a projected input even when an old cell lists it as a blob.
+  if (path === 'package.json') return false;
   return sharedGlobs.some((glob) => matchesInput(path, glob)) ||
     cell.inputs.some((glob) => matchesInput(path, glob));
 }
