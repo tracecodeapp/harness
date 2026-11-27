@@ -93,7 +93,7 @@ async function stage(version, languages, m1 = false) {
   }
   command('node', ['dist/cli.cjs', 'sync-assets', join(site, 'workers'), '--languages', languages], packageRoot);
   if (m1) {
-    const target = join(site, 'workers/csharp/csharp-worker.js');
+    const target = join(site, 'workers/csharp-worker.js');
     assert.equal(sha256(await readFile(target)), '8a417f47a78ceeba7ee6396027bb28b996f84367c6602b389e5c0b477d2869f0');
     await copyFile(new URL('../../workers/csharp/csharp-worker.js', import.meta.url), target);
     console.log(JSON.stringify({ csharpJavaScriptOnly: true, servedWorkerSha256: sha256(await readFile(target)) }));
