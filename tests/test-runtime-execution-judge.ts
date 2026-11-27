@@ -5,10 +5,13 @@ import { Worker } from 'node:worker_threads';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
+import * as Cause from 'effect/Cause';
+import * as Runtime from 'effect/Runtime';
 import {
   InMemoryJudgeRuntimeControl,
   type JudgeEvaluationResult,
 } from '../packages/judge/src/index';
+import { JudgePlanError } from '../packages/judge/src/errors';
 import {
   createAlgorithmJudgeBundle,
   isRuntimeProviderError,
@@ -2915,6 +2918,8 @@ function receiptFixture(options: {
   nativeStop?: boolean;
   nativeAdmission?: boolean;
   prepareObserver?: () => Promise<void>;
+  /** The observer lease's teardown; it may stall. */
+  leaseDispose?: () => Promise<void>;
   workerAcks?: boolean;
   providerMarks?: boolean;
   certification?: 'ends-same';
@@ -3083,7 +3088,11 @@ function receiptFixture(options: {
           if (workerResult) return workerResult as ObserverReply;
           return options.observe ? options.observe(call) : recordedDrawing(call);
         },
-        dispose() { observerReleases += 1; notify(); },
+        dispose() {
+          observerReleases += 1;
+          notify();
+          return options.leaseDispose?.();
+        },
       };
     },
     ...(options.providerMarks !== false ? {
@@ -6130,14 +6139,22 @@ test('verdict-first 7: compile failure defers nothing and keeps no handle; after
       { bundle, interactive: false, drawingDelivery: 'after-verdict' },
       { bundle, interactive: true, drawingDelivery: 'later' },
     ] as const) {
-      await assert.rejects(f.host.execute(request as never), /drawingDelivery/u, JSON.stringify(request.drawingDelivery));
+      // The host rejects a plan error as Effect's FiberFailure (as for any
+      // plan error since 0.21); its cause must be the JudgePlanError.
+      await assert.rejects(f.host.execute(request as never), (error: unknown) => {
+        assert.ok(Runtime.isFiberFailure(error), JSON.stringify(request.drawingDelivery));
+        const cause = Cause.squash(error[Runtime.FiberFailureCauseId]);
+        assert.ok(cause instanceof JudgePlanError, JSON.stringify(request.drawingDelivery));
+        assert.match(cause.message, /drawingDelivery/u);
+        return true;
+      });
     }
     assert.equal(f.state.prepareCalls.length, before, 'rejected before preparing');
     const plan = makePlan([{ id: 'A', input: { label: 'A' }, expected: 'A' }]);
     const direct = await withDirectJudge(f.host, traceBinding(), (judge) =>
       Effect.either(judge.execute<FakeInput>({ plan, drawingDelivery: 'after-verdict' })));
     assert.equal(direct._tag, 'Left');
-    assert.equal(direct._tag === 'Left' && (direct.left as { _tag?: string })._tag, 'JudgePlanError');
+    assert.ok(direct._tag === 'Left' && direct.left instanceof JudgePlanError);
   } finally {
     failing.host.dispose();
     f.host.dispose();
@@ -6164,5 +6181,109 @@ test('verdict-first 8: omitted or with-verdict delivery keeps the joined 0.21 re
     } finally {
       f.host.dispose();
     }
+  }
+});
+
+test('verdict-first 9: a compile-failed deferred Run resolves without waiting on observer teardown', { timeout: 5000 }, async () => {
+  const teardown = controlled();
+  const f = receiptFixture({ compileFailure: true, leaseDispose: () => teardown.promise });
+  try {
+    // The observer lease is prepared before the ordinary compile decision.
+    f.state.preparationDelayMs = 20;
+    const bundle = await receiptBundle();
+    const failed = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.equal(failed.executionId, undefined);
+    assert.deepEqual(failed.deferredDrawings, []);
+    await f.waitUntil(() => f.observerCounts()[1] === 1);
+
+    // Joined delivery keeps 0.21's order: it resolves after the teardown.
+    let joinedResolved = false;
+    const joined = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .then((result) => { joinedResolved = true; return result; });
+    await f.waitUntil(() => f.observerCounts()[1] === 2);
+    await drainTurns();
+    assert.equal(joinedResolved, false);
+    teardown.resolve();
+    assert.equal((await joined).evaluation.status, 'compile-failed');
+  } finally {
+    teardown.resolve();
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 10: a continuation that aborts as the last waiter evicts the admission attempt; the next request starts a fresh one', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+  await untilEvent(events, 'injection-ack', 'A');
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+
+  const controller = new AbortController();
+  const cancelled = assert.rejects(f.host.execute({ ...request, signal: controller.signal }), { name: 'AbortError' });
+  await drainTurns();
+  controller.abort();
+  await cancelled;
+  await untilEvent(events, 'observer-end', 'A');
+  assert.equal(eventsOf(events, 'attachment-bind').length, 0, 'the evicted attempt binds nothing');
+
+  stall.release();
+  const drawn = await f.host.execute(request);
+  assert.equal(drawn.evaluation.cases[0]?.attachment?.status, 'drawn');
+  const starts = eventsOf(events, 'observer-start', 'A').map(({ attemptToken }) => attemptToken);
+  assert.equal(starts.length, 2);
+  assert.notEqual(starts[0], starts[1], 'a fresh attempt');
+  assert.deepEqual(f.observerCalls.map(({ attemptToken }) => attemptToken), [starts[1]]);
+  assert.equal(eventsOf(events, 'attachment-bind').length, 1);
+  assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+});
+
+test('verdict-first 11: after a last-waiter eviction the idle lease arms with nothing left running', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stall = stallingFixture(t, { idleMs: 25 });
+  const { f } = stall;
+  const verdict = await pumped(t.mock.timers,
+    f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } }));
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+  const controller = new AbortController();
+  const cancelled = assert.rejects(f.host.execute({ ...request, signal: controller.signal }), { name: 'AbortError' });
+  await pumpTurns(t.mock.timers);
+  t.mock.timers.tick(100);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0], 'a waiting continuation holds the lease');
+
+  controller.abort();
+  await pumped(t.mock.timers, cancelled);
+  t.mock.timers.tick(24);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0]);
+  t.mock.timers.tick(1);
+  await pumpUntil(t.mock.timers, () => f.observerCounts()[1] === 1);
+  await assert.rejects(f.host.execute(request), /Unknown or disposed interactive execution/u);
+});
+
+test('verdict-first 12: aborting a joined initial request during its join rejects and binds nothing', { timeout: 5000 }, async () => {
+  const late = controlled<ObserverReply>();
+  const f = receiptFixture({ observe: () => late.promise });
+  try {
+    const bundle = await receiptBundle();
+    const controller = new AbortController();
+    const rejected = assert.rejects(f.host.execute({
+      bundle, interactive: true, tracing: { caseIds: ['A'] }, signal: controller.signal,
+    }), { name: 'AbortError' });
+    await f.waitUntil(() => f.observerCalls.length === 1 && f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    controller.abort();
+    await rejected;
+    assert.equal(f.observerCalls[0]?.signal?.aborted, true);
+    late.resolve(recordedDrawing(f.observerCalls[0]!));
+    await drainTurns();
+    assert.equal(f.markers.some(({ phase }) => phase === 'attachment-bind' || phase === 'public-resolve'), false);
+    assert.deepEqual(f.observerCounts(), [1, 1]);
+
+    const again = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    assert.equal(again.evaluation.cases[0]?.attachment?.status, 'drawn');
+  } finally {
+    late.resolve(recordedDrawing(f.observerCalls[0]!));
+    f.host.dispose();
   }
 });
