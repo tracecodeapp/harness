@@ -851,7 +851,7 @@
     "language": "shared",
     "command": "pnpm test:runtime-trace",
     "host": "agentrunner",
-    "inputs": [".nvmrc","docs/**","fixtures/runtime-parity/**","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/report-runtime-trace-known-gaps.ts","tests/test-runtime-raw-emission-contract.ts","tests/test-runtime-trace-fixtures.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
+    "inputs": [".nvmrc","fixtures/runtime-parity/**","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/report-runtime-trace-known-gaps.ts","tests/test-runtime-raw-emission-contract.ts","tests/test-runtime-trace-fixtures.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline"
   },

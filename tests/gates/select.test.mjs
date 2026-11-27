@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { selectCells } from '../../scripts/gates/select.mjs';
 import { candidatePlan } from '../../scripts/gates/candidate-all.mjs';
@@ -24,6 +27,10 @@ test('claimed paths take precedence over noCell and unfamiliar files select the 
   assert.deepEqual(selectCells(inventory, ['.github/workflows/ci.yml', 'reports/required.json']), ['ci-workflow']);
   assert.deepEqual(selectCells(inventory, ['tests/fixtures/expectation.md']), all);
   assert.deepEqual(selectCells(inventory, ['new-directory/runner.mjs']), all);
+  assert.deepEqual(selectCells({ cells, noCell }, [
+    'docs/gates.md', 'AGENTS.md', 'CONTRIBUTING.md', 'benchmarks/speed-baseline-021/run.mjs',
+    'reports/evidence.json', '.gitignore', '.github/workflows/unclaimed.yml', 'runtime-assets.lock.json',
+  ]), []);
 });
 
 test('the candidate plan schedules every cell once on its declared host', () => {
@@ -37,4 +44,33 @@ test('the candidate plan schedules every cell once on its declared host', () => 
   const ci = plan.ci.map(({ id }) => id);
   assert(ci.indexOf('build-tracekernel') < ci.indexOf('python-prepared-provider'));
   assert(ci.indexOf('build') < ci.indexOf('packaged-surface'));
+});
+
+test('candidate-all invokes each local cell once and reports failed cells', () => {
+  const root = mkdtempSync(join(tmpdir(), 'candidate-all-test-'));
+  const checkout = join(root, 'checkout');
+  const runner = resolve('scripts/gates/candidate-all.mjs');
+  const git = (...args) => execFileSync('git', args, { cwd: checkout, encoding: 'utf8' });
+  try {
+    mkdirSync(join(checkout, 'scripts/gates'), { recursive: true });
+    const cells = [
+      { id: 'first', host: 'laptop-unit', command: 'echo CHECK-FIRST; exit 3', pins: {} },
+      { id: 'second', host: 'laptop-unit', command: 'echo CHECK-SECOND', pins: {} },
+      { id: 'other-host', host: 'agentrunner', command: 'echo CHECK-OTHER', pins: {} },
+    ];
+    writeFileSync(join(checkout, 'scripts/gates/cells.json'), JSON.stringify({ cells, noCell: [] }));
+    git('init', '--quiet');
+    git('add', '.');
+    git('-c', 'user.name=Gate Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false',
+      'commit', '--quiet', '-m', 'candidate inventory');
+    const result = spawnSync(process.execPath, [runner, '--rev', 'HEAD', '--host', 'laptop-unit'], {
+      cwd: checkout, encoding: 'utf8', env: { ...process.env, TMPDIR: root },
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.deepEqual(result.stdout.match(/^CHECK-.+$/gm), ['CHECK-FIRST', 'CHECK-SECOND']);
+    assert.deepEqual(JSON.parse(result.stdout.slice(result.stdout.indexOf('{'))).results,
+      [{ cell: 'first', exitCode: 3 }, { cell: 'second', exitCode: 0 }]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

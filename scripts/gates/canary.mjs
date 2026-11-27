@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { extname, join, resolve, sep } from 'node:path';
@@ -37,11 +37,7 @@ async function serve(root) {
   return server;
 }
 
-async function canary(entry) {
-  const output = process.env.GATE_OUTPUT;
-  if (!output || !entry) throw new Error('Run the canary with scripts/gates/run-cell.sh.');
-  const site = join(output, 'site');
-  await mkdir(site);
+async function prepareSite(site, entry) {
   execFileSync(process.execPath, [
     'dist/cli.cjs', 'sync-assets', join(site, 'workers'), '--inventory',
   ], { stdio: 'inherit' });
@@ -53,7 +49,9 @@ async function canary(entry) {
     throw new Error('Canary must resolve the built @tracecode/harness/judge export.');
   }
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
+}
 
+async function collectReceipts(site) {
   const server = await serve(site);
   let browser;
   try {
@@ -72,10 +70,7 @@ async function canary(entry) {
       }
       return rows;
     });
-    const receipt = { rev: process.env.GATE_REV, browser: browser.version(), rows };
-    await writeFile(join(output, 'canary.json'), JSON.stringify(receipt, null, 2) + '\n');
-    for (const row of rows) console.log(JSON.stringify(row));
-    if (rows.length !== 6 || rows.some(({ failure }) => failure)) process.exitCode = 1;
+    return { rev: process.env.GATE_REV, browser: browser.version(), rows };
   } finally {
     try {
       await browser?.close();
@@ -83,6 +78,21 @@ async function canary(entry) {
       server.close();
       server.closeAllConnections();
     }
+  }
+}
+
+async function canary(entry) {
+  const output = process.env.GATE_OUTPUT;
+  if (!output || !entry) throw new Error('Run the canary with scripts/gates/run-cell.sh.');
+  const site = await mkdtemp(join(output, 'site-'));
+  try {
+    await prepareSite(site, entry);
+    const receipt = await collectReceipts(site);
+    await writeFile(join(output, 'canary.json'), JSON.stringify(receipt, null, 2) + '\n');
+    for (const row of receipt.rows) console.log(JSON.stringify(row));
+    if (receipt.rows.length !== 6 || receipt.rows.some(({ failure }) => failure)) process.exitCode = 1;
+  } finally {
+    await rm(site, { recursive: true, force: true });
   }
 }
 

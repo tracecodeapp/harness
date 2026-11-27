@@ -30,8 +30,8 @@ partition uses `run-cell.sh` and waits outside `heavy` when both slots are busy.
 Set `PLAYWRIGHT_BROWSERS_PATH` if the cell uses a provisioned browser cache.
 GA and GB require `GATE_CANDIDATE_TARBALL` and `GATE_MUX_SOURCE`. Point them at
 the exact candidate archive and the staged, pinned mux adapter directory.
-GA C++ also needs `GATE_APP_DATA` set to the staged app manifest file.
-For W on AgentRunner, point `GATE_APP_DATA` at the staged catalog directory.
+GA C++ needs `GATE_APP_MANIFEST` set to the staged app manifest file.
+For W on AgentRunner, point `GATE_APP_CATALOG` at the staged catalog directory.
 Keep these artifacts outside the checkout.
 
 The runner creates a fresh detached worktree, checks for a cached pass, and
