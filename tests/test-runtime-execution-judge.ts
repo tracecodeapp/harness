@@ -2920,6 +2920,8 @@ function receiptFixture(options: {
   prepareObserver?: () => Promise<void>;
   /** The observer lease's teardown; it may stall. */
   leaseDispose?: () => Promise<void>;
+  /** Runs before the ordinary program's teardown; it may stall. */
+  ordinaryDispose?: () => Promise<void>;
   workerAcks?: boolean;
   providerMarks?: boolean;
   certification?: 'ends-same';
@@ -3041,6 +3043,12 @@ function receiptFixture(options: {
         program: {
           ...codeProgram,
           executeIsolated,
+          ...(options.ordinaryDispose ? {
+            async dispose() {
+              await options.ordinaryDispose!();
+              return codeProgram.dispose();
+            },
+          } : {}),
           ...(options.nativeStop ? {
             capabilities: { ...codeProgram.capabilities, stopsAtFirstRunaway: true as const },
             async executeBatchIsolated(request: RuntimePreparedCodeBatchCall & {
@@ -6284,6 +6292,34 @@ test('verdict-first 12: aborting a joined initial request during its join reject
     assert.equal(again.evaluation.cases[0]?.attachment?.status, 'drawn');
   } finally {
     late.resolve(recordedDrawing(f.observerCalls[0]!));
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 13: a deferred verdict does not wait for the ordinary program teardown', { timeout: 5000 }, async () => {
+  const teardown = controlled();
+  const f = receiptFixture({ ordinaryDispose: () => teardown.promise });
+  try {
+    const bundle = await receiptBundle();
+    const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.deepEqual(verdict.deferredDrawings, ['A']);
+    assert.equal(f.state.disposals, 0, 'the ordinary teardown is still pending');
+    const drawing = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A'] } });
+    assert.equal(drawing.evaluation.cases[0]?.attachment?.status, 'drawn');
+
+    // Joined delivery keeps 0.21's order: it resolves after the teardown.
+    let joinedResolved = false;
+    const joined = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .then((result) => { joinedResolved = true; return result; });
+    await f.waitUntil(() => f.ordinaryStarts.length === 6);
+    await drainTurns();
+    assert.equal(joinedResolved, false);
+    teardown.resolve();
+    assert.equal((await joined).evaluation.cases[0]?.attachment?.status, 'drawn');
+    await drainTurns();
+    assert.equal(f.state.disposals, 2, 'both ordinary programs were released once');
+  } finally {
+    teardown.resolve();
     f.host.dispose();
   }
 });
