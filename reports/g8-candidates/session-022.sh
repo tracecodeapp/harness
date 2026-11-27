@@ -5,7 +5,7 @@ checkout="$(git -C "$source_dir" rev-parse --show-toplevel)"
 rig_commit="$(git -C "$checkout" rev-parse HEAD)"
 test -z "$(git -C "$checkout" status --porcelain --untracked-files=all)"
 
-operation="${1:?Expected selftest or window}"
+operation="${1:?Expected selftest, desktop-timing or window}"
 out="${2:?Expected a new absolute output directory}"
 production="${3:?Expected the absolute path to the published 0.21.0 tarball}"
 [[ "$out" == /* && "$production" == /* ]]
@@ -18,6 +18,10 @@ case "$operation" in
   selftest)
     [[ "$#" == 3 && "${SPEED_EXCLUSIVE_WINDOW:-}" != 1 ]]
     minutes=40
+    ;;
+  desktop-timing)
+    [[ "$#" == 3 && "${SPEED_EXCLUSIVE_WINDOW:-}" != 1 ]]
+    minutes=35
     ;;
   window)
     receipt="${4:?Expected the self-test pass receipt}"
@@ -79,6 +83,8 @@ if [[ "$operation" == selftest ]]; then
   SPEED_RIG_022_OPERATION=selftest node "$stage/java-runner/run-g8.mjs" "$out" smoke desktop-a 212026 "$minutes"
   node "$stage/selftest-receipt-022.mjs" record "$out/selftest-pass.json" "$rig_commit" "$production_sha" "$out/calibration.json"
   node "$stage/selftest-receipt-022.mjs" require "$out/selftest-pass.json" "$rig_commit" "$production_sha"
+elif [[ "$operation" == desktop-timing ]]; then
+  SPEED_RIG_022_OPERATION=desktop-timing node "$stage/java-runner/run-g8.mjs" "$out" run desktop-a 212026 "$minutes"
 else
   node "$stage/stage.mjs" "$candidate" "$candidate_sha" none "$out/vcandidate"
   # Verify again immediately before requesting the exclusive slots.

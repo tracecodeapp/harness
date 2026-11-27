@@ -28,6 +28,34 @@ The launch cwd replay deletes only the `cd "$stage"` line immediately after
 `ed1f73b1` and `b28d6ddd` on separate branches. Run each replay from the
 AgentRunner login directory with fresh output.
 
+### Desktop Chromium session bus
+
+The 0.22 desktop Chromium launch drops `DBUS_SESSION_BUS_ADDRESS` and
+`XDG_RUNTIME_DIR` from the browser's environment, matching the capped phone
+launch. The driver keeps its environment so the self-test can list root's
+Chromium scopes before launch and after close.
+
+The self-test opens a desktop page, obtains the browser PID over CDP, and
+walks its live descendants by parent PID. It fails if any of those PIDs is
+under `user@0.service`. The cgroup paths and the two informational scope
+listings are in `desktop-leak.json`. A scope in a listing is attributed to
+the rig only when a rig PID's cgroup identifies that scope.
+
+Run the P27-G diagnostic with the published 0.21.0 tarball and a fresh
+output directory after checking the shared Harness job log:
+
+```sh
+HEAVY_JOB_LANE=h022-p27g nice -n 10 ionice -c3 /root/ci/bin/heavy bash "$checkout/reports/g8-candidates/session-022.sh" desktop-timing "$out" "$control_tarball"
+```
+
+Each language alternates between launches with and without the bus. Each
+trial opens a fresh page and warms its runtime before the Binary Search Run.
+The first two trials per arm are discarded. The remaining 20 per arm use
+the rig's one-minute load limit of 2.0 and require a successful Run and
+first-case trace. The pinned package returns verdicts and firstTrace in the
+same response. See `desktop-timing-samples.jsonl` for trial outcomes and
+`desktop-timing.json` for medians, no-bus/bus ratios, and undecided cells.
+
 ## Approved window
 
 The coordinator names the exclusive window. Pass the self-test receipt for

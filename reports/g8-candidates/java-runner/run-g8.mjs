@@ -133,10 +133,13 @@ const ordinaryPreflight = process.env.SPEED_G8_PREFLIGHT_ORDINARY === '1';
 const rig022 = process.env.SPEED_RIG_022_OPERATION;
 const selftest022 = rig022 === 'selftest';
 const measured022 = rig022 === 'window';
+const desktopTiming022 = rig022 === 'desktop-timing';
 // The 0.22 rig runs CPU-4 groups in a cgroup-capped Chromium; older modes keep the CDP throttle.
 const cappedPhone022 = Boolean(rig022);
-assert.ok(rig022 === undefined || selftest022 || measured022, 'Unknown 0.22 operation');
+assert.ok(rig022 === undefined || selftest022 || measured022 || desktopTiming022, 'Unknown 0.22 operation');
 if (measured022) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'Exclusive window required');
+if (desktopTiming022) assert.ok(mode === 'run' && windowName === 'desktop-a' && !ordinaryPreflight,
+  'Desktop bus timing requires the normal desktop load gate');
 const { heavyCases022, heavyFixture022, production022, selftestPlan022, windowPlan022 } =
   rig022 ? await import('../plan-022.mjs') : {};
 const { assertLessonPromotion022 } = selftest022 ? await import('../csharp-lesson-selftest-022.mjs') : {};
@@ -216,7 +219,7 @@ const csharpWarmSubmitControl = liveControl && !finalRelease && testedLanguage =
 const isLiveWitnessControl = (version, language) => liveControl &&
   (version === '0.17.1' || csharpWarmSubmitControl && language === 'csharp' &&
     version === '0.20.1');
-const versions = selftest022 ? [production022.version] : measured022
+const versions = selftest022 || desktopTiming022 ? [production022.version] : measured022
   ? [production022.version, ...candidateVersions] :
   phoneWarmAa ? phoneWarmAaVersions : submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? [...liveControlVersions(candidateVersions),
@@ -585,6 +588,7 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (desktopTiming022) return [];
   if (selftest022) {
     const groups = selftestPlan022();
     // Fail on the exact lesson path before the longer cross-language matrix.
@@ -696,10 +700,11 @@ function checkDeadline() {
   if (Date.now() >= deadline) throw new Error('Host window elapsed');
 }
 
+const maxLoad = 2;
 async function waitForQuiet() {
   checkDeadline();
   if (mode === 'smoke' || ordinaryPreflight) return;
-  while (loadavg()[0] > 2) {
+  while (loadavg()[0] > maxLoad) {
     checkDeadline();
     await delay(5_000);
   }
@@ -756,7 +761,7 @@ if (inventoryOnly) {
 }
 const report = {
   schema: 'tracecode.speed-baseline.v1',
-  mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: 2, appRefs, schedule,
+  mode, window: mode === 'smoke' ? 'smoke' : windowName, cpu: selectedCpu, seed, start: now(), runMinutes, loadThreshold: maxLoad, appRefs, schedule,
   ...(staged && { candidateScope, ...(releaseVersion && { releaseVersion }),
     runnerCommit: runnerSourceCommit() }),
   ...(aaControl && { aaControl: { languages: aaLanguages, versions: aaVersions, interleavedPerRound: true } }),
@@ -836,6 +841,15 @@ const report = {
 };
 const save = () => writeFile(metadataPath, JSON.stringify(report, null, 2) + '\n');
 
+function launchDesktop({ withoutBus = Boolean(rig022) } = {}) {
+  const options = { channel: 'chromium', headless: true };
+  if (!withoutBus) return chromium.launch(options);
+  const env = { ...process.env };
+  delete env.DBUS_SESSION_BUS_ADDRESS;
+  delete env.XDG_RUNTIME_DIR;
+  return chromium.launch({ ...options, env });
+}
+
 try {
   if (!selftest022) await writeFile(samplesPath, '', { flag: 'wx' });
   const fixtures = await loadFixtures();
@@ -857,7 +871,7 @@ try {
     report.packages[version] = prepared[version].metadata;
   }
   if (desktopLeak) desktopLeakReceipt = { before: desktopLeak.chromiumUserUnits022() };
-  browser = await chromium.launch({ channel: 'chromium', headless: true });
+  browser = await launchDesktop();
   report.browser.version = browser.version();
   if (rig022 || staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
@@ -867,7 +881,7 @@ try {
       const page = await context.newPage();
       await page.goto('data:text/html,<title>Desktop Chromium cgroup check</title>');
       desktopLeakReceipt.live = await desktopLeak.desktopChromiumMembership022(browser);
-      assert.deepEqual(desktopLeakReceipt.live.leaks, [], 'Rig desktop Chromium entered root’s user manager');
+      assert.deepEqual(desktopLeakReceipt.live.leaks, [], "Rig desktop Chromium entered root's user manager");
     } finally {
       await context.close();
     }
@@ -881,6 +895,17 @@ try {
     report.phoneThrottle = phoneCap.receipt;
   }
   if (!selftest022) await save();
+  if (desktopTiming022) {
+    const { compareDesktopBus022 } = await import('../desktop-timing-022.mjs');
+    await compareDesktopBus022({
+      browser, launchWithBus: () => launchDesktop({ withoutBus: false }),
+      openPage: (context, group) => openPage(context, production022.version, prepared[production022.version].url, group),
+      fixtures: fixtures.data['binary-search'],
+      warm: (page) => bounded(page.evaluate(() => window.bench.warm()), 'Warmup'),
+      waitForQuiet, pressure, maxLoad, initial, outcome, refusal,
+      samplesPath, out, rigCommit: runnerSourceCommit(), production: production022,
+    });
+  }
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
     [version, await browser.newContext()])));
   const phoneContexts = phoneCap && Object.fromEntries(await Promise.all(versions.map(async (version) =>
@@ -997,7 +1022,7 @@ try {
             }
             checkDeadline();
             sample.beforeInitial = pressure();
-            if (mode === 'run' && !ordinaryPreflight && sample.beforeInitial.oneMinute > 2) {
+            if (mode === 'run' && !ordinaryPreflight && sample.beforeInitial.oneMinute > maxLoad) {
               sample.excluded = 'initial load > 2.0';
             } else {
               sample.initial = await initial(page, fixture, group.journey, group.state === 'cold');
@@ -1053,7 +1078,7 @@ try {
               }
               if (group.continuation && !sample.invalid && !sample.refusal) {
                 sample.beforeSecond = pressure();
-                if (mode === 'run' && !ordinaryPreflight && sample.beforeSecond.oneMinute > 2) {
+                if (mode === 'run' && !ordinaryPreflight && sample.beforeSecond.oneMinute > maxLoad) {
                   sample.excluded = 'continuation load > 2.0';
                 } else {
                   sample.second = await second(page, fixture.cases[1].id);
