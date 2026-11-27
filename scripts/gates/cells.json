@@ -260,7 +260,7 @@
     "command": "node scripts/gates/qualification.mjs ga cpp tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","packages/runtime-csharp/package.json","packages/runtime-csharp/src/**","packages/runtime-java/package.json","packages/runtime-java/src/**","packages/runtime-javascript/package.json","packages/runtime-javascript/src/**","packages/runtime-python/package.json","packages/runtime-python/src/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/cpp-*","tests/fixtures/cpp-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-cpp-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"appData":"manifest","interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"appData":"manifest","interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "ga-csharp",
@@ -268,7 +268,7 @@
     "command": "node scripts/gates/qualification.mjs ga csharp tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/package.json","packages/runtime-cpp/src/**","packages/runtime-csharp/**","packages/runtime-java/package.json","packages/runtime-java/src/**","packages/runtime-javascript/package.json","packages/runtime-javascript/src/**","packages/runtime-python/package.json","packages/runtime-python/src/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/csharp-*","tests/fixtures/csharp-*","tests/fixtures/csharp-worker/**","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/traceclr-*","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-csharp-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-*/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "ga-java",
@@ -276,7 +276,7 @@
     "command": "node scripts/gates/qualification.mjs ga java tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/package.json","packages/runtime-cpp/src/**","packages/runtime-csharp/package.json","packages/runtime-csharp/src/**","packages/runtime-java/**","packages/runtime-javascript/package.json","packages/runtime-javascript/src/**","packages/runtime-python/package.json","packages/runtime-python/src/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/java-*","tests/fixtures/java-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/tracejvm-*","tests/fixtures/tracekernel-tracejvm-*","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-java-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "ga-javascript",
@@ -284,7 +284,7 @@
     "command": "node scripts/gates/qualification.mjs ga javascript tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/package.json","packages/runtime-cpp/src/**","packages/runtime-csharp/package.json","packages/runtime-csharp/src/**","packages/runtime-java/package.json","packages/runtime-java/src/**","packages/runtime-javascript/**","packages/runtime-python/package.json","packages/runtime-python/src/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/javascript-*","tests/fixtures/javascript-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/helpers/javascript-*","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-javascript-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "ga-python",
@@ -292,7 +292,7 @@
     "command": "node scripts/gates/qualification.mjs ga python tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/package.json","packages/runtime-cpp/src/**","packages/runtime-csharp/package.json","packages/runtime-csharp/src/**","packages/runtime-java/package.json","packages/runtime-java/src/**","packages/runtime-javascript/package.json","packages/runtime-javascript/src/**","packages/runtime-python-native/**","packages/runtime-python/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/python-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/pyodide-*","tests/fixtures/python-*","tests/fixtures/python-*/**","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-python-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "ga-typescript",
@@ -300,7 +300,7 @@
     "command": "node scripts/gates/qualification.mjs ga typescript tests/stage1-gates/run.mjs",
     "host": "agentrunner",
     "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/package.json","packages/runtime-cpp/src/**","packages/runtime-csharp/package.json","packages/runtime-csharp/src/**","packages/runtime-java/package.json","packages/runtime-java/src/**","packages/runtime-javascript/**","packages/runtime-python/package.json","packages/runtime-python/src/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/gates/qualification.mjs","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/untraced-host-history.browser.ts","tests/conformance/javascript-*","tests/conformance/typescript-*","tests/fixtures/javascript-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/typescript-*","tests/helpers/javascript-*","tests/stage1-gates/**","tests/stage1-gates/run.mjs","tests/test-typescript-*","toolchains/csharp/**","workers/**","workers/cpp/**","workers/csharp/**","workers/java/**","workers/javascript/**","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/typescript/**","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g1-g6","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/ga-judged-byte-limit","candidateTarball":true,"interpreters":["bash","node","python","python3","sh"]}
   },
   {
     "id": "gb-cpp",
