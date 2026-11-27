@@ -1,6 +1,5 @@
 #!/usr/bin/env npx tsx
 
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   mkdtemp,
@@ -16,6 +15,7 @@ import { chromium } from 'playwright';
 import { classifyCppExceptionUse } from '../workers/cpp/cpp-exceptions.js';
 import { loadEngineRuntimePackages } from '../scripts/runtime-package-assets.mjs';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { startPythonFileServer } from './helpers/python-file-server';
 import { cppExceptionOracleCases } from './fixtures/cpp-exception-cases';
 import cppProjectDiagnostics from './fixtures/cpp-project-diagnostics.json';
 import cppProjectFileIdentity from './fixtures/cpp-project-file-identity.json';
@@ -140,22 +140,7 @@ async function main(): Promise<void> {
     'utf8'
   );
 
-  const server = spawn('python3', ['-c', [
-    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
-    'import os',
-    'class Handler(SimpleHTTPRequestHandler):',
-    '    extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".hpp": "text/plain"}',
-    '    def end_headers(self):',
-    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
-    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
-    '        self.send_header("Cache-Control", "no-cache")',
-    '        super().end_headers()',
-    `os.chdir(${JSON.stringify(tempRoot)})`,
-    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
-  ].join('\n')], {
-    cwd: root,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const server = startPythonFileServer(tempRoot, port, { noCache: true, serveCppHeadersAsText: true });
 
   const browser = await chromium.launch({ headless: true });
   try {

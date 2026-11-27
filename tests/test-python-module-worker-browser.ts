@@ -1,12 +1,12 @@
 #!/usr/bin/env npx tsx
 
 import { test } from 'node:test';
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { startPythonFileServer } from './helpers/python-file-server';
 
 interface ModuleSmokeResult {
   initMs: number;
@@ -35,20 +35,7 @@ async function main(): Promise<void> {
   );
   await writeFile(join(tempRoot, 'index.html'), '<!doctype html><title>Python module worker smoke</title>', 'utf8');
 
-  const server = spawn('python3', ['-c', [
-    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
-    'import os',
-    'class Handler(SimpleHTTPRequestHandler):',
-    '    def end_headers(self):',
-    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
-    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
-    '        super().end_headers()',
-    `os.chdir(${JSON.stringify(tempRoot)})`,
-    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
-  ].join('\n')], {
-    cwd: tempRoot,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const server = startPythonFileServer(tempRoot, port);
   const browser = await chromium.launch({ headless: true });
   try {
     await waitForHttp(origin, 30_000);
