@@ -32,6 +32,12 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Changed
 
+- `BrowserJudgeHost` now rejects a typed Judge failure as the error itself.
+  A plan error (a bad `drawingDelivery`, tracing selection or continuation
+  selection, or an invalid bundle) rejects as `JudgePlanError`, and an
+  infrastructure failure as `JudgeInfrastructureError`, with the same
+  message. 0.21 wrapped them in Effect's `FiberFailure`, so `instanceof`
+  matched a disposed handle's `JudgePlanError` but not the others.
 - The idle lease of a retained interactive execution
   (`interactiveExecutionIdleTimeoutMs`) is now also paused by an observer
   attempt that has not settled. It arms only once every attempt has settled
