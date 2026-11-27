@@ -106,7 +106,7 @@ export function assertLayout022(slice = phoneCap022.slice) {
   return path;
 }
 
-function readProc(pid, file) {
+export function readProc(pid, file) {
   try {
     return readFileSync(`/proc/${pid}/${file}`);
   } catch (error) {
@@ -116,7 +116,7 @@ function readProc(pid, file) {
 }
 
 // Fields after "pid (comm) ": [0] is the state, [1] the parent PID, [19] the start time.
-function statFields(pid) {
+export function statFields(pid) {
   const stat = readProc(pid, 'stat')?.toString('utf8');
   return stat && stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
 }
@@ -185,7 +185,7 @@ function readMembership(cgroup, chromiumDir, requireRenderer) {
   return { cgroup, at: new Date().toISOString(), processes, threads, descendantsOutside: outside };
 }
 
-function descendants(root) {
+export function descendants(root) {
   const children = new Map();
   for (const name of readdirSync('/proc')) {
     if (!/^\d+$/u.test(name)) continue;

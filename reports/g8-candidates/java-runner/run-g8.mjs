@@ -140,6 +140,7 @@ if (measured022) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'Exclusiv
 const { heavyCases022, heavyFixture022, production022, selftestPlan022, windowPlan022 } =
   rig022 ? await import('../plan-022.mjs') : {};
 const { assertLessonPromotion022 } = selftest022 ? await import('../csharp-lesson-selftest-022.mjs') : {};
+const desktopLeak = selftest022 ? await import('../desktop-leak-022.mjs') : undefined;
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -717,6 +718,7 @@ function addressedBySample(sample) {
 
 const prepared = {};
 let browser;
+let desktopLeakReceipt;
 let phoneCap;
 const fullSchedule = plan();
 const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
@@ -854,10 +856,22 @@ try {
     assertExactHistoricalPackage(version, prepared[version].metadata);
     report.packages[version] = prepared[version].metadata;
   }
+  if (desktopLeak) desktopLeakReceipt = { before: desktopLeak.chromiumUserUnits022() };
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   report.browser.version = browser.version();
   if (rig022 || staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
+  if (desktopLeak) {
+    const context = await browser.newContext();
+    try {
+      const page = await context.newPage();
+      await page.goto('data:text/html,<title>Desktop Chromium cgroup check</title>');
+      desktopLeakReceipt.live = await desktopLeak.desktopChromiumMembership022(browser);
+      assert.deepEqual(desktopLeakReceipt.live.leaks, [], 'Rig desktop Chromium entered root’s user manager');
+    } finally {
+      await context.close();
+    }
+  }
   if (cappedPhone022 && schedule.some(({ cpu }) => cpu !== 1)) {
     phoneCap = await launchCapped022(chromium, {
       runId: process.env.SPEED_RIG_022_CGROUP_RUN ?? newRunId022(), workDir: out,
@@ -1173,10 +1187,18 @@ try {
   try {
     if (!selftest022) await save();
   } finally {
-    await browser?.close();
-    for (const { server } of new Set(Object.values(prepared))) {
-      server.close();
-      server.closeAllConnections();
+    try {
+      await browser?.close();
+      if (desktopLeakReceipt) {
+        desktopLeakReceipt.after = desktopLeak.chromiumUserUnits022();
+        await writeFile(join(out, 'desktop-leak.json'), JSON.stringify(desktopLeakReceipt, null, 2) + '\n', { flag: 'wx' });
+        console.log(JSON.stringify({ kind: 'desktop-leak', ...desktopLeakReceipt }));
+      }
+    } finally {
+      for (const { server } of new Set(Object.values(prepared))) {
+        server.close();
+        server.closeAllConnections();
+      }
     }
   }
 }
