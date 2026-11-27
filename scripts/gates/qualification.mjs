@@ -11,16 +11,19 @@ function command(bin, args, options = {}) {
   execFileSync(bin, args, { stdio: 'inherit', ...options });
 }
 
-function runW(language, runner, gateHead, output) {
+function runW(language, runner, gateHead, output, fixtureOnly) {
   const support = 'scripts/untraced-host-history.browser.ts';
   for (const file of [runner, support]) writeFileSync(file, git('show', gateHead + ':' + file));
-  command('pnpm', installArgs);
-  command('pnpm', ['build:tracekernel']);
+  if (!fixtureOnly) {
+    command('pnpm', installArgs);
+    command('pnpm', ['build:tracekernel']);
+  }
   command('pnpm', ['exec', 'tsx', '--tsconfig', 'tsconfig.base.json', runner, language], {
     env: {
       ...process.env,
       TRACECODE_HOST_HISTORY_PROFILE: 'both',
-      TRACECODE_HOST_HISTORY_APP_DATA: process.env.GATE_APP_DATA,
+      TRACECODE_HOST_HISTORY_FIXTURE_ONLY: fixtureOnly ? '1' : '0',
+      ...(!fixtureOnly ? { TRACECODE_HOST_HISTORY_APP_DATA: process.env.GATE_APP_DATA } : {}),
       TRACECODE_HOST_HISTORY_REPORT: join(output, 'host-history.json'),
     },
   });
@@ -76,7 +79,7 @@ try {
   const [, , gate, language, runner] = process.argv;
   const { GATE_BRANCH_HEAD: gateHead, GATE_OUTPUT: output } = process.env;
   if (!gateHead || !output) throw new Error('Run this qualification cell with scripts/gates/run-cell.sh.');
-  if (gate === 'w') runW(language, runner, gateHead, output);
+  if (gate === 'w' || gate === 'w-ci') runW(language, runner, gateHead, output, gate === 'w-ci');
   else if (gate === 'ga' || gate === 'gb') runPacked(gate, language, runner, gateHead, output);
   else throw new Error(`Unknown qualification gate ${gate}.`);
 } catch (error) {

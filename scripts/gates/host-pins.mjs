@@ -9,6 +9,7 @@ import { packageInputs } from './package-inputs.mjs';
 const allowed = [
   'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
   'COREPACK_HOME', 'PNPM_HOME', 'JAVA_HOME', 'DOTNET_ROOT', 'DOTNET_ROOT_X64',
+  'PLAYWRIGHT_BROWSERS_PATH',
 ];
 
 export function allowedEnvironment(source = process.env) {
@@ -50,8 +51,8 @@ export function sha256(file) {
   return execFileSync('sha256sum', ['--', file], { encoding: 'utf8' }).match(/[a-f0-9]{64}/)[0];
 }
 
-function requiredPath(variable, kind) {
-  const name = process.env[variable];
+function requiredPath(variable, kind, fallback) {
+  const name = process.env[variable] ?? fallback;
   if (!name || !existsSync(name) || !statSync(name)[kind]()) {
     throw new Error(`Set ${variable} to the pinned external ${kind === 'isFile' ? 'file' : 'directory'}.`);
   }
@@ -92,7 +93,9 @@ export function hostInputs(cell) {
   }
   if (cell.pins.appData) {
     const directory = cell.pins.appData === 'catalog';
-    inputs.GATE_APP_DATA = requiredPath('GATE_APP_DATA', directory ? 'isDirectory' : 'isFile');
+    const variable = directory ? 'GATE_APP_CATALOG' : 'GATE_APP_MANIFEST';
+    inputs.GATE_APP_DATA = requiredPath(variable, directory ? 'isDirectory' : 'isFile', process.env.GATE_APP_DATA);
+    inputs[variable] = inputs.GATE_APP_DATA;
     if (directory) {
       const catalog = inputs.GATE_APP_DATA;
       const problems = treeDigest(join(catalog, 'problems'));

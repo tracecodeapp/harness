@@ -4,16 +4,37 @@ Find the cell ID, command, and host in [the inventory](../scripts/gates/cells.js
 Use the declared host. On AgentRunner, run from a checkout with the candidate
 commit and any named qualification refs available locally.
 
+For a PR, list the selected cells and run them on their declared hosts, plus
+the `canary`. Always run the canary against the landed commit.
+Selection uses the union of the inventories in the compared commits.
+If neither historical commit contains an inventory, put the same reviewed
+inventory into both disposable replay snapshots before running the selector.
+
 ```bash
+node scripts/gates/select.mjs --base <base> --head <head>
 HEAVY_JOB_LANE=h022-<lane> bash scripts/gates/run-cell.sh <cell> --rev <commit>
+HEAVY_JOB_LANE=h022-<lane> bash scripts/gates/run-cell.sh canary --rev <landing> --force
 node scripts/gates/job-report.mjs --since 2026-11-27T00:00:00Z --lane-prefix h022-
 ```
+
+For a release candidate, run `candidate-all`. Print the complete plan first,
+then run each partition once against the same revision.
+
+```bash
+node scripts/gates/candidate-all.mjs --rev <commit>
+node scripts/gates/candidate-all.mjs --rev <commit> --host <agentrunner|ci|laptop-unit>
+```
+
+On CI and laptop-unit, use a clean disposable checkout at the candidate
+revision with the locked dependencies installed. CI also needs Chromium and
+its system dependencies, as in `.github/workflows/ci.yml`. The AgentRunner
+partition uses `run-cell.sh` and waits outside `heavy` when both slots are busy.
 
 Set `PLAYWRIGHT_BROWSERS_PATH` if the cell uses a provisioned browser cache.
 GA and GB require `GATE_CANDIDATE_TARBALL` and `GATE_MUX_SOURCE`. Point them at
 the exact candidate archive and the staged, pinned mux adapter directory.
-GA C++ also needs `GATE_APP_DATA` set to the staged app manifest file.
-For W on AgentRunner, point `GATE_APP_DATA` at the staged catalog directory.
+GA C++ needs `GATE_APP_MANIFEST` set to the staged app manifest file.
+For W on AgentRunner, point `GATE_APP_CATALOG` at the staged catalog directory.
 Keep these artifacts outside the checkout.
 
 The runner creates a fresh detached worktree, checks for a cached pass, and
@@ -54,10 +75,27 @@ outside the list select every cell.
 | `noCell` glob | Reason |
 | --- | --- |
 | `**/*.md` | Prose changes, including `AGENTS.md` and `CONTRIBUTING.md`, need a gate only when a cell consumes them or when they are fixtures. |
+| `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |
 | `benchmarks/**` | Benchmark scripts run separately unless a cell declares an input there. |
 | `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
 | `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
 | `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
 | `runtime-assets.lock.json` | Untracked since PR #119. `pnpm build` generates it and CI's `test:runtime-assets-lock` checks it. Worker, engine, and C# role inputs select the affected cells. |
 | `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
-| `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |
+
+### Expected selections for 0.21 PRs
+
+Compare each merge commit with its first parent. Language groups use the
+inventory's `language` field. The broad-input groups below use the listed
+patterns as literal inventory entries.
+
+| PR | Merge | Expected selection |
+| --- | --- | --- |
+| #110, Python project paths | `c3812a36` | All cells due to TraceKernel's workspace language dispatch. |
+| #111, JS and TS stack frames | `895fa84f` | JS and TS cells, their joint checks `js-runtime` and the four `javascript-project-stack-frames*` and `javascript-trace-compile*` cells, plus `project-browser` because its script changed. |
+| #108, C# conditional compilation | `1798d4ab` | All cells due to `packages/runtime-contracts/src/runtime-calls.ts`. |
+| #113, terminal output routing | `482de135` | All cells due to TraceKernel's shared shell and workspace changes and the shared pnpm lock. |
+| #103, judged output policy | `773c8ca9` | All cells due to shared changes in `src/**` and `packages/runtime-contracts/**`. |
+| #109, Java judged output | `7816c6a7` | Java cells plus cells with `packages/**`, `workers/**`, or `tests/**` inputs, since this change updates Java source, workers, and fixtures. |
+| #102, C++ compiler order | `a21de2bc` | C++ cells plus cells with `packages/**` or `tests/**` inputs, since this change updates a compiler service and its test. The script edit belongs to `cpp-prepared-lifecycle`. |
+| #97, C# observer prestart | `348bb196` | C# cells plus cells with `packages/**` or `tests/**` inputs, since this change updates the C# provider and its tests. The script edit belongs to `csharp-runtime`. |
