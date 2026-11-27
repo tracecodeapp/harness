@@ -47,8 +47,9 @@ export async function openJudge() {
         pass,
         compileReceipt: Number.isFinite(compileMs),
         caseReceipt: Number.isFinite(caseMs),
+        ...(sample && { totalMs }),
         ...(sample && phasesAvailable && {
-          totalMs, compileMs, caseMs, outsideMs: totalMs - compileMs - caseMs,
+          compileMs, caseMs, outsideMs: totalMs - compileMs - caseMs,
         }),
       };
     },

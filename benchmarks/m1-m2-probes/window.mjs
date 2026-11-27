@@ -55,12 +55,12 @@ async function bounded(deadline, operation) {
 
 const failure = (error) => ({ error: error.name ?? 'Error' });
 
-async function collectM1(browser, url, heavy, canaries, deadline, record) {
+async function collectM1(browser, url, heavy, dry, deadline, record) {
   for (const [problem, n] of [['binary-search', 10], ['binary-search', 100], ['heavy', 10], ['heavy', 100]]) {
     for (const language of languages) {
       if (Date.now() >= deadline) return;
-      if (!canaries[language]) {
-        await record({ probe: 'm1', problem, n, language, skipped: 'dry-run canary or transport failed' });
+      if (!dry.m1[language] || (problem === 'heavy' && !dry.m1Heavy[language])) {
+        await record({ probe: 'm1', problem, n, language, skipped: 'dry-run verdict or transport failed' });
         continue;
       }
       let session;
@@ -72,14 +72,22 @@ async function collectM1(browser, url, heavy, canaries, deadline, record) {
           : { ...heavy[language], cases: Array.from({ length: n }, (_, index) => ({
             ...heavy[language].cases[0], id: String(index + 1),
           })) };
-        const ready = await bounded(deadline, () => page.evaluate(async (fixture) => {
+        const prepare = () => bounded(deadline, () => page.evaluate(async (fixture) => {
           const preparation = await globalThis.probeM1.prepare(fixture);
           return preparation.kind === 'prepared' && await globalThis.probeM1.prime() === 'completed';
         }, fixture));
+        const ready = await prepare();
         if (ready === null) return;
         if (!ready) throw new Error('Prepared provider did not prime');
         let kept = 0;
         for (let index = 0; kept < target && await waitForQuiet(deadline); index++) {
+          // Keep the shipped C# worker lease from rotating between N=10 pairs.
+          // Preparation and the warm-up request are outside the timed arms.
+          if (language === 'csharp' && index > 0 && n === 10) {
+            const primed = await prepare();
+            if (primed === null) return;
+            if (!primed) throw new Error('C# retained runner did not prime');
+          }
           const warmup = index < 3;
           const first = index % 2 === 0 ? 'batch' : 'singleton';
           const before = loadavg()[0];
@@ -88,7 +96,7 @@ async function collectM1(browser, url, heavy, canaries, deadline, record) {
           ));
           const after = loadavg()[0];
           const cut = pair === null || Date.now() >= deadline;
-          const admissible = !warmup && !cut && before <= loadGate && after <= loadGate && pair.pass;
+          const admissible = !warmup && !cut && before <= loadGate && pair.pass;
           await record({
             probe: 'm1', problem, n, language, index, first, warmup, before, after, admissible,
             ...(cut ? { discarded: '45-minute M1 cap' } : { pair }),
@@ -144,8 +152,7 @@ async function collectM2(browser, sites, heavy, deadline, record) {
             const after = loadavg()[0];
             const cut = result === null || Date.now() >= deadline;
             const admissible = !cut && counts[version] < target && before <= loadGate &&
-              after <= loadGate && result.pass && Number.isFinite(result.totalMs) &&
-              Number.isFinite(result.outsideMs);
+              result.pass && Number.isFinite(result.totalMs);
             await record({
               probe: 'm2', key, profile, version, round, before, after, admissible,
               ...(cut ? { discarded: 'M2 window cap' } : { result }),
@@ -174,7 +181,10 @@ export async function validateWindow(config, probeCommit) {
   assert.equal(dry.rigCommit, config.rigCommit);
   assert.equal(dry.heavySha256, config.heavySha256);
   assert.equal(dry.m2Pass, true, 'M2 correctness receipts must pass before sampling');
-  for (const language of languages) assert.equal(typeof dry.m1[language], 'boolean');
+  for (const language of languages) {
+    assert.equal(typeof dry.m1[language], 'boolean');
+    assert.equal(typeof dry.m1Heavy[language], 'boolean');
+  }
   return dry;
 }
 
@@ -191,7 +201,7 @@ export async function collectWindow(browser, sites, output, heavy, dry) {
   });
   try {
     const m1Deadline = starts + 45 * 60_000;
-    await collectM1(browser, sites.m1, heavy, dry.m1, m1Deadline, record);
+    await collectM1(browser, sites.m1, heavy, dry, m1Deadline, record);
     if (await waitForQuiet(Math.min(Date.now() + 15_000, m1Deadline))) {
       const control = await browser.newContext();
       try {

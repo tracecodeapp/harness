@@ -146,6 +146,7 @@ async function dryM2(browser, heavy, sites) {
 async function dryM1(browser, heavy, site) {
   const { server, url } = await serve(site);
   const passed = Object.fromEntries(languages.map((language) => [language, false]));
+  const heavyPassed = { ...passed };
   try {
     for (const language of languages) {
       let context;
@@ -168,9 +169,11 @@ async function dryM1(browser, heavy, site) {
               await page.evaluate(() => globalThis.probeM1.pair('batch', false, true));
             const transport = pair && checkTransport(language, fixture.cases.length, pair);
             console.log(JSON.stringify({ probe: 'm1', language, kind, preparation, prime, pair, transport }));
-            allPassed &&= Boolean(pair?.pass && transport?.pass);
+            const ok = Boolean(pair?.pass && transport?.pass);
+            if (kind === 'p0c-heavy') heavyPassed[language] = ok;
+            else allPassed &&= ok;
           } catch (error) {
-            allPassed = false;
+            if (kind !== 'p0c-heavy') allPassed = false;
             console.log(JSON.stringify({ probe: 'm1', language, kind, error: error.name, message: error.message }));
           }
         }
@@ -184,11 +187,11 @@ async function dryM1(browser, heavy, site) {
   } finally {
     server.close();
   }
-  return passed;
+  return { passed, heavyPassed };
 }
 
 const executionVerbs = {
-  python: ['execute-prepared-program-batch', 'execute-prepared-program'],
+  python: ['execute-prepared-program-batch', 'execute-prepared-program-batch'],
   javascript: ['execute-batch', 'execute-batch'],
   typescript: ['execute-batch', 'execute-batch'],
   java: ['execute-prepared-runtime-program-batch', 'execute-prepared-runtime-program'],
@@ -198,14 +201,14 @@ const executionVerbs = {
 
 function checkTransport(language, count, pair) {
   const [batchVerb, singletonVerb] = executionVerbs[language];
-  const executionOnly = (arm) => arm.transport.filter(({ type }) =>
-    type === batchVerb || type === singletonVerb);
+  const executionOnly = (arm) => arm.transport.filter(({ type, mode }) =>
+    mode !== 'trace' && (type === batchVerb || type === singletonVerb));
   const batch = executionOnly(pair.batch);
   const singleton = executionOnly(pair.singleton);
   const warmWorkerIds = new Set([...batch, ...singleton].map(({ worker }) => worker));
   const pass = batch.length === 1 && batch.every(({ type }) => type === batchVerb) &&
     singleton.length === count && singleton.every(({ type }) => type === singletonVerb) &&
-    (!['csharp', 'cpp'].includes(language) || warmWorkerIds.size === 1);
+    warmWorkerIds.size === 1;
   return { pass, batch: batch.length, singleton: singleton.length, workers: warmWorkerIds.size };
 }
 
@@ -247,9 +250,10 @@ try {
     const m2Pass = mode === 'm1-dry' ? null : await dryM2(browser, heavy, sites);
     await writeFile(join(out, 'dry-receipt.json'), JSON.stringify({
       job: process.env.HEAVY_JOBLOG_ID, browser: browser.version(), probeCommit,
-      rigCommit: config.rigCommit ?? null, heavySha256: heavy ? config.heavySha256 : null, m1, m2Pass,
+      rigCommit: config.rigCommit ?? null, heavySha256: heavy ? config.heavySha256 : null,
+      m1: m1?.passed ?? null, m1Heavy: m1?.heavyPassed ?? null, m2Pass,
     }) + '\n');
-    complete = m2Pass !== false && (!m1 || Object.values(m1).every(Boolean));
+    complete = m2Pass !== false && (!m1 || Object.values(m1.passed).every(Boolean));
   }
 } finally {
   await browser.close();

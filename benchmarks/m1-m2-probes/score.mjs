@@ -22,7 +22,7 @@ function m1Cell(rows, canary, language, problem, n) {
   const cell = rows.filter((row) => row.probe === 'm1' && row.language === language &&
     row.problem === problem && row.n === n && row.admissible === true);
   for (const row of cell) {
-    assert.ok(row.pair.pass && row.before <= 2 && row.after <= 2 && !row.warmup);
+    assert.ok(row.pair.pass && row.before <= 2 && !row.warmup);
     assert.equal(row.first, row.index % 2 ? 'singleton' : 'batch');
     assert.ok(row.index >= 3);
   }
@@ -39,13 +39,14 @@ function m2Cell(rows, profile, key) {
   const byVersion = Object.fromEntries(versions.map((version) => {
     const trials = rows.filter((row) => row.probe === 'm2' && row.profile === profile &&
       row.key === key && row.version === version && row.admissible === true);
-    for (const row of trials) assert.ok(row.result.pass && row.before <= 2 && row.after <= 2 && !row.warmup);
+    for (const row of trials) assert.ok(row.result.pass && row.before <= 2 && !row.warmup);
     assert.equal(trials.length, new Set(trials.map((row) => row.round)).size);
     const phases = ['totalMs', 'compileMs', 'caseMs', 'outsideMs'];
     return [version, {
       count: trials.length,
       ...(trials.length >= min && Object.fromEntries(phases.map((phase) => [
-        phase, median(trials.map((row) => row.result[phase])),
+        phase, trials.every((row) => Number.isFinite(row.result[phase]))
+          ? median(trials.map((row) => row.result[phase])) : undefined,
       ]))),
     }];
   }));

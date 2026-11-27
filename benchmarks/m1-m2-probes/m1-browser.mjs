@@ -31,12 +31,13 @@ export function openM1(language) {
   const host = probeHost({ assetBaseUrl: '/workers', providers: [language] });
   const transport = [];
   const workerIds = new WeakMap();
+  let nextWorkerId = 0;
   const post = Worker.prototype.postMessage;
   let observe = false;
   Worker.prototype.postMessage = function (message, ...args) {
     if (observe && typeof message?.type === 'string') {
-      if (!workerIds.has(this)) workerIds.set(this, transport.length);
-      transport.push({ type: message.type, worker: workerIds.get(this) });
+      if (!workerIds.has(this)) workerIds.set(this, nextWorkerId++);
+      transport.push({ type: message.type, worker: workerIds.get(this), mode: message.payload?.prepared?.mode });
     }
     return post.call(this, message, ...args);
   };
@@ -80,7 +81,9 @@ export function openM1(language) {
         try {
           let outputs;
           if (arm === 'batch') {
-            outputs = await program.executeBatchIsolated({ inputBatch: inputs, limits });
+            outputs = await program.executeBatchIsolated({
+              inputBatch: inputs, limits, ...(language === 'python' && { stopAtFirstRunaway: true }),
+            });
           } else {
             outputs = [];
             for (const input of inputs) outputs.push(await program.executeIsolated({ inputs: input, limits }));
