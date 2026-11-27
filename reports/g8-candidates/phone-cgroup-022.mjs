@@ -320,7 +320,11 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions,
       async remove() {
         if (removed) return removed;
         await browser.close().catch(() => {});
-        const removal = await removeUnit022(unit);
+        // R6: the exit path always kills the scope, even when the browser has already emptied it.
+        const kill = systemctl(['kill', '--signal=SIGKILL', unit], { allowFailure: true });
+        const exitKill = { command: `systemctl kill --signal=SIGKILL ${unit}`, status: kill.status,
+          ...(kill.status !== 0 && { stderr: kill.stderr.trim() }) };
+        const removal = { ...await removeUnit022(unit), exitKill };
         const after = snapshotPath022(slice);
         assert.deepEqual(after, before, 'A pre-existing cgroup differs after the run');
         removed = { ...removal, snapshotAfter: after, snapshotsIdentical: true,
