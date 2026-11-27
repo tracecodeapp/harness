@@ -11,6 +11,7 @@ import { observeDeferred } from './deferred-browser.mjs';
 import { installJudgeBridge, schedulerInjection, serviceDeadlineRoute } from './gb-probe.mjs';
 import { restoreTransferredTraceEvents } from '../../packages/runtime-browser/src/trace-event-transport.ts';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../packages/runtime-contracts/src/trace-adapters/java.ts';
+import { RUNTIME_TRACE_SCHEMA_VERSION } from '../../packages/runtime-contracts/src/runtime-trace.ts';
 
 export { builtInProjectEvaluators, createAlgorithmJudgeBundle, createBrowserJudgeHost };
 export { resolveBuiltInTraceCCRuntimeManifest } from '@tracecode/harness/tracekernel';
@@ -89,7 +90,7 @@ function decodeJavaObservation(payload, maxPathDepth) {
 }
 
 export async function runDeferredFixture(fixture, scenario) {
-  const journal = installJournal(fixture, { decodeJavaObservation });
+  const journal = installJournal(fixture, { decodeJavaObservation, decodeCSharpObservation });
   const createHost = () => createBrowserJudgeHost({
     assetBaseUrl: '/workers', providers: [fixture.language],
     ...(fixture.language === 'cpp' ? { cpp: { executionTimeoutMs: 20000, tracingTimeoutMs: 20000 } } : {}),
@@ -116,6 +117,19 @@ export async function runDeferredFixture(fixture, scenario) {
   } finally {
     journal.restore();
   }
+}
+
+function decodeCSharpObservation(payload) {
+  const { observationStatus: status, reason, attemptedEvents, events } = restoreTransferredTraceEvents(payload);
+  if (status === 'refused') return { drawing: { status, reason } };
+  if (!Array.isArray(events)) return { drawing: null };
+  const trace = {
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+    events: events.map((event) => typeof event.file === 'string' && /(?:solution|UserCode)\.cs$/u.test(event.file)
+      ? { ...event, file: 'solution.cs' }
+      : event),
+  };
+  return { drawing: { status, reason, attemptedEvents, trace } };
 }
 
 export async function runFixture(fixture, options, onReceipt) {
