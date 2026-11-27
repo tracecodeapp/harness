@@ -13,7 +13,7 @@ import {
 } from '@tracecode/runtime-browser/internal';
 import { createCppPreparedExecutionProvider } from './cpp-prepared-provider';
 import { createCppObservationRegistration, createLegacyCppDrawingProducer } from './cpp-observation';
-import { CppWorkerClient } from './cpp-worker-client';
+import { CppWorkerClient, type CppWorkerClientOptions } from './cpp-worker-client';
 import {
   TraceCCCompilerService,
   type TraceCCCompilerShardAssets,
@@ -171,9 +171,12 @@ export function createCppBrowserRuntimeProvider(
             assets: context.assets,
             ...(workerFactory ? { workerFactory } : {}),
           });
-      const createWorkerClient = (role?: 'observer') => new CppWorkerClient({
+      const createWorkerClient = (
+        role?: 'observer',
+        waitForOrdinaryAdmission?: CppWorkerClientOptions['waitForOrdinaryAdmission'],
+      ) => new CppWorkerClient({
         ...workerOptions,
-        ...(compilerService ? { trustedCompilerService: compilerService, trustedCompilerRole: role } : {}),
+        ...(compilerService ? { trustedCompilerService: compilerService, trustedCompilerRole: role, waitForOrdinaryAdmission } : {}),
       });
       // Receipt evaluations request code mode. The scoped createJudge().evaluate
       // entry still uses the legacy trace binding until the direct-entry migration.
@@ -188,12 +191,17 @@ export function createCppBrowserRuntimeProvider(
         RuntimePreparedExecutionProvider
       >([['cpp', preparedProvider]]);
       const observer = createCppObservationRegistration(
-        createLegacyCppDrawingProducer({ createObserverWorkerClient: () => createWorkerClient('observer') }),
+        createLegacyCppDrawingProducer({
+          createObserverWorkerClient: (waitForOrdinaryAdmission) => createWorkerClient('observer', waitForOrdinaryAdmission),
+        }),
         {
           runtimeVersion: context.assets.runtimeManifests?.cpp?.runtimeVersion ?? `harness-${TRACECODE_HARNESS_VERSION}`,
           observationDeadlineMs: options.tracingTimeoutMs ?? 20_000,
           observationPrepareDeadlineMs: preparedProvider.lifecycleAllowanceMs,
-          ...(compilerService && { observationPreparationOrder: 'after-ordinary-compile' }),
+          ...(compilerService && {
+            observationCompileOrder: 'after-ordinary-compile',
+            overlapObservationWithInitialization: true,
+          }),
         }
       );
       const terminateCompiler = () => {

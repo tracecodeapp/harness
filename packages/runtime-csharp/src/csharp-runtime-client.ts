@@ -396,7 +396,7 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
           if (retainedRunner) release(retainedRunner);
           // The app waits for this disposal before starting its next Run.
           // The compiler owns artifact cleanup after the observer is fenced.
-          if (artifact) void compiler.disposePreparedProgram(artifact).catch(() => undefined);
+          if (artifact) void compiler.disposePreparedProgram(artifact, 'background').catch(() => undefined);
         });
         return disposal;
       },
@@ -687,7 +687,11 @@ export class CSharpRuntimeClient implements RuntimeClient, RuntimePreparedExecut
         await retainedFastRunnerTail;
         releaseRetainedFastRunner();
         if (ownedArtifact) {
-          await this.preparedCompiler.disposePreparedProgram(ownedArtifact);
+          const release = this.preparedCompiler.disposePreparedProgram(ownedArtifact);
+          // A shared compiler can still be inside another Run's companion
+          // compile. The host already owns the bytes and released the runner.
+          if (this.preparedAuthority) void release.catch(() => undefined);
+          else await release;
         }
       })();
       return disposePromise;

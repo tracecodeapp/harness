@@ -127,6 +127,7 @@ class StrictCompilerWorker {
 class LearnerWorker {
   static instances: LearnerWorker[] = [];
   static compileRequests = 0;
+  static beforeTraceCompileRequest: (() => void) | undefined;
 
   onmessage: MessageHandler = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -151,6 +152,7 @@ class LearnerWorker {
       return;
     }
     if (message.type === 'prepare-runtime-program') {
+      if (message.payload?.mode === 'trace') LearnerWorker.beforeTraceCompileRequest?.();
       LearnerWorker.compileRequests += 1;
       this.pendingPreparation = message;
       queueMicrotask(() => deliver(this.onmessage, {
@@ -204,6 +206,7 @@ function resetFakes(): void {
   StrictCompilerWorker.compiles.length = 0;
   LearnerWorker.instances = [];
   LearnerWorker.compileRequests = 0;
+  LearnerWorker.beforeTraceCompileRequest = undefined;
 }
 
 /**
@@ -302,7 +305,7 @@ function createCppJudge(lease: ReturnType<typeof createCppLease>) {
   return createBrowserJudgeHostFromRuntimeHost(runtime);
 }
 
-test('a cold C++ Judge Run reaches TraceCC before the drawing prepares', async (t) => {
+test('a cold joined C++ Run initializes its drawing runner before admission but reaches TraceCC with ordinary code first', async (t) => {
   resetFakes();
   StrictCompilerWorker.autoBoot = true;
   const phases: string[] = [];
@@ -323,6 +326,7 @@ test('a cold C++ Judge Run reaches TraceCC before the drawing prepares', async (
   const host = createCppJudge(createCppLease(routedWorkerFactory));
   const entered = Promise.withResolvers<void>();
   const ordinary = Promise.withResolvers<void>();
+  const drawingRunnerReady = Promise.withResolvers<void>();
   const startedDrawing = Promise.withResolvers<void>();
   const code = 'int echo(int value) { return value; }';
   try {
@@ -338,12 +342,13 @@ test('a cold C++ Judge Run reaches TraceCC before the drawing prepares', async (
       if (phases.includes('ordinary-case-started')) startedDrawing.resolve();
       else startedDrawing.reject(new Error('TraceCC observer prepared before ordinary case admission'));
     };
+    LearnerWorker.beforeTraceCompileRequest = drawingRunnerReady.resolve;
     void startedDrawing.promise.catch(() => {});
     const verdict = host.execute({
-      bundle, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] },
+      bundle, interactive: true, tracing: { caseIds: ['A'] },
     });
     void verdict.catch(() => {});
-    await beforeBarrier(entered.promise);
+    await beforeBarrier(Promise.all([entered.promise, drawingRunnerReady.promise]));
     assert.deepEqual(StrictCompilerWorker.compiles, [`code:${code}`]);
     ordinary.resolve();
     assert.equal((await verdict).evaluation.cases[0]?.verdict.kind, 'passed');
@@ -351,6 +356,52 @@ test('a cold C++ Judge Run reaches TraceCC before the drawing prepares', async (
     assert.deepEqual(StrictCompilerWorker.compiles, [`code:${code}`, `trace:${code}`]);
   } finally {
     ordinary.resolve();
+    host.dispose();
+  }
+});
+
+test('the C++ Judge provider preserves TraceCC when disposing a running drawing before a cache-miss Run', async () => {
+  resetFakes();
+  StrictCompilerWorker.autoBoot = true;
+  const host = createCppJudge(createCppLease(routedWorkerFactory));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const make = (id: string) => createAlgorithmJudgeBundle({
+    id: `cpp-observer-role-${id}`, language: 'cpp',
+    code: `int echo(int value) { /* ${id} */ return value; }`, functionName: 'echo',
+    cases: [{ id, input: { value: 7 }, expected: 7 }],
+  });
+  try {
+    const [a, b] = await Promise.all([make('A'), make('B')]);
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (!source.startsWith('trace:') || !source.includes('/* A */')) return;
+      entered.resolve();
+      return release.promise;
+    };
+    const first = await host.execute({
+      bundle: a, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] },
+    });
+    assert.ok(first.executionId);
+    await beforeBarrier(entered.promise);
+    const compiler = StrictCompilerWorker.instances[0]!;
+    const drawing = host.execute({ executionId: first.executionId, tracing: { caseIds: ['A'] } });
+    const rejectedDrawing = assert.rejects(drawing, { name: 'JudgePlanError' });
+    void rejectedDrawing.catch(() => undefined);
+    await beforeBarrier(host.disposeExecution(first.executionId));
+    const second = host.execute({ bundle: b, interactive: true, drawingDelivery: 'after-verdict' });
+    void second.catch(() => undefined);
+    await beforeBarrier(rejectedDrawing);
+    assert.equal(compiler.terminated, false);
+    assert.deepEqual(StrictCompilerWorker.compiles.map((source) => source.match(/^(code|trace):.*\/\* (.) \*\//)?.slice(1)),
+      [['code', 'A'], ['trace', 'A']]);
+    release.resolve();
+    assert.equal((await beforeBarrier(second)).evaluation.cases[0]?.verdict.kind, 'passed');
+    assert.deepEqual(StrictCompilerWorker.compiles.map((source) => source.match(/^(code|trace):.*\/\* (.) \*\//)?.slice(1)),
+      [['code', 'A'], ['trace', 'A'], ['code', 'B']]);
+    assert.deepEqual(StrictCompilerWorker.instances, [compiler]);
+    assert.equal(compiler.terminated, false);
+  } finally {
+    release.resolve();
     host.dispose();
   }
 });
@@ -375,7 +426,7 @@ test('a C++ drawing held in the TraceCC queue refuses at its preparation deadlin
     cases: [{ id, input: { value: 7 }, expected: 7 }],
   });
   try {
-    const [a, b] = await Promise.all([make('A'), make('B')]);
+    const [a, b, c] = await Promise.all([make('A'), make('B'), make('C')]);
     assert.equal((await host.evaluateAlgorithm({ bundle: b })).evaluation.cases[0]?.verdict.kind, 'passed');
     StrictCompilerWorker.beforeCompile = (source) => {
       if (!source.startsWith('trace:') || !source.includes('/* A */')) return;
@@ -392,7 +443,9 @@ test('a C++ drawing held in the TraceCC queue refuses at its preparation deadlin
     const attachment = drawing.evaluation.cases[0]?.attachment;
     assert.ok(attachment?.status === 'refused' && attachment.reason === 'observer-timeout');
     release.resolve();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    const sentinel = await host.execute({ bundle: c, interactive: true, tracing: { caseIds: ['C'] } });
+    assert.equal(sentinel.evaluation.cases[0]?.verdict.kind, 'passed');
+    assert.ok(StrictCompilerWorker.compiles.some((s) => s.startsWith('trace:') && s.includes('/* C */')));
     assert.equal(StrictCompilerWorker.compiles.some((s) => s.startsWith('trace:') && s.includes('/* B */')), false);
     assert.equal(StrictCompilerWorker.instances.length, 1);
     assert.equal(StrictCompilerWorker.instances[0]!.terminated, false);
@@ -459,9 +512,9 @@ test('disposing a running and a queued TraceCC observer drops both results witho
     assert.equal((await b).success, true);
     assert.equal(worker.terminated, false);
     assert.equal(StrictCompilerWorker.instances.length, 1);
-    assert.deepEqual(StrictCompilerWorker.compiles, ['A observer running', 'B ordinary']);
     const retry = await service.compileTrusted({ driverSource: 'A observer running' }, undefined, 'observer');
     assert.notEqual((retry.timings as { artifactCacheHit?: boolean }).artifactCacheHit, true);
+    assert.deepEqual(StrictCompilerWorker.compiles, ['A observer running', 'B ordinary', 'A observer running']);
   } finally {
     release.resolve();
     abortB.abort();

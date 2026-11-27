@@ -735,7 +735,7 @@ export class CSharpWorkerClient {
       const result = await prepare();
       if (observer && call.signal?.aborted) {
         if (result.success && result.compiledArtifactKey) {
-          void this.disposePreparedProgram({ compiledArtifactKey: result.compiledArtifactKey })
+          void this.disposePreparedProgram({ compiledArtifactKey: result.compiledArtifactKey }, 'background')
             .catch(() => undefined);
         }
         call.signal.throwIfAborted();
@@ -986,7 +986,8 @@ export class CSharpWorkerClient {
   }
 
   async disposePreparedProgram(
-    prepared: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>
+    { compiledArtifactKey }: Pick<CSharpPreparedProgramArtifact, 'compiledArtifactKey'>,
+    priority: 'foreground-cleanup' | 'background' = 'foreground-cleanup',
   ): Promise<void> {
     if (this.options.runtimeRole === 'compiler') {
       const session = this.core.currentSession;
@@ -999,7 +1000,7 @@ export class CSharpWorkerClient {
         reply = this.core.runClientEffect(
           this.core.sendMessageEffectWithOptions(
             'dispose-prepared-program',
-            { compiledArtifactKey: prepared.compiledArtifactKey },
+            { compiledArtifactKey },
             {
               onRequestRegistered: posted,
               validateLifecycle: () => {
@@ -1014,7 +1015,7 @@ export class CSharpWorkerClient {
         // must neither hold the compile queue nor close its session.
         void reply.then(posted, posted);
         await dispatched;
-      }, 'background');
+      }, priority);
       await reply;
       return;
     }
@@ -1023,7 +1024,7 @@ export class CSharpWorkerClient {
       await this.core.runClientEffect(
         this.sendCommandEffect<{ success: boolean }>(
           'dispose-prepared-program',
-          { compiledArtifactKey: prepared.compiledArtifactKey }
+          { compiledArtifactKey }
         )
       );
     });

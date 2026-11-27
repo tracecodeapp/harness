@@ -30,6 +30,7 @@ export interface CSharpBrowserRuntimeProviderOptions {
 }
 
 const FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS = 20_000;
+const STANDBY_ACQUIRE_BUDGET_MS = 75;
 const STANDBY_RETRY_INITIAL_DELAY_MS = 250;
 const STANDBY_RETRY_MAX_DELAY_MS = 5_000;
 const DEFAULT_PREPARED_BATCH_CONCURRENCY = 4;
@@ -295,11 +296,23 @@ export function createCSharpBrowserRuntimeProvider(
           };
         },
         async createRunner(tier: CSharpPreparedRunnerTier): Promise<CSharpWorkerClient> {
+          const epoch = capacityEpoch;
           if (tier === 'algorithm-fast' && !standbyRunner && standbyWarmup) {
-            await standbyWarmup.catch(() => undefined);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+              await Promise.race([
+                standbyWarmup.catch(() => undefined),
+                new Promise<void>((resolve) => { timer = setTimeout(resolve, STANDBY_ACQUIRE_BUDGET_MS); }),
+              ]);
+            } finally {
+              clearTimeout(timer);
+            }
           }
           if (disposed) {
             throw new Error('C# browser runtime provider has been disposed.');
+          }
+          if (epoch !== capacityEpoch) {
+            throw new Error('C# browser runtime provider was reset during runner acquisition.');
           }
           const runner = standbyRunner ?? createRunnerClient();
           if (runner === standbyRunner) standbyRunner = undefined;

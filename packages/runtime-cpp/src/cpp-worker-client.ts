@@ -149,6 +149,8 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   trustedCompilerService?: CppTrustedCompilerService;
   /** Assigned by the provider that owns this worker, never by a guest message. */
   trustedCompilerRole?: 'observer';
+  /** Lets an observer runner initialize before it may use the shared compiler. */
+  waitForOrdinaryAdmission?: (signal: AbortSignal) => Promise<void>;
 }
 
 interface PendingCompilerFrameRequest {
@@ -1031,6 +1033,10 @@ export class CppWorkerClient {
     this.activeCompilerRequestControllers.add(controller);
     try {
       const compiler = this.options.trustedCompilerService;
+      if (compiler && this.options.waitForOrdinaryAdmission) {
+        await this.options.waitForOrdinaryAdmission(controller.signal);
+        controller.signal.throwIfAborted();
+      }
       const result = await (compiler
         ? compiler.compileTrusted(message.payload, controller.signal, this.options.trustedCompilerRole)
         : this.compileTrusted(message.payload, controller.signal));

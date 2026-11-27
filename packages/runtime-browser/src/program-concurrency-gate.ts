@@ -5,6 +5,8 @@ interface ConcurrencyWaiter {
   readonly onAbort?: () => void;
 }
 
+type ProgramPriority = 'foreground' | 'foreground-cleanup' | 'background';
+
 export function preparedRuntimeAbortError(
   signal: AbortSignal | undefined
 ): Error {
@@ -37,6 +39,7 @@ export function detachPreparedRuntimeRequest<T>(work: Promise<T>, signal?: Abort
 export class RuntimeProgramConcurrencyGate {
   private active = 0;
   private readonly waiting: ConcurrencyWaiter[] = [];
+  private readonly cleanup: ConcurrencyWaiter[] = [];
   private readonly background: ConcurrencyWaiter[] = [];
 
   constructor(private readonly maximum: number) {
@@ -50,7 +53,7 @@ export class RuntimeProgramConcurrencyGate {
   async run<Result>(
     signal: AbortSignal | undefined,
     use: () => Promise<Result>,
-    priority: 'foreground' | 'background' = 'foreground'
+    priority: ProgramPriority = 'foreground'
   ): Promise<Result> {
     const release = await this.acquire(signal, priority);
     try {
@@ -62,7 +65,7 @@ export class RuntimeProgramConcurrencyGate {
 
   private acquire(
     signal: AbortSignal | undefined,
-    priority: 'foreground' | 'background'
+    priority: ProgramPriority
   ): Promise<() => void> {
     if (signal?.aborted) {
       return Promise.reject(preparedRuntimeAbortError(signal));
@@ -71,7 +74,8 @@ export class RuntimeProgramConcurrencyGate {
       this.active += 1;
       return Promise.resolve(this.releasePermit());
     }
-    const waiting = priority === 'background' ? this.background : this.waiting;
+    const waiting = priority === 'foreground' ? this.waiting
+      : priority === 'foreground-cleanup' ? this.cleanup : this.background;
     return new Promise<() => void>((resolve, reject) => {
       const waiter: ConcurrencyWaiter = {
         signal,
@@ -106,7 +110,7 @@ export class RuntimeProgramConcurrencyGate {
 
   private resumeNext(): void {
     while (this.active < this.maximum) {
-      const waiter = this.waiting.shift() ?? this.background.shift();
+      const waiter = this.waiting.shift() ?? this.cleanup.shift() ?? this.background.shift();
       if (!waiter) return;
       if (waiter.signal?.aborted) {
         waiter.reject(preparedRuntimeAbortError(waiter.signal));
