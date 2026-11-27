@@ -1376,3 +1376,54 @@ test('Worker terminals close SES commands and carry started sets only with trust
     globalThis.Worker = originalWorker;
   }
 });
+
+test('deferred C# records the exact trusted prime and correlates recorder replies', async () => {
+  const { installJournal } = await import('./gb-transport.mjs');
+  const originalWorker = globalThis.Worker;
+  globalThis.Worker = class FixtureWorker {
+    addEventListener(_, listener) { this.listener = listener; }
+    postMessage() {}
+    reply(data, isTrusted = true) { this.listener({ data, isTrusted }); }
+    terminate() {}
+  };
+  const journal = installJournal(fixture('csharp', 'stdout'), {
+    decodeCSharpObservation: (payload) => ({ drawing: payload.drawing }),
+  });
+  try {
+    journal.track('draw-first-deferred');
+    const worker = new Worker('csharp-worker.js');
+    const prime = {
+      id: 'prime', type: 'execute-prepared-code', protocolToken: 'prime-token',
+      payload: {
+        inputs: { a: 1, b: 2 },
+        prepared: {
+          mode: 'trace', functionName: 'Add',
+          code: 'public class Solution { public int Add(int a, int b) { return a + b; } }',
+        },
+      },
+    };
+    worker.postMessage(prime);
+    worker.postMessage({ ...prime, id: 'different-input', payload: { ...prime.payload, inputs: { a: 2, b: 1 } } });
+
+    worker.postMessage({
+      id: 'draw', type: 'execute-prepared-trace', protocolToken: 'draw-token',
+      payload: { inputs: { n: 7 }, observation: { attemptToken: 'attempt' } },
+    });
+    const terminal = {
+      id: 'draw', type: 'execute-prepared-trace', protocolToken: 'draw-token',
+      payload: { observation: { attemptToken: 'attempt' }, drawing: { status: 'drawn' } },
+    };
+    worker.reply({ ...terminal, protocolToken: 'old' });
+    worker.reply(terminal, false);
+    worker.reply(terminal);
+
+    const evidence = journal.since(0);
+    assert.deepEqual(evidence.filter(({ kind }) => kind === 'trusted-standby-prime').map(({ commandId }) => commandId), ['prime']);
+    assert.deepEqual(evidence.filter(({ kind }) => kind === 'ordinary-dispatch').map(({ commandId }) => commandId), ['different-input']);
+    assert.deepEqual(evidence.filter(({ kind }) => kind === 'observer-reply').map(({ caseId, attemptToken }) =>
+      [caseId, attemptToken]), [['A', 'attempt']]);
+  } finally {
+    journal.restore();
+    globalThis.Worker = originalWorker;
+  }
+});
