@@ -107,6 +107,11 @@ export async function runDeferredFixture(fixture, scenario) {
         language: fixture.language,
       })),
     });
+    if (scenario.cut === 'step-budget' && report.draw?.evaluation.cases[0]?.attachment?.status === 'truncated') {
+      const referenceRoute = 'draw-first-deferred:reference';
+      journal.track(referenceRoute);
+      report.prefixReference = await observeLongerPrefix(fixture, createHost(), referenceRoute, fixture.cases);
+    }
     return { ...report, wire: journal.since(0) };
   } finally {
     journal.restore();

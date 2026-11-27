@@ -192,11 +192,40 @@ export function checkDeferredDrawing(fixture, scenario, row, report) {
   checkRow(fixture, expected, row, scenario.suffix ? 'not-run' : 'completed',
     report.verdict.evaluation.cases, report.presentation[0],
     (id, pass) => assert(pass, id), {});
-  if (scenario.fault || scenario.suffix) return;
-  const replies = report.wire.filter(({ kind, request, caseId }) => kind === 'observer-reply' &&
-    request === 'draw-first-deferred' && caseId === row.caseId);
+  assert(!report.wire.some(({ kind, request }) => request === 'draw-first-deferred' &&
+    (kind === 'ordinary-dispatch' || kind === 'ordinary-start')), 'Draw dispatched ordinary work');
+  if (scenario.suffix) return;
+  const caseReplies = report.wire.filter(({ kind, caseId }) => kind === 'observer-reply' && caseId === row.caseId);
+  const replies = caseReplies.filter(({ request }) => request === 'draw-first-deferred' || request === 'run-first-deferred');
+  if (scenario.fault) {
+    if (scenario.fault.fault === 'no-recorder') {
+      assert.equal(replies.length, 1);
+      assert.equal(replies[0].recorderDisabled, true);
+      assert(checkRecorder(fixture, attachment, replies[0]), 'Worker did not attest the recorder refusal');
+    }
+    return;
+  }
   assert.equal(replies.length, 1, 'Expected one authenticated recorder reply');
   assert(checkRecorder(fixture, attachment, replies[0]), 'Drawing differs from recorder reply');
+  if (scenario.cut === 'step-budget') {
+    const reference = report.prefixReference;
+    const referenceRow = reference?.evaluation.cases[0];
+    const longer = rawAttachment(referenceRow);
+    const referenceReplies = caseReplies.filter(({ request }) => request === 'draw-first-deferred:reference');
+    assert.equal(referenceReplies.length, 1);
+    assert(longer.modern && validBinding(longer, referenceRow, { retainedWorkspaceDigest: reference.bundleDigest }));
+    assert(checkRecorder(fixture, longer, referenceReplies[0]));
+    const prefix = attachment.events.map(eventProjection);
+    const whole = longer.events.map(eventProjection);
+    assert(whole.length > prefix.length, 'Reference recording must retain a longer prefix');
+    assert.deepEqual(prefix, whole.slice(0, prefix.length));
+    if (fixture.language === 'java') {
+      const rawPrefix = replies[0].javaEvents;
+      const rawWhole = referenceReplies[0].javaEvents;
+      assert(Array.isArray(rawPrefix) && Array.isArray(rawWhole) && rawPrefix.length > 0 && rawWhole.length > rawPrefix.length);
+      assert.deepEqual(rawPrefix, rawWhole.slice(0, rawPrefix.length));
+    }
+  }
 }
 
 function completeOrdinaryStarts(events) {

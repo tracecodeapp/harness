@@ -217,7 +217,12 @@ async function main() {
   const deferred = !routeFilter && !names ? [...new Set(requested.map(({ fixture }) => fixture.language))]
     .flatMap((language) => deferredScenarios(language).map((scenario) => {
       const name = scenario.suffix ? 'three-rows' : scenario.cut ? scenario.name : 'stdout';
-      const fixture = fixtures.fixtures.find((entry) => entry.language === language && entry.name === name);
+      const original = fixtures.fixtures.find((entry) => entry.language === language && entry.name === name);
+      const fixture = language === 'cpp' && scenario.cut === 'step-budget' ? {
+        ...original,
+        // Exercise a source prefix on straight-line code supported by the legacy recorder.
+        code: 'class Solution {\npublic:\n  int solve(int n) {\n    int first = n + 1;\n    int second = first * 2;\n    int third = second - 2;\n    int fourth = third / 2;\n    return fourth;\n  }\n};',
+      } : original;
       const prefix = `G5/${language}/${scenario.name}/deferred`;
       planned.push(...Object.keys(deferredChecks(scenario, {})).map((key) => `${prefix}/${key}`));
       return { fixture, scenario, prefix };
