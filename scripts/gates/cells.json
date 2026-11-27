@@ -451,7 +451,7 @@
     "language": "shared",
     "command": "pnpm test:javascript-project-stack-frames-browser",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/helpers/javascript-project-stack-frame-cases.ts","tests/test-javascript-project-stack-frames-browser.ts","workers/javascript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/helpers/javascript-project-stack-frame-cases.ts","tests/test-javascript-project-stack-frames-browser.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
@@ -553,7 +553,7 @@
     "language": "shared",
     "command": "pnpm test:kernel-policy-sync",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/generate-runtime-kernel-policy-classic.ts","scripts/run-test-suite.ts"],
+    "inputs": [".github/workflows/ci.yml",".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/generate-runtime-kernel-policy-classic.ts","scripts/run-test-suite.ts","workers/shared/runtime-kernel-policy-classic.js","workers/shared/runtime-kernel-policy.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
