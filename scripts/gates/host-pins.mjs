@@ -1,8 +1,41 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { tracksInput } from './inventory.mjs';
+import { packageInputs } from './package-inputs.mjs';
+
+const allowed = [
+  'PATH', 'HOME', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+  'COREPACK_HOME', 'PNPM_HOME', 'JAVA_HOME', 'DOTNET_ROOT', 'DOTNET_ROOT_X64',
+];
+
+export function allowedEnvironment(source = process.env) {
+  return Object.fromEntries(allowed.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]));
+}
+
+function toolVersion(binary, option, env) {
+  const result = spawnSync(binary, [option], { encoding: 'utf8', env });
+  if (result.error?.code === 'ENOENT') return null;
+  if (result.error) throw result.error;
+  const output = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
+  return { exitCode: result.status, signal: result.signal, output };
+}
+
+function toolchainPins(cell, env) {
+  const manifest = JSON.parse(readFileSync('package.json', 'utf8'));
+  const { scripts } = packageInputs(cell, manifest);
+  const commands = [cell.setup, cell.command, ...Object.values(scripts)].filter(Boolean).join('\n');
+  const java = cell.language === 'java' || /\b(?:java|javac|build-java-browser-helper)\b/.test(commands) ||
+    tracksInput(cell, 'packages/runtime-java/src/index.ts');
+  const dotnet = cell.language === 'csharp' || /\b(?:dotnet|restore-csharp-toolchain)\b/.test(commands) ||
+    tracksInput(cell, 'toolchains/csharp/manifest.json');
+  return {
+    ...(java ? { javac: toolVersion('javac', '-version', env), java: toolVersion('java', '-version', env) } : {}),
+    ...(dotnet ? { dotnet: toolVersion('dotnet', '--version', env) } : {}),
+  };
+}
 
 export function sha256(file) {
   return execFileSync('sha256sum', ['--', file], { encoding: 'utf8' }).match(/[a-f0-9]{64}/)[0];
@@ -33,14 +66,15 @@ export function hostInputs(cell) {
   const browserPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
   if (browserPath === '0') throw new Error('Set PLAYWRIGHT_BROWSERS_PATH to the host browser cache.');
   const browsers = resolve(browserPath || join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'ms-playwright'));
+  const inputs = { ...allowedEnvironment(), CI: '1', PLAYWRIGHT_BROWSERS_PATH: browsers };
   const pins = {
     node: process.version,
-    pnpm: execFileSync('pnpm', ['--version'], { encoding: 'utf8' }).trim(),
+    pnpm: execFileSync('pnpm', ['--version'], { encoding: 'utf8', env: inputs }).trim(),
     playwrightBrowsers: existsSync(browsers) ? readdirSync(browsers)
       .filter((name) => /^(?:chromium(?:_headless_shell)?|firefox|webkit|ffmpeg)-\d+$/.test(name))
       .filter((name) => existsSync(join(browsers, name, 'INSTALLATION_COMPLETE'))).sort() : [],
+    ...toolchainPins(cell, inputs),
   };
-  const inputs = { PLAYWRIGHT_BROWSERS_PATH: browsers };
   if (cell.pins.candidateTarball) {
     inputs.GATE_CANDIDATE_TARBALL = requiredPath('GATE_CANDIDATE_TARBALL', 'isFile');
     inputs.GATE_MUX_SOURCE = requiredPath('GATE_MUX_SOURCE', 'isDirectory');
@@ -60,5 +94,6 @@ export function hostInputs(cell) {
       pins.appDataSha256 = sha256(inputs.GATE_APP_DATA);
     }
   }
+  pins.environment = inputs;
   return { pins, inputs };
 }

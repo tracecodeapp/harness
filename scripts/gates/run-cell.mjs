@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path';
 import { hostInputs } from './host-pins.mjs';
 import { git, loadCell, resolveCommit } from './inventory.mjs';
 import { busyHarnessJobs, readJobs } from './job-log.mjs';
-import { readPass, resultPath, storePath, writeResult } from './result-store.mjs';
+import { readCellPass, resultPath, storePath, writeResult } from './result-store.mjs';
+import { canonical } from './package-inputs.mjs';
 
 const script = 'scripts/gates/run-cell.mjs';
 const gateLogs = '/root/ci/gate-logs';
@@ -25,12 +26,13 @@ function execute(output) {
     throw new Error('Use a fresh worktree at the requested revision.');
   }
   const checkPins = () => {
-    if (JSON.stringify(hostInputs(cell).pins) !== JSON.stringify(hostPins)) {
+    const current = hostInputs(cell);
+    if (canonical(current.pins) !== canonical(hostPins)) {
       throw new Error('Host inputs changed after lookup. Restage the pinned inputs and retry.');
     }
+    return current.inputs;
   };
-  checkPins();
-  const env = { ...process.env, GATE_OUTPUT: output, GATE_REV: rev, GATE_BRANCH_HEAD: gateCommit ?? '',
+  const env = { ...checkPins(), GATE_OUTPUT: output, GATE_REV: rev, GATE_BRANCH_HEAD: gateCommit ?? '',
     GATE_INPUT_HASH: hash, GATE_TARBALL_SHA256: hostPins.candidateTarballSha256 ?? '' };
   const command = [cell.setup, cell.command].filter(Boolean).join(' && ');
   const code = run('bash', ['-e', '-o', 'pipefail', '-c', command], { env });
@@ -57,7 +59,7 @@ function runCell(cellId, rev, force, lockedHash) {
     return run('flock', [path + '.lock', process.execPath, script, cellId, rev, force, hash]);
   }
   if (lockedHash !== hash) throw new Error('Inputs changed while waiting for the cache lock. Retry the cell.');
-  const pass = !force && readPass(storePath, cellId, hash);
+  const pass = readCellPass(storePath, cell, hash, force);
   if (pass) {
     console.log(`cached pass ${hash} (job ${pass.jobId}, ${pass.end})`);
     return 0;
@@ -72,12 +74,10 @@ function runCell(cellId, rev, force, lockedHash) {
   writeFileSync(join(output, 'input.json'), JSON.stringify({ cell, rev, gateCommit, hash, hostPins }) + '\n');
   const logPath = join(output, 'job.log');
   const log = openSync(logPath, 'wx');
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/^(?:TRACECODE_|HEAVY_|GB_|TSX_|NODE_OPTIONS$|BASH_ENV$|ENV$)/.test(key)));
-  Object.assign(env, inputs, {
-    CI: '1', HEAVY_JOB_LANE: process.env.HEAVY_JOB_LANE, HEAVY_JOB_CANDIDATE: rev,
+  const env = { ...inputs,
+    HEAVY_JOB_LANE: process.env.HEAVY_JOB_LANE, HEAVY_JOB_CANDIDATE: rev,
     HEAVY_JOB_CELL: cellId, HEAVY_JOB_INPUT_HASH: hash,
-  });
+  };
   console.log(`running ${cellId} ${hash} (log ${logPath})`);
   let exitCode;
   try {

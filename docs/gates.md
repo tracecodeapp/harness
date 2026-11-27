@@ -23,20 +23,25 @@ are in `/root/ci/gate-results/<cell>/<hash>.json` and link to the job logs.
 The report groups jobs by lane, candidate, and cell, and sums run time by lane.
 
 Use `node scripts/gates/cell-hash.mjs <cell> --rev <commit>` to inspect a
-tree-only hash. It hashes sorted Git path and blob ID pairs for the cell and
+tree-only hash. It hashes sorted Git paths, file modes, and blob IDs for the cell and
 shared input globs, the root package fields the cell uses, the sorted-key cell
 definition and pins, and the gate branch head for GA, GB, and W. The runner supplies `--host-pins` for the actual
 lookup. Those pins include Node, pnpm, installed Playwright revisions, and
 the digests of any external inputs the cell uses, including a candidate tarball.
+Applicable cells also pin `javac -version`, `java -version`, and
+`dotnet --version`. The runner forwards an allowlist of host environment
+variables and includes their values in the key. GA records results for
+diagnosis and always executes against its pinned candidate tarball.
 
-Every cell uses the root manifest's dependency fields, `pnpm`, `packageManager`,
-`engines`, `exports`, `files`, `main`, `types`, `type`, and `version`. Other
-manifest inputs are limited to the scripts the cell's setup and command call,
+Every cell uses all root manifest fields outside `scripts`. Script inputs
+are limited to the entries the cell's setup and command call,
 including nested `pnpm`, `pnpm run`, and `npm run` calls.
 
-List the files a cell actually loads, including each cross-language dependency
-explicitly in its inputs. Run `node --test tests/gates/*.test.mjs` to check
-command paths and direct cross-language imports and list unclaimed tracked files.
+Declare the full module closure of each command and entry file, including
+literal dynamic imports and cross-language dependencies. Workspace imports
+resolve to repository source. Run `node --test tests/gates/*.test.mjs` after
+installing the locked dependencies to check the closure and list unclaimed
+tracked files.
 
 ### Paths without a cell
 
@@ -50,6 +55,6 @@ outside the list select every cell.
 | `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
 | `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
 | `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
-| `runtime-assets.lock.json` | The lock is derived. Its worker, engine, and C# role inputs select the affected cells. Lock checks declare the generator and workers. |
+| `runtime-assets.lock.json` | The lock is derived. Worker, engine, and C# role inputs select the affected cells, and `test:runtime-assets-lock` checks lock consistency. |
 | `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
 | `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |

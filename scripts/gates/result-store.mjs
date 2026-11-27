@@ -24,6 +24,13 @@ export function readPass(root, cell, hash) {
   }
 }
 
+export function readCellPass(root, cell, hash, force) {
+  // GA may pass with companion routes skipped. Keep its receipts for
+  // diagnosis but always rerun the candidate-qualified gate.
+  if (force || cell.id.startsWith('ga-')) return undefined;
+  return readPass(root, cell.id, hash);
+}
+
 export function writeResult(root, record) {
   const path = resultPath(root, record.cell, record.hash);
   const temp = path + '.' + randomUUID() + '.tmp';

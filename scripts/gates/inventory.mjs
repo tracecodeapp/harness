@@ -50,7 +50,7 @@ export function blobs(commit) {
   return git('ls-tree', '-rz', '--full-tree', commit).split('\0').filter(Boolean)
     .flatMap((line) => {
       const tab = line.indexOf('\t');
-      const [, type, id] = line.slice(0, tab).split(' ');
-      return type === 'blob' ? [[line.slice(tab + 1), id]] : [];
+      const [mode, type, id] = line.slice(0, tab).split(' ');
+      return type === 'blob' ? [[line.slice(tab + 1), mode, id]] : [];
     });
 }
