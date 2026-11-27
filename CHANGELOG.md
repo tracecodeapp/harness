@@ -8,6 +8,10 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ### Added
 
+- GA and GB qualify verdict-first interactive Runs through the packed Judge in
+  all six languages. They check that a held observer cannot delay the verdict,
+  the continuation keeps the committed grades, and faults return typed drawing
+  refusals.
 - A traced run that failed, or was stopped by a limit, after its trace stopped
   recording at a budget keeps that budget: `traceTruncated?:
   ExecutionLimitReason` (optional, additive) is now also on the `failed` and

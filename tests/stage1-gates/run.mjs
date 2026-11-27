@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, realpathSync, statSync } from 'node:fs';
 import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { extname, join, resolve, sep } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
@@ -17,11 +17,11 @@ import { checkCppNaturalShape, cppNaturalShapeId, cppNaturalShapeRequests, cppNa
 import { cppRefusalFor } from './cpp-refusal.mjs';
 import { checkJudgedByteLimit, judgedByteLimitFixtures, judgedByteLimitRequest } from './judged-byte-limit.mjs';
 import { exerciseMux, loadMux } from './mux.mjs';
-import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
+import { checkPresentation, hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 import { retainedControlTargets } from './worker-evidence.mjs';
 import { deferredScenarios } from './deferred-browser.mjs';
 import { assertDeferred } from './deferred-oracle.mjs';
-import { checkPresentation } from './receipt.mjs';
+import deferredFixtures from './deferred-fixtures.json' with { type: 'json' };
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url), 'utf8'));
 const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
@@ -71,7 +71,7 @@ try {
     outfile: bundlePath, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
     alias: {
       'stage1-worker-evidence': fileURLToPath(new URL('worker-evidence.mjs', import.meta.url)),
-      'stage1-deferred-browser': fileURLToPath(new URL('deferred-browser.mjs', import.meta.url)),
+      'stage1-deferred-browser': join(dirname(fileURLToPath(import.meta.url)), 'deferred-browser.mjs'),
     },
     external: ['/gate-routes.mjs', '/gate-app-trace-wire.mjs'],
     metafile: true,
@@ -229,7 +229,6 @@ try {
     return registered;
   }
   const runtime = { setupMs: performance.now(), requests: 0, fixtureMs: {}, requestMs: {} };
-  const deferredFixtures = JSON.parse(readFileSync(new URL('deferred-fixtures.json', import.meta.url), 'utf8'));
   for (const language of new Set(deferredFixtures.filter((fixture) => matches({
     ...fixture, gate: 'G1', name: 'stdout',
   })).map((fixture) => fixture.language))) {
