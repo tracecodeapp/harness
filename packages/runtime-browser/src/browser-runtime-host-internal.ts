@@ -128,6 +128,8 @@ export interface JudgeReceiptProvider {
     /** Backstop for an observer that fails to return a terminal drawing. */
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
+    /** The shared compiler must wait for the evaluation's first ordinary case admission. */
+    readonly observationCompileOrder?: 'after-ordinary-compile';
     /** Observation can initialize concurrently with ordinary provider readiness. */
     readonly overlapObservationWithInitialization?: true;
     /** Native stopping batches can acknowledge admission before delivering rows. */
@@ -165,6 +167,7 @@ export interface JudgeReceiptProvider {
     program: JudgeObservationProgram,
     signal: AbortSignal,
     traceOptions?: Readonly<TraceExecutionOptions>,
+    waitForOrdinaryAdmission?: (signal: AbortSignal) => Promise<void>,
   ): Promise<JudgeObservationLease | ObservationRefusal>;
   /** Private trusted composition journal. Never comes from a request or a worker. */
   mark?(marker: JudgeScheduleMarker): void;

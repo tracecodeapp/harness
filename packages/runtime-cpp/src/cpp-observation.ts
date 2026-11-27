@@ -21,6 +21,7 @@ import {
 
 type Preparation = Pick<RuntimeObservationCall, 'traceOptions' | 'signal'> & {
   readonly program: JudgeObservationProgram;
+  readonly waitForOrdinaryAdmission?: (signal: AbortSignal) => Promise<void>;
 };
 
 /** Internal composition supplies exactly one producer. */
@@ -51,6 +52,8 @@ export function createCppObservationRegistration(
     readonly runtimeVersion: string;
     readonly observationDeadlineMs: number;
     readonly observationPrepareDeadlineMs?: number;
+    readonly observationCompileOrder?: 'after-ordinary-compile';
+    readonly overlapObservationWithInitialization?: true;
   }
 ) {
   const { runtimeVersion, ...deadlines } = options;
@@ -68,12 +71,13 @@ export function createCppObservationRegistration(
     async prepareObservation(
       program: JudgeObservationProgram,
       signal: AbortSignal,
-      traceOptions?: Preparation['traceOptions']
+      traceOptions?: Preparation['traceOptions'],
+      waitForOrdinaryAdmission?: Preparation['waitForOrdinaryAdmission'],
     ): Promise<JudgeObservationLease> {
       signal.throwIfAborted();
       let lease: JudgeObservationLease;
       try {
-        lease = await producer.prepare({ program, traceOptions, signal });
+        lease = await producer.prepare({ program, traceOptions, signal, waitForOrdinaryAdmission });
       } catch {
         signal.throwIfAborted();
         lease = refusalLease('observer-prepare');
@@ -129,7 +133,7 @@ export function createCppObservationRegistration(
 
 interface LegacyCppDrawingOptions {
   /** Must allocate an observer-owned worker client, never the ordinary client. */
-  createObserverWorkerClient(): Pick<CppWorkerClient,
+  createObserverWorkerClient(waitForOrdinaryAdmission?: Preparation['waitForOrdinaryAdmission']): Pick<CppWorkerClient,
     'init' | 'prepareRuntimeProgram' | 'executePreparedTrace' | 'terminate'>;
 }
 
@@ -189,7 +193,7 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
     // That trace and output are the worker message's structured clone (or
     // JSON.parse of transferred events), passed through by liftTraceOutcome.
     replyProvenance: 'structured-clone',
-    async prepare({ program, traceOptions, signal }) {
+    async prepare({ program, traceOptions, signal, waitForOrdinaryAdmission }) {
       type ObserverClient = ReturnType<LegacyCppDrawingOptions['createObserverWorkerClient']>;
       const clients = new Set<ObserverClient>();
       const retire = (client: ObserverClient) => {
@@ -198,7 +202,7 @@ export function createLegacyCppDrawingProducer(options: LegacyCppDrawingOptions)
 
       async function compile(signal?: AbortSignal) {
         signal?.throwIfAborted();
-        const client = options.createObserverWorkerClient();
+        const client = options.createObserverWorkerClient(waitForOrdinaryAdmission);
         clients.add(client);
         const abort = () => retire(client);
         signal?.addEventListener('abort', abort, { once: true });

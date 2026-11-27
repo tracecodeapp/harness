@@ -4,6 +4,7 @@ export * from './execution-host';
 export * from './host-artifact-cache';
 export * from './kernel-http-async';
 export * from './kernel-http-sync';
+export * from './program-concurrency-gate';
 export * from './runtime-capability-guards';
 export * from './runtime-diagnostics';
 export * from './runtime-execute';

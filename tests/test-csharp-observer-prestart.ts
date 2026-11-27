@@ -10,6 +10,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createCSharpBrowserRuntimeProvider } from '../packages/runtime-csharp/src/browser-runtime-provider';
+import { CSharpWorkerClient } from '../packages/runtime-csharp/src/csharp-worker-client';
+import type { CSharpRuntimeClient } from '../packages/runtime-csharp/src/csharp-runtime-client';
+import { encodeTraceClrWireResult } from '../packages/runtime-csharp/src/traceclr-wire';
+import { createBrowserRuntimeHost, createBrowserRuntimeProviderRegistry } from '../packages/runtime-browser/src';
+import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
+import { createAlgorithmJudgeBundle } from '../src/judge';
 import type { BrowserRuntimeProviderContext } from '../packages/runtime-browser/src/runtime-provider-registry';
 import type { BrowserRuntimeJudgeReceiptLease } from '../packages/runtime-browser/src/browser-runtime-host-internal';
 
@@ -25,9 +31,14 @@ interface JournalEntry {
   readonly role: string;
   readonly type: string;
   readonly detail?: string;
+  readonly functionName?: string;
 }
 
 const PRIME_INPUTS = { a: 1, b: 2 };
+const INT_WIRE = {
+  parameters: [{ name: 'value', type: { wireType: 'int32' } }],
+  returnType: { wireType: 'int32' },
+};
 
 class JournalWorker {
   static journal: JournalEntry[] = [];
@@ -39,6 +50,11 @@ class JournalWorker {
   /** Compile requests in these modes fail as a learner compile error. */
   static failCompileModes = new Set<string>();
   static compilerWarmupFails = false;
+  static fastOrdinary = false;
+  static beforePrepare: ((functionName: string, mode: string) => Promise<void> | undefined) | undefined;
+  static beforeRelease: ((artifactKey: string) => Promise<void> | undefined) | undefined;
+  static beforeObserve: (() => Promise<void>) | undefined;
+  static beforeCode: ((value: unknown) => Promise<void> | undefined) | undefined;
 
   readonly index: number;
   role = 'unknown';
@@ -61,6 +77,11 @@ class JournalWorker {
     JournalWorker.failPrimeFor = new Set();
     JournalWorker.failCompileModes = new Set();
     JournalWorker.compilerWarmupFails = false;
+    JournalWorker.fastOrdinary = false;
+    JournalWorker.beforePrepare = undefined;
+    JournalWorker.beforeRelease = undefined;
+    JournalWorker.beforeObserve = undefined;
+    JournalWorker.beforeCode = undefined;
   }
 
   static mark(label: string): void {
@@ -79,6 +100,8 @@ class JournalWorker {
       role: this.role,
       type: prime ? 'prime' : observation ? 'observe' : message.type,
       ...(message.type === 'prepare-program' ? { detail: String(payload.mode) } : {}),
+      ...(message.type === 'dispose-prepared-program' ? { detail: String(payload.compiledArtifactKey) } : {}),
+      ...(typeof payload.functionName === 'string' ? { functionName: payload.functionName } : {}),
     });
     const reply = (replyPayload: unknown): void => {
       if (this.terminated) return;
@@ -119,6 +142,8 @@ class JournalWorker {
           return;
         case 'prepare-program': {
           const mode = String(payload.mode);
+          const functionName = String(payload.functionName);
+          await JournalWorker.beforePrepare?.(functionName, mode);
           if (JournalWorker.failCompileModes.has(mode)) {
             reply({
               success: false,
@@ -130,22 +155,15 @@ class JournalWorker {
           }
           // Ordinary assemblies take the compatibility tier and the companion
           // the algorithm-fast tier, so one fixture covers both runner shapes.
-          const fast = mode === 'trace';
+          const fast = mode === 'trace' || JournalWorker.fastOrdinary;
           reply({
             success: true,
-            compiledArtifactKey: `${mode}-artifact`,
+            compiledArtifactKey: JournalWorker.fastOrdinary ? `${mode}-${functionName}` : `${mode}-artifact`,
             compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
             compiledArtifactSha256: (fast ? 'cd' : 'ef').repeat(32),
             preparedRunnerTier: fast ? 'algorithm-fast' : 'compatibility',
             preparedRunnerReason: fast ? 'direct wire driver' : 'compatibility driver',
-            ...(fast
-              ? {
-                  traceClrWireContract: {
-                    parameters: [{ name: 'value', type: { wireType: 'int32' } }],
-                    returnType: { wireType: 'int32' },
-                  },
-                }
-              : {}),
+            ...(fast ? { traceClrWireContract: INT_WIRE } : {}),
             consoleOutput: [],
           });
           return;
@@ -160,9 +178,14 @@ class JournalWorker {
             });
             return;
           }
-          reply({ success: true, output: inputs?.value ?? null, consoleOutput: [] });
+          await JournalWorker.beforeCode?.(inputs?.value);
+          reply({
+            success: true, output: inputs?.value ?? null, consoleOutput: [],
+            ...(JournalWorker.fastOrdinary ? { outputBytes: encodeTraceClrWireResult(INT_WIRE, inputs?.value) } : {}),
+          });
           return;
         case 'execute-prepared-trace': {
+          if (observation) await JournalWorker.beforeObserve?.();
           const observationPayload = payload.observation as { attemptToken?: unknown } | undefined;
           reply({
             success: true,
@@ -173,6 +196,7 @@ class JournalWorker {
           return;
         }
         case 'dispose-prepared-program':
+          await JournalWorker.beforeRelease?.(String(payload.compiledArtifactKey));
           reply({ success: true });
           return;
         default:
@@ -209,6 +233,379 @@ const PROGRAM = {
   functionName: 'Echo',
   executionStyle: 'solution-method' as const,
 };
+
+async function whileHeld<T>(work: Promise<T>, describe: string): Promise<T> {
+  const timeout = Promise.withResolvers<never>();
+  const timer = setTimeout(() => timeout.reject(new Error(describe)), 1_000);
+  try {
+    return await Promise.race([work, timeout.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createCompilerClient() {
+  return new CSharpWorkerClient({
+    workerUrl: '/workers/csharp-worker.js',
+    assetBaseUrl: '/workers/vendor/csharp-compiler',
+    runtimeRole: 'compiler',
+    workerFactory: (url) => new JournalWorker(url) as unknown as Worker,
+  });
+}
+
+function compileOrder(): string[] {
+  return JournalWorker.journal.flatMap((entry) =>
+    entry.type === 'prepare-program' ? [entry.functionName!] : []);
+}
+
+function createCSharpJudge(lease: BrowserRuntimeJudgeReceiptLease) {
+  return createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+    providers: ['csharp'],
+    providerRegistry: createBrowserRuntimeProviderRegistry([{
+      id: 'csharp-test', languages: ['csharp'], create: () => lease,
+    }]),
+    featureOverrides: { worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true },
+  }));
+}
+
+function csharpBundle(label: string, value: number) {
+  return createAlgorithmJudgeBundle({
+    id: `csharp-review-${label}`, language: 'csharp',
+    code: PROGRAM.code.replace('Echo', `Echo${label}`),
+    functionName: `Echo${label}`, executionStyle: PROGRAM.executionStyle,
+    cases: [{ id: label, input: { value }, expected: value }],
+  });
+}
+
+test('the C# Judge provider preserves Roslyn when disposing a running drawing before a new compile', async () => {
+  JournalWorker.reset();
+  const host = createCSharpJudge(createLease());
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const [a, b] = await Promise.all([csharpBundle('A', 7), csharpBundle('B', 8)]);
+    JournalWorker.beforePrepare = (name, mode) => {
+      if (name !== 'EchoA' || mode !== 'trace') return;
+      entered.resolve();
+      return release.promise;
+    };
+    const first = await host.execute({
+      bundle: a, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] },
+    });
+    assert.ok(first.executionId);
+    await whileHeld(entered.promise, 'A companion never reached Roslyn');
+    const compiler = JournalWorker.instances.find(({ role }) => role === 'compiler')!;
+    const drawing = host.execute({ executionId: first.executionId, tracing: { caseIds: ['A'] } });
+    const rejectedDrawing = assert.rejects(drawing, { name: 'JudgePlanError' });
+    void rejectedDrawing.catch(() => undefined);
+    await whileHeld(host.disposeExecution(first.executionId), 'A dispose waited for its companion');
+    const second = host.execute({ bundle: b, interactive: true, drawingDelivery: 'after-verdict' });
+    void second.catch(() => undefined);
+    await whileHeld(rejectedDrawing, 'A drawing did not detach');
+    assert.equal(compiler.terminated, false);
+    assert.deepEqual(compileOrder(), ['EchoA', 'EchoA']);
+    release.resolve();
+    assert.equal((await whileHeld(second, 'B did not finish')).evaluation.cases[0]?.verdict.kind, 'passed');
+    assert.deepEqual(compileOrder(), ['EchoA', 'EchoA', 'EchoB']);
+    assert.deepEqual(JournalWorker.instances.filter(({ role }) => role === 'compiler'), [compiler]);
+    assert.equal(compiler.terminated, false);
+  } finally {
+    release.resolve();
+    host.dispose();
+  }
+});
+
+for (const route of ['joined', 'submit'] as const) {
+  test(`C# ${route} verdict does not await compiler cleanup behind a drawing`, async () => {
+    JournalWorker.reset();
+    JournalWorker.fastOrdinary = true;
+    const host = createCSharpJudge(createLease());
+    const drawingEntered = Promise.withResolvers<void>();
+    const releaseDrawing = Promise.withResolvers<void>();
+    const codeEntered = Promise.withResolvers<void>();
+    const releaseCode = Promise.withResolvers<void>();
+    const cleanupPosted = Promise.withResolvers<void>();
+    try {
+      const [a, b, c, d] = await Promise.all([
+        csharpBundle('A', 7), csharpBundle('B', 8), csharpBundle('C', 9), csharpBundle('D', 10),
+      ]);
+      const deferred = { interactive: true as const, drawingDelivery: 'after-verdict' as const };
+      const first = await host.execute({ bundle: a, ...deferred });
+      const third = await host.execute({ bundle: c, ...deferred });
+      assert.ok(first.executionId && third.executionId);
+      JournalWorker.beforePrepare = (name, mode) => {
+        if (name !== 'EchoA' || mode !== 'trace') return;
+        drawingEntered.resolve();
+        return releaseDrawing.promise;
+      };
+      JournalWorker.beforeCode = (value) => {
+        if (value !== 8) return;
+        codeEntered.resolve();
+        return releaseCode.promise;
+      };
+      JournalWorker.beforeRelease = (key) => {
+        if (key === 'code-EchoB') cleanupPosted.resolve();
+        return undefined;
+      };
+      const second = route === 'joined'
+        ? host.execute({ bundle: b, interactive: true })
+        : host.evaluateAlgorithm({ bundle: b });
+      void second.catch(() => undefined);
+      await whileHeld(codeEntered.promise, 'B did not enter its ordinary case');
+      const drawing = host.execute({ executionId: first.executionId, tracing: { caseIds: ['A'] } });
+      void drawing.catch(() => undefined);
+      await whileHeld(drawingEntered.promise, 'A companion never reached Roslyn');
+      const laterDrawing = host.execute({ executionId: third.executionId, tracing: { caseIds: ['C'] } });
+      void laterDrawing.catch(() => undefined);
+      await settle();
+      releaseCode.resolve();
+      assert.equal((await whileHeld(second, `${route} verdict waited for A's drawing`)).evaluation.cases[0]?.verdict.kind, 'passed');
+      const queuedRun = host.execute({ bundle: d, ...deferred });
+      void queuedRun.catch(() => undefined);
+      await settle();
+      releaseDrawing.resolve();
+      await whileHeld(Promise.all([queuedRun, drawing, laterDrawing, cleanupPosted.promise]), 'queued compile, cleanup and drawings did not finish');
+      const cleanup = JournalWorker.journal.findIndex(({ type, detail }) => type === 'dispose-prepared-program' && detail === 'code-EchoB');
+      const compile = JournalWorker.journal.findIndex(({ type, detail, functionName }) =>
+        type === 'prepare-program' && detail === 'code' && functionName === 'EchoD');
+      const queued = JournalWorker.journal.findIndex(({ type, detail, functionName }) =>
+        type === 'prepare-program' && detail === 'trace' && functionName === 'EchoC');
+      assert.ok(compile >= 0 && compile < cleanup && cleanup < queued,
+        'ordinary cleanup should post after queued ordinary compiles and ahead of queued companions');
+    } finally {
+      releaseCode.resolve();
+      releaseDrawing.resolve();
+      host.dispose();
+    }
+  });
+}
+
+for (const primeFinishesAfterMs of [150, undefined]) {
+  const stalled = primeFinishesAfterMs === undefined;
+  test(stalled
+    ? 'C# uses a fresh ordinary runner if its replacement spare stalls for two seconds'
+    : 'C# uses a spare that finishes priming 150 ms after runner acquisition begins', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const diagnostics = t.mock.method(console, 'warn', () => {});
+    const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+    JournalWorker.reset();
+    JournalWorker.fastOrdinary = true;
+    const lease = createLease();
+    const finishPrime = Promise.withResolvers<void>();
+    try {
+      const { provider, standby } = await warmPage(lease);
+      const first = await provider.prepareProgram({ ...PROGRAM, mode: 'code' });
+      assert.ok(first.kind === 'prepared' && first.program.mode === 'code');
+      assert.equal((await first.program.executeIsolated({ inputs: { value: 7 } })).kind, 'completed');
+      JournalWorker.primeGate = finishPrime.promise;
+      await first.program.dispose();
+      await nextTurn();
+      const spare = runnerWorkers().find((worker) => worker !== standby && commandsOf(worker.index).includes('prime'));
+      assert.ok(spare, 'the replacement spare reached the held prime');
+      const second = await provider.prepareProgram({ ...PROGRAM, functionName: 'EchoB', mode: 'code' });
+      assert.ok(second.kind === 'prepared' && second.program.mode === 'code');
+      const execution = second.program.executeIsolated({ inputs: { value: 8 } });
+      void execution.catch(() => undefined);
+      await nextTurn();
+      if (primeFinishesAfterMs !== undefined) setTimeout(finishPrime.resolve, primeFinishesAfterMs);
+      t.mock.timers.tick((primeFinishesAfterMs ?? 2_000) - 1);
+      await nextTurn();
+      assert.equal(runnerWorkers().length, 2, 'no fresh runner before the spare finishes or stalls');
+      assert.ok(!commandsOf(spare.index).includes('execute-prepared-code'));
+
+      t.mock.timers.tick(1);
+      await nextTurn();
+      const executions = JournalWorker.journal.filter(({ type }) => type === 'execute-prepared-code');
+      assert.equal(executions.length, 2);
+      assert.equal(runnerWorkers().length, stalled ? 3 : 2);
+      assert.equal(executions[1]?.worker === spare.index, !stalled);
+      assert.equal((await execution).kind, 'completed');
+      const fallbacks = diagnostics.mock.calls.filter(({ arguments: args }) =>
+        args[1]?.phase === 'standby-runner-fallback');
+      assert.equal(fallbacks.length, stalled ? 1 : 0);
+      await second.program.dispose();
+    } finally {
+      finishPrime.resolve();
+      lease.dispose();
+    }
+  });
+}
+
+test('Roslyn admits an ordinary compile ahead of a queued companion', async () => {
+  JournalWorker.reset();
+  const compiler = createCompilerClient();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    await compiler.warmup();
+    JournalWorker.beforePrepare = (name) => {
+      if (name !== 'Running') return;
+      entered.resolve();
+      return release.promise;
+    };
+    const a = compiler.prepareProgram({ ...PROGRAM, functionName: 'Running', mode: 'trace' }, 'observer');
+    await entered.promise;
+    const queued = compiler.prepareProgram({ ...PROGRAM, functionName: 'Queued', mode: 'trace' }, 'observer');
+    const b = compiler.prepareProgram({ ...PROGRAM, functionName: 'Ordinary', mode: 'code' });
+    assert.deepEqual(compileOrder(), ['Running']);
+    release.resolve();
+    await Promise.all([a, queued, b]);
+    assert.deepEqual(compileOrder(), ['Running', 'Ordinary', 'Queued']);
+  } finally {
+    release.resolve();
+    compiler.terminate();
+  }
+});
+
+test('disposing a running and a queued Roslyn companion detaches both without closing the compiler session', async () => {
+  JournalWorker.reset();
+  const compiler = createCompilerClient();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const discarded = Promise.withResolvers<void>();
+  const abortA = new AbortController();
+  const abortB = new AbortController();
+  const requests: Promise<unknown>[] = [];
+  try {
+    await compiler.warmup();
+    const worker = JournalWorker.instances[0]!;
+    JournalWorker.beforePrepare = (name) => {
+      if (name !== 'Running') return;
+      entered.resolve();
+      return release.promise;
+    };
+    JournalWorker.beforeRelease = () => {
+      discarded.resolve();
+      return undefined;
+    };
+    const a = compiler.prepareProgram({ ...PROGRAM, functionName: 'Running', mode: 'trace', signal: abortA.signal }, 'observer');
+    requests.push(a.catch(() => {}));
+    await entered.promise;
+    const queued = compiler.prepareProgram({ ...PROGRAM, functionName: 'Queued', mode: 'trace', signal: abortA.signal }, 'observer');
+    requests.push(queued.catch(() => {}));
+    const b = compiler.prepareProgram({ ...PROGRAM, functionName: 'Ordinary', mode: 'code', signal: abortB.signal });
+    requests.push(b.catch(() => {}));
+    abortA.abort(new DOMException('A disposed', 'AbortError'));
+    await whileHeld(Promise.all([
+      assert.rejects(a, { name: 'AbortError' }),
+      assert.rejects(queued, { name: 'AbortError' }),
+    ]), 'queued and running observer must detach before the compiler is released');
+    assert.equal(worker.terminated, false, 'disposing A cannot close the compiler session');
+    release.resolve();
+    assert.equal((await b).success, true);
+    await whileHeld(discarded.promise, 'a detached artifact must be released');
+    assert.deepEqual(compileOrder(), ['Running', 'Ordinary']);
+    const releaseIndex = JournalWorker.journal.findIndex(({ type }) => type === 'dispose-prepared-program');
+    const bIndex = JournalWorker.journal.findIndex(({ functionName }) => functionName === 'Ordinary');
+    assert.ok(releaseIndex > bIndex, 'detached artifact cleanup yields to B');
+    assert.equal(JournalWorker.instances.length, 1);
+  } finally {
+    abortB.abort();
+    release.resolve();
+    compiler.terminate();
+    await Promise.all(requests);
+  }
+});
+
+test('a Roslyn companion held in the compiler queue refuses at its preparation deadline', async () => {
+  JournalWorker.reset();
+  const lease = createLease();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    const { provider } = await warmPage(lease);
+    JournalWorker.beforePrepare = (name) => {
+      if (name !== 'Blocking') return;
+      entered.resolve();
+      return release.promise;
+    };
+    const blocking = provider.prepareProgram({ ...PROGRAM, functionName: 'Blocking', mode: 'code' });
+    await entered.promise;
+    const observer = await (provider as CSharpRuntimeClient).prepareObservation(PROGRAM, undefined, {}, 10);
+    assert.ok(!('status' in observer));
+    const drawing = observer.observe({ program: PROGRAM, inputs: { value: 7 }, attemptToken: 'held' });
+    assert.deepEqual(await whileHeld(drawing, 'the queued observer missed its preparation deadline'),
+      { status: 'refused', reason: 'observer-timeout' });
+    assert.deepEqual(compileOrder(), ['Blocking']);
+    release.resolve();
+    const artifact = await blocking;
+    assert.ok(artifact.kind === 'prepared');
+    await artifact.program.dispose();
+    await observer.dispose();
+    assert.deepEqual(compileOrder(), ['Blocking'], 'expired preparation never reaches the compiler');
+    assert.equal(JournalWorker.instances.filter(({ role }) => role === 'compiler').length, 1);
+  } finally {
+    release.resolve();
+    lease.dispose();
+  }
+});
+
+for (const disposeA of [false, true]) {
+  test(`deferred C# Run B uses a primed spare while A's compiler release is held (dispose A: ${disposeA})`, async () => {
+    JournalWorker.reset();
+    JournalWorker.fastOrdinary = true;
+    const lease = createLease();
+    const runtime = createBrowserRuntimeHost({
+      providers: ['csharp'],
+      providerRegistry: createBrowserRuntimeProviderRegistry([{
+        id: 'csharp-spare-test', languages: ['csharp'], create: () => lease,
+      }]),
+      featureOverrides: { worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true },
+    });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtime);
+    const releaseHeld = Promise.withResolvers<void>();
+    const releaseA = Promise.withResolvers<void>();
+    const observationStarted = Promise.withResolvers<void>();
+    const finishDrawing = Promise.withResolvers<void>();
+    const bundle = (label: 'A' | 'B', value: number) => createAlgorithmJudgeBundle({
+      id: `csharp-spare-${label}`, language: 'csharp',
+      code: PROGRAM.code.replace('Echo', `Echo${label}`),
+      functionName: `Echo${label}`,
+      executionStyle: PROGRAM.executionStyle,
+      cases: [{ id: label, input: { value }, expected: value }],
+    });
+    try {
+      await host.warmLanguage('csharp');
+      JournalWorker.beforeRelease = (key) => {
+        if (key === 'code-EchoA') releaseHeld.resolve();
+        return key.endsWith('-EchoA') ? releaseA.promise : undefined;
+      };
+      JournalWorker.beforeObserve = () => {
+        observationStarted.resolve();
+        return finishDrawing.promise;
+      };
+      const [aBundle, bBundle] = await Promise.all([bundle('A', 7), bundle('B', 8)]);
+      const verdictA = await host.execute({
+        bundle: aBundle, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] },
+      });
+      assert.equal(verdictA.evaluation.cases[0]?.verdict.kind, 'passed');
+      assert.ok(verdictA.executionId);
+      await whileHeld(Promise.all([releaseHeld.promise, observationStarted.promise]), 'A has no pending drawing and release');
+      const drawingA = host.execute({ executionId: verdictA.executionId, tracing: { caseIds: ['A'] } });
+      const outcomeA = drawingA.then((result) => result.evaluation.cases[0]?.attachment?.status, (error: Error) => error.name);
+      if (disposeA) {
+        await whileHeld(host.disposeExecution(verdictA.executionId), 'disposing A waited on the held compiler release');
+      }
+      const b = await whileHeld(host.execute({
+        bundle: bBundle, interactive: true, drawingDelivery: 'after-verdict',
+      }), 'B waited on the held compiler release');
+      assert.equal(b.evaluation.cases[0]?.verdict.kind, 'passed');
+      const executions = JournalWorker.journal.filter(({ type }) => type === 'execute-prepared-code');
+      assert.equal(executions.length, 2);
+      assert.notEqual(executions[0]!.worker, executions[1]!.worker);
+      assert.deepEqual(commandsOf(executions[1]!.worker).slice(0, 4),
+        ['init', 'warmup', 'prime', 'execute-prepared-code'], 'B must acquire warmed spare capacity');
+      assert.equal(JournalWorker.instances.filter(({ role }) => role === 'compiler').length, 1);
+      releaseA.resolve();
+      finishDrawing.resolve();
+      assert.equal(await outcomeA, disposeA ? 'JudgePlanError' : 'drawn');
+    } finally {
+      releaseA.resolve();
+      finishDrawing.resolve();
+      host.dispose();
+    }
+  });
+}
 
 type ObservationLease = {
   observe(call: { program: typeof PROGRAM; inputs: Record<string, unknown>; attemptToken: string; signal?: AbortSignal }): Promise<{ status: string }>;

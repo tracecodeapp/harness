@@ -100,6 +100,10 @@ export interface OrdinaryBatchProgress {
 /** Owns one prepare journal and the observation lifetime for a committed evaluation. */
 export class JudgeObservationSchedule<Result, Expected> {
   private readonly lifetime = new AbortController();
+  private allowObserverCompile!: () => void;
+  private readonly ordinaryAdmission = new Promise<void>((resolve) => {
+    this.allowObserverCompile = resolve;
+  });
   private readonly gate = new RuntimeProgramConcurrencyGate(1);
   private readonly attempts = new Map<string, ObservationAttempt>();
   private readonly admitted = new Set<string>();
@@ -160,6 +164,7 @@ export class JudgeObservationSchedule<Result, Expected> {
 
   admit(caseId: string): void {
     if (this.lifetime.signal.aborted || this.admitted.has(caseId)) return;
+    this.allowObserverCompile();
     this.admitted.add(caseId);
     if (this.selected.has(caseId)) this.attempt(caseId);
   }
@@ -342,6 +347,7 @@ export class JudgeObservationSchedule<Result, Expected> {
     if (this.lifetime.signal.aborted) return;
     this.receipt.dispose();
     this.lifetime.abort(reason);
+    this.allowObserverCompile();
     for (const attempt of this.attempts.values()) attempt.controller.abort(this.lifetime.signal.reason);
     this.attempts.clear();
     const lease = this.lease;
@@ -369,7 +375,10 @@ export class JudgeObservationSchedule<Result, Expected> {
             return observationRefused('observer-prepare');
           }
         }
-        const prepared = this.registration.prepareObservation(program, signal, this.traceOptions).then(async (artifact) => {
+        const waitForOrdinaryAdmission = this.registration.capabilities.observationCompileOrder === 'after-ordinary-compile'
+          ? (compileSignal: AbortSignal) => waitForSignal(this.ordinaryAdmission, AbortSignal.any([signal, compileSignal]))
+          : undefined;
+        const prepared = this.registration.prepareObservation(program, signal, this.traceOptions, waitForOrdinaryAdmission).then(async (artifact) => {
           if ('status' in artifact) return artifact;
           if (signal.aborted) await artifact.dispose();
           else this.lease = artifact;

@@ -123,7 +123,8 @@ export interface CppWorkerAssets {
 export interface CppTrustedCompilerService {
   compileTrusted(
     payload: unknown,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    role?: 'ordinary' | 'observer'
   ): Promise<Record<string, unknown>>;
 }
 
@@ -146,6 +147,10 @@ export interface CppWorkerClientOptions extends CppWorkerAssets {
   externalCompilerUrl?: string;
   /** Trusted compiler authority retained independently of disposable runners. */
   trustedCompilerService?: CppTrustedCompilerService;
+  /** Assigned by the provider that owns this worker, never by a guest message. */
+  trustedCompilerRole?: 'observer';
+  /** Lets an observer runner initialize before it may use the shared compiler. */
+  waitForOrdinaryAdmission?: (signal: AbortSignal) => Promise<void>;
 }
 
 interface PendingCompilerFrameRequest {
@@ -1027,9 +1032,14 @@ export class CppWorkerClient {
     const controller = new AbortController();
     this.activeCompilerRequestControllers.add(controller);
     try {
-      const result = await (
-        this.options.trustedCompilerService ?? this
-      ).compileTrusted(message.payload, controller.signal);
+      const compiler = this.options.trustedCompilerService;
+      if (compiler && this.options.waitForOrdinaryAdmission) {
+        await this.options.waitForOrdinaryAdmission(controller.signal);
+        controller.signal.throwIfAborted();
+      }
+      const result = await (compiler
+        ? compiler.compileTrusted(message.payload, controller.signal, this.options.trustedCompilerRole)
+        : this.compileTrusted(message.payload, controller.signal));
       if (
         controller.signal.aborted ||
         coordinatorGeneration !== this.compilerCoordinatorGeneration ||
@@ -1047,6 +1057,11 @@ export class CppWorkerClient {
         },
         transfer
       );
+    } catch (error) {
+      if (controller.signal.aborted ||
+          coordinatorGeneration !== this.compilerCoordinatorGeneration ||
+          worker !== this.core.currentSession?.worker) return;
+      throw error;
     } finally {
       this.activeCompilerRequestControllers.delete(controller);
     }

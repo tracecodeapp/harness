@@ -8,9 +8,14 @@
 // send a second request while the first caller is still starting it.
 
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { createCppBrowserRuntimeProvider } from '../packages/runtime-cpp/src/browser-runtime-provider';
 import { TraceCCCompilerService } from '../packages/runtime-cpp/src/tracecc-compiler-service';
 import { createTraceCCRuntimeManifest } from '../packages/runtime-cpp/src/tracecc-runtime-assets';
+import { createBrowserRuntimeHost, createBrowserRuntimeProviderRegistry } from '../packages/runtime-browser/src';
+import type { BrowserRuntimeJudgeReceiptLease } from '../packages/runtime-browser/src/browser-runtime-host-internal';
+import { createBrowserJudgeHostFromRuntimeHost } from '../src/internal/browser-judge';
+import { createAlgorithmJudgeBundle } from '../src/judge';
 
 function assertCondition(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -44,6 +49,9 @@ class StrictCompilerWorker {
   static instances: StrictCompilerWorker[] = [];
   /** The next Worker answers its init with the worker's failure reply (`postFailure`). */
   static failNextInit: string | null = null;
+  static autoBoot = false;
+  static beforeCompile: ((source: string) => Promise<void> | undefined) | undefined;
+  static readonly compiles: string[] = [];
 
   onmessage: MessageHandler = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -57,6 +65,7 @@ class StrictCompilerWorker {
 
   constructor(readonly url: string | URL) {
     StrictCompilerWorker.instances.push(this);
+    if (StrictCompilerWorker.autoBoot) this.finishBoot();
     void this.booted.then(() => {
       if (!this.terminated) deliver(this.onmessage, { type: 'worker-ready' });
     });
@@ -95,9 +104,17 @@ class StrictCompilerWorker {
         reply({ error: MISSING_MANIFEST_ERROR }, 'error');
         return;
       }
-      reply(message.type === 'compile-trusted-tracecc'
-        ? { success: true, outputBytes: MINIMAL_WASM.slice(), stdout: '', stderr: '', timings: {} }
-        : { success: true });
+      if (message.type !== 'compile-trusted-tracecc') {
+        reply({ success: true });
+        return;
+      }
+      const project = message.payload?.project as { files?: { contents: string }[] } | undefined;
+      const source = project?.files?.[0]?.contents ?? '';
+      StrictCompilerWorker.compiles.push(source);
+      const finish = () => reply({ success: true, outputBytes: MINIMAL_WASM.slice(), stdout: '', stderr: '', timings: {} });
+      const held = StrictCompilerWorker.beforeCompile?.(source);
+      if (held) void held.then(finish);
+      else finish();
     }
   }
 
@@ -110,6 +127,7 @@ class StrictCompilerWorker {
 class LearnerWorker {
   static instances: LearnerWorker[] = [];
   static compileRequests = 0;
+  static beforeTraceCompileRequest: (() => void) | undefined;
 
   onmessage: MessageHandler = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
@@ -134,15 +152,23 @@ class LearnerWorker {
       return;
     }
     if (message.type === 'prepare-runtime-program') {
+      if (message.payload?.mode === 'trace') LearnerWorker.beforeTraceCompileRequest?.();
       LearnerWorker.compileRequests += 1;
       this.pendingPreparation = message;
       queueMicrotask(() => deliver(this.onmessage, {
         type: 'compile-request',
         requestId: `learner-compile-${LearnerWorker.compileRequests}`,
         protocolToken: message.protocolToken,
-        payload: { driverSource: `driver:${String(message.payload?.code ?? '')}` },
+        payload: { driverSource: `${String(message.payload?.mode)}:${String(message.payload?.code ?? '')}` },
       }));
       return;
+    }
+    if (message.type === 'execute-prepared-runtime-program') {
+      const inputs = message.payload?.inputs as { value: number };
+      reply(message, { success: true, output: inputs.value, consoleOutput: [] });
+    }
+    if (message.type === 'dispose-prepared-runtime-program') {
+      reply(message, { success: true });
     }
     if (message.type === 'compile-response') {
       const preparation = this.pendingPreparation;
@@ -175,8 +201,12 @@ function routedWorkerFactory(url: string | URL): StrictCompilerWorker | LearnerW
 function resetFakes(): void {
   StrictCompilerWorker.instances = [];
   StrictCompilerWorker.failNextInit = null;
+  StrictCompilerWorker.autoBoot = false;
+  StrictCompilerWorker.beforeCompile = undefined;
+  StrictCompilerWorker.compiles.length = 0;
   LearnerWorker.instances = [];
   LearnerWorker.compileRequests = 0;
+  LearnerWorker.beforeTraceCompileRequest = undefined;
 }
 
 /**
@@ -208,6 +238,29 @@ const SHARD = {
   runtimeObjectUrl: '/workers/cpp/tracecc/narrow.o',
 };
 
+function createCppLease(workerFactory?: (url: string | URL) => unknown): BrowserRuntimeJudgeReceiptLease {
+  return createCppBrowserRuntimeProvider().create({
+    assets: {
+      cppWorker: '/workers/cpp-worker.js',
+      cppCompilerFrame: '/workers/cpp-compiler-frame.html',
+      cppCompilerWorker: '/workers/cpp-compiler-worker.js',
+      cppCompilerWasm: COMPILER_URL,
+      cppLinkerWasm: COMPILER_URL,
+      cppSysroot: '/workers/cpp/tracecc/llvm-resources.tar',
+      cppRuntimeHeader: '/workers/cpp/tracecc/tracecode_runtime.hpp',
+      cppCompilerBundle: '',
+      cppCompilerIntegrity: { assets: [{ url: COMPILER_URL, sha256: 'a'.repeat(64) }] },
+      runtimeManifests: { cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc') },
+    } as never,
+    debug: false,
+    workerLifecyclePolicy: 'retire-only',
+    workerFactoryFor: () => workerFactory,
+    preflight: () => async () => undefined,
+    manifestAsset: () => undefined,
+    manifestAssetCollection: () => undefined,
+  } as never) as BrowserRuntimeJudgeReceiptLease;
+}
+
 function createService(
   workerFactory: (url: string | URL) => unknown = (url) => new StrictCompilerWorker(url)
 ): TraceCCCompilerService {
@@ -221,6 +274,284 @@ function createService(
     workerFactory: (url) => workerFactory(url) as never,
   });
 }
+
+async function startCompiler(service: TraceCCCompilerService): Promise<StrictCompilerWorker> {
+  const prewarm = service.prewarmAssets();
+  const worker = StrictCompilerWorker.instances[0]!;
+  worker.finishBoot();
+  await prewarm;
+  return worker;
+}
+
+/** Bound a failed assertion without releasing the compiler barrier first. */
+async function beforeBarrier<T>(pending: Promise<T>): Promise<T> {
+  const expired = Promise.withResolvers<never>();
+  const timer = setTimeout(() => expired.reject(new Error('Request waited for the held compile')), 1_000);
+  try {
+    return await Promise.race([pending, expired.promise]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function createCppJudge(lease: ReturnType<typeof createCppLease>) {
+  const runtime = createBrowserRuntimeHost({
+    providers: ['cpp'],
+    providerRegistry: createBrowserRuntimeProviderRegistry([{
+      id: 'cpp-order-test', languages: ['cpp'], create: () => lease,
+    }]),
+    featureOverrides: { worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true },
+  });
+  return createBrowserJudgeHostFromRuntimeHost(runtime);
+}
+
+test('a cold joined C++ Run initializes its drawing runner before admission but reaches TraceCC with ordinary code first', async (t) => {
+  resetFakes();
+  StrictCompilerWorker.autoBoot = true;
+  const phases: string[] = [];
+  const bridge = Symbol.for('@tracecode/harness/internal/judge-test-bridge/v1');
+  const globals = [
+    ['window', globalThis],
+    ['document', { defaultView: globalThis }],
+    [bridge, { onEvent: ({ phase }: { phase: string }) => phases.push(phase) }],
+  ] as const;
+  for (const [key, value] of globals) {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, key);
+    Object.defineProperty(globalThis, key, { configurable: true, value });
+    t.after(() => {
+      if (previous) Object.defineProperty(globalThis, key, previous);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
+  const host = createCppJudge(createCppLease(routedWorkerFactory));
+  const entered = Promise.withResolvers<void>();
+  const ordinary = Promise.withResolvers<void>();
+  const drawingRunnerReady = Promise.withResolvers<void>();
+  const startedDrawing = Promise.withResolvers<void>();
+  const code = 'int echo(int value) { return value; }';
+  try {
+    const bundle = await createAlgorithmJudgeBundle({
+      id: 'cpp-prepare-order', language: 'cpp', code, functionName: 'echo',
+      cases: [{ id: 'A', input: { value: 7 }, expected: 7 }],
+    });
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (source === `code:${code}`) {
+        entered.resolve();
+        return ordinary.promise;
+      }
+      if (phases.includes('ordinary-case-started')) startedDrawing.resolve();
+      else startedDrawing.reject(new Error('TraceCC observer prepared before ordinary case admission'));
+    };
+    LearnerWorker.beforeTraceCompileRequest = drawingRunnerReady.resolve;
+    void startedDrawing.promise.catch(() => {});
+    const verdict = host.execute({
+      bundle, interactive: true, tracing: { caseIds: ['A'] },
+    });
+    void verdict.catch(() => {});
+    await beforeBarrier(Promise.all([entered.promise, drawingRunnerReady.promise]));
+    assert.deepEqual(StrictCompilerWorker.compiles, [`code:${code}`]);
+    ordinary.resolve();
+    assert.equal((await verdict).evaluation.cases[0]?.verdict.kind, 'passed');
+    await beforeBarrier(startedDrawing.promise);
+    assert.deepEqual(StrictCompilerWorker.compiles, [`code:${code}`, `trace:${code}`]);
+  } finally {
+    ordinary.resolve();
+    host.dispose();
+  }
+});
+
+test('the C++ Judge provider preserves TraceCC when disposing a running drawing before a cache-miss Run', async () => {
+  resetFakes();
+  StrictCompilerWorker.autoBoot = true;
+  const host = createCppJudge(createCppLease(routedWorkerFactory));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const make = (id: string) => createAlgorithmJudgeBundle({
+    id: `cpp-observer-role-${id}`, language: 'cpp',
+    code: `int echo(int value) { /* ${id} */ return value; }`, functionName: 'echo',
+    cases: [{ id, input: { value: 7 }, expected: 7 }],
+  });
+  try {
+    const [a, b] = await Promise.all([make('A'), make('B')]);
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (!source.startsWith('trace:') || !source.includes('/* A */')) return;
+      entered.resolve();
+      return release.promise;
+    };
+    const first = await host.execute({
+      bundle: a, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] },
+    });
+    assert.ok(first.executionId);
+    await beforeBarrier(entered.promise);
+    const compiler = StrictCompilerWorker.instances[0]!;
+    const drawing = host.execute({ executionId: first.executionId, tracing: { caseIds: ['A'] } });
+    const rejectedDrawing = assert.rejects(drawing, { name: 'JudgePlanError' });
+    void rejectedDrawing.catch(() => undefined);
+    await beforeBarrier(host.disposeExecution(first.executionId));
+    const second = host.execute({ bundle: b, interactive: true, drawingDelivery: 'after-verdict' });
+    void second.catch(() => undefined);
+    await beforeBarrier(rejectedDrawing);
+    assert.equal(compiler.terminated, false);
+    assert.deepEqual(StrictCompilerWorker.compiles.map((source) => source.match(/^(code|trace):.*\/\* (.) \*\//)?.slice(1)),
+      [['code', 'A'], ['trace', 'A']]);
+    release.resolve();
+    assert.equal((await beforeBarrier(second)).evaluation.cases[0]?.verdict.kind, 'passed');
+    assert.deepEqual(StrictCompilerWorker.compiles.map((source) => source.match(/^(code|trace):.*\/\* (.) \*\//)?.slice(1)),
+      [['code', 'A'], ['trace', 'A'], ['code', 'B']]);
+    assert.deepEqual(StrictCompilerWorker.instances, [compiler]);
+    assert.equal(compiler.terminated, false);
+  } finally {
+    release.resolve();
+    host.dispose();
+  }
+});
+
+test('a C++ drawing held in the TraceCC queue refuses at its preparation deadline', async () => {
+  resetFakes();
+  StrictCompilerWorker.autoBoot = true;
+  const lease = createCppLease(routedWorkerFactory);
+  const provider = lease.judgeReceiptProviders!.get('cpp')!;
+  const host = createCppJudge({
+    ...lease,
+    judgeReceiptProviders: new Map([['cpp', {
+      ...provider,
+      capabilities: { ...provider.capabilities, observationPrepareDeadlineMs: 20 },
+    }]]),
+  });
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const make = (id: string) => createAlgorithmJudgeBundle({
+    id: `cpp-prepare-deadline-${id}`, language: 'cpp',
+    code: `int echo(int value) { /* ${id} */ return value; }`, functionName: 'echo',
+    cases: [{ id, input: { value: 7 }, expected: 7 }],
+  });
+  try {
+    const [a, b, c] = await Promise.all([make('A'), make('B'), make('C')]);
+    assert.equal((await host.evaluateAlgorithm({ bundle: b })).evaluation.cases[0]?.verdict.kind, 'passed');
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (!source.startsWith('trace:') || !source.includes('/* A */')) return;
+      entered.resolve();
+      return release.promise;
+    };
+    await host.execute({ bundle: a, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] } });
+    await beforeBarrier(entered.promise);
+    const rerun = await beforeBarrier(host.execute({
+      bundle: b, interactive: true, drawingDelivery: 'after-verdict', tracing: { caseIds: ['B'] },
+    }));
+    assert.ok(rerun.executionId);
+    const drawing = await beforeBarrier(host.execute({ executionId: rerun.executionId, tracing: { caseIds: ['B'] } }));
+    const attachment = drawing.evaluation.cases[0]?.attachment;
+    assert.ok(attachment?.status === 'refused' && attachment.reason === 'observer-timeout');
+    release.resolve();
+    const sentinel = await host.execute({ bundle: c, interactive: true, tracing: { caseIds: ['C'] } });
+    assert.equal(sentinel.evaluation.cases[0]?.verdict.kind, 'passed');
+    assert.ok(StrictCompilerWorker.compiles.some((s) => s.startsWith('trace:') && s.includes('/* C */')));
+    assert.equal(StrictCompilerWorker.compiles.some((s) => s.startsWith('trace:') && s.includes('/* B */')), false);
+    assert.equal(StrictCompilerWorker.instances.length, 1);
+    assert.equal(StrictCompilerWorker.instances[0]!.terminated, false);
+  } finally {
+    release.resolve();
+    host.dispose();
+  }
+});
+
+test('TraceCC admits an ordinary compile ahead of a queued observer', async () => {
+  resetFakes();
+  const service = createService();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    await startCompiler(service);
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (source !== 'A observer running') return;
+      entered.resolve();
+      return release.promise;
+    };
+    const a = service.compileTrusted({ driverSource: 'A observer running' }, undefined, 'observer');
+    await entered.promise;
+    const queued = service.compileTrusted({ driverSource: 'A observer queued' }, undefined, 'observer');
+    const b = service.compileTrusted({ driverSource: 'B ordinary' });
+    release.resolve();
+    await Promise.all([a, queued, b]);
+    assert.deepEqual(StrictCompilerWorker.compiles, ['A observer running', 'B ordinary', 'A observer queued']);
+  } finally {
+    release.resolve();
+    service.terminate();
+  }
+});
+
+test('disposing a running and a queued TraceCC observer drops both results without restarting the compiler', async () => {
+  resetFakes();
+  const service = createService();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const extras: Promise<unknown>[] = [];
+  const abortB = new AbortController();
+  try {
+    const worker = await startCompiler(service);
+    StrictCompilerWorker.beforeCompile = (source) => {
+      if (source !== 'A observer running') return;
+      entered.resolve();
+      return release.promise;
+    };
+    const abortA = new AbortController();
+    const a = service.compileTrusted({ driverSource: 'A observer running' }, abortA.signal, 'observer');
+    extras.push(a.catch(() => {}));
+    await entered.promise;
+    const queued = service.compileTrusted({ driverSource: 'A observer queued' }, abortA.signal, 'observer');
+    extras.push(queued.catch(() => {}));
+    const b = service.compileTrusted({ driverSource: 'B ordinary' }, abortB.signal);
+    extras.push(b.catch(() => {}));
+    abortA.abort(new DOMException('A disposed', 'AbortError'));
+    assert.equal(worker.terminated, false, 'disposing A must preserve the worker running its compile');
+    await beforeBarrier(Promise.all([
+      assert.rejects(a, { name: 'AbortError' }),
+      assert.rejects(queued, { name: 'AbortError' }),
+    ]));
+    release.resolve();
+    assert.equal((await b).success, true);
+    assert.equal(worker.terminated, false);
+    assert.equal(StrictCompilerWorker.instances.length, 1);
+    const retry = await service.compileTrusted({ driverSource: 'A observer running' }, undefined, 'observer');
+    assert.notEqual((retry.timings as { artifactCacheHit?: boolean }).artifactCacheHit, true);
+    assert.deepEqual(StrictCompilerWorker.compiles, ['A observer running', 'B ordinary', 'A observer running']);
+  } finally {
+    release.resolve();
+    abortB.abort();
+    service.terminate();
+    await Promise.all(extras);
+  }
+});
+
+test('a same-source TraceCC ordinary rerun hits the cache while an observer compile is held', async () => {
+  resetFakes();
+  const service = createService();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    await startCompiler(service);
+    const ordinary = { driverSource: 'same ordinary source' };
+    await service.compileTrusted(ordinary);
+    StrictCompilerWorker.beforeCompile = () => {
+      entered.resolve();
+      return release.promise;
+    };
+    const observation = service.compileTrusted({ driverSource: 'observer' }, undefined, 'observer');
+    await entered.promise;
+    const repeat = service.compileTrusted(ordinary);
+    try {
+      const result = await beforeBarrier(repeat);
+      assert.equal((result.timings as { artifactCacheHit?: boolean }).artifactCacheHit, true);
+      assert.deepEqual(StrictCompilerWorker.compiles, ['same ordinary source', 'observer']);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([observation, repeat]);
+    }
+  } finally {
+    release.resolve();
+    service.terminate();
+  }
+});
 
 test('a compile sent while an asset prewarm starts the TraceCC compiler Worker waits for its init', async () => {
   resetFakes();
@@ -264,26 +595,7 @@ test('a Run submitted as an aborted first prepare is still starting the compiler
   const originalWorker = globalThis.Worker;
   // @ts-expect-error focused Worker test double
   globalThis.Worker = routedWorkerFactory;
-  const lease = createCppBrowserRuntimeProvider().create({
-    assets: {
-      cppWorker: '/workers/cpp-worker.js',
-      cppCompilerFrame: '/workers/cpp-compiler-frame.html',
-      cppCompilerWorker: '/workers/cpp-compiler-worker.js',
-      cppCompilerWasm: COMPILER_URL,
-      cppLinkerWasm: COMPILER_URL,
-      cppSysroot: '/workers/cpp/tracecc/llvm-resources.tar',
-      cppRuntimeHeader: '/workers/cpp/tracecc/tracecode_runtime.hpp',
-      cppCompilerBundle: '',
-      cppCompilerIntegrity: { assets: [{ url: COMPILER_URL, sha256: 'a'.repeat(64) }] },
-      runtimeManifests: { cpp: createTraceCCRuntimeManifest('/workers/cpp/tracecc') },
-    } as never,
-    debug: false,
-    workerLifecyclePolicy: 'retire-only',
-    workerFactoryFor: () => undefined,
-    preflight: () => async () => undefined,
-    manifestAsset: () => undefined,
-    manifestAssetCollection: () => undefined,
-  } as never);
+  const lease = createCppLease();
   const digest = interceptNextArtifactDigest();
   try {
     const provider = lease.preparedProviders?.get('cpp');
