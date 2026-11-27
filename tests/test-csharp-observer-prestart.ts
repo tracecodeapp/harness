@@ -380,33 +380,56 @@ for (const route of ['joined', 'submit'] as const) {
   });
 }
 
-test('C# uses a fresh ordinary runner if its replacement spare stalls while priming', async () => {
-  JournalWorker.reset();
-  JournalWorker.fastOrdinary = true;
-  const lease = createLease();
-  const finishPrime = Promise.withResolvers<void>();
-  try {
-    const { provider, standby } = await warmPage(lease);
-    const first = await provider.prepareProgram({ ...PROGRAM, mode: 'code' });
-    assert.ok(first.kind === 'prepared' && first.program.mode === 'code');
-    assert.equal((await first.program.executeIsolated({ inputs: { value: 7 } })).kind, 'completed');
-    JournalWorker.primeGate = finishPrime.promise;
-    await first.program.dispose();
-    await settle();
-    const spare = runnerWorkers().find((worker) => worker !== standby && commandsOf(worker.index).includes('prime'));
-    assert.ok(spare, 'the replacement spare reached the held prime');
-    const second = await provider.prepareProgram({ ...PROGRAM, functionName: 'EchoB', mode: 'code' });
-    assert.ok(second.kind === 'prepared' && second.program.mode === 'code');
-    const result = await whileHeld(second.program.executeIsolated({ inputs: { value: 8 } }), 'B waited for the stalled spare');
-    assert.equal(result.kind, 'completed');
-    assert.equal(JournalWorker.journal.filter(({ type }) => type === 'execute-prepared-code').length, 2);
-    assert.ok(!commandsOf(spare.index).includes('execute-prepared-code'));
-    await second.program.dispose();
-  } finally {
-    finishPrime.resolve();
-    lease.dispose();
-  }
-});
+for (const primeFinishesAfterMs of [150, undefined]) {
+  const stalled = primeFinishesAfterMs === undefined;
+  test(stalled
+    ? 'C# uses a fresh ordinary runner if its replacement spare stalls for two seconds'
+    : 'C# uses a spare that finishes priming 150 ms after runner acquisition begins', async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const diagnostics = t.mock.method(console, 'warn', () => {});
+    const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+    JournalWorker.reset();
+    JournalWorker.fastOrdinary = true;
+    const lease = createLease();
+    const finishPrime = Promise.withResolvers<void>();
+    try {
+      const { provider, standby } = await warmPage(lease);
+      const first = await provider.prepareProgram({ ...PROGRAM, mode: 'code' });
+      assert.ok(first.kind === 'prepared' && first.program.mode === 'code');
+      assert.equal((await first.program.executeIsolated({ inputs: { value: 7 } })).kind, 'completed');
+      JournalWorker.primeGate = finishPrime.promise;
+      await first.program.dispose();
+      await nextTurn();
+      const spare = runnerWorkers().find((worker) => worker !== standby && commandsOf(worker.index).includes('prime'));
+      assert.ok(spare, 'the replacement spare reached the held prime');
+      const second = await provider.prepareProgram({ ...PROGRAM, functionName: 'EchoB', mode: 'code' });
+      assert.ok(second.kind === 'prepared' && second.program.mode === 'code');
+      const execution = second.program.executeIsolated({ inputs: { value: 8 } });
+      void execution.catch(() => undefined);
+      await nextTurn();
+      if (primeFinishesAfterMs !== undefined) setTimeout(finishPrime.resolve, primeFinishesAfterMs);
+      t.mock.timers.tick((primeFinishesAfterMs ?? 2_000) - 1);
+      await nextTurn();
+      assert.equal(runnerWorkers().length, 2, 'no fresh runner before the spare finishes or stalls');
+      assert.ok(!commandsOf(spare.index).includes('execute-prepared-code'));
+
+      t.mock.timers.tick(1);
+      await nextTurn();
+      const executions = JournalWorker.journal.filter(({ type }) => type === 'execute-prepared-code');
+      assert.equal(executions.length, 2);
+      assert.equal(runnerWorkers().length, stalled ? 3 : 2);
+      assert.equal(executions[1]?.worker === spare.index, !stalled);
+      assert.equal((await execution).kind, 'completed');
+      const fallbacks = diagnostics.mock.calls.filter(({ arguments: args }) =>
+        args[1]?.phase === 'standby-runner-fallback');
+      assert.equal(fallbacks.length, stalled ? 1 : 0);
+      await second.program.dispose();
+    } finally {
+      finishPrime.resolve();
+      lease.dispose();
+    }
+  });
+}
 
 test('Roslyn admits an ordinary compile ahead of a queued companion', async () => {
   JournalWorker.reset();

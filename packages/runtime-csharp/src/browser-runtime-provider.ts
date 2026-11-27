@@ -7,6 +7,7 @@ import type {
   BrowserRuntimeProvider,
   BrowserRuntimeProviderContext,
 } from '@tracecode/runtime-browser';
+import { logRuntimeDiagnostic } from '@tracecode/runtime-browser/internal';
 import type {
   BrowserRuntimeJudgeReceiptLease,
   JudgeReceiptProvider,
@@ -30,7 +31,8 @@ export interface CSharpBrowserRuntimeProviderOptions {
 }
 
 const FIREFOX_PREPARED_WORKER_IDLE_TIMEOUT_MS = 20_000;
-const STANDBY_ACQUIRE_BUDGET_MS = 75;
+// Detect a stalled spare. This is not a latency budget for normal priming.
+const STANDBY_RUNNER_STALL_MS = 2_000;
 const STANDBY_RETRY_INITIAL_DELAY_MS = 250;
 const STANDBY_RETRY_MAX_DELAY_MS = 5_000;
 const DEFAULT_PREPARED_BATCH_CONCURRENCY = 4;
@@ -297,12 +299,15 @@ export function createCSharpBrowserRuntimeProvider(
         },
         async createRunner(tier: CSharpPreparedRunnerTier): Promise<CSharpWorkerClient> {
           const epoch = capacityEpoch;
+          let standbyOutcome: 'ready' | 'warmup-failed' | 'stalled' | undefined;
           if (tier === 'algorithm-fast' && !standbyRunner && standbyWarmup) {
             let timer: ReturnType<typeof setTimeout> | undefined;
             try {
-              await Promise.race([
-                standbyWarmup.catch(() => undefined),
-                new Promise<void>((resolve) => { timer = setTimeout(resolve, STANDBY_ACQUIRE_BUDGET_MS); }),
+              standbyOutcome = await Promise.race([
+                standbyWarmup.then(() => 'ready' as const, () => 'warmup-failed' as const),
+                new Promise<'stalled'>((resolve) => {
+                  timer = setTimeout(() => resolve('stalled'), STANDBY_RUNNER_STALL_MS);
+                }),
               ]);
             } finally {
               clearTimeout(timer);
@@ -314,8 +319,24 @@ export function createCSharpBrowserRuntimeProvider(
           if (epoch !== capacityEpoch) {
             throw new Error('C# browser runtime provider was reset during runner acquisition.');
           }
-          const runner = standbyRunner ?? createRunnerClient();
-          if (runner === standbyRunner) standbyRunner = undefined;
+          if (standbyRunner) {
+            const runner = standbyRunner;
+            standbyRunner = undefined;
+            return runner;
+          }
+          const runner = createRunnerClient();
+          if (standbyOutcome !== undefined) {
+            logRuntimeDiagnostic('warn', {
+              component: 'CSharpBrowserRuntimeProvider',
+              runtime: 'csharp',
+              phase: 'standby-runner-fallback',
+              message: 'C# started a fresh runner after waiting for a spare.',
+              detail: {
+                reason: standbyOutcome === 'ready' ? 'already-claimed' : standbyOutcome,
+                stallMs: STANDBY_RUNNER_STALL_MS,
+              },
+            });
+          }
           return runner;
         },
         createObserverRunner: createRunnerClient,
