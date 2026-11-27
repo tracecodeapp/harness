@@ -394,10 +394,11 @@ class JavaScriptWorkerConnection {
   prepareEffect<T>(
     type: 'prepare-execution' | 'prepare-observation',
     payload: unknown,
-    observerSignal?: AbortSignal,
+    { observerSignal, onRequestRegistered }: { observerSignal?: AbortSignal; onRequestRegistered?: () => void } = {},
   ): Effect.Effect<T, Error> {
     return this.core.sendMessageEffectWithOptions<T>(type, payload, {
       timeoutMs: null,
+      onRequestRegistered,
       scheduleReply: (reply) => Effect.flatten(Effect.tryPromise({
         try: (signal) => this.preparationQueue.run(
           observerSignal ? AbortSignal.any([signal, observerSignal]) : signal,
@@ -1000,6 +1001,7 @@ export class JavaScriptWorkerClient {
       const operation =
         call.mode === 'trace' ? 'execute-with-tracing' : 'execute-code';
       const coordinator = this.getCoordinator(generation);
+      let posted = false;
       const reply = await coordinator.core.runClientEffect(
         coordinator.prepareEffect<PreparedExecutionReply>(
           'prepare-execution',
@@ -1015,8 +1017,10 @@ export class JavaScriptWorkerClient {
                 : {}),
             },
           },
+          { onRequestRegistered: () => { posted = true; } },
         ),
-        call.signal
+        call.signal,
+        () => posted,
       );
       if (
         !reply ||
@@ -1301,7 +1305,7 @@ export class JavaScriptWorkerClient {
       // Cancelling the attempt removes a queued request or detaches from a
       // posted one. Passing its signal to runClientEffect closes the session.
       const work = coordinator.core.runClientEffect(
-        coordinator.prepareEffect('prepare-observation', { ...payload, options: traceOptions }, signal),
+        coordinator.prepareEffect('prepare-observation', { ...payload, options: traceOptions }, { observerSignal: signal }),
       );
       preparedExecution = await detachPreparedRuntimeRequest(work, signal);
       signal?.throwIfAborted();

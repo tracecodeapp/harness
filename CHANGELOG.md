@@ -34,8 +34,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 - JavaScript and TypeScript Runs give ordinary preparations priority over
   queued drawing preparations. A new Run can wait for one drawing preparation
-  already posted to the shared coordinator. Cancelling a drawing drops its
-  queued request or discards its reply and keeps the coordinator running.
+  already in progress. Cancelling a drawing drops it if it hasn't started,
+  or lets it finish and discards it, without restarting anything.
 - C++ and C# Runs give ordinary compiles priority over queued drawing
   compiles. A new Run can wait for one drawing compile already in progress.
   Cancelling a drawing leaves the compiler running, and a C++ rerun can use
