@@ -1,5 +1,31 @@
 import { probeHost, probeProvider, compareJudgeValues } from 'probe-judge';
 
+export async function measureHostControls() {
+  const url = URL.createObjectURL(new Blob(['onmessage = () => postMessage(null)'], { type: 'text/javascript' }));
+  const worker = new Worker(url);
+  try {
+    const ping = () => new Promise((resolve) => {
+      worker.addEventListener('message', resolve, { once: true });
+      worker.postMessage(null);
+    });
+    await ping();
+    const echoRoundTripMs = [];
+    const timerArmCancelMs = [];
+    for (let i = 0; i < 20; i++) {
+      const start = performance.now();
+      await ping();
+      echoRoundTripMs.push(performance.now() - start);
+      const timerStart = performance.now();
+      for (let j = 0; j < 1_000; j++) clearTimeout(setTimeout(() => {}, 60_000));
+      timerArmCancelMs.push((performance.now() - timerStart) / 1_000);
+    }
+    return { echoRoundTripMs, timerArmCancelMs };
+  } finally {
+    worker.terminate();
+    URL.revokeObjectURL(url);
+  }
+}
+
 export function openM1(language) {
   if (crossOriginIsolated) throw new Error('The rig uses a non-isolated document');
   const host = probeHost({ assetBaseUrl: '/workers', providers: [language] });
@@ -63,7 +89,15 @@ export function openM1(language) {
           const elapsedMs = sample ? performance.now() - started : undefined;
           rows[arm] = {
             verdicts, passed: verdicts.length === inputs.length && verdicts.every((row) => row.passed),
-            ...(sample && { elapsedMs }),
+            ...(sample && {
+              elapsedMs,
+              combinedSetup: outputs.map(({ timings }) => ({
+                ...(Number.isFinite(timings?.classLoadMs) && { classLoadMs: timings.classLoadMs }),
+                ...(language === 'csharp' && Number.isFinite(timings?.hostCallMs) && {
+                  managedCallMs: timings.hostCallMs,
+                }),
+              })),
+            }),
           };
         } catch (error) {
           rows[arm] = { passed: false, error: error.name, message: error.message };

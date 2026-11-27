@@ -171,6 +171,7 @@ export async function validateWindow(config, probeCommit) {
   const dry = JSON.parse(await readFile(config.dryReceipt, 'utf8'));
   assert.equal(dry.probeCommit, probeCommit, 'Dry-run receipt must match the sampling commit');
   assert.equal(dry.browser, '145.0.7632.6');
+  assert.equal(dry.rigCommit, config.rigCommit);
   assert.equal(dry.heavySha256, config.heavySha256);
   assert.equal(dry.m2Pass, true, 'M2 correctness receipts must pass before sampling');
   for (const language of languages) assert.equal(typeof dry.m1[language], 'boolean');
@@ -189,7 +190,28 @@ export async function collectWindow(browser, sites, output, heavy, dry) {
     tarballs: Object.fromEntries(Object.entries(releases).map(([version, { sha256 }]) => [version, sha256])),
   });
   try {
-    await collectM1(browser, sites.m1, heavy, dry.m1, starts + 45 * 60_000, record);
+    const m1Deadline = starts + 45 * 60_000;
+    await collectM1(browser, sites.m1, heavy, dry.m1, m1Deadline, record);
+    if (await waitForQuiet(Math.min(Date.now() + 15_000, m1Deadline))) {
+      const control = await browser.newContext();
+      try {
+        const page = await control.newPage();
+        await page.goto(sites.m1);
+        const before = loadavg()[0];
+        const diagnostic = await bounded(Math.min(Date.now() + 10_000, m1Deadline), () => page.evaluate(async () => {
+          const { measureHostControls } = await import('/entry.mjs');
+          return measureHostControls();
+        }));
+        const after = loadavg()[0];
+        if (diagnostic && before <= loadGate && after <= loadGate) {
+          await record({ probe: 'm1-controls', before, after, ...diagnostic });
+        }
+      } catch (error) {
+        await record({ probe: 'm1-controls', ...failure(error) });
+      } finally {
+        await control.close();
+      }
+    }
   } catch (error) {
     // A partial M1 must leave the M2 phase runnable in the same window.
     await record({ probe: 'm1', ...failure(error) });

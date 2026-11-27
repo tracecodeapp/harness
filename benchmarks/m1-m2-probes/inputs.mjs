@@ -47,6 +47,13 @@ export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex'
 export const languages = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
 const binaryCatalog = '/root/ci/parity-app-data';
 const extensions = { javascript: 'js', typescript: 'ts', java: 'java', csharp: 'cs', cpp: 'cpp' };
+const binarySourceHashes = {
+  cpp: '629c991e25777d29e32215e8858137d8ad39a65e3601822f4d56eeaeac5f979b',
+  csharp: '7f3c1af1a75236e48a006414d051d4d0bf65f9981fc5a8d1210882d6dba540bb',
+  java: '2e3dc0131ec3bb8392a8b7d552d008c39e63cbb94f535856f9b2ff4abcad6ac5',
+  javascript: '431cf85191b037c7328cfcef3c21aa9528bd7b972bc0af3cfc0d81a9712988d5',
+  typescript: 'bdeb5353408e46aeb6894f0f3d3f3f198877e7ec9d8dd327575103209714f810',
+};
 
 export async function loadBinarySearch(language, count) {
   const file = join(binaryCatalog, 'problems/binary-search.json');
@@ -58,6 +65,7 @@ export async function loadBinarySearch(language, count) {
     join(binaryCatalog, `reference-solutions/${language}/practice/binary-search.${extensions[language]}`),
     'utf8',
   );
+  if (language !== 'python') assert.equal(sha256(source), binarySourceHashes[language], language);
   return {
     code: source,
     functionName: problem.functionName,

@@ -48,7 +48,7 @@ export function packedM1Probe() {
         }
       ),
 `);
-          contents += '\nexport { createBrowserRuntimeHost2 as probeHost, getBrowserRuntimeHostPreparedProvider as probeProvider, compareJudgeValues };\n';
+          contents += '\nexport { createBrowserRuntimeHost2 as probeHost, getBrowserRuntimeHostPreparedProvider as probeProvider };\n';
         } else if (path.endsWith('/chunk-6GZXRECY.js')) {
           contents = replaceOnce(contents, 'const executeCodeCases = async (execution) => {', '        const executeTraceCases', () => (
             'const executeCodeCases = async (execution) => client.executePreparedCodeBatch(await currentHandle(), execution);\n'

@@ -166,8 +166,9 @@ async function dryM1(browser, heavy, site) {
               await page.evaluate(() => globalThis.probeM1.prime());
             const pair = prime === 'completed' &&
               await page.evaluate(() => globalThis.probeM1.pair('batch', false, true));
-            console.log(JSON.stringify({ probe: 'm1', language, kind, preparation, prime, pair }));
-            allPassed &&= Boolean(pair?.pass);
+            const transport = pair && checkTransport(language, fixture.cases.length, pair);
+            console.log(JSON.stringify({ probe: 'm1', language, kind, preparation, prime, pair, transport }));
+            allPassed &&= Boolean(pair?.pass && transport?.pass);
           } catch (error) {
             allPassed = false;
             console.log(JSON.stringify({ probe: 'm1', language, kind, error: error.name, message: error.message }));
@@ -184,6 +185,28 @@ async function dryM1(browser, heavy, site) {
     server.close();
   }
   return passed;
+}
+
+const executionVerbs = {
+  python: ['execute-prepared-program-batch', 'execute-prepared-program'],
+  javascript: ['execute-batch', 'execute-batch'],
+  typescript: ['execute-batch', 'execute-batch'],
+  java: ['execute-prepared-runtime-program-batch', 'execute-prepared-runtime-program'],
+  csharp: ['p0f-execute-prepared-code-batch', 'execute-prepared-code'],
+  cpp: ['execute-prepared-runtime-program-batch', 'execute-prepared-runtime-program'],
+};
+
+function checkTransport(language, count, pair) {
+  const [batchVerb, singletonVerb] = executionVerbs[language];
+  const executionOnly = (arm) => arm.transport.filter(({ type }) =>
+    type === batchVerb || type === singletonVerb);
+  const batch = executionOnly(pair.batch);
+  const singleton = executionOnly(pair.singleton);
+  const warmWorkerIds = new Set([...batch, ...singleton].map(({ worker }) => worker));
+  const pass = batch.length === 1 && batch.every(({ type }) => type === batchVerb) &&
+    singleton.length === count && singleton.every(({ type }) => type === singletonVerb) &&
+    (!['csharp', 'cpp'].includes(language) || warmWorkerIds.size === 1);
+  return { pass, batch: batch.length, singleton: singleton.length, workers: warmWorkerIds.size };
 }
 
 const heavy = config.heavyPlan ? await loadHeavyFixtures(config.heavyPlan, config.heavySha256) : undefined;

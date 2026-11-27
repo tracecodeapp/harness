@@ -87,6 +87,11 @@ export function score(rows) {
     }
   }
   lines.push('', 'C# overhead measures dispatch and transport. Both arms use a fresh load context per case.');
+  const controls = rows.find((row) => row.probe === 'm1-controls' && row.echoRoundTripMs);
+  if (controls) {
+    lines.push('', `Desktop worker echo ${ms(median(controls.echoRoundTripMs))} ms per null-payload round trip. Timer arm and cancel ${ms(median(controls.timerArmCancelMs))} ms per timer.`);
+  }
+  lines.push('', 'The published receipts do not isolate a fresh-state reset from the managed or worker execution. A reset-only cost is unavailable.');
   lines.push('', '## M2', '',
     '| Case | Profile | Version | Admissible | Median total (ms) | Compile (ms) | Case (ms) | Outside (ms) | Cell decision |',
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
