@@ -1,0 +1,283 @@
+// The 0.22 phone CPU cap (lane P27-F). Chromium refuses CDP CPU throttling on Worker targets, so
+// the phone profile runs its own Chromium in a transient systemd scope whose cgroup v2 cpu.max caps
+// the CPU time of every thread in the browser's process tree: the page main thread, DedicatedWorker
+// threads and V8 background threads alike.
+//
+// Safety rules (PHASE1-CONTRACTS.md, P27-F, conditions 1-5 and R1-R7):
+// - The scope is created only by `systemd-run --scope`, as the exec of Chromium itself, so only the
+//   rig's Chromium is ever inside it. Nothing here does mkdir in, or writes any file to, a cgroup.
+// - The parent slice must already delegate `cpu`; nothing changes cgroup.subtree_control anywhere.
+// - Every launch snapshots each pre-existing cgroup on the path before and after, and they must match.
+// - The scope is removed with `systemctl kill`; a detached watchdog does the same if the launcher dies.
+import assert from 'node:assert/strict';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, openSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+export const phoneCap022 = Object.freeze({
+  // One phone thread is modelled as a quarter of one desktop core. The CDP 4x main-thread figure
+  // (P27-C: 4.04x) is the calibration target; the dry run keeps the measured ratios with its receipt.
+  factor: 4,
+  cpuQuotaPercent: 25,
+  periodUs: 10_000,
+  quotaUs: 2_500,
+  slice: 'system.slice',
+  unitPrefix: 'h022-p27f-',
+  envMarker: 'H022_P27F_RUN',
+});
+export const workerThrottle022 = `cgroup-cpu.max ${phoneCap022.quotaUs} ${phoneCap022.periodUs}`;
+// Stamp for CPU-4 cells measured with the CDP throttle alone, which does not reach Workers.
+export const cdpOnlyWorkerThrottle = 'none';
+
+const cgroupRoot = '/sys/fs/cgroup';
+const runIdPattern = /^[a-z0-9][a-z0-9-]{0,47}$/u;
+const watchdog = fileURLToPath(new URL('./phone-cgroup-watchdog-022.sh', import.meta.url));
+
+// The CDP rate for a page. A capped phone page gets rate 1, so nothing is throttled twice.
+export function cdpRate022(cpu, capped) {
+  return capped && cpu !== 1 ? 1 : cpu;
+}
+
+export function unitName022(runId) {
+  assert.match(runId, runIdPattern, 'Rig cgroup run id must be a lowercase token');
+  return `${phoneCap022.unitPrefix}${runId}.scope`;
+}
+
+export function newRunId022() {
+  return `${new Date().toISOString().replace(/[-:]/gu, '').replace(/\..*$/u, '').toLowerCase()}-${process.pid}`;
+}
+
+function systemctl(args, { allowFailure = false } = {}) {
+  const result = spawnSync('systemctl', ['--no-pager', ...args], { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  if (!allowFailure) assert.equal(result.status, 0, `systemctl ${args.join(' ')}: ${result.stderr}`);
+  return result;
+}
+
+function loadState(unit) {
+  return systemctl(['show', '-p', 'LoadState', '--value', unit], { allowFailure: true }).stdout.trim();
+}
+
+// Every rig unit and rig cgroup on the host, from any run.
+export function leftovers022() {
+  const units = systemctl(['list-units', '--all', '--plain', '--no-legend', `${phoneCap022.unitPrefix}*`])
+    .stdout.split('\n').map((line) => line.trim().split(/\s+/u)[0]).filter(Boolean);
+  const found = spawnSync('find', [cgroupRoot, '-xdev', '-type', 'd', '-name', `${phoneCap022.unitPrefix}*`],
+    { encoding: 'utf8' });
+  if (found.error) throw found.error;
+  const cgroups = found.stdout.split('\n').filter(Boolean);
+  return { units, cgroups };
+}
+
+export function assertNoLeftovers022(when) {
+  const left = leftovers022();
+  assert.ok(!left.units.length && !left.cgroups.length,
+    `Leftover rig cgroup ${when}: ${JSON.stringify(left)}`);
+  return { when, units: 0, cgroups: 0, listing: `find ${cgroupRoot} -name '${phoneCap022.unitPrefix}*': empty` };
+}
+
+const readTrim = (file) => readFileSync(file, 'utf8').trim();
+
+// R2: the pre-existing cgroups on the path to the scope, read only.
+export function snapshotPath022(slice = phoneCap022.slice) {
+  return ['/', `/${slice}`].map((path) => {
+    const dir = join(cgroupRoot, path);
+    return {
+      path,
+      subtreeControl: readTrim(join(dir, 'cgroup.subtree_control')),
+      cpuMax: readTrim(join(dir, 'cpu.max')),
+      cpuWeight: readTrim(join(dir, 'cpu.weight')),
+      // Processes directly in this cgroup (not its descendants, which other teams start and stop).
+      processes: readTrim(join(dir, 'cgroup.procs')).split('\n').filter(Boolean).length,
+    };
+  });
+}
+
+export function assertLayout022(slice = phoneCap022.slice) {
+  const path = snapshotPath022(slice);
+  for (const cgroup of path) {
+    assert.ok(cgroup.subtreeControl.split(' ').includes('cpu'),
+      `${cgroup.path} does not delegate cpu; the rig must not change subtree_control (take the fallback)`);
+  }
+  assert.equal(path[1].processes, 0, `${slice} holds processes directly`);
+  return path;
+}
+
+function readProc(pid, file) {
+  try {
+    return readFileSync(`/proc/${pid}/${file}`);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return undefined;
+    throw error;
+  }
+}
+
+function describeProcess(pid, unit) {
+  let exe;
+  try {
+    exe = readlinkSync(`/proc/${pid}/exe`);
+  } catch {
+    return { pid, exited: true };
+  }
+  const argv = (readProc(pid, 'cmdline') ?? Buffer.alloc(0)).toString('utf8').split('\0').filter(Boolean);
+  const env = (readProc(pid, 'environ') ?? Buffer.alloc(0)).toString('utf8').split('\0');
+  const type = argv.find((arg) => arg.startsWith('--type='))?.slice('--type='.length) ?? 'browser';
+  const threads = Number(/^Threads:\s+(\d+)$/mu.exec(readProc(pid, 'status')?.toString('utf8') ?? '')?.[1] ?? 0);
+  return { pid, exe, type, threads, marker: env.includes(`${phoneCap022.envMarker}=${unit}`) };
+}
+
+// R3: every PID in the scope is the rig's Chromium (and never the Node driver).
+export function membership022(cgroup, unit, chromiumDir, { requireRenderer = false } = {}) {
+  const dir = join(cgroupRoot, cgroup);
+  const pids = readTrim(join(dir, 'cgroup.procs')).split('\n').filter(Boolean).map(Number);
+  const processes = pids.map((pid) => describeProcess(pid, unit)).filter(({ exited }) => !exited);
+  assert.ok(processes.length > 0, `No live process in ${cgroup}`);
+  for (const entry of processes) {
+    assert.notEqual(entry.pid, process.pid, 'The Node driver is inside the rig cgroup');
+    assert.ok(entry.exe.startsWith(chromiumDir + '/'), `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
+    assert.ok(entry.marker, `Process without the rig marker in ${cgroup}: ${JSON.stringify(entry)}`);
+  }
+  if (requireRenderer) {
+    assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
+  }
+  const threads = readTrim(join(dir, 'cgroup.threads')).split('\n').filter(Boolean).length;
+  return { cgroup, at: new Date().toISOString(), processes, threads };
+}
+
+// Processes anywhere on the host that carry this run's marker.
+export function markedProcesses022(unit) {
+  const ls = spawnSync('ls', ['/proc'], { encoding: 'utf8' });
+  return ls.stdout.split('\n').filter((name) => /^\d+$/u.test(name)).map(Number)
+    .filter((pid) => pid !== process.pid)
+    .filter((pid) => (readProc(pid, 'environ') ?? Buffer.alloc(0)).toString('utf8').split('\0')
+      .includes(`${phoneCap022.envMarker}=${unit}`));
+}
+
+// Kill and wait for one rig unit to disappear. Only ever called with this run's own unit name.
+export async function removeUnit022(unit, { timeoutMs = 20_000 } = {}) {
+  assert.ok(unit.startsWith(phoneCap022.unitPrefix) && unit.endsWith('.scope'));
+  const started = Date.now();
+  let killed = false;
+  while (Date.now() - started < timeoutMs) {
+    const state = loadState(unit);
+    const cgroupDir = join(cgroupRoot, phoneCap022.slice, unit);
+    if (state === 'not-found' && !existsSync(cgroupDir) && !markedProcesses022(unit).length) {
+      return { unit, killed, removedAfterMs: Date.now() - started };
+    }
+    if (state === 'loaded') {
+      systemctl(['kill', '--signal=SIGKILL', unit], { allowFailure: true });
+      killed = true;
+    }
+    await delay(100);
+  }
+  throw new Error(`Rig unit ${unit} was not removed within ${timeoutMs} ms`);
+}
+
+function removeUnitSync(unit) {
+  if (loadState(unit) === 'loaded') systemctl(['kill', '--signal=SIGKILL', unit], { allowFailure: true });
+}
+
+async function waitForScope(unit, timeoutMs = 30_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const shown = systemctl(['show', '-p', 'LoadState,ActiveState,ControlGroup', unit], { allowFailure: true })
+      .stdout.trim().split('\n').map((line) => line.split('='));
+    const props = Object.fromEntries(shown.map(([key, ...value]) => [key, value.join('=')]));
+    if (props.LoadState === 'loaded' && props.ActiveState === 'active' && props.ControlGroup) return props;
+    await delay(50);
+  }
+  throw new Error(`Rig scope ${unit} did not start`);
+}
+
+const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+// Launches Chromium inside a new transient scope. `launchOptions` must be the desktop launch options.
+export async function launchCapped022(chromium, { runId, workDir, launchOptions }) {
+  const unit = unitName022(runId);
+  const slice = phoneCap022.slice;
+  const noneBefore = assertNoLeftovers022('before launch');
+  const before = assertLayout022(slice);
+  const real = chromium.executablePath();
+  assert.ok(real && existsSync(real), 'Chromium executable not found');
+  const chromiumDir = dirname(real);
+  const wrapper = join(workDir, `${unit}-chromium.sh`);
+  // systemd-run --scope registers its own PID as the scope and then execs Chromium, so the
+  // Playwright pipe, arguments and environment pass through unchanged.
+  writeFileSync(wrapper, [
+    '#!/bin/sh',
+    `export ${phoneCap022.envMarker}=${shellQuote(unit)}`,
+    `exec systemd-run --quiet --scope --collect --slice=${slice} --unit=${shellQuote(unit)} \\`,
+    `  -p CPUQuota=${phoneCap022.cpuQuotaPercent}% -p CPUQuotaPeriodSec=${phoneCap022.periodUs / 1000}ms \\`,
+    `  -- ${shellQuote(real)} "$@"`,
+    '',
+  ].join('\n'), { flag: 'wx' });
+  chmodSync(wrapper, 0o755);
+  const watchdogLog = openSync(join(workDir, `${unit}-watchdog.log`), 'a');
+  const guard = spawn('bash', [watchdog, String(process.pid), unit], {
+    detached: true, stdio: ['ignore', watchdogLog, watchdogLog],
+  });
+  guard.unref();
+  const onExit = () => removeUnitSync(unit);
+  process.on('exit', onExit);
+
+  let browser;
+  try {
+    browser = await chromium.launch({ ...launchOptions, executablePath: wrapper });
+    const props = await waitForScope(unit);
+    const cgroup = props.ControlGroup;
+    assert.equal(cgroup, `/${slice}/${unit}`, 'Rig scope is not where the layout check expected it');
+    const cpuMax = readTrim(join(cgroupRoot, cgroup, 'cpu.max'));
+    assert.equal(cpuMax, `${phoneCap022.quotaUs} ${phoneCap022.periodUs}`, 'Unexpected cpu.max');
+    const atLaunch = membership022(cgroup, unit, chromiumDir);
+    const during = snapshotPath022(slice);
+    assert.deepEqual(during, before, 'A pre-existing cgroup changed when the scope was created');
+    const receipt = {
+      mechanism: 'cgroup-v2 cpu.max via systemd-run --scope', workerThrottle: workerThrottle022,
+      factor: phoneCap022.factor, cpuQuotaPercent: phoneCap022.cpuQuotaPercent,
+      unit, slice, cgroup, cpuMax, chromium: real, wrapper, watchdogPid: guard.pid,
+      noneBefore, snapshotBefore: before, membershipAtLaunch: atLaunch,
+    };
+    let removed;
+    return {
+      browser, unit, cgroup, receipt,
+      membership: (options) => membership022(cgroup, unit, chromiumDir, options),
+      async remove() {
+        if (removed) return removed;
+        await browser.close().catch(() => {});
+        const removal = await removeUnit022(unit);
+        const after = snapshotPath022(slice);
+        assert.deepEqual(after, before, 'A pre-existing cgroup differs after the run');
+        removed = { ...removal, snapshotAfter: after, snapshotsIdentical: true,
+          noneAfter: assertNoLeftovers022('after removal') };
+        process.off('exit', onExit);
+        return removed;
+      },
+    };
+  } catch (error) {
+    await browser?.close().catch(() => {});
+    await removeUnit022(unit).catch(() => {});
+    process.off('exit', onExit);
+    throw error;
+  }
+}
+
+// CLI used by the launch scripts: `assert-clean`, `layout`, and `cleanup <run-id>`.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [operation, runId] = process.argv.slice(2);
+  if (operation === 'assert-clean') {
+    console.log(JSON.stringify({ kind: 'rig-cgroup-clean', ...assertNoLeftovers022('at start') }));
+  } else if (operation === 'layout') {
+    const path = assertLayout022();
+    const own = readTrim('/proc/self/cgroup');
+    console.log(JSON.stringify({ kind: 'rig-cgroup-layout', driverCgroup: own, path,
+      systemd: execFileSync('systemctl', ['--version'], { encoding: 'utf8' }).split('\n')[0] }));
+  } else if (operation === 'cleanup') {
+    const unit = unitName022(runId);
+    console.log(JSON.stringify({ kind: 'rig-cgroup-cleanup', ...await removeUnit022(unit) }));
+  } else {
+    console.error('Usage: phone-cgroup-022.mjs assert-clean | layout | cleanup <run-id>');
+    process.exitCode = 2;
+  }
+}
