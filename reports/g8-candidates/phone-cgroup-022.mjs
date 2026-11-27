@@ -124,7 +124,9 @@ function describeProcess(pid) {
   try {
     exe = readlinkSync(`/proc/${pid}/exe`);
   } catch {
-    return { pid, exited: true };
+    // A zombie keeps its PID and parent until it is reaped, but its exe link is gone.
+    const stat = statFields(pid);
+    return stat?.[0] === 'Z' ? { pid, ppid: Number(stat[1]), startTime: stat[19], zombie: true } : { pid, exited: true };
   }
   const stat = statFields(pid);
   if (!stat) return { pid, exited: true };
@@ -147,16 +149,20 @@ function readMembership(cgroup, chromiumDir, requireRenderer) {
   const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
   for (const entry of processes) {
     assert.notEqual(entry.pid, process.pid, 'The Node driver is inside the rig cgroup');
-    assert.ok(entry.exe.startsWith(chromiumDir + '/'), `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
+    assert.ok(entry.zombie || entry.exe.startsWith(chromiumDir + '/'),
+      `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
     let root = entry;
     for (let hops = 0; byPid.has(root.ppid) && hops < 64; hops++) root = byPid.get(root.ppid);
+    const suffix = entry.zombie ? ', exited and awaiting reap' : '';
     if (root.ppid === process.pid) {
       entry.browserPid = root.pid;
-      entry.mappedBy = root === entry ? 'browser spawned by this driver' : `descendant of browser ${root.pid}`;
+      entry.mappedBy = (root === entry ? 'browser spawned by this driver' : `descendant of browser ${root.pid}`) + suffix;
     } else {
-      assert.equal(root.ppid, 1,
-        `Process in ${cgroup} descends from a process outside it: ${JSON.stringify(entry)}`);
-      entry.mappedBy = `Chromium helper daemonised from the browser (${basename(entry.exe)})`;
+      const parent = root.ppid;
+      assert.equal(parent, 1, `Process in ${cgroup} descends from a process outside it: ${JSON.stringify(entry)}; ` +
+        `parent ${parent}: ${JSON.stringify({ stat: statFields(parent)?.slice(0, 2),
+          cgroup: readProc(parent, 'cgroup')?.toString('utf8').trim() })}`);
+      entry.mappedBy = `Chromium helper daemonised from the browser (${entry.zombie ? 'zombie' : basename(entry.exe)})${suffix}`;
     }
   }
   const browsers = new Set(processes.map(({ browserPid }) => browserPid).filter(Boolean));
