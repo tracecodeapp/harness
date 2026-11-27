@@ -43,6 +43,74 @@ const m2Catalog = [
 
 export const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
+export const languages = ['python', 'javascript', 'typescript', 'java', 'csharp', 'cpp'];
+const binaryCatalog = '/root/ci/parity-app-data';
+const extensions = { javascript: 'js', typescript: 'ts', java: 'java', csharp: 'cs', cpp: 'cpp' };
+
+export async function loadBinarySearch(language, count) {
+  const file = join(binaryCatalog, 'problems/binary-search.json');
+  const bytes = await readFile(file);
+  assert.equal(sha256(bytes), '886dd0ed83a69ba11151fdf9c83c9f74132bd708a7d9dc2f864ee1e1468d0942');
+  const problem = JSON.parse(bytes);
+  assert.equal(problem.testCases.length, 10);
+  const source = language === 'python' ? problem.solutionCode : await readFile(
+    join(binaryCatalog, `reference-solutions/${language}/practice/binary-search.${extensions[language]}`),
+    'utf8',
+  );
+  return {
+    code: source,
+    functionName: problem.functionName,
+    executionStyle: problem.executionStyle ?? 'function',
+    cases: Array.from({ length: count }, (_, index) => {
+      const { input, expected } = problem.testCases[index % 10];
+      return { id: String(index + 1), input, expected };
+    }),
+  };
+}
+
+const canaryPrograms = {
+  python: 'marker = 0\ndef canary(write):\n    global marker\n    if write:\n        marker = 17\n    return marker\n',
+  javascript: 'let marker = 0; function canary(write) { if (write) marker = 17; return marker; }',
+  typescript: 'let marker: number = 0; function canary(write: number): number { if (write) marker = 17; return marker; }',
+  java: 'class Solution { static int marker = 0; public int canary(int write) { if (write != 0) marker = 17; return marker; } }',
+  csharp: 'public class Solution { static int marker = 0; public int Canary(int write) { if (write != 0) marker = 17; return marker; } }',
+  cpp: 'class Solution { public: int canary(int write) { static int marker = 0; if (write) marker = 17; return marker; } };',
+};
+
+export function mutationCanary(language) {
+  return {
+    code: canaryPrograms[language],
+    functionName: language === 'csharp' ? 'Canary' : 'canary',
+    executionStyle: ['java', 'csharp', 'cpp'].includes(language) ? 'solution-method' : 'function',
+    cases: [
+      { id: 'write', input: { write: 1 }, expected: 17 },
+      { id: 'read', input: { write: 0 }, expected: 0 },
+    ],
+  };
+}
+
+export async function loadHeavyFixtures(path, expectedSha256) {
+  assert.match(expectedSha256, /^[0-9a-f]{64}$/);
+  const bytes = await readFile(path);
+  assert.equal(sha256(bytes), expectedSha256, 'P0-C heavy fixture manifest');
+  const fixtures = JSON.parse(bytes);
+  for (const language of languages) {
+    const { code, functionName, cases } = fixtures[language];
+    assert.equal(typeof code, 'string');
+    assert.equal(typeof functionName, 'string');
+    assert.equal(cases.length, 1, language);
+    assert.ok(cases[0].id && cases[0].input && Object.hasOwn(cases[0], 'expected'), language);
+  }
+  return fixtures;
+}
+
+export const tracemallocWitness = {
+  code: 'def trace_memory_on():\n    import tracemalloc\n    return tracemalloc.is_tracing()\n',
+  functionName: 'trace_memory_on',
+  executionStyle: 'function',
+  cases: [{ id: 'tracemalloc-off', input: {}, expected: false }],
+};
+
 export async function loadM2Catalog() {
   return Promise.all(m2Catalog.map(async (pin) => {
     const path = join(catalog, `${pin.problem}.json`);

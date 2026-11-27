@@ -4601,6 +4601,7 @@ async function handleMessage(message) {
     configuredRuntimeRole === 'runner' &&
     ![
       'execute-prepared-code',
+      'p0f-execute-prepared-code-batch',
       'execute-prepared-trace',
       'dispose-prepared-program',
     ].includes(message.type)
@@ -4614,6 +4615,37 @@ async function handleMessage(message) {
 
   if (message.type === 'prepare-program') {
     return prepareCSharpProgram(message);
+  }
+
+  if (message.type === 'p0f-execute-prepared-code-batch') {
+    const { cases, ...common } = message.payload;
+    if (
+      configuredRuntimeRole !== 'runner' ||
+      common.prepared?.mode !== 'code' ||
+      common.prepared?.preparedRunnerTier !== 'algorithm-fast' ||
+      !Array.isArray(cases) || cases.length < 1 || cases.length > 100
+    ) {
+      throw new Error('P0-F requires a retained prepared code runner and 1–100 cases.');
+    }
+    const results = [];
+    for (const [caseIndex, { inputs, inputBytes }] of cases.entries()) {
+      const result = await handleMessage({
+        ...message,
+        type: 'execute-prepared-code',
+        payload: { ...common, inputs, inputBytes },
+        onOrdinaryStart() {
+          trustedCSharpWorkerPostMessage({
+            id: message.id,
+            protocolToken: message.protocolToken,
+            type: 'runtime-progress',
+            payload: { stage: 'ordinary-case-started', detail: { caseIndex } },
+          });
+        },
+      });
+      results.push(result);
+      if (result.success !== true) break;
+    }
+    return { results };
   }
 
   if (message.type === 'execute-prepared-trace' && message.payload?.observation !== undefined) {
