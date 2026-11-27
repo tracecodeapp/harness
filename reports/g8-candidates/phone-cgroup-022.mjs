@@ -143,16 +143,25 @@ export function membership022(cgroup, chromiumDir, { requireRenderer = false } =
   const processes = pids.map(describeProcess).filter(({ exited }) => !exited);
   assert.ok(processes.length > 0, `No live process in ${cgroup}`);
   const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+  const crashpad = join(chromiumDir, 'chrome_crashpad_handler');
   for (const entry of processes) {
     assert.notEqual(entry.pid, process.pid, 'The Node driver is inside the rig cgroup');
     assert.ok(entry.exe.startsWith(chromiumDir + '/'), `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
+    if (entry.exe === crashpad && entry.ppid === 1) {
+      // Chromium's crash handler double-forks, so its parent chain ends at init. It can only be in
+      // this scope by forking from the browser that systemd-run placed here.
+      entry.mappedBy = 'crashpad handler (daemonised by the browser)';
+      continue;
+    }
     let root = entry;
     for (let hops = 0; byPid.has(root.ppid) && hops < 64; hops++) root = byPid.get(root.ppid);
     assert.equal(root.ppid, process.pid,
       `Process in ${cgroup} does not descend from this driver's Chromium: ${JSON.stringify(entry)}`);
     entry.browserPid = root.pid;
+    entry.mappedBy = root === entry ? 'browser spawned by this driver' : `descendant of browser ${root.pid}`;
   }
-  assert.equal(new Set(processes.map(({ browserPid }) => browserPid)).size, 1, 'More than one browser in the scope');
+  const browsers = new Set(processes.map(({ browserPid }) => browserPid).filter(Boolean));
+  assert.equal(browsers.size, 1, 'Expected exactly one browser in the scope');
   if (requireRenderer) {
     assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
   }
