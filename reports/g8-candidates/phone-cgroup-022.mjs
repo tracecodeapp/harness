@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, openSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -135,38 +135,51 @@ function describeProcess(pid) {
 }
 
 // R3: every PID in the scope is the rig's Chromium and never the Node driver. Each one has a
-// Chromium executable and descends, through other members, from the browser this driver spawned.
+// Chromium executable, and its parent chain through other members ends at the browser this driver
+// spawned or, for helpers Chromium daemonises (such as chrome_crashpad_handler), at init. Only the
+// browser's own PID was placed in the scope; everything else entered it by forking from that browser.
 // (Chromium rewrites its environ block for the process title, so an environment marker can't be read.)
-export function membership022(cgroup, chromiumDir, { requireRenderer = false } = {}) {
+function readMembership(cgroup, chromiumDir, requireRenderer) {
   const dir = join(cgroupRoot, cgroup);
   const pids = readTrim(join(dir, 'cgroup.procs')).split('\n').filter(Boolean).map(Number);
   const processes = pids.map(describeProcess).filter(({ exited }) => !exited);
   assert.ok(processes.length > 0, `No live process in ${cgroup}`);
   const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
-  const crashpad = join(chromiumDir, 'chrome_crashpad_handler');
   for (const entry of processes) {
     assert.notEqual(entry.pid, process.pid, 'The Node driver is inside the rig cgroup');
     assert.ok(entry.exe.startsWith(chromiumDir + '/'), `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
-    if (entry.exe === crashpad && entry.ppid === 1) {
-      // Chromium's crash handler double-forks, so its parent chain ends at init. It can only be in
-      // this scope by forking from the browser that systemd-run placed here.
-      entry.mappedBy = 'crashpad handler (daemonised by the browser)';
-      continue;
-    }
     let root = entry;
     for (let hops = 0; byPid.has(root.ppid) && hops < 64; hops++) root = byPid.get(root.ppid);
-    assert.equal(root.ppid, process.pid,
-      `Process in ${cgroup} does not descend from this driver's Chromium: ${JSON.stringify(entry)}`);
-    entry.browserPid = root.pid;
-    entry.mappedBy = root === entry ? 'browser spawned by this driver' : `descendant of browser ${root.pid}`;
+    if (root.ppid === process.pid) {
+      entry.browserPid = root.pid;
+      entry.mappedBy = root === entry ? 'browser spawned by this driver' : `descendant of browser ${root.pid}`;
+    } else {
+      assert.equal(root.ppid, 1,
+        `Process in ${cgroup} descends from a process outside it: ${JSON.stringify(entry)}`);
+      entry.mappedBy = `Chromium helper daemonised from the browser (${basename(entry.exe)})`;
+    }
   }
   const browsers = new Set(processes.map(({ browserPid }) => browserPid).filter(Boolean));
-  assert.equal(browsers.size, 1, 'Expected exactly one browser in the scope');
+  assert.equal(browsers.size, 1, `Expected exactly one browser in ${cgroup}`);
   if (requireRenderer) {
     assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
   }
   const threads = readTrim(join(dir, 'cgroup.threads')).split('\n').filter(Boolean).length;
   return { cgroup, at: new Date().toISOString(), processes, threads };
+}
+
+// Chromium forks short-lived helpers while it starts; retry until one consistent reading.
+export async function membership022(cgroup, chromiumDir, { requireRenderer = false } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= 30; attempt++) {
+    try {
+      return { ...readMembership(cgroup, chromiumDir, requireRenderer), attempt };
+    } catch (error) {
+      lastError = error;
+      await delay(100);
+    }
+  }
+  throw lastError;
 }
 
 // Processes from a membership listing that are still alive (same PID and start time).
@@ -249,7 +262,7 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
     assert.equal(cgroup, `/${slice}/${unit}`, 'Rig scope is not where the layout check expected it');
     const cpuMax = readTrim(join(cgroupRoot, cgroup, 'cpu.max'));
     assert.equal(cpuMax, `${phoneCap022.quotaUs} ${phoneCap022.periodUs}`, 'Unexpected cpu.max');
-    const atLaunch = membership022(cgroup, chromiumDir);
+    const atLaunch = await membership022(cgroup, chromiumDir);
     const during = snapshotPath022(slice);
     assert.deepEqual(during, before, 'A pre-existing cgroup changed when the scope was created');
     const receipt = {

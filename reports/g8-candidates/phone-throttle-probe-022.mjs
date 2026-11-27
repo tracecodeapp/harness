@@ -175,7 +175,7 @@ async function trial(profile, arm, n) {
   try {
     if (arm !== 'A') record.isolation = await page.evaluate(pageCreateWorker);
     if (profile === 'phone' && arm !== 'A' && !membershipWithWorker) {
-      membershipWithWorker = capped.membership({ requireRenderer: true });
+      membershipWithWorker = await capped.membership({ requireRenderer: true });
     }
     record.start = epochNow();
     if (arm === 'A') {
@@ -211,7 +211,7 @@ if (mode === 'hold') {
   page.evaluate(pageRunWorker, 4e10).catch(() => {});
   await delay(1_000);
   const ready = { pid: process.pid, unit: capped.unit, cgroup: capped.cgroup,
-    watchdogPid: capped.receipt.watchdogPid, membership: capped.membership({ requireRenderer: true }) };
+    watchdogPid: capped.receipt.watchdogPid, membership: await capped.membership({ requireRenderer: true }) };
   await writeFile(join(out, 'ready.json'), JSON.stringify(ready, null, 2) + '\n');
   console.log(JSON.stringify({ kind: 'hold-ready', ...ready, membership: undefined,
     processes: ready.membership.processes.length, threads: ready.membership.threads }));
@@ -325,7 +325,7 @@ if (mode === 'dryrun') {
     aloneMs: median(aloneMs), duringPhoneMs: median(phoneMs), ratio: round3(median(phoneMs) / median(aloneMs)) };
 }
 
-const membershipEnd = capped.membership({ requireRenderer: false });
+const membershipEnd = await capped.membership({ requireRenderer: false });
 const removal = await capped.remove();
 await desktop.close();
 server.close();

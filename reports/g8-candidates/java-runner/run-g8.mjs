@@ -442,7 +442,7 @@ async function openPage(context, version, url, group) {
     await cdp.send('Emulation.setCPUThrottlingRate', { rate: cdpRate022(group.cpu, cappedPhone022) });
     await page.goto(url, { waitUntil: 'load' });
     if (phoneCap && group.cpu !== 1 && !report.phoneThrottle.membershipWithPage) {
-      report.phoneThrottle.membershipWithPage = phoneCap.membership({ requireRenderer: true });
+      report.phoneThrottle.membershipWithPage = await phoneCap.membership({ requireRenderer: true });
     }
     await page.evaluate(async ({ language, stopSubmit, candidate, candidateRuntime }) => {
       const { createSession } = await import('/entry.mjs');
