@@ -86,7 +86,7 @@ async function stage(version, languages, m1 = false) {
     for (const dependency of Object.keys(manifest.dependencies ?? {})) {
       const dest = join(modules, dependency);
       await mkdir(dirname(dest), { recursive: true });
-      await symlink(join(dirname(installedRoot), dependency), dest);
+      await symlink(await realpath(join(dirname(dirname(installedRoot)), dependency)), dest);
     }
   } else {
     await symlink(join(priorRoot, 'node_modules'), modules);
