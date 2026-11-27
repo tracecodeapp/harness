@@ -648,7 +648,62 @@ export async function runBrowserAlgorithmBatch(
           judgeFallbackIsolationWorkerUrls = workerUrls.splice(0);
         }
 
+        // Verdict first, drawing after: the same Run with after-verdict
+        // delivery, then the selected drawing through a continuation. Last,
+        // so its post-verdict teardown cannot count against another phase.
+        const deferredStartedAt = performance.now();
+        const deferredVerdict = await host.execute({
+          bundle: traceBundle,
+          interactive: true,
+          drawingDelivery: 'after-verdict',
+          tracing: { caseIds: [selectedCaseId] },
+        });
+        const deferredVerdictMs = performance.now() - deferredStartedAt;
+        let deferredDrawing: {
+          readonly caseIds: readonly string[];
+          readonly statuses: readonly (string | undefined)[];
+          readonly eventCounts: readonly number[];
+          readonly valuesMatchVerdict: boolean;
+          readonly ms: number;
+        } | undefined;
+        try {
+          if (deferredVerdict.executionId && deferredVerdict.deferredDrawings?.length) {
+            const drawing = await host.execute({
+              executionId: deferredVerdict.executionId,
+              tracing: { caseIds: deferredVerdict.deferredDrawings },
+            });
+            const rows = drawing.evaluation.status === 'completed' ? drawing.evaluation.cases : [];
+            const verdictRows = deferredVerdict.evaluation.status === 'completed'
+              ? deferredVerdict.evaluation.cases
+              : [];
+            deferredDrawing = {
+              caseIds: rows.map((row) => row.caseId),
+              statuses: rows.map((row) => row.attachment?.status),
+              eventCounts: rows.map((row) => traceEventCount(row.trace)),
+              valuesMatchVerdict: rows.every((row) =>
+                verdictRows.some((verdictRow) =>
+                  verdictRow.caseId === row.caseId && verdictRow.status === row.status &&
+                  JSON.stringify(verdictRow.value) === JSON.stringify(row.value))),
+              ms: performance.now() - deferredStartedAt,
+            };
+          }
+        } finally {
+          if (deferredVerdict.executionId) {
+            await host.disposeExecution(deferredVerdict.executionId);
+          }
+        }
+        const deferred = {
+          verdictMs: deferredVerdictMs,
+          verdictStatus: deferredVerdict.evaluation.status,
+          verdictOutputs: deferredVerdict.evaluation.cases.map((result) => result.value),
+          verdictDrawingRows: deferredVerdict.evaluation.cases.filter((result) =>
+            Object.hasOwn(result, 'attachment') || Object.hasOwn(result, 'trace')).length,
+          deferredDrawings: deferredVerdict.deferredDrawings,
+          drawing: deferredDrawing,
+        };
+
         results[fixture.language] = {
+          deferred,
           warmMode,
           warmMs,
           tracePrimeMs,

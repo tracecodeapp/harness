@@ -9,6 +9,7 @@ import {
   InMemoryJudgeRuntimeControl,
   type JudgeEvaluationResult,
 } from '../packages/judge/src/index';
+import { JudgePlanError } from '../packages/judge/src/errors';
 import {
   createAlgorithmJudgeBundle,
   isRuntimeProviderError,
@@ -2915,6 +2916,10 @@ function receiptFixture(options: {
   nativeStop?: boolean;
   nativeAdmission?: boolean;
   prepareObserver?: () => Promise<void>;
+  /** The observer lease's teardown; it may stall. */
+  leaseDispose?: () => Promise<void>;
+  /** Runs before the ordinary program's teardown; it may stall. */
+  ordinaryDispose?: () => Promise<void>;
   workerAcks?: boolean;
   providerMarks?: boolean;
   certification?: 'ends-same';
@@ -3036,6 +3041,12 @@ function receiptFixture(options: {
         program: {
           ...codeProgram,
           executeIsolated,
+          ...(options.ordinaryDispose ? {
+            async dispose() {
+              await options.ordinaryDispose!();
+              return codeProgram.dispose();
+            },
+          } : {}),
           ...(options.nativeStop ? {
             capabilities: { ...codeProgram.capabilities, stopsAtFirstRunaway: true as const },
             async executeBatchIsolated(request: RuntimePreparedCodeBatchCall & {
@@ -3083,7 +3094,11 @@ function receiptFixture(options: {
           if (workerResult) return workerResult as ObserverReply;
           return options.observe ? options.observe(call) : recordedDrawing(call);
         },
-        dispose() { observerReleases += 1; notify(); },
+        dispose() {
+          observerReleases += 1;
+          notify();
+          return options.leaseDispose?.();
+        },
       };
     },
     ...(options.providerMarks !== false ? {
@@ -5831,3 +5846,551 @@ test('D-WATCH: without a journal, a protocol interruption keeps its reason on th
     assert.equal(row.failure?.origin === 'provider' ? row.failure.reason : undefined, 'protocol', row.caseId);
   }
 });
+
+// Verdict first, drawing after (0.22 V1): `drawingDelivery: 'after-verdict'`.
+
+const afterVerdict = { interactive: true, drawingDelivery: 'after-verdict' } as const;
+
+/**
+ * A receipt fixture whose trusted bridge holds the observers of the first
+ * evaluation it sees with an acknowledged `stall` until `release()`. Later
+ * evaluations observe normally, so a second Run on the same host is not held.
+ * The fixture's own observe call for that evaluation is held too, so a 0.21
+ * Judge, which ignores the bridge's `stall`, still waits for the release.
+ */
+function stallingFixture(
+  t: import('node:test').TestContext,
+  options: Omit<Parameters<typeof receiptFixture>[0], 'observe' | 'providerMarks'> = {}
+) {
+  const events: TestBridgeEvent[] = [];
+  const held = controlled();
+  let stalled: string | undefined;
+  installJudgeTestGlobals(t)({
+    onEvent: (event) => events.push(event),
+    faultAt: (context) => {
+      if (context.point !== 'observe') return undefined;
+      stalled ??= context.evaluationId;
+      return context.evaluationId === stalled ? 'stall' : undefined;
+    },
+    releaseStall: () => held.promise,
+  });
+  const f = receiptFixture({
+    // Longer than any test timeout: only the release ends the stall.
+    deadlineMs: 60_000,
+    ...options,
+    providerMarks: false,
+    observe: async (call) => {
+      if (stalled !== undefined && call.attemptToken.includes(JSON.stringify(stalled))) await held.promise;
+      return recordedDrawing(call);
+    },
+  });
+  t.after(() => { held.resolve(); f.host.dispose(); });
+  return { f, events, release: () => held.resolve(), stalledEvaluation: () => stalled };
+}
+
+function eventsOf(events: readonly TestBridgeEvent[], phase: string, caseId?: string) {
+  return events.filter((event) => event.phase === phase && (caseId === undefined || event.caseId === caseId));
+}
+
+function resolveRequests(events: readonly TestBridgeEvent[]) {
+  return eventsOf(events, 'public-resolve').map((event) => (event as { readonly request?: string }).request);
+}
+
+/** A row's ordinary fields: everything but the drawing and per-run identifiers. */
+function ordinaryFields(row: JudgeCaseResult | undefined) {
+  const { attachment: _attachment, trace: _trace, ...ordinary } = row ?? ({} as JudgeCaseResult);
+  return JSON.parse(JSON.stringify(ordinary, (key, value: unknown) =>
+    ['evaluationId', 'sessionId', 'pid', 'runId', 'startedAt', 'endedAt', 'evaluatedAt'].includes(key)
+      ? undefined
+      : value));
+}
+
+async function untilEvent(events: readonly TestBridgeEvent[], phase: string, caseId?: string): Promise<void> {
+  for (let turn = 0; turn < 200 && eventsOf(events, phase, caseId).length === 0; turn += 1) await drainTurns(1);
+  assert.ok(eventsOf(events, phase, caseId).length > 0, `no ${phase} event`);
+}
+
+test('verdict-first 1: with a stalled observer the initial resolves at the verdict, with no drawing', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const bundle = await receiptBundle();
+
+  const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+  assert.ok(verdict.executionId);
+  assert.deepEqual(verdict.deferredDrawings, ['A']);
+  assert.equal(verdict.evaluation.status, 'completed');
+  assert.deepEqual(verdict.evaluation.cases.map(({ caseId, value }) => [caseId, value]), [['A', 'A'], ['B', 'B'], ['C', 'C']]);
+  for (const row of verdict.evaluation.cases) {
+    assert.equal(Object.hasOwn(row, 'attachment'), false, row.caseId);
+    assert.equal(Object.hasOwn(row, 'trace'), false, row.caseId);
+  }
+  const at = (phase: string) => events.findIndex((event) => event.phase === phase);
+  assert.equal(eventsOf(events, 'ordinary-commit').length, 1);
+  assert.deepEqual(resolveRequests(events), ['initial']);
+  assert.ok(at('ordinary-commit') < at('public-resolve'));
+  const ack = eventsOf(events, 'injection-ack')[0] as { point?: string; fault?: string; caseId?: string } | undefined;
+  assert.deepEqual([ack?.point, ack?.fault, ack?.caseId], ['observe', 'stall', 'A']);
+  assert.equal(eventsOf(events, 'observer-end').length, 0, 'the verdict resolved before observer-end');
+  assert.equal(eventsOf(events, 'attachment-bind').length, 0);
+
+  // Rows equal the joined route's, apart from the drawing.
+  const joined = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+  assert.equal(joined.evaluation.cases[0]?.attachment?.status, 'drawn');
+  assert.deepEqual(verdict.evaluation.cases.map(ordinaryFields), joined.evaluation.cases.map(ordinaryFields));
+});
+
+test('verdict-first 2: a continuation draws once; overlapping requests coalesce and a later one is a cache hit', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+  const ordinaryWrites = eventsOf(events, 'ordinary-write-attempt').length;
+
+  const first = f.host.execute(request);
+  const second = f.host.execute(request);
+  await drainTurns();
+  assert.equal(eventsOf(events, 'observer-start', 'A').length, 1);
+  assert.equal(eventsOf(events, 'attachment-bind').length, 0);
+  stall.release();
+  const [one, two] = await Promise.all([first, second]);
+  const attachment = one.evaluation.cases[0]?.attachment;
+  assert.equal(attachment?.status, 'drawn');
+  assert.equal(two.evaluation.cases[0]?.attachment, attachment, 'coalesced onto one attempt');
+  for (const result of [one, two]) {
+    assert.equal(result.executionId, verdict.executionId);
+    assert.deepEqual(result.evaluation.cases.map(({ caseId }) => caseId), ['A']);
+    assert.equal(result.evaluation.cases[0]?.trace, attachment?.status === 'drawn' ? attachment.trace : undefined);
+    assert.deepEqual(ordinaryFields(result.evaluation.cases[0]), ordinaryFields(verdict.evaluation.cases[0]));
+  }
+  assert.equal(attachment?.evaluationId, eventsOf(events, 'ordinary-commit')[0]?.evaluationId);
+
+  const cached = await f.host.execute(request);
+  assert.equal(cached.evaluation.cases[0]?.attachment, attachment);
+  const token = eventsOf(events, 'observer-start', 'A')[0]?.attemptToken;
+  assert.deepEqual(eventsOf(events, 'observation-cache-hit').map(({ caseId, attemptToken }) => [caseId, attemptToken]), [['A', token]]);
+  assert.equal(eventsOf(events, 'observer-start').length, 1, 'one observer-start for the case');
+  assert.equal(eventsOf(events, 'attachment-bind').length, 1);
+  assert.equal(f.observerCalls.length, 1);
+  assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C'], 'no ordinary start on a continuation');
+  assert.equal(eventsOf(events, 'ordinary-write-attempt').length, ordinaryWrites);
+  assert.equal(eventsOf(events, 'ordinary-commit').length, 1);
+  assert.deepEqual(resolveRequests(events), ['initial', 'continuation', 'continuation', 'continuation']);
+  const bind = events.findIndex(({ phase }) => phase === 'attachment-bind');
+  const continued = events.findIndex((event) => event.phase === 'public-resolve' &&
+    (event as { readonly request?: string }).request === 'continuation');
+  assert.ok(bind < continued, 'bind before the continuation resolves');
+
+  // RuntimeJudge.execute (createJudge) honors the same request.
+  const plan = makePlan(['A', 'B'].map((label) => ({ id: label, input: { label }, expected: label })));
+  const direct = await withDirectJudge(f.host, traceBinding(), (judge) => Effect.gen(function* () {
+    const initial = yield* judge.execute<FakeInput>({ plan, ...afterVerdict, tracing: { caseIds: ['B'] } });
+    const drawing = yield* judge.execute({ executionId: initial.executionId!, tracing: { caseIds: ['B'] } });
+    return { initial, drawing };
+  }));
+  assert.deepEqual(direct.initial.deferredDrawings, ['B']);
+  assert.equal(direct.initial.evaluation.cases.some((row) => Object.hasOwn(row, 'attachment')), false);
+  assert.equal(direct.drawing.evaluation.cases[0]?.attachment?.status, 'drawn');
+});
+
+test('verdict-first 3: disposing during a stall rejects the pending continuation and binds nothing later', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+  const pending = f.host.execute(request);
+  const rejected = assert.rejects(pending, /Unknown or disposed interactive execution/u);
+  await untilEvent(events, 'injection-ack', 'A');
+  await f.host.disposeExecution(verdict.executionId!);
+  await rejected;
+  stall.release();
+  await drainTurns();
+  assert.equal(eventsOf(events, 'attachment-bind').length, 0);
+  assert.deepEqual(resolveRequests(events), ['initial']);
+  assert.equal(f.observerCalls.length, 0, 'a released stall of a disposed attempt never observes');
+  assert.deepEqual(f.observerCounts(), [1, 1]);
+  await assert.rejects(f.host.execute(request), /Unknown or disposed interactive execution/u);
+});
+
+test('verdict-first 4: an unsettled observer attempt holds the idle lease; it arms once the attempt settles', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stall = stallingFixture(t, { idleMs: 25 });
+  const { f, events } = stall;
+  const verdict = await pumped(t.mock.timers,
+    f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } }));
+  assert.ok(verdict.executionId);
+  assert.equal(eventsOf(events, 'observer-end').length, 0);
+
+  // No continuation is waiting, but the attempt has not settled.
+  t.mock.timers.tick(100);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0], 'the execution outlived the idle timeout during the stall');
+
+  stall.release();
+  await pumpUntil(t.mock.timers, () => eventsOf(events, 'attachment-bind', 'A').length === 1);
+  t.mock.timers.tick(24);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0], 'the lease counts from the settle');
+  t.mock.timers.tick(1);
+  await pumpUntil(t.mock.timers, () => f.observerCounts()[1] === 1);
+  await assert.rejects(f.host.execute({ executionId: verdict.executionId, tracing: { caseIds: ['A'] } }),
+    /Unknown or disposed interactive execution/u);
+});
+
+test('verdict-first 5: a second Run and a Submit never wait on an earlier stalled drawing', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const bundle = await receiptBundle();
+  const first = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+  const pending = f.host.execute({ executionId: first.executionId!, tracing: { caseIds: ['A'] } });
+  const rejected = assert.rejects(pending, /Unknown or disposed interactive execution/u);
+  await untilEvent(events, 'injection-ack', 'A');
+
+  const rerun = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+  assert.notEqual(rerun.executionId, first.executionId);
+  assert.deepEqual(rerun.deferredDrawings, ['A']);
+  const redrawn = await f.host.execute({ executionId: rerun.executionId!, tracing: { caseIds: ['A'] } });
+  assert.equal(redrawn.evaluation.cases[0]?.attachment?.status, 'drawn');
+  const submit = await f.host.evaluateAlgorithm({ bundle: { ...bundle, execution: { ...bundle.execution, trace: false } } });
+  assert.equal(submit.verdict, 'passed');
+  assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C', 'A', 'B', 'C', 'A', 'B', 'C']);
+
+  const firstEvaluation = stall.stalledEvaluation();
+  assert.ok(firstEvaluation);
+  assert.equal(events.some((event) => event.phase === 'attachment-bind' && event.evaluationId === firstEvaluation), false);
+  await f.host.disposeExecution(first.executionId!);
+  await rejected;
+  stall.release();
+  await drainTurns();
+  assert.equal(events.some((event) => event.phase === 'attachment-bind' && event.evaluationId === firstEvaluation), false);
+});
+
+test('verdict-first 6: each observer fault arrives as its refusal, and a stopped suffix as case-not-run', { timeout: 10000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bundle = await receiptBundle();
+  for (const [point, fault, reason] of [
+    ['prepare', 'prepare', 'observer-prepare'],
+    ['observe', 'runtime', 'observer-runtime'],
+    ['observe', 'deadline', 'observer-timeout'],
+    ['encode', 'encode', 'observer-encode'],
+  ] as const) {
+    const events: TestBridgeEvent[] = [];
+    install({
+      onEvent: (event) => events.push(event),
+      faultAt: (context) => context.point === point ? fault : undefined,
+    });
+    const f = receiptFixture({ providerMarks: false });
+    try {
+      const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+      assert.deepEqual(verdict.deferredDrawings, ['A'], fault);
+      assert.equal(verdict.evaluation.cases.some((row) => Object.hasOwn(row, 'attachment')), false, fault);
+      const drawing = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A'] } });
+      const row = drawing.evaluation.cases[0]!;
+      assert.equal(row.status, 'completed', fault);
+      assert.equal(row.value, 'A', fault);
+      assert.equal(row.attachment?.status === 'refused' && row.attachment.reason, reason, fault);
+      assert.equal(Object.hasOwn(row, 'trace'), false, fault);
+      const ack = events.findIndex(({ phase }) => phase === 'injection-ack');
+      assert.ok(ack >= 0 && ack < events.findIndex(({ phase }) => phase === 'attachment-bind'), fault);
+    } finally {
+      f.host.dispose();
+    }
+  }
+
+  const events: TestBridgeEvent[] = [];
+  install({ onEvent: (event) => events.push(event) });
+  const f = receiptFixture({ providerMarks: false });
+  try {
+    const stopping = await receiptBundle([
+      { id: 'A', input: { label: 'A' }, expected: 'A' },
+      { id: 'B', input: { label: 'B', mode: 'limit' }, expected: 'B' },
+      { id: 'C', input: { label: 'C' }, expected: 'C' },
+    ]);
+    const verdict = await f.host.execute({ bundle: stopping, ...afterVerdict, tracing: { caseIds: ['C', 'A', 'B'] } });
+    assert.deepEqual(verdict.deferredDrawings, ['A', 'B', 'C'], 'plan order');
+    assert.equal(verdict.evaluation.cases[2]?.status, 'not-run');
+    assert.equal(verdict.evaluation.cases.some((row) => Object.hasOwn(row, 'attachment')), false);
+    const suffix = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['C'] } });
+    const refusal = suffix.evaluation.cases[0]?.attachment;
+    assert.equal(refusal?.status === 'refused' && refusal.reason, 'case-not-run');
+    const drawn = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A', 'B'] } });
+    assert.deepEqual(drawn.evaluation.cases.map(({ attachment }) => attachment?.status), ['drawn', 'drawn']);
+    assert.deepEqual(f.observerCalls.map((call) => call.inputs.label), ['A', 'B']);
+    assert.equal(eventsOf(events, 'observer-start', 'C').length, 0, 'no observer for a stopped suffix');
+  } finally {
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 7: compile failure defers nothing and keeps no handle; after-verdict needs interactive', { timeout: 5000 }, async () => {
+  const bundle = await receiptBundle();
+  const failing = receiptFixture({ compileFailure: true });
+  const f = receiptFixture();
+  try {
+    const failed = await failing.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.equal(failed.executionId, undefined);
+    assert.deepEqual(failed.deferredDrawings, []);
+    // Observer preparation overlaps the ordinary prepare; with no handle it is released at once.
+    const [prepared, released] = failing.observerCounts();
+    assert.equal(released, prepared);
+    assert.equal(failing.observerCalls.length, 0);
+
+    const empty = await f.host.execute({ bundle, ...afterVerdict });
+    assert.ok(empty.executionId);
+    assert.deepEqual(empty.deferredDrawings, []);
+
+    const before = f.state.prepareCalls.length;
+    for (const request of [
+      { bundle, drawingDelivery: 'after-verdict', tracing: { caseIds: ['A'] } },
+      { bundle, interactive: false, drawingDelivery: 'after-verdict' },
+      { bundle, interactive: true, drawingDelivery: 'later' },
+    ] as const) {
+      // The host rejects with the typed error itself, never a FiberFailure.
+      await assert.rejects(f.host.execute(request as never), (error: unknown) => {
+        assert.ok(error instanceof JudgePlanError, `${JSON.stringify(request.drawingDelivery)}: ${String(error)}`);
+        assert.match(error.message, /drawingDelivery/u);
+        return true;
+      });
+    }
+    // So does a bad continuation selection, like the disposed handle already did.
+    const { executionId } = empty;
+    for (const caseIds of [[], ['A', 'A'], ['missing']]) {
+      await assert.rejects(f.host.execute({ executionId: executionId!, tracing: { caseIds } }),
+        (error: unknown) => error instanceof JudgePlanError);
+    }
+    await f.host.disposeExecution(executionId!);
+    await assert.rejects(f.host.execute({ executionId: executionId!, tracing: { caseIds: ['A'] } }),
+      (error: unknown) => error instanceof JudgePlanError && /Unknown or disposed/u.test(error.message));
+    assert.equal(f.state.prepareCalls.length, before, 'rejected before preparing');
+    const plan = makePlan([{ id: 'A', input: { label: 'A' }, expected: 'A' }]);
+    const direct = await withDirectJudge(f.host, traceBinding(), (judge) =>
+      Effect.either(judge.execute<FakeInput>({ plan, drawingDelivery: 'after-verdict' })));
+    assert.equal(direct._tag, 'Left');
+    assert.ok(direct._tag === 'Left' && direct.left instanceof JudgePlanError);
+  } finally {
+    failing.host.dispose();
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 8: omitted or with-verdict delivery keeps the joined 0.21 response and order', { timeout: 5000 }, async (t) => {
+  const install = installJudgeTestGlobals(t);
+  const bundle = await receiptBundle();
+  for (const delivery of [undefined, 'with-verdict'] as const) {
+    const events: TestBridgeEvent[] = [];
+    install({ onEvent: (event) => events.push(event) });
+    const f = receiptFixture({ providerMarks: false });
+    try {
+      const joined = await f.host.execute({
+        bundle, interactive: true, tracing: { caseIds: ['A'] }, ...(delivery ? { drawingDelivery: delivery } : {}),
+      });
+      assert.equal(Object.hasOwn(joined, 'deferredDrawings'), false, String(delivery));
+      assert.equal(joined.evaluation.cases[0]?.attachment?.status, 'drawn', String(delivery));
+      const at = (phase: string) => events.findIndex((event) => event.phase === phase);
+      assert.ok(at('ordinary-commit') < at('attachment-bind'), String(delivery));
+      assert.ok(at('attachment-bind') < at('public-resolve'), String(delivery));
+      assert.deepEqual(resolveRequests(events), ['initial'], String(delivery));
+    } finally {
+      f.host.dispose();
+    }
+  }
+});
+
+test('verdict-first 9: a compile-failed deferred Run resolves without waiting on observer teardown', { timeout: 5000 }, async () => {
+  const teardown = controlled();
+  const f = receiptFixture({ compileFailure: true, leaseDispose: () => teardown.promise });
+  try {
+    // The observer lease is prepared before the ordinary compile decision.
+    f.state.preparationDelayMs = 20;
+    const bundle = await receiptBundle();
+    const failed = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.equal(failed.executionId, undefined);
+    assert.deepEqual(failed.deferredDrawings, []);
+    await f.waitUntil(() => f.observerCounts()[1] === 1);
+
+    // Joined delivery keeps 0.21's order: it resolves after the teardown.
+    let joinedResolved = false;
+    const joined = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .then((result) => { joinedResolved = true; return result; });
+    await f.waitUntil(() => f.observerCounts()[1] === 2);
+    await drainTurns();
+    assert.equal(joinedResolved, false);
+    teardown.resolve();
+    assert.equal((await joined).evaluation.status, 'compile-failed');
+  } finally {
+    teardown.resolve();
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 10: a continuation that aborts as the last waiter evicts the admission attempt; the next request starts a fresh one', { timeout: 5000 }, async (t) => {
+  const stall = stallingFixture(t);
+  const { f, events } = stall;
+  const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+  await untilEvent(events, 'injection-ack', 'A');
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+
+  const controller = new AbortController();
+  const cancelled = assert.rejects(f.host.execute({ ...request, signal: controller.signal }), { name: 'AbortError' });
+  await drainTurns();
+  controller.abort();
+  await cancelled;
+  await untilEvent(events, 'observer-end', 'A');
+  assert.equal(eventsOf(events, 'attachment-bind').length, 0, 'the evicted attempt binds nothing');
+
+  stall.release();
+  const drawn = await f.host.execute(request);
+  assert.equal(drawn.evaluation.cases[0]?.attachment?.status, 'drawn');
+  const starts = eventsOf(events, 'observer-start', 'A').map(({ attemptToken }) => attemptToken);
+  assert.equal(starts.length, 2);
+  assert.notEqual(starts[0], starts[1], 'a fresh attempt');
+  assert.deepEqual(f.observerCalls.map(({ attemptToken }) => attemptToken), [starts[1]]);
+  assert.equal(eventsOf(events, 'attachment-bind').length, 1);
+  assert.deepEqual(f.ordinaryStarts, ['A', 'B', 'C']);
+});
+
+test('verdict-first 11: after a last-waiter eviction the idle lease arms with nothing left running', { timeout: 5000 }, async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const stall = stallingFixture(t, { idleMs: 25 });
+  const { f } = stall;
+  const verdict = await pumped(t.mock.timers,
+    f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } }));
+  const request = { executionId: verdict.executionId!, tracing: { caseIds: ['A'] } };
+  const controller = new AbortController();
+  const cancelled = assert.rejects(f.host.execute({ ...request, signal: controller.signal }), { name: 'AbortError' });
+  await pumpTurns(t.mock.timers);
+  t.mock.timers.tick(100);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0], 'a waiting continuation holds the lease');
+
+  controller.abort();
+  await pumped(t.mock.timers, cancelled);
+  t.mock.timers.tick(24);
+  await pumpTurns(t.mock.timers);
+  assert.deepEqual(f.observerCounts(), [1, 0]);
+  t.mock.timers.tick(1);
+  await pumpUntil(t.mock.timers, () => f.observerCounts()[1] === 1);
+  await assert.rejects(f.host.execute(request), /Unknown or disposed interactive execution/u);
+});
+
+test('verdict-first 12: aborting a joined initial request during its join rejects and binds nothing', { timeout: 5000 }, async () => {
+  const late = controlled<ObserverReply>();
+  const f = receiptFixture({ observe: () => late.promise });
+  try {
+    const bundle = await receiptBundle();
+    const controller = new AbortController();
+    const rejected = assert.rejects(f.host.execute({
+      bundle, interactive: true, tracing: { caseIds: ['A'] }, signal: controller.signal,
+    }), { name: 'AbortError' });
+    await f.waitUntil(() => f.observerCalls.length === 1 && f.markers.some(({ phase }) => phase === 'ordinary-commit'));
+    controller.abort();
+    await rejected;
+    assert.equal(f.observerCalls[0]?.signal?.aborted, true);
+    late.resolve(recordedDrawing(f.observerCalls[0]!));
+    await drainTurns();
+    assert.equal(f.markers.some(({ phase }) => phase === 'attachment-bind' || phase === 'public-resolve'), false);
+    assert.deepEqual(f.observerCounts(), [1, 1]);
+
+    const again = await f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } });
+    assert.equal(again.evaluation.cases[0]?.attachment?.status, 'drawn');
+  } finally {
+    late.resolve(recordedDrawing(f.observerCalls[0]!));
+    f.host.dispose();
+  }
+});
+
+test('verdict-first 13: a deferred verdict does not wait for the ordinary program teardown', { timeout: 5000 }, async () => {
+  const teardown = controlled();
+  const f = receiptFixture({ ordinaryDispose: () => teardown.promise });
+  try {
+    const bundle = await receiptBundle();
+    const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.deepEqual(verdict.deferredDrawings, ['A']);
+    assert.equal(f.state.disposals, 0, 'the ordinary teardown is still pending');
+    const drawing = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A'] } });
+    assert.equal(drawing.evaluation.cases[0]?.attachment?.status, 'drawn');
+
+    // Joined delivery keeps 0.21's order: it resolves after the teardown.
+    let joinedResolved = false;
+    const joined = f.host.execute({ bundle, interactive: true, tracing: { caseIds: ['A'] } })
+      .then((result) => { joinedResolved = true; return result; });
+    await f.waitUntil(() => f.ordinaryStarts.length === 6);
+    await drainTurns();
+    assert.equal(joinedResolved, false);
+    teardown.resolve();
+    assert.equal((await joined).evaluation.cases[0]?.attachment?.status, 'drawn');
+    await drainTurns();
+    assert.equal(f.state.disposals, 2, 'both ordinary programs were released once');
+  } finally {
+    teardown.resolve();
+    f.host.dispose();
+  }
+});
+
+function releaseFaults(markers: ReadonlyArray<{ phase: string }>) {
+  return markers.filter(({ phase }) => phase === 'release-fault')
+    .map((marker) => (marker as { readonly operation?: string }).operation);
+}
+
+test('verdict-first 14: a release that fails after the verdict is journalled as release-fault and changes nothing else', { timeout: 5000 }, async () => {
+  const f = receiptFixture({ ordinaryDispose: () => Promise.reject(new Error('ordinary release exploded')) });
+  const failing = receiptFixture({
+    compileFailure: true,
+    leaseDispose: () => Promise.reject(new Error('observer release exploded')),
+  });
+  try {
+    const bundle = await receiptBundle();
+    const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.deepEqual(verdict.deferredDrawings, ['A']);
+    assert.deepEqual(verdict.evaluation.cases.map(({ caseId, value }) => [caseId, value]), [['A', 'A'], ['B', 'B'], ['C', 'C']]);
+    await drainTurns();
+    assert.deepEqual(releaseFaults(f.markers), ['dispose interactive prepared runtime program']);
+    const at = (phase: string) => f.markers.findIndex((marker) => marker.phase === phase);
+    assert.ok(at('public-resolve') < at('release-fault'), 'journalled after the verdict');
+    const fault = f.markers[at('release-fault')] as { readonly evaluationId?: string };
+    assert.equal(fault.evaluationId, (f.markers[at('ordinary-commit')] as { readonly evaluationId?: string }).evaluationId);
+    const drawing = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A'] } });
+    assert.equal(drawing.evaluation.cases[0]?.attachment?.status, 'drawn');
+    assert.deepEqual(ordinaryFields(drawing.evaluation.cases[0]), ordinaryFields(verdict.evaluation.cases[0]));
+
+    // The observer is prepared before the compile decision, then released after it.
+    failing.state.preparationDelayMs = 20;
+    const failed = await failing.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.deepEqual(failed.deferredDrawings, []);
+    await drainTurns();
+    assert.deepEqual(releaseFaults(failing.markers), ['dispose Judge observation']);
+  } finally {
+    f.host.dispose();
+    failing.host.dispose();
+  }
+});
+
+for (const outcome of ['resolves', 'rejects'] as const) {
+  test(`verdict-first 15: disposing the host while a release is pending is safe (the release ${outcome})`, { timeout: 5000 }, async () => {
+    let settle!: () => void;
+    const pending = new Promise<void>((resolve, reject) => {
+      settle = outcome === 'resolves' ? resolve : () => reject(new Error('late release fault'));
+    });
+    const f = receiptFixture({ ordinaryDispose: () => pending });
+    try {
+      const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+      assert.ok(verdict.executionId);
+      f.host.dispose();
+      await assert.rejects(f.host.execute({ executionId: verdict.executionId, tracing: { caseIds: ['A'] } }),
+        (error: unknown) => error instanceof JudgePlanError);
+      await drainTurns();
+      assert.deepEqual(f.observerCounts(), [1, 1], 'the observer is released with the host');
+      assert.equal(f.state.disposals, 0, 'the ordinary release is still pending');
+      settle();
+      await drainTurns();
+      assert.equal(f.state.disposals, outcome === 'resolves' ? 1 : 0);
+      assert.deepEqual(releaseFaults(f.markers),
+        outcome === 'resolves' ? [] : ['dispose interactive prepared runtime program']);
+    } finally {
+      settle();
+      f.host.dispose();
+    }
+  });
+}

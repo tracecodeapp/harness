@@ -62,6 +62,7 @@ export type {
   JudgeComparisonInput,
   JudgeComparisonResult,
   JudgeDiagnostic,
+  JudgeDrawingDelivery,
   JudgeEvaluationOptions,
   JudgeEvaluationPlan,
   JudgeEvaluationResult,

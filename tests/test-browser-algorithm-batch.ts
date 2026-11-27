@@ -65,6 +65,20 @@ interface BatchLanguageResult {
     readonly observerWorkers: readonly DisposableObserverWorker[];
     readonly pythonWorkers?: readonly PythonInteractiveWorker[];
   };
+  readonly deferred: {
+    readonly verdictMs: number;
+    readonly verdictStatus: string;
+    readonly verdictOutputs: readonly unknown[];
+    readonly verdictDrawingRows: number;
+    readonly deferredDrawings?: readonly string[];
+    readonly drawing?: {
+      readonly caseIds: readonly string[];
+      readonly statuses: readonly (string | undefined)[];
+      readonly eventCounts: readonly number[];
+      readonly valuesMatchVerdict: boolean;
+      readonly ms: number;
+    };
+  };
   readonly compatibilityIsolation?: ReceiptSummary;
   readonly compatibilityIsolationWorkerUrls?: readonly string[];
   readonly compatibilityIsolationMaximumActiveWorkers?: number;
@@ -488,6 +502,22 @@ async function main(): Promise<void> {
             ),
           `${language} interactive background drain did not trace every remaining case in order: ${JSON.stringify(languageResult.interactive)}`
         );
+        const { deferred } = languageResult;
+        assertCondition(
+          deferred.verdictStatus === 'completed' &&
+            deferred.verdictOutputs.length === algorithmCaseCount &&
+            deferred.verdictOutputs.every((output) => output === 1) &&
+            deferred.verdictDrawingRows === 0 &&
+            JSON.stringify(deferred.deferredDrawings) === JSON.stringify(['case-1']),
+          `${language} after-verdict Run did not resolve a drawing-free verdict listing case-1: ${JSON.stringify(deferred)}`
+        );
+        assertCondition(
+          JSON.stringify(deferred.drawing?.caseIds) === JSON.stringify(['case-1']) &&
+            deferred.drawing?.statuses[0] === 'drawn' &&
+            deferred.drawing.eventCounts[0]! > 0 &&
+            deferred.drawing.valuesMatchVerdict,
+          `${language} after-verdict continuation did not draw case-1 over the verdict's row: ${JSON.stringify(deferred)}`
+        );
         assertBoundedWorkers(
           language,
           'code batch',
@@ -530,6 +560,8 @@ async function main(): Promise<void> {
             traceMs: languageResult.traceMs,
             interactiveInitialMs:
               languageResult.interactive.initialMs,
+            deferredVerdictMs: languageResult.deferred.verdictMs,
+            deferredDrawingMs: languageResult.deferred.drawing?.ms,
             interactiveCompileTimings:
               languageResult.interactive.compileTimings,
             interactiveCaseTimings:

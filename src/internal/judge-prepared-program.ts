@@ -120,6 +120,7 @@ export class JudgeObservationSchedule<Result, Expected> {
   /** Accepted journal starts and finishes so far. */
   private sequence = 0;
   private lease?: JudgeObservationLease;
+  private settled?: () => void;
 
   constructor(
     evaluationId: string,
@@ -218,11 +219,31 @@ export class JudgeObservationSchedule<Result, Expected> {
     else attempt.expiryTimer = setTimeout(expire, remaining);
   }
 
+  /**
+   * The sealed verdict with no drawing on any row, whatever has settled, so
+   * its shape never depends on a race. Nothing here waits on an observer.
+   */
+  verdict() {
+    return this.receipt.projectReceipt([]) as JudgeAlgorithmReceipt<Result, Expected>;
+  }
+
+  /** Joined delivery: the verdict once every selected drawing has settled. */
   async initial(signal: AbortSignal) {
-    await waitForSignal(Promise.all(
-      [...this.selected].map((caseId) => this.attempts.get(caseId)?.done)
-    ), signal);
+    await Promise.all([...this.selected].map((caseId) => this.waitForDrawing(caseId, signal, false)));
     return this.receipt.projectReceipt([...this.selected]) as JudgeAlgorithmReceipt<Result, Expected>;
+  }
+
+  /** Whether an observer attempt is still running (it holds the idle lease). */
+  observing(): boolean {
+    for (const attempt of this.attempts.values()) {
+      if (!attempt.settled) return true;
+    }
+    return false;
+  }
+
+  /** Called after each live attempt settles, so the owner can re-arm its idle lease. */
+  onObservationSettled(listener: () => void): void {
+    this.settled = listener;
   }
 
   async continue(caseIds: readonly string[], signal: AbortSignal) {
@@ -237,7 +258,8 @@ export class JudgeObservationSchedule<Result, Expected> {
     caseId?: string,
     attemptToken?: string,
     journal?: Pick<JudgeScheduleMarker,
-      'caseIndex' | 'dispatchGeneration' | 'sequence' | 'progress' | 'reason' | 'cause' | 'accepted'>
+      'caseIndex' | 'dispatchGeneration' | 'sequence' | 'progress' | 'reason' | 'cause' | 'accepted' | 'request' |
+      'operation'>
   ): void {
     if (!this.registration.mark && !this.testBridge) return;
     const marker = {
@@ -309,7 +331,7 @@ export class JudgeObservationSchedule<Result, Expected> {
       readonly progress?: 'started' | 'finished';
     },
     point: 'prepare' | 'observe' | 'encode' | 'service',
-    fault: 'prepare' | 'runtime' | 'deadline' | 'encode' | 'no-recorder'
+    fault: 'prepare' | 'runtime' | 'deadline' | 'encode' | 'no-recorder' | 'stall'
   ): void {
     this.testBridge?.onEvent(Object.freeze({
       ...context, phase: 'injection-ack', point, fault, at: globalThis.performance.now(),
@@ -388,21 +410,28 @@ export class JudgeObservationSchedule<Result, Expected> {
       attempt.expiryTimer = undefined;
       if (this.attempts.get(caseId) === attempt && !attempt.controller.signal.aborted) {
         this.receipt.publishDrawing(attempt.token, attempt.token.binding, drawing, this.replyOwnership());
+        this.settled?.();
       }
     });
     if (this.clockStopped.has(caseId)) this.limitObservation(caseId, attempt, this.ordinaryClockMs);
     return attempt;
   }
 
-  private async waitForDrawing(caseId: string, signal: AbortSignal): Promise<void> {
+  /**
+   * Waits for one case's drawing. `continuation` marks a cache hit; the joined
+   * initial request never does.
+   */
+  private async waitForDrawing(caseId: string, signal: AbortSignal, continuation = true): Promise<void> {
     signal.throwIfAborted();
     if (!this.admitted.has(caseId)) {
-      if (this.receipt.hasCachedNotRunAttachment(caseId)) this.mark('observation-cache-hit', caseId);
+      if (continuation && this.receipt.hasCachedNotRunAttachment(caseId)) this.mark('observation-cache-hit', caseId);
       return;
     }
+    // Coalescing: every request for a case joins its one live attempt, which
+    // may have started at ordinary admission, before the verdict.
     const attempt = this.attempt(caseId);
     if (attempt.settled) {
-      this.mark('observation-cache-hit', caseId, attempt.token.token);
+      if (continuation) this.mark('observation-cache-hit', caseId, attempt.token.token);
       return;
     }
     attempt.waiters += 1;
@@ -413,6 +442,10 @@ export class JudgeObservationSchedule<Result, Expected> {
         waiting = false;
         signal.removeEventListener('abort', abort);
         attempt.waiters -= 1;
+        // The last waiter's abort cancels and evicts an unsettled attempt
+        // that some request joined; the next request starts a new one. An
+        // attempt started at admission that no request has joined has no
+        // waiters, so it keeps running after the verdict until it settles.
         if (!attempt.settled && attempt.waiters === 0 && this.attempts.get(caseId) === attempt) {
           this.attempts.delete(caseId);
           this.receipt.cancelObservation(attempt.token);
@@ -462,6 +495,11 @@ export class JudgeObservationSchedule<Result, Expected> {
           if (context && fault === 'runtime') {
             this.ack(context, 'observe', fault);
             return observationRefused('observer-runtime');
+          }
+          if (context && fault === 'stall') {
+            this.ack(context, 'observe', fault);
+            const release = this.testBridge?.releaseStall?.(context) ?? new Promise<never>(() => undefined);
+            await waitForSignal(release, observationSignal);
           }
           const call = {
             program: this.program!,

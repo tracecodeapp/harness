@@ -1,6 +1,9 @@
+import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
+import * as Option from 'effect/Option';
+import * as Runtime from 'effect/Runtime';
 import * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
@@ -40,6 +43,7 @@ import {
   getBrowserRuntimeHostJudgeReceiptProvider,
   getBrowserRuntimeHostPreparedProvider,
   type JudgeReceiptProvider,
+  type JudgeScheduleMarker,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import {
   createBrowserRuntimeHost,
@@ -158,6 +162,23 @@ export type {
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
 
 /**
+ * Run a Judge effect for a host caller. A typed Judge failure rejects as
+ * itself, not wrapped in Effect's `FiberFailure`, so `instanceof
+ * JudgePlanError` holds for every plan error the host returns.
+ */
+function runJudgePromise<A, E>(effect: Effect.Effect<A, E>, signal?: AbortSignal): Promise<A> {
+  return Effect.runPromise(effect, signal ? { signal } : undefined).catch((error: unknown) => {
+    if (!Runtime.isFiberFailure(error)) throw error;
+    const failure = Cause.failureOption(error[Runtime.FiberFailureCauseId]);
+    if (Option.isSome(failure) &&
+      (failure.value instanceof JudgePlanError || failure.value instanceof JudgeInfrastructureError)) {
+      throw failure.value;
+    }
+    throw error;
+  });
+}
+
+/**
  * Run a Judge effect under the caller's signal. An abort interrupts the
  * evaluation (providers terminate their busy workers) and rejects with the
  * caller's own abort reason, an `AbortError`, never an opaque fiber failure,
@@ -167,8 +188,8 @@ function runAbortable<A, E>(
   effect: Effect.Effect<A, E>,
   signal: AbortSignal | undefined
 ): Promise<A> {
-  if (!signal) return Effect.runPromise(effect);
-  return Effect.runPromise(effect, { signal }).catch((error: unknown) => {
+  if (!signal) return runJudgePromise(effect);
+  return runJudgePromise(effect, signal).catch((error: unknown) => {
     if (!signal.aborted) throw error;
     const reason: unknown = signal.reason;
     throw reason instanceof Error && reason.name === 'AbortError'
@@ -639,9 +660,10 @@ export interface CreateBrowserJudgeHostOptions {
   readonly csharp?: BrowserJudgeCSharpOptions;
   readonly cpp?: BrowserJudgeCppOptions;
   /**
-   * Idle lease for retained interactive executions. Continuation work
-   * pauses the lease, and completing that work renews it. Defaults to five
-   * minutes. Explicit disposal remains the preferred lifecycle path.
+   * Idle lease for retained interactive executions. Continuation work and
+   * an observer attempt that has not settled pause the lease, and
+   * completing either renews it. Defaults to five minutes. Explicit disposal
+   * remains the preferred lifecycle path.
    */
   readonly interactiveExecutionIdleTimeoutMs?: number;
   /**
@@ -720,6 +742,8 @@ export interface BrowserJudgeInitialExecuteRequest<
   readonly bundle: JudgeAlgorithmBundle<Input, Expected, Result>;
   readonly interactive?: boolean;
   readonly tracing?: RuntimeJudgeTraceSelection;
+  /** When the selected drawings arrive. Default `'with-verdict'`. */
+  readonly drawingDelivery?: JudgeDrawingDelivery;
   readonly signal?: AbortSignal;
   /**
    * Stop at the first case a time or line limit stopped and report the
@@ -2030,6 +2054,20 @@ export interface RuntimeJudgeTraceSelection {
   readonly caseIds: readonly string[];
 }
 
+/**
+ * When an interactive Run delivers its selected drawings.
+ *
+ * - `'with-verdict'` (the default): the initial request resolves once every
+ *   selected drawing has settled, with each attached to its row. Deprecated
+ *   for interactive Run; one-shot traced calls keep it.
+ * - `'after-verdict'`: requires `interactive: true`. The initial request
+ *   resolves at the verdict with no drawing on any row, and
+ *   `deferredDrawings` lists the selected cases. Each drawing then arrives
+ *   through a continuation (`{ executionId, tracing }`), which joins the
+ *   observer already started for that case.
+ */
+export type JudgeDrawingDelivery = 'with-verdict' | 'after-verdict';
+
 export interface RuntimeJudgeInitialExecuteRequest<
   Input = Record<string, unknown>,
   Expected = unknown,
@@ -2040,6 +2078,8 @@ export interface RuntimeJudgeInitialExecuteRequest<
   readonly interactive?: boolean;
   /** Omit for no recorded cases. */
   readonly tracing?: RuntimeJudgeTraceSelection;
+  /** When the selected drawings arrive. Default `'with-verdict'`. */
+  readonly drawingDelivery?: JudgeDrawingDelivery;
   readonly comparator?: JudgeComparator<Input, Expected, Result>;
   /**
    * Stop at the first case a time or line limit stopped and report the
@@ -2066,6 +2106,12 @@ export type RuntimeJudgeExecuteRequest<
 export interface RuntimeJudgeExecuteResult<Result = unknown, Expected = unknown> {
   readonly executionId?: string;
   readonly evaluation: JudgeEvaluationResult<Result, Expected>;
+  /**
+   * Present only when `'after-verdict'` delivery was honored: the selected
+   * case IDs in plan order, each to be drawn by a continuation. Empty when
+   * nothing was selected or the compile failed.
+   */
+  readonly deferredDrawings?: readonly string[];
   /** Wall-clock lifecycle phases measured by the browser Judge authority. */
   readonly timings?: RuntimeJudgeExecutionTimings;
 }
@@ -2073,6 +2119,24 @@ export interface RuntimeJudgeExecuteResult<Result = unknown, Expected = unknown>
 interface RetainedReceiptExecution {
   readonly manifest: JudgeAlgorithmBundle;
   readonly schedule: JudgeObservationSchedule<unknown, unknown>;
+}
+
+function validateDrawingDelivery(
+  request: Pick<RuntimeJudgeInitialExecuteRequest, 'interactive' | 'drawingDelivery'>
+): Effect.Effect<void, JudgePlanError> {
+  const delivery: unknown = request.drawingDelivery;
+  if (delivery === undefined || delivery === 'with-verdict') return Effect.void;
+  if (delivery !== 'after-verdict') {
+    return Effect.fail(new JudgePlanError({
+      message: `drawingDelivery must be 'with-verdict' or 'after-verdict', not ${JSON.stringify(delivery)}.`,
+    }));
+  }
+  if (request.interactive !== true) {
+    return Effect.fail(new JudgePlanError({
+      message: "drawingDelivery 'after-verdict' requires interactive: true.",
+    }));
+  }
+  return Effect.void;
 }
 
 let nextOpaqueId = 1;
@@ -2145,6 +2209,16 @@ class RuntimeJudgeComposition
     });
   }
 
+  /** Whether a retained execution still has an observer attempt running. */
+  observationPending(executionId: string): boolean {
+    return this.receiptExecutions.get(executionId)?.schedule.observing() ?? false;
+  }
+
+  /** Calls `listener` after each observer attempt of a retained execution settles. */
+  onObservationSettled(executionId: string, listener: () => void): void {
+    this.receiptExecutions.get(executionId)?.schedule.onObservationSettled(listener);
+  }
+
   disposeRetainedExecutions(): Effect.Effect<void> {
     return Effect.forEach(
       [...this.receiptExecutions.keys()],
@@ -2171,7 +2245,7 @@ class RuntimeJudgeComposition
   startBundleExecution<Input extends Record<string, unknown>, Result, Expected>(
     bundle: JudgeAlgorithmBundle<Input, Expected, Result>,
     request: Pick<RuntimeJudgeInitialExecuteRequest<Input, Expected, Result>,
-      'interactive' | 'tracing' | 'stopAtFirstRunaway'>
+      'interactive' | 'tracing' | 'drawingDelivery' | 'stopAtFirstRunaway'>
   ) {
     return this.startReceiptExecution<Input, Result, Expected>(
       bundle,
@@ -2236,6 +2310,8 @@ class RuntimeJudgeComposition
     receipt: JudgeAlgorithmReceipt<Result, Expected>;
   }, JudgePlanError | JudgeInfrastructureError> {
     return this.untilHostDisposal(Effect.gen(this, function* () {
+      yield* validateDrawingDelivery(request);
+      const deferred = request.drawingDelivery === 'after-verdict';
       const selected = yield* validateTraceSelection(request.plan, request.tracing);
       yield* validateJudgePlan(request.plan);
       const codeBinding = ordinaryBinding(this.runtime, binding);
@@ -2268,6 +2344,9 @@ class RuntimeJudgeComposition
           stopAtFirstRunaway: request.interactive === true || request.stopAtFirstRunaway === true,
         });
         schedule.commit(evaluation);
+        // After-verdict delivery resolves at the seal. Observers started at
+        // admission keep running; continuations deliver their drawings.
+        if (deferred) return schedule.verdict();
         return yield* Effect.tryPromise({
           try: (signal) => schedule.initial(signal),
           catch: (cause) => new JudgeInfrastructureError({
@@ -2295,26 +2374,46 @@ class RuntimeJudgeComposition
           ], { concurrency: 2 });
           return yield* Effect.failCause(outcome.cause);
         }
-        const release = yield* Effect.exit(this.disposeEvaluation(evaluationId));
-        if (Exit.isFailure(release)) {
-          yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
-          return yield* Effect.failCause(release.cause);
+        if (!deferred) {
+          const release = yield* Effect.exit(this.disposeEvaluation(evaluationId));
+          if (Exit.isFailure(release)) {
+            yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
+            return yield* Effect.failCause(release.cause);
+          }
         }
         const receipt = outcome.value;
         let executionId: string | undefined;
-        if (request.interactive === true && receipt.evaluation.status === 'completed') {
+        const retained = request.interactive === true && receipt.evaluation.status === 'completed';
+        if (retained) {
           executionId = this.nextOpaqueExecutionId('execution');
           this.receiptExecutions.set(executionId, { manifest: bundle, schedule });
-        } else {
+        } else if (!deferred) {
           // A lease release fault is independent of an already joined receipt.
           yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
         }
-        schedule.mark('public-resolve');
+        schedule.mark('public-resolve', undefined, undefined, { request: 'initial' });
+        if (deferred) {
+          // An after-verdict verdict waits on no teardown (G2). The ordinary
+          // program is released after the resolve, since a release can queue
+          // behind observer work (C#'s shares the compiler queue with the
+          // observer's companion compile). A compile failure keeps no handle,
+          // so its observer is released too. Neither can change the verdict,
+          // so a release fault is journalled as `release-fault`, not thrown.
+          const fault = (operation: NonNullable<JudgeScheduleMarker['operation']>) => () =>
+            schedule.mark('release-fault', undefined, undefined, { operation });
+          void Effect.runPromise(this.disposeEvaluation(evaluationId))
+            .catch(fault('dispose interactive prepared runtime program'));
+          if (!retained) void schedule.dispose().catch(fault('dispose Judge observation'));
+        }
+        // Nothing can be drawn later without a handle.
+        const deferredDrawings = !deferred ? undefined : !executionId ? [] :
+          request.plan.cases.map(({ id }) => id).filter((caseId) => selected?.has(caseId));
         return {
           receipt,
           result: Object.freeze({
             ...(executionId ? { executionId } : {}),
             evaluation: receipt.evaluation,
+            ...(deferredDrawings ? { deferredDrawings: Object.freeze(deferredDrawings) } : {}),
           }),
         };
       }));
@@ -2357,7 +2456,7 @@ class RuntimeJudgeComposition
           if (this.receiptExecutions.get(request.executionId) !== owned) {
             return Effect.fail(disposedExecutionError(request.executionId));
           }
-          owned.schedule.mark('public-resolve');
+          owned.schedule.mark('public-resolve', undefined, undefined, { request: 'continuation' });
           return Effect.succeed(Object.freeze({
             executionId: request.executionId,
             evaluation: evaluation as JudgeEvaluationResult<Result, Expected>,
@@ -2558,7 +2657,7 @@ export function createBrowserJudgeHost(
 }
 
 interface RetainedBrowserJudgeExecution {
-  readonly judge: RuntimeJudge;
+  readonly judge: RuntimeJudgeComposition;
   readonly scope: Scope.CloseableScope;
   activeContinuations: number;
   idleTimer?: ReturnType<typeof globalThis.setTimeout>;
@@ -2627,25 +2726,27 @@ export function createBrowserJudgeHostFromRuntimeHost(
     retained.idleTimer = undefined;
   };
 
+  // The idle lease counts only time when nothing is happening: no
+  // continuation waiting and no observer attempt running. An attempt started
+  // before an after-verdict verdict can outlive it with no request waiting;
+  // the lease stays paused until it settles, and the settle re-arms it.
+  const leasePaused = (
+    executionId: string,
+    retained: RetainedBrowserJudgeExecution
+  ): boolean =>
+    retained.activeContinuations > 0 ||
+    retainedExecutions.get(executionId) !== retained ||
+    retained.judge.observationPending(executionId);
+
   const armIdleTimer = (
     executionId: string,
     retained: RetainedBrowserJudgeExecution
   ): void => {
     clearIdleTimer(retained);
-    if (
-      retained.activeContinuations > 0 ||
-      retainedExecutions.get(executionId) !== retained
-    ) {
-      return;
-    }
+    if (leasePaused(executionId, retained)) return;
     const timer = globalThis.setTimeout(() => {
       retained.idleTimer = undefined;
-      if (
-        retained.activeContinuations > 0 ||
-        retainedExecutions.get(executionId) !== retained
-      ) {
-        return;
-      }
+      if (leasePaused(executionId, retained)) return;
       void disposeExecution(executionId).catch(() => undefined);
     }, interactiveExecutionIdleTimeoutMs);
     retained.idleTimer = timer;
@@ -2659,7 +2760,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     retained.abort?.abort(disposedExecutionError(executionId));
     clearIdleTimer(retained);
     try {
-      await Effect.runPromise(retained.judge.disposeExecution(executionId));
+      await runJudgePromise(retained.judge.disposeExecution(executionId));
     } finally {
       await Effect.runPromise(Scope.close(retained.scope, Exit.void));
     }
@@ -2722,7 +2823,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     await measureJudgeExecutionPhase(
       phases,
       'bundle-validation',
-      () => Effect.runPromise(validateAlgorithmJudgeBundle(bundle))
+      () => runJudgePromise(validateAlgorithmJudgeBundle(bundle))
     );
     if (signal.aborted) throw judgeAbortError();
     if (!host.isLanguageSupported(language)) {
@@ -2746,6 +2847,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
       const controls = {
         interactive: request.interactive,
         tracing,
+        drawingDelivery: request.drawingDelivery,
         stopAtFirstRunaway: request.stopAtFirstRunaway,
       };
       const { result, receipt } = await measureJudgeExecutionPhase(
@@ -2761,8 +2863,10 @@ export function createBrowserJudgeHostFromRuntimeHost(
           activeContinuations: 0,
           abort: new AbortController(),
         };
-        retainedExecutions.set(result.executionId, retained);
-        armIdleTimer(result.executionId, retained);
+        const executionId = result.executionId;
+        retainedExecutions.set(executionId, retained);
+        judge.onObservationSettled(executionId, () => armIdleTimer(executionId, retained));
+        armIdleTimer(executionId, retained);
       } else {
         await Effect.runPromise(Scope.close(scope, Exit.void));
       }

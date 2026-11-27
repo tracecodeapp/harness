@@ -1566,6 +1566,7 @@ function assertJavaScriptObservationProtocol(): void {
     'attachment-bind': prepared,
     'observation-cache-hit': prepared,
     'public-resolve': judge,
+    'release-fault': judge,
     'injection-ack': prepared,
     'judged-output-policy': bridge,
   } satisfies Record<BridgeEvent['phase'], string>;
@@ -1574,7 +1575,7 @@ function assertJavaScriptObservationProtocol(): void {
   }
   type Fault = NonNullable<ReturnType<NonNullable<JudgeTestBridge['faultAt']>>>;
   const faults = {
-    prepare: true, runtime: true, deadline: true, encode: true, 'no-recorder': true,
+    prepare: true, runtime: true, deadline: true, encode: true, 'no-recorder': true, stall: true,
   } satisfies Record<Fault, true>;
   assertCondition(prepared.includes(`point: 'service'`), 'Missing Judge bridge fault evidence for the service point');
   for (const fault of Object.keys(faults)) {

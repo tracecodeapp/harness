@@ -83,7 +83,13 @@ export type JudgeSchedulePhase =
   | 'observer-end'
   | 'attachment-bind'
   | 'observation-cache-hit'
-  | 'public-resolve';
+  | 'public-resolve'
+  /**
+   * A release the Judge ran after an after-verdict verdict failed. The
+   * verdict is unchanged; on the joined route the same fault would have been
+   * the request's `JudgeInfrastructureError` for `operation`.
+   */
+  | 'release-fault';
 
 export interface JudgeScheduleMarker {
   readonly phase: JudgeSchedulePhase;
@@ -106,6 +112,10 @@ export interface JudgeScheduleMarker {
   readonly cause?: 'backstop' | 'injected';
   /** `service-deadline`: accepted finishes the stopped batch publishes. */
   readonly accepted?: number;
+  /** `public-resolve`: the initial request or a continuation. */
+  readonly request?: 'initial' | 'continuation';
+  /** `release-fault`: the release that failed, named as its `JudgeInfrastructureError` operation. */
+  readonly operation?: 'dispose interactive prepared runtime program' | 'dispose Judge observation';
   readonly at: number;
 }
 
