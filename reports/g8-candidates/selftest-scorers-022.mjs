@@ -1,0 +1,128 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { metricEndpoints } from './aa-score-lib.mjs';
+import { historicalPackageSha256 } from './java-runner/version-preparation.mjs';
+import { phoneWarmAaPlan, phoneWarmAaRoundOrder, phoneWarmAaVersions } from './phone-warm-aa.mjs';
+import { production022, windowPlan022 } from './plan-022.mjs';
+import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
+
+const [root, rigCommit] = process.argv.slice(2);
+assert.ok(root && rigCommit);
+const json = (file, value) => writeFile(file, JSON.stringify(value) + '\n');
+const jsonl = (file, rows) => writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
+const metrics = (group, value) => Object.fromEntries(metricEndpoints(group).map((endpoint) =>
+  [warmMetricName(group, endpoint), value]));
+
+function runScorer(file, args, expectedExit) {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL(file, import.meta.url)), ...args],
+    { encoding: 'utf8' });
+  if (result.error) throw result.error;
+  assert.equal(result.status, expectedExit, `${file}\n${result.stderr}\n${result.stdout}`);
+  console.log(JSON.stringify({ scorer: file, exit: result.status }));
+  return result;
+}
+
+const aaDir = join(root, 'seeded-aa');
+await mkdir(aaDir);
+const prefix = 'seeded-phone-aa';
+const labels = phoneWarmAaVersions;
+const packagePin = { sha256: historicalPackageSha256['0.17.1'] };
+await json(join(aaDir, prefix + '-metadata.json'), {
+  phoneWarmAa: {
+    sourceVersion: '0.17.1', labels, target: 20,
+    languages: ['python', 'csharp'], cpu: 4, freshPagePerSample: true,
+    repeatRun: true, alternatingOrderPerRound: true,
+    tolerances: { medianRatio: 1.05, p90Ratio: 1.10 },
+  },
+  complete: true,
+  packages: Object.fromEntries(labels.map((label) => [label, packagePin])),
+  schedule: phoneWarmAaPlan,
+});
+const aaRowFile = join(aaDir, prefix + '-samples.jsonl');
+const aaRows = phoneWarmAaPlan.flatMap((group, groupIndex) =>
+  Array.from({ length: group.target }, (_, index) => {
+    const round = index + 1;
+    return phoneWarmAaRoundOrder(group.versions, round).map((version, position) => ({
+      groupIndex, round, version, position, kept: true, cache: { initial: {} },
+      metrics: metrics(group, 400),
+      ...(isRepeatWarmMode(group) && { prime: {}, primeCache: {} }),
+    }));
+  }).flat());
+const excluded = { ...aaRows[0], round: 21, kept: false, excluded: 'initial load > 2.0' };
+await jsonl(aaRowFile, [excluded, ...aaRows]);
+let result = runScorer('./score-phone-warm-aa.mjs', [aaDir, prefix], 0);
+assert.equal(JSON.parse(result.stdout.trim().split('\n').at(-1)).summary.pass, true);
+
+const aaFailed = aaRows.map((row) => row.groupIndex === 0 && row.version === labels[1]
+  ? { ...row, metrics: metrics(phoneWarmAaPlan[0], 550) } : row);
+await jsonl(aaRowFile, [excluded, ...aaFailed]);
+result = runScorer('./score-phone-warm-aa.mjs', [aaDir, prefix], 1);
+const aaScores = result.stdout.trim().split('\n').map(JSON.parse);
+assert.equal(aaScores.at(-1).summary.pass, false);
+assert.ok(aaScores.some(({ cell, pass }) => cell && pass));
+assert.ok(aaScores.some(({ cell, pass }) => cell && !pass));
+
+for (const disposition of ['invalid', 'refusal']) {
+  await jsonl(aaRowFile, [{ ...excluded, excluded: undefined, [disposition]: `Seeded ${disposition}` },
+    ...aaRows]);
+  const bad = runScorer('./score-phone-warm-aa.mjs', [aaDir, prefix], 1);
+  assert.match(bad.stderr, new RegExp(`Seeded ${disposition}`));
+}
+
+const [pass, fail, controlInvalid, repaired, partial] = windowPlan022().slice(0, 5);
+const controlSha256 = production022.sha256;
+const reference = join(root, 'seeded-reference.json');
+const ref = (group, median, p90, aaPass = true) => metrics(group, { median, p90, aaPass });
+await json(reference, { controlSha256, groups: {
+  [pass.groupIndex]: ref(pass, 500, 500),
+  [fail.groupIndex]: ref(fail, 500, 500),
+  [controlInvalid.groupIndex]: ref(controlInvalid, 500, 500, false),
+  [repaired.groupIndex]: ref(repaired, 500, 500),
+  [partial.groupIndex]: ref(partial, 500, 500),
+} });
+
+function rows(group, control, candidate, count = group.target) {
+  return group.versions.flatMap((version, versionIndex) =>
+    Array.from({ length: count }, (_, index) => ({
+      groupIndex: group.groupIndex, version, round: index + 1, kept: true,
+      metrics: metrics(group, versionIndex === 0 ? control : candidate(index)),
+    })));
+}
+
+async function session(name, schedule, rows) {
+  const dir = join(root, name);
+  await mkdir(dir);
+  await json(join(dir, 'window-metadata.json'), {
+    schema: 'tracecode.speed-022.window.v1', rigCommit, controlSha256,
+    candidateSha256: 'a'.repeat(64), schedule,
+  });
+  await jsonl(join(dir, 'window-samples.jsonl'), rows);
+  return dir;
+}
+
+const passRows = rows(pass, 500, () => 550);
+const rejected = ['invalid', 'refusal', 'excluded'].map((reason, index) => ({
+  ...passRows[0], round: pass.target + index + 1, kept: false,
+  [reason]: `Seeded ${reason}`, metrics: metrics(pass, 10_000),
+}));
+const first = await session('seeded-session-one', [pass, fail, controlInvalid, repaired, partial],
+  [...passRows, ...rejected, ...rows(fail, 500, (index) => index < 15 ? 500 : 560),
+    ...rows(controlInvalid, 500, () => 500), ...rows(repaired, 1, () => 1, 1),
+    ...rows(partial, 500, () => 500, 1)]);
+const second = await session('seeded-session-two', [repaired], rows(repaired, 500, () => 500));
+const formal = JSON.parse(runScorer('./score-022.mjs', [reference, first, second], 1).stdout);
+const [passResult, failResult, controlResult, repairedResult, partialResult] = formal.groups;
+assert.ok(passResult.cells.every(({ result }) => result === 'pass'));
+assert.deepEqual(passResult.counts, { invalid: 1, refusal: 1, excluded: 1 });
+assert.ok(failResult.cells.every(({ result, failed }) => result === 'fail' && failed.join() === 'p90'));
+assert.ok(controlResult.cells.every(({ result }) => result === 'controlInvalid'));
+assert.equal(repairedResult.source, second);
+assert.ok(repairedResult.cells.every(({ result }) => result === 'pass'));
+assert.equal(partialResult.incomplete, true);
+
+const passing = await session('seeded-passing-session', [pass], passRows);
+assert.equal(JSON.parse(runScorer('./score-022.mjs', [reference, passing], 0).stdout).pass, true);
+console.log('Seeded scorer outcomes passed: formal pass, formal fail, controlInvalid, A/A pass, A/A fail, partial, merge');

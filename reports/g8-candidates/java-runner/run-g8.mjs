@@ -123,6 +123,14 @@ const shapeProbeFile = process.env.SPEED_G8_SHAPE_PROBE_FILE;
 const finalReleaseTailFile = process.env.SPEED_G8_FINAL_TAIL_FILE;
 const inventoryOnly = process.env.SPEED_G8_INVENTORY_ONLY === '1';
 const ordinaryPreflight = process.env.SPEED_G8_PREFLIGHT_ORDINARY === '1';
+const rig022 = process.env.SPEED_RIG_022_OPERATION;
+const selftest022 = rig022 === 'selftest';
+const measured022 = rig022 === 'window';
+assert.ok(rig022 === undefined || selftest022 || measured022, 'Unknown 0.22 operation');
+if (measured022) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'Exclusive window required');
+const { heavyFixture022, production022, selftestPlan022, windowPlan022 } =
+  rig022 ? await import('../plan-022.mjs') : {};
+const { assertLessonPromotion022 } = selftest022 ? await import('../csharp-lesson-selftest-022.mjs') : {};
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
 const testedLanguage = process.env.SPEED_G8_LANGUAGE ?? 'java';
 assert.ok(['javascript', 'typescript', 'python', 'cpp', 'java', 'csharp'].includes(testedLanguage));
@@ -198,7 +206,9 @@ const csharpWarmSubmitControl = liveControl && !finalRelease && testedLanguage =
 const isLiveWitnessControl = (version, language) => liveControl &&
   (version === '0.17.1' || csharpWarmSubmitControl && language === 'csharp' &&
     version === '0.20.1');
-const versions = phoneWarmAa ? phoneWarmAaVersions : submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
+const versions = selftest022 ? [production022.version] : measured022
+  ? [production022.version, ...candidateVersions] :
+  phoneWarmAa ? phoneWarmAaVersions : submitAa ? submitAaVersions : pythonFreshAa ? pythonFreshAaVersions : releasePythonWarm ? ['release-deploy', '0.17.1', '0.20.1'] : referenceRerecord ? ['0.17.1', '0.20.1'] : aaClosing ? aaClosingAllVersions : aaControl ? aaVersions : releaseVersion ? ['release-deploy'] : candidate
   ? liveControl ? [...liveControlVersions(candidateVersions),
       ...(csharpWarmSubmitControl ? ['0.20.1'] : [])] : candidateVersions : Object.keys(appRefs);
 const appLockIntegrity = {
@@ -212,7 +222,7 @@ const baseFilePrefix = phoneWarmAa ? 'phone-warm-aa-' : finalRelease ? `final-${
     (candidateScope === 'spot' ? 'spot-' : testedLanguage + '-' + candidateScope + '-') :
     candidate ? 's-' + testedLanguage + '-' + candidateScope + '-' :
   mode === 'smoke' ? 'smoke-' : 'speed-' + windowName + '-';
-const filePrefix = outputTag ? `${outputTag}-${baseFilePrefix}` : baseFilePrefix;
+const filePrefix = rig022 ? `${rig022}-` : outputTag ? `${outputTag}-${baseFilePrefix}` : baseFilePrefix;
 const metadataPath = join(out, filePrefix + 'metadata.json');
 const samplesPath = join(out, filePrefix + 'samples.jsonl');
 const deadline = Date.now() + runMinutes * 60_000;
@@ -292,6 +302,10 @@ async function loadFixtures() {
       };
     }
   }
+  if (rig022) {
+    data['heavy-022'] = Object.fromEntries(await Promise.all(Object.keys(languages)
+      .map(async (language) => [language, await heavyFixture022(language)])));
+  }
   return { data, provenance };
 }
 
@@ -327,28 +341,36 @@ async function serve(site) {
 }
 
 async function prepareVersion(version) {
-  const stagedVersion = version.startsWith('candidate-') || version === 'release-deploy';
-  const root = join(out, stagedVersion ? (releaseVersion ? 'vrelease' : 'vcandidate') : 'v' + version);
+  const published022 = rig022 && version === production022.version;
+  const stagedVersion = version.startsWith('candidate-') || version === 'release-deploy' || published022;
+  const root = join(out, published022 ? 'vproduction' :
+    stagedVersion ? (releaseVersion ? 'vrelease' : 'vcandidate') : 'v' + version);
+  const pin = rig022 ? await json(join(root, 'candidate.json')) : staged;
   const harness = join(root, 'package');
   const site = join(root, 'site');
   const manifest = await json(join(harness, 'package.json'));
-  assert.equal(manifest.version, stagedVersion ? staged.version : version);
-  const tarball = stagedVersion ? 'candidate.tgz' : 'tracecode-harness-' + version + '.tgz';
+  assert.equal(manifest.version, stagedVersion ? pin.version : version);
+  const tarball = rig022 ? `tracecode-harness-${pin.version}.tgz` :
+    stagedVersion ? 'candidate.tgz' : 'tracecode-harness-' + version + '.tgz';
   const tarballBytes = await readFile(join(root, tarball));
   const integrity = 'sha512-' + createHash('sha512').update(tarballBytes).digest('base64');
-  if (stagedVersion) assert.equal(sha256(tarballBytes), staged.tarballSha256);
+  if (published022) assert.equal(sha256(tarballBytes), production022.sha256);
+  if (measured022 && !published022) {
+    assert.equal(sha256(tarballBytes), process.env.SPEED_RIG_022_CANDIDATE_SHA256);
+  }
+  if (stagedVersion) assert.equal(sha256(tarballBytes), pin.tarballSha256);
   else assert.equal(integrity, appLockIntegrity[version], 'Tarball differs from the app lockfile');
   const dependencyFile = join(root, 'dependencies.json');
   const dependencyBytes = await readFile(dependencyFile);
   const dependenciesSha256 = sha256(dependencyBytes);
-  assert.equal(dependenciesSha256, stagedVersion ? staged.dependenciesSha256 : frozenDependencyHashes[version],
+  assert.equal(dependenciesSha256, stagedVersion ? pin.dependenciesSha256 : frozenDependencyHashes[version],
     `Installed dependency tree differs from the frozen tree for Harness ${version}`);
   const dependencyLockSha256 = sha256(await readFile(join(harness, 'package-lock.json')));
   const expectedLock = new URL(`./dependency-locks/${version}.package-lock.json`, import.meta.url);
-  assert.equal(dependencyLockSha256, stagedVersion ? staged.dependencyLockSha256 :
+  assert.equal(dependencyLockSha256, stagedVersion ? pin.dependencyLockSha256 :
     sha256(await readFile(expectedLock)), `Install lock differs from the frozen lock for Harness ${version}`);
   if (stagedVersion) {
-    for (const [name, hash] of Object.entries(staged.files)) {
+    for (const [name, hash] of Object.entries(pin.files)) {
       assert.equal(sha256(await readFile(join(root, name))), hash, name + ' differs from staged bytes');
     }
   }
@@ -371,7 +393,7 @@ async function prepareVersion(version) {
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
   const metadata = {
     appRef: stagedVersion ? appRefs[releaseVersion ? '0.17.1' : '0.20.1'] : appRefs[version],
-    ...(stagedVersion && { ...(staged.commit && { commit: staged.commit }), files: staged.files }),
+    ...(stagedVersion && { ...(pin.commit && { commit: pin.commit }), files: pin.files }),
     tarball, integrity, sha256: sha256(tarballBytes),
     dependencyLockSha256, dependenciesSha256,
     dependencies: JSON.parse(dependencyBytes.toString('utf8')),
@@ -405,12 +427,14 @@ async function openPage(context, version, url, group) {
       window.bench = createSession(language, stopSubmit, candidate, candidateRuntime);
   }, {
     language: group.language,
-    stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main',
-    candidate: shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
+    stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main' ||
+      version === production022?.version,
+    candidate: rig022 ? group.language === 'csharp' && group.journey === 'lesson' :
+      shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
       isLiveWitnessControl(version, group.language) &&
         ['java', 'csharp', 'python'].includes(group.language) ||
       fixedWarmWitness && repeatPenaltyLanguages.includes(group.language),
-    candidateRuntime: shouldValidateCandidateWitness(version, group.language, testedLanguage),
+    candidateRuntime: Boolean(rig022) || shouldValidateCandidateWitness(version, group.language, testedLanguage),
   });
     return page;
   } catch (error) {
@@ -442,6 +466,14 @@ function candidateOutcome(result, role, caseCount, caseId, version, language, tr
   } : undefined;
   const selectedReplenishmentOptions = replenishmentOptions &&
     Object.keys(replenishmentOptions).length > 0 ? replenishmentOptions : undefined;
+  if (rig022 && language === 'csharp') {
+    // The published 0.21.0 control uses the modern split execution roles.
+    if (selectedReplenishmentOptions?.promotedExecutionType) {
+      selectedReplenishmentOptions.promotedExecutionType = 'execute-prepared-code';
+      selectedReplenishmentOptions.promotedPrepareRole = 'ordinary';
+    }
+    if (selftest022) assertLessonPromotion022(caseCount, selectedReplenishmentOptions);
+  }
   if (fixedWarmWitness && repeatPenaltyLanguages.includes(language)) {
     if (language === 'csharp') {
       return csharpProductionControlOutcome(
@@ -531,6 +563,23 @@ function expectedGroupSeconds(group) {
 }
 
 function plan() {
+  if (selftest022) {
+    const groups = selftestPlan022();
+    // Fail on the exact lesson path before the longer cross-language matrix.
+    const csharpLesson = groups.find(({ language, journey }) => language === 'csharp' && journey === 'lesson');
+    return [csharpLesson, ...groups.filter((group) => group !== csharpLesson)];
+  }
+  if (measured022) {
+    const groups = windowPlan022();
+    const selection = process.env.SPEED_RIG_022_GROUPS;
+    if (selection === undefined || selection === '-') return groups;
+    const indexes = JSON.parse(selection);
+    assert.ok(Array.isArray(indexes) && indexes.length && new Set(indexes).size === indexes.length);
+    return indexes.map((index) => {
+      assert.ok(Number.isSafeInteger(index) && groups[index], `Unknown window group ${index}`);
+      return groups[index];
+    });
+  }
   if (phoneWarmAa) return structuredClone(phoneWarmAaPlan);
   if (finalRelease) {
     const groups = structuredClone(finalReleasePlan(testedLanguage, candidateScope));
@@ -634,6 +683,7 @@ async function waitForQuiet() {
 }
 
 function addressedBySample(sample) {
+  if (sample.problem === 'heavy-022') return { submitVerdicts: sample.initial?.judgeMs };
   if (sample.journey === 'run') return Object.fromEntries([
     ['verdicts', sample.initial?.elapsedMs],
     ['firstTrace', sample.initial?.firstTraceMs],
@@ -750,11 +800,17 @@ const report = {
   browser: { channel: 'chromium', crossOriginIsolated: false },
   packages: {},
   complete: false,
+  ...(measured022 && {
+    schema: 'tracecode.speed-022.window.v1',
+    rigCommit: runnerSourceCommit(),
+    controlSha256: production022.sha256,
+    candidateSha256: process.env.SPEED_RIG_022_CANDIDATE_SHA256,
+  }),
 };
 const save = () => writeFile(metadataPath, JSON.stringify(report, null, 2) + '\n');
 
 try {
-  await writeFile(samplesPath, '', { flag: 'wx' });
+  if (!selftest022) await writeFile(samplesPath, '', { flag: 'wx' });
   const fixtures = await loadFixtures();
   report.fixtures = fixtures.provenance;
   for (const version of versions) {
@@ -767,7 +823,7 @@ try {
       const firstAaLabel = phoneWarmAa ? phoneWarmAaVersions[0] : pythonFreshAaVersions[0];
       prepared[version] = prepared[firstAaLabel] ?? await prepareVersion('0.17.1');
     } else {
-      const sourceVersion = candidatePreparationSourceVersion(version, candidate);
+      const sourceVersion = candidatePreparationSourceVersion(version, candidate || measured022);
       prepared[version] = prepared[sourceVersion] ?? await prepareVersion(sourceVersion);
     }
     assertExactHistoricalPackage(version, prepared[version].metadata);
@@ -775,15 +831,17 @@ try {
   }
   browser = await chromium.launch({ channel: 'chromium', headless: true });
   report.browser.version = browser.version();
-  if (staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
+  if (rig022 || staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
-  await save();
+  if (!selftest022) await save();
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
     [version, await browser.newContext()])));
   let complete = true;
   const capturedSubmitAfterRun = new Set();
   const trustedCsharpArtifactKeys = new Map();
-  for (const [groupIndex, group] of schedule.entries()) {
+  const calibration = [];
+  for (const [scheduleIndex, group] of schedule.entries()) {
+    const groupIndex = rig022 ? group.groupIndex : scheduleIndex;
     const { target } = group;
     const fixture = fixtures.data[group.problem][group.language];
     const otherProblem = problemIds.find((id) => id !== group.problem);
@@ -799,6 +857,7 @@ try {
           ? phoneWarmAaRoundOrder(group.versions, round)
           : pythonFreshAa
           ? pythonFreshAaRoundOrder(group.versions, round)
+          : measured022 ? (round % 2 === 1 ? group.versions : [...group.versions].reverse())
           : aaClosing ? group.versions : releasePythonWarm
           ? liveRoundOrder(group.versions, round) : referenceRerecord
           ? referenceRoundOrder(group.versions, round) : liveControl
@@ -899,8 +958,9 @@ try {
               if (group.journey === 'run' && !sample.invalid && sample.initial.firstTraceMs === null) {
                 sample.invalid = 'No first-case trace';
               }
-              if ((candidate || fixedWarmWitness) &&
-                  (shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
+              const lesson022 = rig022 && group.language === 'csharp' && group.journey === 'lesson';
+              if ((lesson022 || candidate || fixedWarmWitness) &&
+                  (lesson022 || shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
                     isLiveWitnessControl(version, group.language) &&
                       ['java', 'csharp', 'python'].includes(group.language) ||
                     fixedWarmWitness && repeatPenaltyLanguages.includes(group.language)) &&
@@ -989,14 +1049,25 @@ try {
                 sample.second, group.language, sample.trustedCsharpArtifactKey) }),
             };
           }
+          if (selftest022) {
+            assert.ok(!sample.invalid && !sample.refusal && !sample.excluded,
+              `Self-test group ${groupIndex} ${group.language}/${group.journey}: ${sample.invalid ?? sample.refusal ?? sample.excluded}`);
+            if (group.problem === 'heavy-022') {
+              const row = { kind: 'calibration', language: group.language, judgeMs: sample.initial.judgeMs };
+              calibration.push(row);
+              console.log(JSON.stringify(row));
+            }
+            count.kept++;
+            continue;
+          }
           sample.wallMs = Date.now() - attemptStarted;
           sample.metrics = addressedBySample(sample);
           sample.kept = mode === 'run' && !sample.invalid && !sample.excluded && !sample.refusal;
           if (sample.invalid || sample.refusal) count.invalid++;
           else if (!sample.excluded) count.kept++;
           await appendFile(samplesPath, JSON.stringify(sample) + '\n');
-          const shapeReceipt = uncapturedShapeGuard.observe(group, version, sample);
-          if (shapeReceipt.action === 'fail-fast') {
+          const shapeReceipt = rig022 ? undefined : uncapturedShapeGuard.observe(group, version, sample);
+          if (shapeReceipt?.action === 'fail-fast') {
             throw new Error(`Uncaptured shape rejected its first completed attempt: ${shapeReceipt.key}: ` +
               (sample.invalid ?? sample.refusal));
           }
@@ -1029,7 +1100,13 @@ try {
       await Promise.all([...warmPages.values()].map((page) => page.close().catch(() => {})));
     }
     if (Object.values(counts).some((c) => c.kept < target)) complete = false;
-    console.log(JSON.stringify({ groupIndex, ...group, counts, wallMs: Date.now() - groupStarted }));
+    console.log(JSON.stringify({ groupIndex, ...group, counts,
+      ...(!selftest022 && { wallMs: Date.now() - groupStarted }) }));
+  }
+  if (selftest022) {
+    assert.equal(calibration.length, Object.keys(languages).length);
+    const outOfRange = calibration.filter(({ judgeMs }) => !(judgeMs >= 1000 && judgeMs <= 3000));
+    assert.deepEqual(outOfRange, [], 'Heavy-case calibration outside 1–3 seconds');
   }
   report.complete = complete;
   if (!complete) process.exitCode = 1;
@@ -1039,7 +1116,7 @@ try {
 } finally {
   report.end = now();
   try {
-    await save();
+    if (!selftest022) await save();
   } finally {
     await browser?.close();
     for (const { server } of new Set(Object.values(prepared))) {

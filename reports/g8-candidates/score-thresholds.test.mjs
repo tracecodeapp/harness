@@ -2,10 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   expectedLiveControlMetadata,
+  fails022Threshold,
   medianRegressionClass,
   pairedRepeatControlScopeAllowed,
   scoreThresholds,
 } from './score-thresholds.mjs';
+
+test('0.22 requires both a strict relative increase and an inclusive absolute increase', () => {
+  assert.equal(fails022Threshold(5500, 5000), false);
+  const underAbsoluteFloor = 49.9 / 0.50;
+  assert.equal(fails022Threshold(underAbsoluteFloor + 49.9, underAbsoluteFloor), false);
+  const aboveRelativeFloor = 50 / 0.1001;
+  assert.equal(fails022Threshold(aboveRelativeFloor + 50, aboveRelativeFloor), true);
+  assert.equal(fails022Threshold(100, 100), false);
+});
 
 test('seeded control derives identical unrounded thresholds for equivalent frozen cells', () => {
   const history = [

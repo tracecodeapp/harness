@@ -56,6 +56,11 @@ function phoneBase(language) {
 export function finalReleasePlan(language, scope) {
   assert.ok(finalRuntimeLanguages.includes(language),
     `Unknown final-release runtime language: ${language}`);
+  return releaseJourneyGroups(language, scope);
+}
+
+export function releaseJourneyGroups(language, scope) {
+  assert.ok(finalReleaseLanguages.includes(language), `Unknown release language: ${language}`);
   assert.ok(['desktop', 'phone'].includes(scope), `Unknown final-release scope: ${scope}`);
   const base = scope === 'desktop' ? desktopBase(language) : phoneBase(language);
   if (!['python', 'csharp'].includes(language)) return base;

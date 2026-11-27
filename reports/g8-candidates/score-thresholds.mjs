@@ -1,3 +1,13 @@
+import assert from 'node:assert/strict';
+
+export function fails022Threshold(candidateMs, controlMs) {
+  assert.ok(Number.isFinite(candidateMs) && candidateMs > 0);
+  assert.ok(Number.isFinite(controlMs) && controlMs > 0);
+  // Compare against the boundary directly so subtracting decimal measurements
+  // cannot turn an exactly 10% increase into a value just above 10%.
+  return candidateMs >= controlMs + 50 && candidateMs > controlMs + controlMs / 10;
+}
+
 export function scoreThresholds(scope, requiredHistory) {
   return {
     median: (scope === 'spot' ? 1.05 : 1) * Math.min(...requiredHistory.map((row) => row.median)),

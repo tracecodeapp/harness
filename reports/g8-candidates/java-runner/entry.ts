@@ -319,7 +319,8 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
       const warm = cold ? this.warm(false) : undefined;
       try {
         const b = await bundle(fixture, mode !== 'submit');
-        const builtMs = performance.now() - started;
+        const judgeStarted = performance.now();
+        const builtMs = judgeStarted - started;
         const result = mode === 'submit'
           ? await host.evaluateAlgorithm({
               bundle: b,
@@ -339,6 +340,7 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
         // response as all case verdicts. There is no earlier event subscription.
         return {
           elapsedMs, builtMs, evaluation, verdict: result.verdict, firstTraceMs: firstTrace?.traceEvents ? elapsedMs : null,
+          ...(fixture.id === 'heavy-022' && { judgeMs: received - judgeStarted }),
           executionId: Boolean(executionId), warm: await warm, timing: result.timings,
           ...(measured && { [language]: measured.read(started, received) }),
         };
