@@ -11,7 +11,7 @@
 // - The scope is removed with `systemctl kill`; a detached watchdog does the same if the launcher dies.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, openSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -170,8 +170,33 @@ function readMembership(cgroup, chromiumDir, requireRenderer) {
   if (requireRenderer) {
     assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
   }
+  // Coverage: every live descendant of the browser, anywhere on the host, is inside the scope.
+  const [browserPid] = browsers;
+  const outside = descendants(browserPid).filter((pid) => {
+    const own = readProc(pid, 'cgroup')?.toString('utf8').trim();
+    return own !== undefined && own !== `0::${cgroup}`;
+  }).map((pid) => ({ pid, cgroup: readProc(pid, 'cgroup')?.toString('utf8').trim() }));
+  assert.deepEqual(outside, [], `Rig Chromium processes outside ${cgroup}`);
   const threads = readTrim(join(dir, 'cgroup.threads')).split('\n').filter(Boolean).length;
-  return { cgroup, at: new Date().toISOString(), processes, threads };
+  return { cgroup, at: new Date().toISOString(), processes, threads, descendantsOutside: outside };
+}
+
+function descendants(root) {
+  const children = new Map();
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/u.test(name)) continue;
+    const ppid = Number(statFields(Number(name))?.[1]);
+    if (!children.has(ppid)) children.set(ppid, []);
+    children.get(ppid).push(Number(name));
+  }
+  const found = [];
+  const queue = [...(children.get(root) ?? [])];
+  while (queue.length) {
+    const pid = queue.shift();
+    found.push(pid);
+    queue.push(...(children.get(pid) ?? []));
+  }
+  return found;
 }
 
 // Chromium forks short-lived helpers while it starts; retry until one consistent reading.
@@ -243,10 +268,13 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
   const chromiumDir = dirname(real);
   const wrapper = join(workDir, `${unit}-chromium.sh`);
   // systemd-run --scope registers its own PID as the scope and then execs Chromium, so the
-  // Playwright pipe, arguments and environment pass through unchanged.
+  // Playwright pipe and arguments pass through unchanged. Chromium on Linux moves processes into its
+  // own app-org.chromium.Chromium-<pid>.scope through the session bus, which would take them out of
+  // the cap, so the phone browser runs without a session bus address.
   writeFileSync(wrapper, [
     '#!/bin/sh',
-    `exec systemd-run --quiet --scope --collect --slice=${slice} --unit=${shellQuote(unit)} \\`,
+    'exec env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR \\',
+    `  systemd-run --quiet --scope --collect --slice=${slice} --unit=${shellQuote(unit)} \\`,
     `  -p CPUQuota=${phoneCap022.cpuQuotaPercent}% -p CPUQuotaPeriodSec=${phoneCap022.periodUs / 1000}ms \\`,
     `  -- ${shellQuote(real)} "$@"`,
     '',
