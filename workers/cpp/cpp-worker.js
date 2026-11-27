@@ -61,6 +61,11 @@ const TRACE_EVENT_TRANSFER_MAX_CHUNK_BYTES = 256 * 1024;
 const TRACE_EVENT_TRANSFER_MAX_BYTES = 64 * 1024 * 1024;
 const TRACE_EVENT_TRANSFER_MIN_EVENTS = 128;
 const DEFAULT_MAX_STORED_EVENTS = 50_000;
+// A drawing's default byte budget and per-event cap, in UTF-8 bytes of each
+// final event's JSON. The launch coordinator set them from R-DATA's catalog
+// sizes: the JS/TS budget, which no C++ reference drawing reaches.
+const CPP_DEFAULT_TRACE_MAX_BYTES = 32 * 1024 * 1024;
+const CPP_DEFAULT_TRACE_MAX_EVENT_BYTES = 256 * 1024;
 const DEFAULT_INTERVIEW_MAX_TRACE_STEPS = 10_000;
 const DEFAULT_INTERVIEW_MAX_LINE_EVENTS = 12_000;
 const DEFAULT_INTERVIEW_MAX_SINGLE_LINE_HITS = 1_000;
@@ -12484,25 +12489,163 @@ function popCppCallStackFrame(stack, functionName) {
   }
 }
 
-function enrichCppRuntimeTraceCallStacks(events) {
-  const stack = [];
-  return events.map((event) => {
-    if (event?.kind === 'call') {
-      const frame = {
-        function: event.function || '<module>',
-        ...(event.args !== undefined ? { args: event.args } : {}),
-        ...(typeof event.line === 'number' ? { line: event.line } : {}),
-      };
-      stack.push(frame);
-      return { ...event, callStack: cloneCppCallStack(stack) };
-    }
-    if (event?.kind === 'return') {
-      const withStack = stack.length > 0 ? { ...event, callStack: cloneCppCallStack(stack) } : { ...event };
-      popCppCallStackFrame(stack, event.function);
-      return withStack;
-    }
-    return stack.length > 0 ? { ...event, callStack: cloneCppCallStack(stack) } : { ...event };
+function pushCppCallStackFrame(stack, event) {
+  stack.push({
+    function: event.function || '<module>',
+    ...(event.args !== undefined ? { args: event.args } : {}),
+    ...(typeof event.line === 'number' ? { line: event.line } : {}),
   });
+}
+
+// The event's active function as its enriched copy would report it: the
+// live stack's top, or the raw event's own call stack when the live one is
+// empty (the copy then keeps the raw event's fields).
+function cppRuntimeTraceActiveFunction(event, stack) {
+  if (stack.length > 0) return stack[stack.length - 1]?.function;
+  const own = event?.callStack;
+  return Array.isArray(own) ? own[own.length - 1]?.function : undefined;
+}
+
+function cppRuntimeTraceEventFunction(event, activeFunction) {
+  return event?.kind === 'line' && !event.function && activeFunction ? activeFunction : event?.function;
+}
+
+// One drawing event: the raw event with a copy of the live call stack, then
+// the per-event normalisation. The caller has already decided to keep it.
+function buildCppRuntimeTraceEvent(event, stack, activeFunction, context) {
+  const enriched = stack.length > 0 ? { ...event, callStack: cloneCppCallStack(stack) } : { ...event };
+  const normalized = stripCppSyntheticHelperFrames({
+    ...enriched,
+    ...(enriched.kind === 'line' && !enriched.function && activeFunction ? { function: activeFunction } : {}),
+    runId: context.runId,
+    file: context.file,
+  }, context.userFunctionNames);
+  return normalizeRuntimeTraceEventTargetDepth({
+    ...normalized,
+    ...cppRuntimeTraceSourceOwnership(normalized, context.statementSourceMap),
+  }, context.maxPathDepth);
+}
+
+// The UTF-8 length TextEncoder would give, without allocating the bytes.
+function utf8ByteLength(text) {
+  if (!/[^\x00-\x7f]/.test(text)) return text.length;
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length &&
+      text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) {
+      bytes += 4;
+      index += 1;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+function cppRuntimeTraceEventBytes(event) {
+  return utf8ByteLength(JSON.stringify(event));
+}
+
+function cppRuntimeTraceByteBudget(maxTraceBytes) {
+  const maxBytes = Number.isFinite(maxTraceBytes) ? Number(maxTraceBytes) : CPP_DEFAULT_TRACE_MAX_BYTES;
+  return { maxBytes, maxEventBytes: Math.min(CPP_DEFAULT_TRACE_MAX_EVENT_BYTES, maxBytes) };
+}
+
+/**
+ * One pass over the recorder's raw events. It tracks the live call stack for
+ * every event, but copies the stack onto an event only when that event is
+ * kept, and measures each kept event as it is built. At the first count cap
+ * (`countLimits`, in precedence order) or byte cut it stops copying, so a
+ * drawing costs at most its byte budget plus one stack, whatever the depth.
+ *
+ * Helper events are dropped before anything counts, as they always were. The
+ * scan continues past the cut without copying, to count the events left out
+ * and, when `substituteTimeout` is set, to find the first timeout marker.
+ */
+function collectCppRuntimeTraceEvents(events, context, countLimits, budget, substituteTimeout) {
+  const stack = [];
+  const retained = [];
+  const retainedBytes = [];
+  let bytes = 0;
+  let cut;
+  let keptCount = 0;
+  let retainedTimeout = false;
+  let timeoutEvent;
+  for (const event of events) {
+    if (event?.kind === 'call') pushCppCallStackFrame(stack, event);
+    const activeFunction = cppRuntimeTraceActiveFunction(event, stack);
+    const dropped = isDroppableCppSyntheticHelperEvent({
+      kind: event?.kind,
+      function: cppRuntimeTraceEventFunction(event, activeFunction),
+    }, context.userFunctionNames);
+    if (!dropped) {
+      keptCount += 1;
+      let built;
+      if (!cut) {
+        for (const { max, reason } of countLimits) {
+          if (retained.length >= max) { cut = reason; break; }
+        }
+      }
+      if (!cut) {
+        built = buildCppRuntimeTraceEvent(event, stack, activeFunction, context);
+        const eventBytes = cppRuntimeTraceEventBytes(built);
+        if (eventBytes > budget.maxEventBytes || bytes + eventBytes > budget.maxBytes) {
+          cut = 'byte-budget';
+        } else {
+          retained.push(built);
+          retainedBytes.push(eventBytes);
+          bytes += eventBytes;
+          if (built.kind === 'timeout') retainedTimeout = true;
+        }
+      }
+      if (cut && substituteTimeout && !retainedTimeout && !timeoutEvent && event?.kind === 'timeout') {
+        timeoutEvent = built ?? buildCppRuntimeTraceEvent(event, stack, activeFunction, context);
+      }
+    }
+    if (event?.kind === 'return') popCppCallStackFrame(stack, event.function);
+  }
+  if (timeoutEvent) {
+    // A cut drawing ends with the first timeout marker in place of its last
+    // event, as it always has, within the same byte budget.
+    const timeoutBytes = cppRuntimeTraceEventBytes(timeoutEvent);
+    if (timeoutBytes <= budget.maxEventBytes) {
+      if (retained.length > 0) {
+        retained.pop();
+        bytes -= retainedBytes.pop();
+      }
+      while (retained.length > 0 && bytes + timeoutBytes > budget.maxBytes) {
+        retained.pop();
+        bytes -= retainedBytes.pop();
+      }
+      retained.push(timeoutEvent);
+      bytes += timeoutBytes;
+    }
+  }
+  return { events: retained, bytes, cut, keptCount };
+}
+
+function cppRuntimeTraceContext(options) {
+  return {
+    runId: options.runId || 'cpp:run',
+    file: options.file || CPP_USER_SOURCE_FILE,
+    maxPathDepth: normalizeMaxPathDepth(options.maxPathDepth),
+    statementSourceMap: typeof options.sourceCode === 'string'
+      ? buildRuntimeStatementSourceMap(options.sourceCode)
+      : new Map(),
+    userFunctionNames: buildCppUserFunctionNameSet(options.sourceCode),
+  };
+}
+
+function cppRuntimeTrace(runId, events) {
+  return {
+    schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
+    language: 'cpp',
+    runId,
+    events,
+    lineEventCount: events.filter((event) => event.kind === 'line').length,
+    traceStepCount: events.length,
+  };
 }
 
 function normalizeMaxPathDepth(value) {
@@ -12676,59 +12819,29 @@ function cppRuntimeTraceSourceOwnership(event, statementSourceMap) {
   };
 }
 
+// Every recording path except observation finalizes here. Its run supplies
+// the verdict, so a cut only stops recording: it reports traceLimitExceeded
+// and droppedEventCount, as the event cap always has, and the verdict stands.
 function finalizeRuntimeTrace(events, options = {}) {
-  const runId = options.runId || 'cpp:run';
-  const file = options.file || CPP_USER_SOURCE_FILE;
-  const maxPathDepth = normalizeMaxPathDepth(options.maxPathDepth);
-  const statementSourceMap = typeof options.sourceCode === 'string'
-    ? buildRuntimeStatementSourceMap(options.sourceCode)
-    : new Map();
-  const userFunctionNames = buildCppUserFunctionNameSet(options.sourceCode);
+  const context = cppRuntimeTraceContext(options);
   const maxEvents = Number.isFinite(options.maxStoredEvents)
     ? Number(options.maxStoredEvents)
     : Number.isFinite(options.maxTraceSteps)
       ? Number(options.maxTraceSteps)
       : DEFAULT_MAX_STORED_EVENTS;
-  const normalizedEvents = enrichCppRuntimeTraceCallStacks(events).flatMap((event) => {
-    const activeFunction = Array.isArray(event.callStack) ? event.callStack[event.callStack.length - 1]?.function : undefined;
-    const normalized = stripCppSyntheticHelperFrames({
-      ...event,
-      ...(event.kind === 'line' && !event.function && activeFunction ? { function: activeFunction } : {}),
-      runId,
-      file,
-    }, userFunctionNames);
-    if (isDroppableCppSyntheticHelperEvent(normalized, userFunctionNames)) return [];
-    return [normalizeRuntimeTraceEventTargetDepth({
-      ...normalized,
-      ...cppRuntimeTraceSourceOwnership(normalized, statementSourceMap),
-    }, maxPathDepth)];
-  });
-  const traceLimitExceeded = maxEvents !== undefined && normalizedEvents.length > maxEvents;
-  let storedEvents = traceLimitExceeded ? normalizedEvents.slice(0, Math.max(0, maxEvents)) : normalizedEvents;
-  if (
-    traceLimitExceeded &&
-    normalizedEvents.some((event) => event.kind === 'timeout') &&
-    !storedEvents.some((event) => event.kind === 'timeout')
-  ) {
-    const timeoutEvent = normalizedEvents.find((event) => event.kind === 'timeout');
-    storedEvents =
-      maxEvents && maxEvents > 1 && timeoutEvent
-        ? [...normalizedEvents.slice(0, maxEvents - 1), timeoutEvent]
-        : timeoutEvent
-          ? [timeoutEvent]
-          : storedEvents;
-  }
+  const collected = collectCppRuntimeTraceEvents(
+    Array.isArray(events) ? events : [],
+    context,
+    // slice() truncates the cap, so the stored prefix always did too.
+    [{ max: Math.max(0, Math.trunc(maxEvents)), reason: 'stored-event-budget' }],
+    cppRuntimeTraceByteBudget(options.maxTraceBytes),
+    true
+  );
+  const traceLimitExceeded = collected.cut !== undefined;
   return {
-    trace: {
-      schemaVersion: RUNTIME_TRACE_SCHEMA_VERSION,
-      language: 'cpp',
-      runId,
-      events: storedEvents,
-      lineEventCount: storedEvents.filter((event) => event.kind === 'line').length,
-      traceStepCount: storedEvents.length,
-    },
+    trace: cppRuntimeTrace(context.runId, collected.events),
     traceLimitExceeded,
-    droppedEventCount: traceLimitExceeded ? Math.max(0, normalizedEvents.length - storedEvents.length) : 0,
+    droppedEventCount: traceLimitExceeded ? Math.max(0, collected.keptCount - collected.events.length) : 0,
   };
 }
 
@@ -12812,36 +12925,43 @@ function cppBatchTraceResultsFromParsedOutput(parsed, source, inputBatch, timing
   };
 }
 
+// Whether the C++ observation adapter will refuse this drawing whatever its
+// events: legacyDrawing (packages/runtime-cpp/src/cpp-observation.ts) refuses
+// a result of kind `limit` or `failed`, which is every unsuccessful reply
+// here, a `traceTruncated` result, which this reply never produces, and a
+// recorder that did not complete.
+function cppObservationDrawingRefused(programSucceeded, recorderCompleted) {
+  return !programSucceeded || !recorderCompleted;
+}
+
 // Observation retains recorder events only. The legacy UI path still uses
 // finalizeRuntimeTrace's historical presentation and timeout markers.
-function finalizePreparedObservation(parsed, prepared, attemptToken, recorderEnabled = true) {
+function finalizePreparedObservation(parsed, prepared, attemptToken, recorderEnabled = true, programSucceeded = true) {
   const status = parsed.traceStatus;
   const events = (prepared.inputMode === 'named-batch'
     ? splitCppBatchTraceEvents(parsed.events, 1)[0] ?? []
     : parsed.events).filter((event) => event.kind !== 'timeout');
   const opts = prepared.traceOptions;
-  const { trace } = finalizeRuntimeTrace(events, {
-    sourceCode: prepared.source,
-    maxPathDepth: opts.maxPathDepth,
-    maxStoredEvents: Number.MAX_SAFE_INTEGER,
-  });
   const dropped = Number.isSafeInteger(status?.droppedEventCount) && status.droppedEventCount > 0
     ? status.droppedEventCount
     : 0;
   const attemptedEvents = events.length + dropped;
-  let cut;
-  let length = 0;
-  let bytes = 0;
-  const encoder = Number.isFinite(opts.maxTraceBytes) ? new TextEncoder() : undefined;
-  for (const event of trace.events) {
-    if (length >= opts.maxTraceSteps) { cut = 'step-budget'; break; }
-    if (length >= opts.maxStoredEvents) { cut = 'stored-event-budget'; break; }
-    if (encoder) {
-      bytes += encoder.encode(JSON.stringify(event)).byteLength;
-      if (bytes > opts.maxTraceBytes) { cut = 'byte-budget'; break; }
-    }
-    length++;
-  }
+  const recorderCompleted = recorderEnabled && parsed.foundResult && typeof status?.traceLimitExceeded === 'boolean';
+  const context = cppRuntimeTraceContext({ sourceCode: prepared.source, maxPathDepth: opts.maxPathDepth });
+  // A drawing that will be refused is never built: no call stack is copied.
+  const collected = cppObservationDrawingRefused(programSucceeded, recorderCompleted)
+    ? { events: [], cut: undefined }
+    : collectCppRuntimeTraceEvents(
+        events,
+        context,
+        [
+          { max: opts.maxTraceSteps, reason: 'step-budget' },
+          { max: opts.maxStoredEvents, reason: 'stored-event-budget' },
+        ],
+        cppRuntimeTraceByteBudget(opts.maxTraceBytes),
+        false
+      );
+  let cut = collected.cut;
   if (!cut && status?.traceLimitExceeded) {
     cut = {
       'line-limit': 'line-budget',
@@ -12849,18 +12969,12 @@ function finalizePreparedObservation(parsed, prepared, attemptToken, recorderEna
       'trace-limit': 'stored-event-budget',
     }[status.timeoutReason];
   }
-  const retained = trace.events.slice(0, length);
   return {
-    trace: {
-      ...trace,
-      events: retained,
-      lineEventCount: retained.filter(({ kind }) => kind === 'line').length,
-      traceStepCount: retained.length,
-    },
+    trace: cppRuntimeTrace(context.runId, collected.events),
     observation: {
       attemptToken,
       recorderEnabled,
-      recorderCompleted: recorderEnabled && parsed.foundResult && typeof status?.traceLimitExceeded === 'boolean',
+      recorderCompleted,
       attemptedEvents,
       ...(cut && { cut }),
     },
@@ -16467,7 +16581,6 @@ async function runPreparedRuntimeProgram(
     ];
 
     if (preparedProgram.observationOnly) {
-      const { trace, observation } = finalizePreparedObservation(parsed, preparedProgram, attemptToken, tracingEnabled);
       // A guest may exit with status 124 itself. Only the recorder's budget
       // sentinel distinguishes its hard stop from an unrelated abnormal exit.
       const budgetStop = programTimedOut && !program.trap && parsed.events.some((event) =>
@@ -16476,6 +16589,9 @@ async function runPreparedRuntimeProgram(
       const foundResult = parsed.foundResult &&
         (!named || (Array.isArray(parsed.output) && parsed.output.length === 1));
       const success = program.exitCode === 0 && foundResult;
+      const { trace, observation } = finalizePreparedObservation(
+        parsed, preparedProgram, attemptToken, tracingEnabled, Boolean(success)
+      );
       return {
         success,
         ...(success

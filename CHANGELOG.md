@@ -6,6 +6,29 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Fixed
+
+- **C++: a runaway recursion's drawing no longer takes the tab to over a
+  gigabyte.** When a C++ program stopped, the worker copied the whole call
+  stack onto every recorded event before deciding whether to keep the
+  drawing. At the app's backtracking limits, a recursion such as
+  `int f(int x) { return f(x + 1); }` made the worker's JavaScript heap reach
+  about 400 MiB and the renderer about 1.4 GiB, though the drawing was then
+  refused. The worker now copies the stack one kept event at a time and
+  measures each event as it goes (the UTF-8 bytes of its JSON). A C++ drawing
+  has a default byte budget of 32 MiB and a per-event cap of 256 KiB, and
+  `maxTraceBytes` still sets the budget when given. A drawing that will be
+  refused anyway is not built at all.
+  - In a Judge drawing, the cut is a truncation with the existing
+    `trace-byte-limit` reason, and the prefix up to the budget is kept.
+  - On the other C++ trace paths (`executeWithTracing`, trace batches and the
+    native runner), the cut stops recording the way the event cap does, with
+    `traceLimitExceeded` and `droppedEventCount`. A cut drawing still ends
+    with its timeout marker, unless that marker alone exceeds the per-event
+    cap.
+  - The run's verdict and output never change. A drawing under the budget is
+    byte-identical to 0.21.0's.
+
 ## [0.21.0] - 2026-11-26
 
 ### Added
