@@ -33,7 +33,9 @@ function runW(language, runner, gateHead, output, fixtureOnly) {
 function stageGate(gate, gateHead, output) {
   const root = join(output, 'driver');
   mkdirSync(root);
-  const archive = execFileSync('git', ['archive', gateHead, ...packedDriverPaths[gate]], {
+  const archive = execFileSync('git', [
+    'archive', gateHead, packedDriverPaths.root, ...packedDriverPaths.support[gate],
+  ], {
     maxBuffer: 16 * 1024 * 1024,
   });
   execFileSync('tar', ['-xf', '-', '-C', root], { input: archive });

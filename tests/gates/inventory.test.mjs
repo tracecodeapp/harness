@@ -40,8 +40,8 @@ function driverPath(ref, path) {
   if (ref.endsWith('/gate-g7-ci')) {
     return /^scripts\/(?:check-untraced-host-history\.mjs|untraced-host-history\.browser\.ts|run-untraced-host-history\.sh)$/.test(path);
   }
-  if (ref.endsWith('/ga-judged-byte-limit')) return matchesDriverPath(packedDriverPaths.ga, path);
-  return path.startsWith('tests/stage1-gates/');
+  const support = ref.endsWith('/ga-judged-byte-limit') ? packedDriverPaths.support.ga : [];
+  return matchesDriverPath([packedDriverPaths.root, ...support], path);
 }
 
 function matchesDriverPath(entries, path) {
@@ -50,7 +50,8 @@ function matchesDriverPath(entries, path) {
 
 test('the staged GB browser driver resolves its recorder decoders', () => {
   const head = resolveCommit('refs/remotes/origin/test/gate-g4-g5');
-  const files = new Set(blobs(head).map(([path]) => path).filter((path) => matchesDriverPath(packedDriverPaths.gb, path)));
+  const entries = [packedDriverPaths.root, ...packedDriverPaths.support.gb];
+  const files = new Set(blobs(head).map(([path]) => path).filter((path) => matchesDriverPath(entries, path)));
   const read = (path) => git('show', head + ':' + path);
   const { parents, unresolved } = moduleGraph({ files, read, aliases: {}, allowances: {} })([
     'tests/stage1-gates/gb-browser.mjs',
@@ -99,7 +100,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
     }
     const { files, drivers, closure } = graphs.get(ref);
     // Support archived from a gate ref is already keyed by that commit.
-    const covered = (path) => (drivers.has(path) && matchesDriverPath(packedDriverPaths.ga.slice(1), path)) ||
+    const covered = (path) => (drivers.has(path) && matchesDriverPath(packedDriverPaths.support.ga, path)) ||
       tracksInput(cell, path);
     const namedFiles = commandFiles([cell.setup, cell.command].filter(Boolean).join(' && '));
     const roots = [];

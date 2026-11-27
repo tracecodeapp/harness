@@ -1,8 +1,10 @@
 {
-  "ga": ["tests/stage1-gates", "tests/fixtures/cpp-natural-shapes.json"],
-  "gb": [
-    "tests/stage1-gates",
-    "packages/runtime-browser/src/trace-event-transport.ts",
-    "packages/runtime-contracts/src"
-  ]
+  "root": "tests/stage1-gates",
+  "support": {
+    "ga": ["tests/fixtures/cpp-natural-shapes.json"],
+    "gb": [
+      "packages/runtime-browser/src/trace-event-transport.ts",
+      "packages/runtime-contracts/src"
+    ]
+  }
 }
