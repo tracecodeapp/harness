@@ -32,6 +32,7 @@ AgentRunner login directory with fresh output.
 The coordinator names the exclusive window. Pass the self-test receipt for
 the current checkout commit and the supplied production archive. The script
 validates that pair before staging and again before requesting the lock.
+Both packages receive the same journey options, including Submit policy.
 
 ```sh
 bash "$checkout/reports/g8-candidates/session-022.sh" window "$out" "$control_tarball" "$selftest_receipt" "$candidate_tarball" "$candidate_sha256" "$reference_json" "$minutes"

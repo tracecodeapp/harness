@@ -437,8 +437,7 @@ async function openPage(context, version, url, group) {
       window.bench = createSession(language, stopSubmit, candidate, candidateRuntime);
   }, {
     language: group.language,
-    stopSubmit: sourceVersion === '0.20.1' || sourceVersion === 'candidate-main' ||
-      version === production022?.version,
+    stopSubmit: Boolean(rig022) || sourceVersion === '0.20.1' || sourceVersion === 'candidate-main',
     candidate: rig022 ? group.language === 'csharp' && group.journey === 'lesson' :
       shouldValidateCandidateWitness(version, group.language, testedLanguage) ||
       isLiveWitnessControl(version, group.language) &&
