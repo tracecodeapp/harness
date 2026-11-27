@@ -567,7 +567,8 @@ function plan() {
     const groups = selftestPlan022();
     // Fail on the exact lesson path before the longer cross-language matrix.
     const csharpLesson = groups.find(({ language, journey }) => language === 'csharp' && journey === 'lesson');
-    return [csharpLesson, ...groups.filter((group) => group !== csharpLesson)];
+    return [csharpLesson, ...groups.filter(({ problem }) => problem === 'heavy-022'),
+      ...groups.filter((group) => group !== csharpLesson && group.problem !== 'heavy-022')];
   }
   if (measured022) {
     const groups = windowPlan022();
@@ -1050,14 +1051,20 @@ try {
             };
           }
           if (selftest022) {
-            assert.ok(!sample.invalid && !sample.refusal && !sample.excluded,
-              `Self-test group ${groupIndex} ${group.language}/${group.journey}: ${sample.invalid ?? sample.refusal ?? sample.excluded}`);
+            const failure = sample.invalid ?? sample.refusal ?? sample.excluded;
             if (group.problem === 'heavy-022') {
-              const row = { kind: 'calibration', language: group.language, judgeMs: sample.initial.judgeMs };
+              const row = { kind: 'calibration', language: group.language,
+                ...(failure ? { failure } : { judgeMs: sample.initial.judgeMs }) };
               calibration.push(row);
               console.log(JSON.stringify(row));
             }
-            count.kept++;
+            if (failure) {
+              assert.equal(group.problem, 'heavy-022',
+                `Self-test group ${groupIndex} ${group.language}/${group.journey}: ${failure}`);
+              count.invalid++;
+            } else {
+              count.kept++;
+            }
             continue;
           }
           sample.wallMs = Date.now() - attemptStarted;

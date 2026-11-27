@@ -9,7 +9,7 @@ import { phoneWarmAaPlan, phoneWarmAaRoundOrder, phoneWarmAaVersions } from './p
 import { production022, windowPlan022 } from './plan-022.mjs';
 import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 
-const [root, rigCommit] = process.argv.slice(2);
+const [root, rigCommit, launcher, tarball] = process.argv.slice(2);
 assert.ok(root && rigCommit);
 const json = (file, value) => writeFile(file, JSON.stringify(value) + '\n');
 const jsonl = (file, rows) => writeFile(file, rows.map((row) => JSON.stringify(row)).join('\n') + '\n');
@@ -79,7 +79,7 @@ const ref = (group, median, p90, aaPass = true) => metrics(group, { median, p90,
 await json(reference, { controlSha256, groups: {
   [pass.groupIndex]: ref(pass, 500, 500),
   [fail.groupIndex]: ref(fail, 500, 500),
-  [controlInvalid.groupIndex]: ref(controlInvalid, 500, 500, false),
+  [controlInvalid.groupIndex]: ref(controlInvalid, 400, 400),
   [repaired.groupIndex]: ref(repaired, 500, 500),
   [partial.groupIndex]: ref(partial, 500, 500),
 } });
@@ -125,4 +125,29 @@ assert.equal(partialResult.incomplete, true);
 
 const passing = await session('seeded-passing-session', [pass], passRows);
 assert.equal(JSON.parse(runScorer('./score-022.mjs', [reference, passing], 0).stdout).pass, true);
+await json(reference, { controlSha256, groups: { [pass.groupIndex]: ref(pass, 500, 500, false) } });
+const failedAaReference = JSON.parse(runScorer('./score-022.mjs', [reference, passing], 1).stdout);
+assert.ok(failedAaReference.groups[0].cells.every(({ result }) => result === 'controlInvalid'));
 console.log('Seeded scorer outcomes passed: formal pass, formal fail, controlInvalid, A/A pass, A/A fail, partial, merge');
+
+if (launcher && tarball) {
+  const receipt = join(root, 'seeded-selftest-receipt.json');
+  function rejectWindow(archive, message) {
+    // A nonexistent candidate also prevents a lock request if the gate regresses.
+    const result = spawnSync('bash', [launcher, 'window', join(root, 'blocked-window'), archive,
+      receipt, join(root, 'no-candidate.tgz'), 'a'.repeat(64), reference, '1'], { encoding: 'utf8' });
+    if (result.error) throw result.error;
+    assert.ok(result.status > 0);
+    assert.match(result.stderr, message);
+  }
+  rejectWindow(tarball, /ENOENT.*seeded-selftest-receipt/u);
+  const passReceipt = { schema: 'tracecode.speed-022.selftest.v1', pass: true,
+    rigCommit, tarballSha256: controlSha256 };
+  await json(receipt, { ...passReceipt, rigCommit: rigCommit.replace(/^./u, (first) => first === '0' ? '1' : '0') });
+  rejectWindow(tarball, /Self-test pass must match the rig commit/u);
+  await json(receipt, { ...passReceipt, tarballSha256: '0'.repeat(64) });
+  rejectWindow(tarball, /Self-test pass must match the rig commit/u);
+  await json(receipt, passReceipt);
+  rejectWindow(reference, /Published 0.21.0 tarball digest differs/u);
+  console.log('Window gate rejected missing and stale receipts, and an unpinned tarball');
+}

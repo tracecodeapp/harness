@@ -10,12 +10,12 @@ export const production022 = Object.freeze({
 
 export const heavyCases022 = Object.freeze({
   javascript: {
-    file: 'javascript.js', functionName: 'checksum', input: { rounds: 750000000 }, expected: 1413358465,
-    sha256: '440354bb620bd90878d661227d7adc67937f8797333dd2634ea7db60037971cb',
+    file: 'javascript.js', functionName: 'checksum', input: { rounds: 480000000 }, expected: 80934913,
+    sha256: 'a94e90384fc533fc19d9fa423924d75c1240490c2f35e4b2ccab568e46fd1b2e',
   },
   typescript: {
-    file: 'typescript.ts', functionName: 'checksum', input: { rounds: 750000000 }, expected: 1413358465,
-    sha256: '12c6d1ace0658a9100f631e69b2a07eab21e2f1b9aaba44021babfc8bdc10fab',
+    file: 'typescript.ts', functionName: 'checksum', input: { rounds: 480000000 }, expected: 80934913,
+    sha256: '73e223af3116dd53e558e134000073cebe4ad5779cbc04eb2854b21c777b2d1f',
   },
   python: {
     file: 'python.py', functionName: 'count_placements', input: { size: 13 }, expected: 73712,
@@ -26,8 +26,8 @@ export const heavyCases022 = Object.freeze({
     sha256: '0f375ced8e807cbfee0fa6e51ba810aef030a1294663e520405cb58d6b1c00c8',
   },
   java: {
-    file: 'java.java', functionName: 'checksum', input: { rounds: 500000000 }, expected: 1010330881,
-    sha256: '65beac396cf2c38daf3da6a3a5d5b04c1d9f02c2356700f10d734994b90af930',
+    file: 'java.java', functionName: 'checksum', input: { rounds: 50000000 }, expected: -288021375,
+    sha256: '05fdaf87743b40350d5f1e010d442ff47a06d743ae63cb883df76aec329144f1',
   },
   csharp: {
     file: 'csharp.cs', functionName: 'checksum', input: { rounds: 17000000 }, expected: 463212609,
