@@ -1,6 +1,8 @@
 import { createPythonClock } from './gb-python-clock.mjs';
 import { serviceDeadlineRoute } from './gb-probe.mjs';
 
+const csharpStandbyPrime = 'public class Solution { public int Add(int a, int b) { return a + b; } }';
+
 function recorderEvents(payload) {
   const events = payload.trace?.events;
   const transfer = payload.__traceEventTransport;
@@ -218,6 +220,10 @@ export function installJournal(fixture, { decodeJavaObservation, decodeCSharpObs
         const attemptToken = payload.observation?.attemptToken;
         if (message.type === 'execute-prepared-trace' && typeof attemptToken === 'string') {
           track({ ordinary: false, attemptToken, terminal: message.type });
+        } else if (message.type === 'execute-prepared-code' && payload.prepared?.mode === 'trace' &&
+            payload.prepared.code === csharpStandbyPrime && payload.prepared.functionName === 'Add' &&
+            payload.inputs?.a === 1 && payload.inputs?.b === 2 && Object.keys(payload.inputs).length === 2) {
+          record('trusted-standby-prime', correlated);
         } else if (/^execute-(?:prepared-)?code(?:-batch)?$/u.test(message.type)) {
           track({ ordinary: true, terminal: message.type });
         }
