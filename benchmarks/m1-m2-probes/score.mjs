@@ -98,10 +98,22 @@ export function score(rows) {
     '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
   );
   let regressions = 0;
+  const backlog = [];
   for (const profile of profiles) {
     for (const key of caseKeys) {
       const { byVersion, decision } = m2Cell(rows, profile, key);
-      if (decision === 'regression') regressions++;
+      if (decision === 'regression') {
+        regressions++;
+        const candidate = byVersion['0.21.0'];
+        const control = byVersion['0.20.1'];
+        const phases = ['caseMs', 'outsideMs', 'compileMs'];
+        const deltas = phases.map((phase) => candidate[phase] - control[phase]);
+        const location = deltas.every(Number.isFinite) && deltas[0] > 0 &&
+          deltas[0] >= Math.max(deltas[1], deltas[2])
+          ? 'The case phase gained the most time. Investigate the per-case clock and line guard first.'
+          : 'The receipt does not support assigning the extra time to the case clock or line guard.';
+        backlog.push(`- ${key}, ${profile}. ${location}`);
+      }
       for (const version of versions) {
         const row = byVersion[version];
         lines.push(`| ${key} | ${profile} | ${version} | ${row.count} | ${ms(row.totalMs)} | ${ms(row.compileMs)} | ${ms(row.caseMs)} | ${ms(row.outsideMs)} | ${decision} |`);
@@ -109,7 +121,8 @@ export function score(rows) {
     }
   }
   if (regressions) {
-    lines.push('', `${regressions} cells meet the Python vertical backlog rule. Use the receipt deltas to locate the extra time before assigning a cause.`);
+    lines.push('', `${regressions} cells meet the Python vertical backlog rule.`, '',
+      ...backlog, '', 'The dry-run tracemalloc witness returned false, and the measured request uses plain Judge with drawing disabled.');
   }
   return lines.join('\n') + '\n';
 }

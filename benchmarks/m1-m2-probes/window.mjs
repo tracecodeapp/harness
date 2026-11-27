@@ -55,12 +55,16 @@ async function bounded(deadline, operation) {
 
 const failure = (error) => ({ error: error.name ?? 'Error' });
 
-async function collectM1(browser, url, heavy, dry, deadline, record) {
-  for (const [problem, n] of [['binary-search', 10], ['binary-search', 100], ['heavy', 10], ['heavy', 100]]) {
+async function collectM1(browser, url, cells, heavy, dry, deadline, record) {
+  for (const [problem, n] of cells) {
     for (const language of languages) {
       if (Date.now() >= deadline) return;
       if (!dry.m1[language] || (problem === 'heavy' && !dry.m1Heavy[language])) {
         await record({ probe: 'm1', problem, n, language, skipped: 'dry-run verdict or transport failed' });
+        continue;
+      }
+      if (language === 'csharp' && n > 64) {
+        await record({ probe: 'm1', problem, n, language, skipped: 'the published singleton runner rotates after at most 64 cases' });
         continue;
       }
       let session;
@@ -201,7 +205,7 @@ export async function collectWindow(browser, sites, output, heavy, dry) {
   });
   try {
     const m1Deadline = starts + 45 * 60_000;
-    await collectM1(browser, sites.m1, heavy, dry, m1Deadline, record);
+    await collectM1(browser, sites.m1, [['binary-search', 10]], heavy, dry, m1Deadline, record);
     if (await waitForQuiet(Math.min(Date.now() + 15_000, m1Deadline))) {
       const control = await browser.newContext();
       try {
@@ -222,6 +226,8 @@ export async function collectWindow(browser, sites, output, heavy, dry) {
         await control.close();
       }
     }
+    await collectM1(browser, sites.m1, [['binary-search', 100], ['heavy', 10], ['heavy', 100]],
+      heavy, dry, m1Deadline, record);
   } catch (error) {
     // A partial M1 must leave the M2 phase runnable in the same window.
     await record({ probe: 'm1', ...failure(error) });

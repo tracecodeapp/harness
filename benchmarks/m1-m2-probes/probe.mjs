@@ -13,9 +13,10 @@ import { packedM1Probe } from './packed-probe.mjs';
 import { collectWindow, openSession, validateWindow } from './window.mjs';
 
 const [mode, output, configPath] = process.argv.slice(2);
-assert.ok(['m1-dry', 'm2-dry', 'dry', 'prepare', 'window'].includes(mode) && output,
-  'probe.mjs dry|m1-dry|m2-dry|prepare|window OUTPUT [CONFIG_JSON]');
-if (mode !== 'window') assert.ok(process.env.HEAVY_JOBLOG_ID, 'Run through the job logger');
+assert.ok(['m1-dry', 'm2-dry', 'dry', 'prepare', 'verify-window', 'window'].includes(mode) && output,
+  'probe.mjs dry|m1-dry|m2-dry|prepare|verify-window|window OUTPUT [CONFIG_JSON]');
+const windowMode = ['window', 'verify-window'].includes(mode);
+if (!windowMode) assert.ok(process.env.HEAVY_JOBLOG_ID, 'Run through the job logger');
 const probeCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const config = configPath ? JSON.parse(await readFile(configPath, 'utf8')) : {};
 const out = resolve(output);
@@ -214,7 +215,7 @@ function checkTransport(language, count, pair) {
 
 const heavy = config.heavyPlan ? await loadHeavyFixtures(config.heavyPlan, config.heavySha256) : undefined;
 const stageMarker = join(out, 'stage.json');
-if (mode !== 'window') {
+if (!windowMode) {
   assert.ok((await stat(out).catch(() => null)) === null, 'Use a fresh output directory');
   const sites = {};
   if (mode !== 'm2-dry') sites.m1 = await stage('0.21.0', 'python,javascript,java,cpp,csharp', true);
@@ -226,8 +227,9 @@ if (mode !== 'window') {
 if (mode === 'prepare') process.exit(0);
 const { sites, probeCommit: stagedCommit } = JSON.parse(await readFile(stageMarker, 'utf8'));
 assert.equal(stagedCommit, probeCommit, 'Use assets staged by this probe commit');
-const registered = mode === 'window' ? await validateWindow(config, probeCommit) : undefined;
+const registered = windowMode ? await validateWindow(config, probeCommit) : undefined;
 if (registered) assert.ok(heavy, 'Supply the registered P0-C heavy cases');
+if (mode === 'verify-window') process.exit(0);
 const browser = await chromium.launch({ channel: 'chromium', headless: true });
 let complete = true;
 try {
