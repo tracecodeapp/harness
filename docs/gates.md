@@ -32,3 +32,18 @@ the digests of any external inputs the cell uses, including a candidate tarball.
 List the files a cell actually loads, including each cross-language dependency
 explicitly in its inputs. Run `node --test tests/gates/*.test.mjs` to check
 command paths and direct cross-language imports and list unclaimed tracked files.
+
+### Paths without a cell
+
+A declared cell input always takes precedence over this list. Other paths
+outside the list select every cell.
+
+| `noCell` glob | Reason |
+| --- | --- |
+| `**/*.md` | Prose changes, including `AGENTS.md` and `CONTRIBUTING.md`, need a gate only when a cell consumes them or when they are fixtures. |
+| `benchmarks/**` | Benchmark scripts run separately unless a cell declares an input there. |
+| `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
+| `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
+| `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
+| `runtime-assets.lock.json` | The lock is generated from the workers and pinned engine assets. Lock checks declare the generator and workers as inputs. |
+| `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |

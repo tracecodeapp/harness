@@ -15,11 +15,12 @@ export function resolveCommit(rev) {
 }
 
 export function loadInventory(commit) {
-  return JSON.parse(git('show', commit + ':scripts/gates/cells.json'));
+  const inventory = JSON.parse(git('show', commit + ':scripts/gates/cells.json'));
+  return Array.isArray(inventory) ? { cells: inventory, noCell: [] } : inventory;
 }
 
 export function loadCell(commit, id) {
-  const cell = loadInventory(commit).find((entry) => entry.id === id);
+  const cell = loadInventory(commit).cells.find((entry) => entry.id === id);
   if (!cell) throw new Error(`Unknown gate cell ${id}. See scripts/gates/cells.json at ${commit}.`);
   return cell;
 }

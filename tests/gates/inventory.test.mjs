@@ -43,7 +43,7 @@ function runtimeImports(entry, source, files, language) {
 }
 
 test('inventory claims named command files and reports unclaimed tracked paths', () => {
-  const inventory = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
+  const { cells: inventory } = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
   const paths = git('ls-files', '-z').split('\0').filter(Boolean);
   const branches = new Map();
   const imports = new Map();
@@ -60,6 +60,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
     assert(languages.has(cell.language), `Unknown language for ${cell.id}`);
     assert(cell.inputs.includes('scripts/gates/**'));
     assert(cell.inputs.includes('scripts/run-test-suite.ts'));
+    assert(!tracksInput(cell, 'runtime-assets.lock.json'), `${cell.id} claims a generated lock`);
     for (const pin of cell.pins.files) assert(paths.some((path) =>
       matchesInput(path, pin) && tracksInput(cell, path)), `${cell.id} has no input for pin ${pin}`);
     const ref = cell.pins.gateRef;

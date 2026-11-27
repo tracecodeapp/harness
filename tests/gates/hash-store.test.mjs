@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -84,6 +84,31 @@ test('the store serves only passes for the requested key', () => {
     writeResult(root, { ...record, status: 'fail', exitCode: 1, jobId: 'job-2' });
     assert.equal(cached(), undefined);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('regenerating the runtime asset lock after a Java edit preserves the Python key', () => {
+  const { cells } = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
+  const cell = cells.find(({ id }) => id === 'python-project-paths');
+  assert(cell);
+  const root = mkdtempSync(join(tmpdir(), 'gate-lock-hash-'));
+  const cwd = process.cwd();
+  try {
+    process.chdir(root);
+    git('init', '--quiet');
+    change('scripts/gates/cells.json', JSON.stringify({ cells: [cell], noCell: ['runtime-assets.lock.json'] }));
+    change('workers/python/worker.js', 'export const python = 1;\n');
+    change('workers/java/worker.js', 'export const java = 1;\n');
+    change('runtime-assets.lock.json', '{"java":"original"}\n');
+    const before = commit('original workers');
+
+    change('workers/java/worker.js', 'export const java = 2;\n');
+    change('runtime-assets.lock.json', '{"java":"regenerated"}\n');
+    const after = commit('Java worker and its regenerated lock');
+    assert.equal(hashCell(loadCell(before, cell.id), before), hashCell(loadCell(after, cell.id), after));
+  } finally {
+    process.chdir(cwd);
     rmSync(root, { recursive: true, force: true });
   }
 });
