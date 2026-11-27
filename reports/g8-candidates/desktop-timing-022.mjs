@@ -25,7 +25,7 @@ function summarize(rows) {
       ? withoutBus.medianMs / withBus.medianMs : null;
     const deltaMs = ratio === null ? null : withoutBus.medianMs - withBus.medianMs;
     const complete = arms.every((arm) => cell[arm].count === measuredTrials);
-    const moved = ratio !== null && Math.abs(ratio - 1) > 0.05 && Math.abs(deltaMs) >= 5;
+    const moved = ratio !== null && (ratio > 1.05 || ratio < 0.95) && Math.abs(deltaMs) >= 5;
     return { language, metric, ...cell, ratio, deltaMs,
       result: !complete || ratio === null ? 'undecided' : moved ? 'moved' : 'no measurable move' };
   }));
