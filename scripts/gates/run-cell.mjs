@@ -62,9 +62,14 @@ function runCell(cellId, rev, force, lockedHash) {
     console.log(`cached pass ${hash} (job ${pass.jobId}, ${pass.end})`);
     return 0;
   }
-  const busy = busyHarnessJobs(readJobs());
-  if (busy.length >= 2 || busy.some(({ queued }) => queued.lane === process.env.HEAVY_JOB_LANE)) {
-    throw new Error('Harness slots are busy. Retry when a lane job ends.');
+  for (;;) {
+    const busy = busyHarnessJobs(readJobs());
+    if (busy.length < 2 && !busy.some(({ queued }) => queued.lane === process.env.HEAVY_JOB_LANE)) break;
+    if (process.env.GATE_WAIT_FOR_SLOT !== '1') {
+      console.error('Harness slots are busy. Retry when a lane job ends.');
+      return 75;
+    }
+    run('sleep', ['3']);
   }
 
   mkdirSync(gateLogs, { recursive: true });

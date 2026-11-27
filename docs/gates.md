@@ -4,10 +4,28 @@ Find the cell ID, command, and host in [the inventory](../scripts/gates/cells.js
 Use the declared host. On AgentRunner, run from a checkout with the candidate
 commit and any named qualification refs available locally.
 
+For a PR, list the selected cells and run them on their declared hosts, plus
+the `canary`. Always run the canary against the landed commit.
+
 ```bash
+node scripts/gates/select.mjs --base <base> --head <head>
 HEAVY_JOB_LANE=h022-<lane> bash scripts/gates/run-cell.sh <cell> --rev <commit>
+HEAVY_JOB_LANE=h022-<lane> bash scripts/gates/run-cell.sh canary --rev <landing> --force
 node scripts/gates/job-report.mjs --since 2026-11-27T00:00:00Z --lane-prefix h022-
 ```
+
+For a release candidate, run `candidate-all`. Print the complete plan first,
+then run each partition once against the same revision.
+
+```bash
+node scripts/gates/candidate-all.mjs --rev <commit>
+node scripts/gates/candidate-all.mjs --rev <commit> --host <agentrunner|ci|laptop-unit>
+```
+
+On CI and laptop-unit, use a clean disposable checkout at the candidate
+revision with the locked dependencies installed. CI also needs Chromium and
+its system dependencies, as in `.github/workflows/ci.yml`. The AgentRunner
+partition uses `run-cell.sh` and waits outside `heavy` when both slots are busy.
 
 Set `PLAYWRIGHT_BROWSERS_PATH` if the cell uses a provisioned browser cache.
 GA and GB require `GATE_CANDIDATE_TARBALL` and `GATE_MUX_SOURCE`. Point them at
@@ -46,13 +64,13 @@ outside the list select every cell.
 | `noCell` glob | Reason |
 | --- | --- |
 | `**/*.md` | Prose changes, including `AGENTS.md` and `CONTRIBUTING.md`, need a gate only when a cell consumes them or when they are fixtures. |
+| `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |
 | `benchmarks/**` | Benchmark scripts run separately unless a cell declares an input there. |
 | `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
 | `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
 | `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
 | `runtime-assets.lock.json` | The lock is derived. Its worker, engine, and C# role inputs select the affected cells. Lock checks declare the generator and workers. |
 | `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
-| `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |
 
 ### Expected selections for 0.21 PRs
 

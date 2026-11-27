@@ -1,4 +1,4 @@
-{"noCell": ["**/*.md","benchmarks/**","reports/**",".gitignore",".github/workflows/**","runtime-assets.lock.json","CHANGELOG.md","!**/fixtures/**"], "cells": [
+{"noCell": ["**/*.md","!**/fixtures/**","benchmarks/**","reports/**",".gitignore",".github/workflows/**","runtime-assets.lock.json","CHANGELOG.md"], "cells": [
   {
     "id": "asset-sync",
     "language": "shared",
@@ -47,6 +47,15 @@
     "host": "agentrunner",
     "inputs": [".nvmrc","LICENSE","README.md","THIRD_PARTY_NOTICES.md","examples/**","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/**","scripts/check-browser-project-bundle.mjs","scripts/gates/**","scripts/generate-runtime-assets-lock.mjs","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build"
+  },
+  {
+    "id": "canary",
+    "language": "shared",
+    "command": "timeout 240s node scripts/gates/canary.mjs scripts/gates/canary-browser.mjs",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/**","patches/**","pnpm-lock.yaml","scripts/**","scripts/gates/**","scripts/run-test-suite.ts","toolchains/**","workers/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/**"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build"
   },
   {
@@ -1172,7 +1181,7 @@
   {
     "id": "w-ci-cpp",
     "language": "cpp",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh cpp",
+    "command": "node scripts/gates/qualification.mjs w-ci cpp scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/cpp-*","tests/fixtures/cpp-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/test-cpp-*","workers/cpp/**","workers/shared/runtime-kernel-policy*.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
@@ -1181,7 +1190,7 @@
   {
     "id": "w-ci-csharp",
     "language": "csharp",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh csharp",
+    "command": "node scripts/gates/qualification.mjs w-ci csharp scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-csharp/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/csharp-*","tests/fixtures/csharp-*","tests/fixtures/csharp-worker/**","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/traceclr-*","tests/test-csharp-*","toolchains/csharp/**","workers/csharp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-*/**"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
@@ -1190,7 +1199,7 @@
   {
     "id": "w-ci-java",
     "language": "java",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh java",
+    "command": "node scripts/gates/qualification.mjs w-ci java scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-java/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/java-*","tests/fixtures/java-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/tracejvm-*","tests/fixtures/tracekernel-tracejvm-*","tests/test-java-*","workers/java/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
@@ -1199,7 +1208,7 @@
   {
     "id": "w-ci-javascript",
     "language": "javascript",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh javascript",
+    "command": "node scripts/gates/qualification.mjs w-ci javascript scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/javascript-*","tests/fixtures/javascript-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/helpers/javascript-*","tests/test-javascript-*","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
@@ -1208,7 +1217,7 @@
   {
     "id": "w-ci-python",
     "language": "python",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh python",
+    "command": "node scripts/gates/qualification.mjs w-ci python scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-python-native/**","packages/runtime-python/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/python-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/pyodide-*","tests/fixtures/python-*","tests/fixtures/python-*/**","tests/test-python-*","workers/python/**","workers/shared/runtime-kernel-policy*.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
@@ -1217,7 +1226,7 @@
   {
     "id": "w-ci-typescript",
     "language": "typescript",
-    "command": "TRACECODE_HOST_HISTORY_FIXTURE_ONLY=1 bash scripts/run-untraced-host-history.sh typescript",
+    "command": "node scripts/gates/qualification.mjs w-ci typescript scripts/check-untraced-host-history.mjs",
     "host": "ci",
     "inputs": [".github/workflows/ci.yml",".github/workflows/stage1-runtime.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/check-untraced-host-history.mjs","scripts/gates/**","scripts/run-test-suite.ts","scripts/run-untraced-host-history.sh","scripts/untraced-host-history.browser.ts","tests/conformance/javascript-*","tests/conformance/typescript-*","tests/fixtures/javascript-*","tests/fixtures/learner-failure-matrix-cases.ts","tests/fixtures/typescript-*","tests/helpers/javascript-*","tests/test-typescript-*","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/typescript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
     "pins": {"files":[".nvmrc","pnpm-lock.yaml"],"gateRef":"refs/remotes/origin/test/gate-g7-ci"},
