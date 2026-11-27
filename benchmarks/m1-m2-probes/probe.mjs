@@ -241,7 +241,13 @@ if (registered && stagedCommit !== probeCommit) {
   assert.equal(stagedCommit, probeCommit, 'Use assets staged by this probe commit');
 }
 if (registered) assert.ok(heavy, 'Supply the registered P0-C heavy cases');
-if (mode === 'verify-window') process.exit(0);
+if (mode === 'verify-window') {
+  console.log(JSON.stringify({
+    verified: true, probeCommit, dryRunJob: registered.job, rigCommit: registered.rigCommit,
+    planSha256: registered.heavySha256, tarballSha256: releases['0.21.0'].sha256,
+  }));
+  process.exit(0);
+}
 const browser = await chromium.launch({ channel: 'chromium', headless: true });
 let complete = true;
 try {

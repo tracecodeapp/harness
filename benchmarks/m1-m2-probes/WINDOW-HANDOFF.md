@@ -113,8 +113,8 @@ log is `/root/ci/h022-p0f/logs/m2-4e749456.log`.
 ## Coordinator's window
 
 The coordinator names and opens the window after P0-C's green self-test
-receipt exists. Run the updated sampler from the staged branch checkout
-and reuse the verified browser assets from dry-run commit `94a37e11`. The window
+receipt exists. Run from the staged sampler checkout and reuse the browser
+assets and dry-run receipt from that commit. The window
 configuration uses the same `heavyPlan`, `heavySha256` and `rigCommit`
 fields as the dry configuration. Add `selftestReceipt` with the absolute
 path to P0-C's green receipt and `dryReceipt` with the absolute path to
@@ -129,11 +129,7 @@ inputs against the dry-run commit, and requires the recorded Chromium build.
 ```sh
 base=/root/ci/h022-p0f
 cd "$base/window-sampler"
-out="$base/out-94a37e11"
-# Set this to P0-C's actual green receipt for the rig commit in dry-config.json.
-test -f "$selftest_receipt" &&
-jq --arg selftestReceipt "$selftest_receipt" --arg dryReceipt "$out/dry-receipt.json" \
-  '. + {$selftestReceipt, $dryReceipt}' "$base/dry-config.json" > "$base/window-config.json" &&
+out="$base/out-$(git rev-parse --short=8 HEAD)"
 P0F_COORDINATOR_WINDOW=1 node benchmarks/m1-m2-probes/probe.mjs \
   verify-window "$out" "$base/window-config.json" &&
 P0F_COORDINATOR_WINDOW=1 /root/ci/bin/heavy-exclusive \

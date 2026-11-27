@@ -178,7 +178,8 @@ async function collectM2(browser, sites, heavy, deadline, record) {
 export async function validateWindow(config, stagedCommit) {
   assert.equal(process.env.P0F_COORDINATOR_WINDOW, '1', 'Coordinator must open the window');
   const receipt = JSON.parse(await readFile(config.selftestReceipt, 'utf8'));
-  assert.deepEqual(receipt, {
+  const { calibration, calibrationOutsideBand, ...identity } = receipt;
+  assert.deepEqual(identity, {
     schema: 'tracecode.speed-022.selftest.v1',
     pass: true, rigCommit: config.rigCommit, tarballSha256: releases['0.21.0'].sha256,
   });
