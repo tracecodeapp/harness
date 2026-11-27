@@ -37,8 +37,8 @@
     "language": "shared",
     "command": "pnpm build:tracekernel",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "bundle-gates",
@@ -77,12 +77,57 @@
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build"
   },
   {
-    "id": "correct-program-timing",
-    "language": "shared",
-    "command": "pnpm test:correct-program-timing",
+    "id": "correct-program-timing-python",
+    "language": "python",
+    "command": "TRACECODE_TIMING_LANGUAGES=python pnpm test:correct-program-timing",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-correct-program-timing.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-python/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","workers/python/**","workers/shared/runtime-kernel-policy*.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "correct-program-timing-javascript",
+    "language": "javascript",
+    "command": "TRACECODE_TIMING_LANGUAGES=javascript pnpm test:correct-program-timing",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "correct-program-timing-typescript",
+    "language": "typescript",
+    "command": "TRACECODE_TIMING_LANGUAGES=typescript pnpm test:correct-program-timing",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/typescript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "correct-program-timing-csharp",
+    "language": "csharp",
+    "command": "TRACECODE_TIMING_LANGUAGES=csharp pnpm test:correct-program-timing",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-csharp/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","toolchains/csharp/**","workers/csharp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-*/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "correct-program-timing-java",
+    "language": "java",
+    "command": "TRACECODE_TIMING_LANGUAGES=java pnpm test:correct-program-timing",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-java/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","workers/java/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "correct-program-timing-cpp",
+    "language": "cpp",
+    "command": "TRACECODE_TIMING_LANGUAGES=cpp pnpm test:correct-program-timing",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/correct-program-timing-baseline-0.19.0.json","tests/fixtures/correct-program-timing-entry.ts","tests/test-correct-program-timing.ts","workers/cpp/**","workers/shared/runtime-kernel-policy*.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -398,16 +443,16 @@
     "language": "shared",
     "command": "pnpm test:javascript-project-stack-frames",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-javascript-project-stack-frames.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/helpers/javascript-project-stack-frame-cases.ts","tests/test-javascript-project-stack-frames.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "javascript-project-stack-frames-browser",
     "language": "shared",
     "command": "pnpm test:javascript-project-stack-frames-browser",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-javascript-project-stack-frames-browser.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/helpers/javascript-project-stack-frame-cases.ts","tests/test-javascript-project-stack-frames-browser.ts","workers/javascript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "javascript-ses-provider-browser",
@@ -450,25 +495,66 @@
     "language": "shared",
     "command": "pnpm test:judge",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","packages/judge/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline"
   },
   {
     "id": "judge-browser",
-    "language": "shared",
-    "command": "pnpm test:judge:browser",
+    "language": "javascript",
+    "command": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-project-judge.ts",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-browser-algorithm-batch.ts","tests/test-browser-project-judge.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-project-judge-entry.ts","tests/test-browser-project-judge.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "aliases": ["test:judge:browser"]
+  },
+  {
+    "id": "judge-browser-algorithm-javascript",
+    "language": "javascript",
+    "command": "TRACECODE_ALGORITHM_BATCH_LANGUAGES=javascript pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
+    "host": "ci",
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-algorithm-batch-entry.ts","tests/test-browser-algorithm-batch.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
+  },
+  {
+    "id": "judge-browser-algorithm-typescript",
+    "language": "typescript",
+    "command": "TRACECODE_ALGORITHM_BATCH_LANGUAGES=typescript pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
+    "host": "ci",
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-algorithm-batch-entry.ts","tests/test-browser-algorithm-batch.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/typescript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
+  },
+  {
+    "id": "judge-browser-algorithm-csharp",
+    "language": "csharp",
+    "command": "pnpm materialize:csharp-role-assets && TRACECODE_ALGORITHM_BATCH_LANGUAGES=csharp pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
+    "host": "ci",
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-csharp/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-algorithm-batch-entry.ts","tests/test-browser-algorithm-batch.ts","toolchains/csharp/**","workers/csharp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-*/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
+  },
+  {
+    "id": "judge-browser-algorithm-java",
+    "language": "java",
+    "command": "TRACECODE_ALGORITHM_BATCH_LANGUAGES=java pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
+    "host": "ci",
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-java/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-algorithm-batch-entry.ts","tests/test-browser-algorithm-batch.ts","workers/java/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
+  },
+  {
+    "id": "judge-browser-algorithm-cpp",
+    "language": "cpp",
+    "command": "TRACECODE_ALGORITHM_BATCH_LANGUAGES=cpp pnpm exec tsx --tsconfig tsconfig.base.json tests/test-browser-algorithm-batch.ts",
+    "host": "ci",
+    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/browser-algorithm-batch-entry.ts","tests/test-browser-algorithm-batch.ts","workers/cpp/**","workers/shared/runtime-kernel-policy*.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "kernel-policy-sync",
     "language": "shared",
     "command": "pnpm test:kernel-policy-sync",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/generate-runtime-kernel-policy-classic.ts","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/generate-runtime-kernel-policy-classic.ts","scripts/run-test-suite.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "kernel-storage-browser",
@@ -506,12 +592,57 @@
     "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
   },
   {
-    "id": "lost-worker-provider-origin",
-    "language": "shared",
-    "command": "pnpm test:lost-worker-provider-origin",
+    "id": "lost-worker-provider-origin-python",
+    "language": "python",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=python pnpm test:lost-worker-provider-origin",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-lost-worker-provider-origin-browser.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-python/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","workers/python/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-role-artifacts/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "lost-worker-provider-origin-javascript",
+    "language": "javascript",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=javascript pnpm test:lost-worker-provider-origin",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "lost-worker-provider-origin-typescript",
+    "language": "typescript",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=typescript pnpm test:lost-worker-provider-origin",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-javascript/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/typescript/**","workers/vendor/csharp-role-artifacts/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "lost-worker-provider-origin-csharp",
+    "language": "csharp",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=csharp pnpm test:lost-worker-provider-origin",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-csharp/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","toolchains/csharp/**","workers/csharp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-*/**","workers/vendor/csharp-role-artifacts/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "lost-worker-provider-origin-java",
+    "language": "java",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=java pnpm test:lost-worker-provider-origin",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","packages/runtime-java/**","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","workers/java/**","workers/shared/runtime-kernel-policy*.js","workers/shared/tracekernel-*.js","workers/vendor/*.jar","workers/vendor/csharp-role-artifacts/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "lost-worker-provider-origin-cpp",
+    "language": "cpp",
+    "command": "TRACECODE_LOST_WORKER_LANGUAGES=cpp pnpm test:lost-worker-provider-origin",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","packages/runtime-cpp/src/tracecc-runtime-assets*.ts","patches/**","pnpm-lock.yaml","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","tests/example-app-smoke.ts","tests/fixtures/lost-worker-provider-origin-entry.ts","tests/test-lost-worker-provider-origin-browser.ts","workers/cpp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-role-artifacts/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -536,8 +667,8 @@
     "language": "shared",
     "command": "pnpm test:output-routing",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-workspace-output-routing.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-workspace-output-routing.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -571,8 +702,8 @@
     "language": "shared",
     "command": "pnpm test:process-resource-limits",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-process-resource-limits.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-process-resource-limits.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -594,12 +725,48 @@
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
-    "id": "project-browser-matrix",
-    "language": "shared",
-    "command": "pnpm test:project-browser-matrix",
+    "id": "project-browser-matrix-python",
+    "language": "python",
+    "command": "TRACECODE_PROJECT_MATRIX_LANGUAGES=python pnpm test:project-browser-matrix",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","scripts/test-browser-project-provider-matrix.mjs","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-browser-project-judge.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-python/**","patches/**","pnpm-lock.yaml","scripts/benchmark-browser-project-runtimes.ts","scripts/check-browser-project-performance.mjs","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","scripts/test-browser-project-provider-matrix.mjs","tests/example-app-smoke.ts","tests/test-browser-project-judge.ts","workers/python/**","workers/shared/runtime-kernel-policy*.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "project-browser-matrix-javascript",
+    "language": "javascript",
+    "command": "TRACECODE_PROJECT_MATRIX_LANGUAGES=javascript pnpm test:project-browser-matrix",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","patches/**","pnpm-lock.yaml","scripts/benchmark-browser-project-runtimes.ts","scripts/check-browser-project-performance.mjs","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","scripts/test-browser-project-provider-matrix.mjs","tests/example-app-smoke.ts","tests/test-browser-project-judge.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "project-browser-matrix-typescript",
+    "language": "typescript",
+    "command": "TRACECODE_PROJECT_MATRIX_LANGUAGES=typescript pnpm test:project-browser-matrix",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-javascript/**","packages/runtime-typescript/**","patches/**","pnpm-lock.yaml","scripts/benchmark-browser-project-runtimes.ts","scripts/check-browser-project-performance.mjs","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","scripts/test-browser-project-provider-matrix.mjs","tests/example-app-smoke.ts","tests/test-browser-project-judge.ts","workers/javascript/**","workers/shared/runtime-kernel-policy*.js","workers/typescript/**","workers/vendor/javascript-libraries.js","workers/vendor/typescript.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "project-browser-matrix-csharp",
+    "language": "csharp",
+    "command": "TRACECODE_PROJECT_MATRIX_LANGUAGES=csharp pnpm test:project-browser-matrix",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-csharp/**","patches/**","pnpm-lock.yaml","scripts/benchmark-browser-project-runtimes.ts","scripts/check-browser-project-performance.mjs","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","scripts/test-browser-project-provider-matrix.mjs","tests/example-app-smoke.ts","tests/test-browser-project-judge.ts","toolchains/csharp/**","workers/csharp/**","workers/shared/runtime-kernel-policy*.js","workers/vendor/csharp-*/**"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
+    "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
+  },
+  {
+    "id": "project-browser-matrix-cpp",
+    "language": "cpp",
+    "command": "TRACECODE_PROJECT_MATRIX_LANGUAGES=cpp pnpm test:project-browser-matrix",
+    "host": "agentrunner",
+    "inputs": [".nvmrc","packages/judge/**","packages/runtime-browser/**","packages/runtime-cpp/**","patches/**","pnpm-lock.yaml","scripts/benchmark-browser-project-runtimes.ts","scripts/check-browser-project-performance.mjs","scripts/csharp-role-artifacts.ts","scripts/gates/**","scripts/run-test-suite.ts","scripts/runtime-asset-staging.ts","scripts/runtime-package-assets.mjs","scripts/test-browser-project-provider-matrix.mjs","tests/example-app-smoke.ts","tests/test-browser-project-judge.ts","workers/cpp/**","workers/shared/runtime-kernel-policy*.js"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -843,8 +1010,8 @@
     "language": "shared",
     "command": "pnpm test:runtime-raw-emission-contract",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-runtime-raw-emission-contract.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-runtime-raw-emission-contract.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "runtime-trace",
@@ -878,8 +1045,8 @@
     "language": "shared",
     "command": "pnpm test:runtime-trace-parity",
     "host": "agentrunner",
-    "inputs": [".nvmrc","fixtures/runtime-trace/**","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-runtime-trace-parity.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","fixtures/runtime-trace/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-runtime-trace-parity.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline"
   },
   {
@@ -913,16 +1080,16 @@
     "language": "shared",
     "command": "pnpm test:sql-trace",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-sql-trace.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","packages/runtime-sql/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-sql-trace.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "sql-trace-fixtures",
     "language": "shared",
     "command": "pnpm test:sql-trace-fixtures",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-sql-trace-fixtures.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","packages/runtime-sql/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/fixtures/sql-traces/**","tests/test-sql-trace-fixtures.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "standalone-boundary",
@@ -938,8 +1105,8 @@
     "language": "shared",
     "command": "pnpm test:terminal-error-provenance",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-terminal-error-provenance.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-terminal-error-provenance.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -947,8 +1114,8 @@
     "language": "shared",
     "command": "pnpm test:terminal-executable-restoration",
     "host": "agentrunner",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-terminal-executable-restoration.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]},
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-terminal-executable-restoration.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]},
     "setup": "pnpm install --frozen-lockfile --prefer-offline && pnpm build:tracekernel"
   },
   {
@@ -956,24 +1123,24 @@
     "language": "shared",
     "command": "pnpm test:terminal-shell-state",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-terminal-shell-state.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-terminal-shell-state.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "test-suite-runner",
     "language": "shared",
     "command": "pnpm test:test-suite-runner",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/**","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-test-suite-runner.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-test-suite-runner.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "trace-adapters",
     "language": "shared",
     "command": "pnpm test:trace-adapters",
     "host": "laptop-unit",
-    "inputs": [".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-trace-adapters.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-trace-adapters.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "tracecc",
@@ -1159,8 +1326,8 @@
     "language": "shared",
     "command": "node --import tsx tests/test-tracekernel-workspace-processes.ts",
     "host": "ci",
-    "inputs": [".github/workflows/ci.yml",".nvmrc","packages/**","packages/judge/**","packages/runtime-browser/**","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/conformance/**","tests/fixtures/**","tests/helpers/**","tests/test-tracekernel-workspace-processes.ts","toolchains/**","toolchains/csharp/**","workers/**","workers/shared/runtime-kernel-policy*.js"],
-    "pins": {"files":[".nvmrc","pnpm-lock.yaml","toolchains/csharp/**"]}
+    "inputs": [".github/workflows/ci.yml",".nvmrc","patches/**","pnpm-lock.yaml","scripts/gates/**","scripts/run-test-suite.ts","tests/test-tracekernel-workspace-processes.ts"],
+    "pins": {"files":[".nvmrc","pnpm-lock.yaml"]}
   },
   {
     "id": "typecheck",
