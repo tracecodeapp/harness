@@ -1,6 +1,9 @@
+import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
+import * as Option from 'effect/Option';
+import * as Runtime from 'effect/Runtime';
 import * as Scope from 'effect/Scope';
 import type {
   CodeExecutionResult,
@@ -40,6 +43,7 @@ import {
   getBrowserRuntimeHostJudgeReceiptProvider,
   getBrowserRuntimeHostPreparedProvider,
   type JudgeReceiptProvider,
+  type JudgeScheduleMarker,
 } from '../../packages/runtime-browser/src/browser-runtime-host-internal';
 import {
   createBrowserRuntimeHost,
@@ -158,6 +162,23 @@ export type {
 const PROVIDER_ERROR_CODE = 'runtime-provider-error';
 
 /**
+ * Run a Judge effect for a host caller. A typed Judge failure rejects as
+ * itself, not wrapped in Effect's `FiberFailure`, so `instanceof
+ * JudgePlanError` holds for every plan error the host returns.
+ */
+function runJudgePromise<A, E>(effect: Effect.Effect<A, E>, signal?: AbortSignal): Promise<A> {
+  return Effect.runPromise(effect, signal ? { signal } : undefined).catch((error: unknown) => {
+    if (!Runtime.isFiberFailure(error)) throw error;
+    const failure = Cause.failureOption(error[Runtime.FiberFailureCauseId]);
+    if (Option.isSome(failure) &&
+      (failure.value instanceof JudgePlanError || failure.value instanceof JudgeInfrastructureError)) {
+      throw failure.value;
+    }
+    throw error;
+  });
+}
+
+/**
  * Run a Judge effect under the caller's signal. An abort interrupts the
  * evaluation (providers terminate their busy workers) and rejects with the
  * caller's own abort reason, an `AbortError`, never an opaque fiber failure,
@@ -167,8 +188,8 @@ function runAbortable<A, E>(
   effect: Effect.Effect<A, E>,
   signal: AbortSignal | undefined
 ): Promise<A> {
-  if (!signal) return Effect.runPromise(effect);
-  return Effect.runPromise(effect, { signal }).catch((error: unknown) => {
+  if (!signal) return runJudgePromise(effect);
+  return runJudgePromise(effect, signal).catch((error: unknown) => {
     if (!signal.aborted) throw error;
     const reason: unknown = signal.reason;
     throw reason instanceof Error && reason.name === 'AbortError'
@@ -2377,9 +2398,12 @@ class RuntimeJudgeComposition
           // behind observer work (C#'s shares the compiler queue with the
           // observer's companion compile). A compile failure keeps no handle,
           // so its observer is released too. Neither can change the verdict,
-          // so a release fault is dropped.
-          void Effect.runPromise(this.disposeEvaluation(evaluationId)).catch(() => undefined);
-          if (!retained) void schedule.dispose().catch(() => undefined);
+          // so a release fault is journalled as `release-fault`, not thrown.
+          const fault = (operation: NonNullable<JudgeScheduleMarker['operation']>) => () =>
+            schedule.mark('release-fault', undefined, undefined, { operation });
+          void Effect.runPromise(this.disposeEvaluation(evaluationId))
+            .catch(fault('dispose interactive prepared runtime program'));
+          if (!retained) void schedule.dispose().catch(fault('dispose Judge observation'));
         }
         // Nothing can be drawn later without a handle.
         const deferredDrawings = !deferred ? undefined : !executionId ? [] :
@@ -2736,7 +2760,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     retained.abort?.abort(disposedExecutionError(executionId));
     clearIdleTimer(retained);
     try {
-      await Effect.runPromise(retained.judge.disposeExecution(executionId));
+      await runJudgePromise(retained.judge.disposeExecution(executionId));
     } finally {
       await Effect.runPromise(Scope.close(retained.scope, Exit.void));
     }
@@ -2799,7 +2823,7 @@ export function createBrowserJudgeHostFromRuntimeHost(
     await measureJudgeExecutionPhase(
       phases,
       'bundle-validation',
-      () => Effect.runPromise(validateAlgorithmJudgeBundle(bundle))
+      () => runJudgePromise(validateAlgorithmJudgeBundle(bundle))
     );
     if (signal.aborted) throw judgeAbortError();
     if (!host.isLanguageSupported(language)) {

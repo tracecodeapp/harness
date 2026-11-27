@@ -258,7 +258,8 @@ export class JudgeObservationSchedule<Result, Expected> {
     caseId?: string,
     attemptToken?: string,
     journal?: Pick<JudgeScheduleMarker,
-      'caseIndex' | 'dispatchGeneration' | 'sequence' | 'progress' | 'reason' | 'cause' | 'accepted' | 'request'>
+      'caseIndex' | 'dispatchGeneration' | 'sequence' | 'progress' | 'reason' | 'cause' | 'accepted' | 'request' |
+      'operation'>
   ): void {
     if (!this.registration.mark && !this.testBridge) return;
     const marker = {

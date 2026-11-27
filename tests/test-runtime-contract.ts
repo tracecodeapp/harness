@@ -1566,6 +1566,7 @@ function assertJavaScriptObservationProtocol(): void {
     'attachment-bind': prepared,
     'observation-cache-hit': prepared,
     'public-resolve': judge,
+    'release-fault': judge,
     'injection-ack': prepared,
     'judged-output-policy': bridge,
   } satisfies Record<BridgeEvent['phase'], string>;
