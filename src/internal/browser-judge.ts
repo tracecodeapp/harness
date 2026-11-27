@@ -2353,22 +2353,35 @@ class RuntimeJudgeComposition
           ], { concurrency: 2 });
           return yield* Effect.failCause(outcome.cause);
         }
-        const release = yield* Effect.exit(this.disposeEvaluation(evaluationId));
-        if (Exit.isFailure(release)) {
-          yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
-          return yield* Effect.failCause(release.cause);
+        if (!deferred) {
+          const release = yield* Effect.exit(this.disposeEvaluation(evaluationId));
+          if (Exit.isFailure(release)) {
+            yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
+            return yield* Effect.failCause(release.cause);
+          }
         }
         const receipt = outcome.value;
         let executionId: string | undefined;
-        if (request.interactive === true && receipt.evaluation.status === 'completed') {
+        const retained = request.interactive === true && receipt.evaluation.status === 'completed';
+        if (retained) {
           executionId = this.nextOpaqueExecutionId('execution');
           this.receiptExecutions.set(executionId, { manifest: bundle, schedule });
-        } else {
+        } else if (!deferred) {
           // A lease release fault is independent of an already joined receipt.
           yield* this.disposeSchedule(schedule).pipe(Effect.catchAll(() => Effect.void));
         }
         schedule.mark('public-resolve', undefined, undefined, { request: 'initial' });
-        // A compile failure keeps no handle, so nothing can be drawn later.
+        if (deferred) {
+          // An after-verdict verdict waits on no teardown (G2). The ordinary
+          // program is released after the resolve, since a release can queue
+          // behind observer work (C#'s shares the compiler queue with the
+          // observer's companion compile). A compile failure keeps no handle,
+          // so its observer is released too. Neither can change the verdict,
+          // so a release fault is dropped.
+          void Effect.runPromise(this.disposeEvaluation(evaluationId)).catch(() => undefined);
+          if (!retained) void schedule.dispose().catch(() => undefined);
+        }
+        // Nothing can be drawn later without a handle.
         const deferredDrawings = !deferred ? undefined : !executionId ? [] :
           request.plan.cases.map(({ id }) => id).filter((caseId) => selected?.has(caseId));
         return {
