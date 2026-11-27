@@ -44,9 +44,21 @@ explicitly first, because `npm publish <tarball>` runs no lifecycle scripts.
 
 A candidate is an exact commit plus the tarball `pnpm pack` made from it after
 `pnpm build`, identified by its sha256 and its runtime release ID
-(`runtime-assets.lock.json` → `harness.releaseId`). Run the full suite and the
+(`runtime-assets.lock.json` → `harness.releaseId`, read from the tarball:
+`tar -xzOf <candidate.tgz> package/runtime-assets.lock.json`). Record the lock's
+sha256 and release ID with the release evidence. Run the full suite and the
 consumer validation (TraceCode's `validate-harness-release`) against that
 tarball. Any change to the tree makes a new candidate.
+
+From 0.22.0 the lock is generated, not committed. `pnpm build` writes it
+(`generate:runtime-assets-lock`), `.gitignore` excludes it, and `files` ships
+it, so the package still exports `@tracecode/harness/runtime-assets.lock.json`.
+It is a function of the commit: the tracked `workers/` files, the engine
+packages `pnpm-lock.yaml` pins, and the C# role artifacts. Pull requests never
+commit it. `pnpm test:runtime-assets-lock` checks it in memory when no file is
+present and byte-compares the file when one is. Through 0.21.0 the lock was
+committed, so `git show v0.21.0:runtime-assets.lock.json` still works for
+those tags.
 
 ### 2. Put the release commit on `main`
 
@@ -91,7 +103,9 @@ shasum -a 256 <pack-dir>/tracecode-harness-<version>.tgz
 
 The sha256 must equal the candidate's. If it differs, compare the unpacked
 trees (`diff -r`); a file difference means stop. Either way, the file that is
-published in step 6 is the **candidate tarball**, not a fresh pack.
+published in step 6 is the **candidate tarball**, not a fresh pack. The lock is
+ignored by git, so `git diff --exit-code` does not cover it;
+`test:runtime-assets-lock` and step 6 do.
 
 ### 5. Tag
 
@@ -118,7 +132,8 @@ unless:
 - the file's sha256 is the candidate's;
 - its package name and version are this checkout's;
 - its `runtime-assets.lock.json`, and so its runtime release ID, is
-  byte-identical to the checkout's;
+  byte-identical to the lock the generator produces from this checkout, and to
+  the checkout's built `runtime-assets.lock.json` if one is present;
 - `release:check`, `release:tag-check` and `test:runtime-assets-lock` pass.
   A tarball publish runs no lifecycle scripts, so these are the guards
   `prepublishOnly` would run.

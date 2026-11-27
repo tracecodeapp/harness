@@ -51,6 +51,7 @@ installed_package() (
   pnpm --dir "$consumer" --ignore-workspace add --ignore-scripts --prefer-offline "$tarball"
   package="$consumer/node_modules/@tracecode/harness"
   cmp <(tar -xOzf "$tarball" package/dist/judge.js) "$package/dist/judge.js"
+  # The lock suite checks the generated checkout file before this installed-package check.
   cmp runtime-assets.lock.json "$package/runtime-assets.lock.json"
   node "$package/dist/cli.cjs" sync-assets "$site/workers" --languages csharp
   node --input-type=module - "$consumer" "$site" <<'JS'

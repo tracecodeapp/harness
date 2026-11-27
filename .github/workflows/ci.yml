@@ -64,6 +64,8 @@ jobs:
         run: TRACECODE_JAVA_PREPARED_ENGINES=chromium pnpm test:java-prepared-provider
       - name: Build
         run: pnpm build
+      - name: Check built runtime asset lock
+        run: node --import tsx scripts/generate-runtime-assets-lock.mjs --check
       - name: Verify generated JavaScript workers
         run: |
           pnpm generate:javascript-project-worker

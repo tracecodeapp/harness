@@ -193,7 +193,8 @@ step java-public-judge env TRACECODE_ALGORITHM_BATCH_LANGUAGES=java \
 step java-exit-zero-no-op env TRACECODE_JAVA_PREPARED_ENGINES=chromium TRACECODE_JAVA_EXIT_PROBE=1 \
   "${pnpm[@]}" test:java-prepared-provider:browser || :
 if step package-build "${pnpm[@]}" build &&
-  step package-source-identity git diff --exit-code HEAD -- packages src workers runtime-assets.lock.json; then
+  step package-source-identity git diff --exit-code HEAD -- packages src workers &&
+  step package-runtime-lock "${pnpm[@]}" test:runtime-assets-lock; then
   step gb-stable bash "$0" --gb-stable "$evidence" "$mux" || :
 else
   printf 'gb-stable\tskipped-package-prerequisite\t0\n' | tee -a "$evidence/steps.tsv"

@@ -81,10 +81,23 @@ export async function publishReleaseTarball({
   if (tarballManifest.version !== rootManifest.version) {
     fail(`the tarball is version ${tarballManifest.version}, this checkout is ${rootManifest.version}`);
   }
-  const checkoutLock = await readFile(resolve(root, 'runtime-assets.lock.json'));
+  const generatedLock = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', 'scripts/generate-runtime-assets-lock.mjs', '--stdout'],
+    { cwd: root, env: environment }
+  );
+  if (generatedLock.status !== 0) {
+    fail(`cannot generate the expected runtime asset lock: ${generatedLock.error?.message ?? generatedLock.stderr.toString().trim()}`);
+  }
   const tarballLock = readTarballEntry(tarballPath, 'package/runtime-assets.lock.json');
-  if (!checkoutLock.equals(tarballLock)) {
-    fail("the tarball's runtime-assets.lock.json differs from this checkout's");
+  if (!tarballLock.equals(generatedLock.stdout)) {
+    fail("the tarball's runtime-assets.lock.json differs from the lock generated from this checkout");
+  }
+  const checkoutLock = await readFile(resolve(root, 'runtime-assets.lock.json')).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+  });
+  if (checkoutLock && !checkoutLock.equals(generatedLock.stdout)) {
+    fail("the checkout's runtime-assets.lock.json is stale");
   }
 
   // 3. The guards `prepublishOnly` runs for a directory publish.
