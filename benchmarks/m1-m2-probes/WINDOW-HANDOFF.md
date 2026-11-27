@@ -1,5 +1,10 @@
 # P0-F dry run and window hand-off
 
+The coordinator recorded the M1 decision before sampling. The kernel owns
+case start, finish and deadline as events, and the workers keep their batch
+loops. Java's shipped non-isolated route produced zero admissible warm
+pairs. The window runs M2 first, then collects informational M1 data for K0.
+
 The round-three amendment supplies a C# batch verb and selects the shipped
 C++ prepared batch verb. Both probes start from the published 0.21.0 archive.
 The C# site replaces one served JavaScript worker, and its batch handler runs
@@ -21,9 +26,8 @@ The package and catalog pins are in [inputs.mjs](inputs.mjs). The three
 catalog cases are read in place on AgentRunner. File hashes match app commit
 `e4eca52506e838dacdef28078c39f012a5825cd7`. Program hashes cover the UTF-8
 solution text and input hashes cover UTF-8 `JSON.stringify(input)`.
-Binary Search uses the catalog's ten cases in their original order. N=100
-repeats those ten cases ten times. Each heavy M1 cell repeats the
-registered P0-C case N times.
+Informational M1 uses the catalog's ten Binary Search cases in their
+original order.
 
 The optional dry-run configuration points to P0-C's staged `plan-022.mjs`.
 The loader checks the plan SHA-256 before using `heavyFixture022`. That
@@ -75,11 +79,9 @@ message even for a multi-case batch.
 
 Java's non-isolated client closes the Worker session after each prepared
 singleton. The canary verifies fresh statics, but the published desktop
-route cannot produce the requested warm pair. The window records Java as
-ineligible. C# remains eligible for the deciding Binary Search N=10 cell.
-The registered C# heavy case selects the compatibility tier and cannot use
-the retained-runner batch. The C# N=100 singleton cell is also unavailable
-because the published runner rotates after at most 64 cases.
+route cannot produce the requested warm pair. C# passed the Binary Search
+dry run. The registered C# heavy case selected the compatibility tier,
+which cannot use the retained-runner batch.
 
 C# dry-run worker SHA-256
 `a74d1690f4a7d405fac367a7af5d88edc673149176b16102998c11a7fd1aa01d`
@@ -111,7 +113,8 @@ log is `/root/ci/h022-p0f/logs/m2-4e749456.log`.
 ## Coordinator's window
 
 The coordinator names and opens the window after P0-C's green self-test
-receipt exists. Use the dry output made by the sampling commit. The window
+receipt exists. Run the updated sampler from the staged branch checkout
+and reuse the verified browser assets from dry-run commit `94a37e11`. The window
 configuration uses the same `heavyPlan`, `heavySha256` and `rigCommit`
 fields as the dry configuration. Add `selftestReceipt` with the absolute
 path to P0-C's green receipt and `dryReceipt` with the absolute path to
@@ -120,11 +123,12 @@ path to P0-C's green receipt and `dryReceipt` with the absolute path to
 The following command is for the coordinator after the window is named.
 It runs both phases in one invocation. The sampler checks the receipt's
 P0-C commit and tarball hash against the selected plan and release. It also
-checks the dry receipt and requires the recorded Chromium build.
+checks the dry receipt against the staged assets, verifies the browser
+inputs against the dry-run commit, and requires the recorded Chromium build.
 
 ```sh
 base=/root/ci/h022-p0f
-cd "$base/dry-94a37e11"
+cd "$base/window-sampler"
 out="$base/out-94a37e11"
 # Set this to P0-C's actual green receipt for the rig commit in dry-config.json.
 test -f "$selftest_receipt" &&
@@ -139,30 +143,23 @@ P0F_COORDINATOR_WINDOW=1 /root/ci/bin/heavy-exclusive \
 
 | Order | Cells | Minimum for full coverage |
 | --- | --- | --- |
-| M1 first | Binary Search N=10, all six languages | 3 discarded warm-up pairs and 20 admissible pairs per language, 138 pairs |
-| M1 as time allows | Binary Search N=100, P0-C heavy N=10 and N=100 | 23 pairs per language and cell, another 414 pairs |
-| M2 second | Four cases at Chromium 1× desktop and 4× phone across the three versions | 480 admissible trials plus six discarded warm-ups |
+| M2 first | Four cases at Chromium 1× desktop and 4× phone across the three versions | 480 admissible trials plus six discarded warm-ups |
+| Informational M1 second | Binary Search N=10 for Python, JavaScript, TypeScript, C# and C++ | 3 discarded warm-up pairs and 20 admissible pairs per language, 115 pairs for full coverage |
 
-M1 alternates which arm goes first. Its timer starts at the beginning of
-M1 and has a hard 45-minute cap, which discards the in-flight pair. M2
-alternates version order within rounds and targets 20 admissible trials per
-version and cell. The load gate is the rig's one-minute load of at most 2.0
-immediately before dispatch. M2 has up to 40 minutes. Plan for 75–85 minutes
-of active window time with M1 at the cap. Load exclusions and unfinished M1
-supplementary cells may leave gaps.
+M2 alternates version order within rounds and targets 20 admissible trials
+per version and cell. Its allowance is up to 40 minutes. Informational M1
+alternates which arm goes first and discards any in-flight pair at its
+hard 20-minute cap. The load gate is the rig's one-minute load of at most
+2.0 immediately before dispatch. Allow **50–60 minutes** of active window
+time, based on 30–40 minutes for M2 and up to 20 minutes for informational M1.
 
-The optional host controls record a null-payload worker echo and host timer
-arm/cancel after the deciding M1 cells, if time remains. A direct reset-only cost is
-unavailable in the published receipts. The managed C# call contains both the
-load-context swap and learner execution. The sampler retains combined setup
-fields where the release exposes them.
-
-Score only after both phases have finished and the coordinator releases the
-window. The scorer reads the append-only attempt journal. Its decision uses
-the signed thresholds.
+Score after both phases and after the coordinator releases the window.
+The scorer applies the signed M2 thresholds and prints informational M1
+medians for cells with 20 admissible pairs.
 
 ```sh
-node benchmarks/m1-m2-probes/score.mjs "$out/samples.jsonl" "$out/M1-M2-RESULTS.md"
+node benchmarks/m1-m2-probes/score.mjs \
+  "$out/samples.jsonl" "$out/M2-INFORMATIONAL-M1-RESULTS.md"
 ```
 
 P0-F took no timing samples and did not open an exclusive window.

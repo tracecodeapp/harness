@@ -226,8 +226,20 @@ if (!windowMode) {
 }
 if (mode === 'prepare') process.exit(0);
 const { sites, probeCommit: stagedCommit } = JSON.parse(await readFile(stageMarker, 'utf8'));
-assert.equal(stagedCommit, probeCommit, 'Use assets staged by this probe commit');
-const registered = windowMode ? await validateWindow(config, probeCommit) : undefined;
+const registered = windowMode ? await validateWindow(config, stagedCommit) : undefined;
+if (registered && stagedCommit !== probeCommit) {
+  // Changes to orchestration and reporting can reuse the dry-run browser assets.
+  assert.match(stagedCommit, /^[a-f0-9]{40}$/);
+  const unchanged = spawnSync('git', [
+    'diff', '--quiet', stagedCommit, probeCommit, '--', '.',
+    ...['probe.mjs', 'score.mjs', 'window.mjs', 'WINDOW-HANDOFF.md'].map(
+      (file) => ':(exclude)benchmarks/m1-m2-probes/' + file,
+    ),
+  ]);
+  assert.equal(unchanged.status, 0, 'Browser probe inputs changed since the dry run');
+} else if (!registered) {
+  assert.equal(stagedCommit, probeCommit, 'Use assets staged by this probe commit');
+}
 if (registered) assert.ok(heavy, 'Supply the registered P0-C heavy cases');
 if (mode === 'verify-window') process.exit(0);
 const browser = await chromium.launch({ channel: 'chromium', headless: true });
@@ -243,7 +255,7 @@ try {
     try {
       for (const [key, path] of Object.entries(sites)) servers[key] = await serve(path);
       await collectWindow(browser, Object.fromEntries(Object.entries(servers).map(([key, { url }]) => [key, url])),
-        out, heavy, registered);
+        out, heavy, registered, probeCommit);
     } finally {
       for (const { server } of Object.values(servers)) server.close();
     }
