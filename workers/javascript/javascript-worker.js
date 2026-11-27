@@ -1988,6 +1988,44 @@ const DEFAULT_TRACE_MAX_PATH_DEPTH = 3;
 const MAX_TRACE_MAX_PATH_DEPTH = 8;
 const MAX_TRACE_BULK_ACCESSES = 512;
 
+// A drawing's byte budget and per-event cap, in the retained unit: the UTF-8
+// bytes of JSON.stringify({ ...event, runId, file }) for each event. Every
+// event copies the whole call stack, so without a budget a deep recursion
+// builds a drawing that grows with the square of its depth.
+const DEFAULT_TRACE_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_TRACE_MAX_EVENT_BYTES = 256 * 1024;
+// JSON.stringify({ ...rest, callStack }) is JSON.stringify(rest) plus these
+// bytes plus the stack's own JSON, whatever the key order.
+const TRACE_CALL_STACK_KEY_BYTES = ',"callStack":'.length;
+const TRACE_NON_ASCII_PATTERN = /[^\x00-\x7f]/;
+
+// TextEncoder's byte count for a string, without TextEncoder: the SES trace
+// recorder runs in a compartment that has only the language's intrinsics.
+function traceUtf8ByteLength(text) {
+  if (!TRACE_NON_ASCII_PATTERN.test(text)) return text.length;
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      // Other BMP characters, and a lone surrogate, which encodes as U+FFFD.
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
 function getMaxPathDepthOption(value) {
   const numeric = getNumericOption(value, DEFAULT_TRACE_MAX_PATH_DEPTH);
   return Math.min(MAX_TRACE_MAX_PATH_DEPTH, Math.max(1, numeric));
@@ -2120,9 +2158,21 @@ function createTraceRecorder(options = {}) {
   const statementSourceMap = options.statementSourceMap instanceof Map ? options.statementSourceMap : new Map();
 
   const observation = options.observation === true;
-  const maxTraceBytes = getNumericOption(options.maxTraceBytes, Number.POSITIVE_INFINITY);
-  const byteEncoder = observation && Number.isFinite(maxTraceBytes) ? new TextEncoder() : null;
+  // Every recording path counts bytes. At the cut an observation throws and
+  // stops the program; any other path stops recording and lets the program
+  // run on to its own limits, so its result never depends on the budget.
+  const maxTraceBytes = getNumericOption(options.maxTraceBytes, DEFAULT_TRACE_MAX_BYTES);
+  const maxTraceEventBytes = Math.min(DEFAULT_TRACE_MAX_EVENT_BYTES, maxTraceBytes);
+  const byteUnitRunId = typeof options.runId === 'string' ? options.runId : `${options.language}:run`;
+  const byteUnitFile = typeof options.file === 'string'
+    ? options.file
+    : options.language === 'typescript' ? 'solution.ts' : 'solution.js';
   let retainedBytes = 0;
+  let traceBytesExhausted = false;
+  // The events of one step share one call-stack copy: its JSON is counted
+  // once and reused for each of them.
+  let byteUnitStack;
+  let byteUnitStackBytes = 0;
   let attemptedEvents = 0;
   let observationCut;
   const cutObservation = (reason, lineNumber) => {
@@ -2155,6 +2205,47 @@ function createTraceRecorder(options = {}) {
       trace.push(timeoutStep);
       appendRuntimeTraceEventsForStep(timeoutStep);
     }
+  }
+
+  // The byte budget's cut off the observation path: recording stops where
+  // the next event would not fit, like the count caps, but with no marker
+  // event, so the drawing is a prefix within the budget. Nothing is thrown.
+  function markTraceByteLimit() {
+    traceBytesExhausted = true;
+    if (!traceLimitExceeded) {
+      traceLimitExceeded = true;
+      timeoutReason = 'trace-byte-limit';
+    }
+    pendingAccessesByFrame.clear();
+    deferredAccessesByFrame.clear();
+  }
+
+  function retainedEventBytes(event) {
+    try {
+      const { callStack: stack, ...rest } = event;
+      rest.runId = byteUnitRunId;
+      rest.file = byteUnitFile;
+      let bytes = traceUtf8ByteLength(JSON.stringify(rest));
+      if (stack !== undefined) {
+        if (stack !== byteUnitStack) {
+          byteUnitStackBytes = TRACE_CALL_STACK_KEY_BYTES + traceUtf8ByteLength(JSON.stringify(stack));
+          byteUnitStack = stack;
+        }
+        bytes += byteUnitStackBytes;
+      }
+      return bytes;
+    } catch {
+      // An event that cannot be measured is never retained.
+      return Number.POSITIVE_INFINITY;
+    }
+  }
+
+  // Charges one event to the budget, or reports that it does not fit.
+  function retainEventBytes(event) {
+    const bytes = retainedEventBytes(event);
+    if (bytes > maxTraceEventBytes || retainedBytes + bytes > maxTraceBytes) return false;
+    retainedBytes += bytes;
+    return true;
   }
 
   function normalizeLine(lineNumber, fallback = 1) {
@@ -2449,6 +2540,7 @@ function createTraceRecorder(options = {}) {
   }
 
   function appendRuntimeTraceEventsForStep(step) {
+    if (traceBytesExhausted) return;
     if (traceLimitExceeded && timeoutReason === 'trace-limit' && step?.event !== 'timeout') {
       return;
     }
@@ -2461,23 +2553,20 @@ function createTraceRecorder(options = {}) {
       ...(stack.length > 0 ? { callStack: stack.map((frame) => ({ ...frame })) } : {}),
     };
     const pushRuntimeTraceEvent = (event) => {
+      if (traceBytesExhausted) return false;
       if (observation) {
         attemptedEvents += 1;
         if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
           cutObservation('stored-event-budget', step?.line);
         }
-        if (byteEncoder) {
-          const bytes = byteEncoder.encode(JSON.stringify({
-            ...event,
-            runId: `${options.language}:run`,
-            file: defaultRuntimeTraceFile(options.language),
-          })).byteLength;
-          if (retainedBytes + bytes > maxTraceBytes) cutObservation('byte-budget', step?.line);
-          retainedBytes += bytes;
-        }
+        if (!retainEventBytes(event)) cutObservation('byte-budget', step?.line);
       }
       if (runtimeTraceEvents.length >= effectiveMaxRuntimeTraceEvents) {
         markTraceCaptureLimit(step?.line, step?.function);
+        return false;
+      }
+      if (!observation && !retainEventBytes(event)) {
+        markTraceByteLimit();
         return false;
       }
       runtimeTraceEvents.push(event);
@@ -7553,6 +7642,8 @@ async function executeWithTracing(payload) {
   }
   const traceRecorder = createTraceRecorder({
     ...(options ?? {}), maxPathDepth, statementSourceMap, observation, language,
+    // The run id and file every reply below exports its events with.
+    runId: `${language}:run`, file: defaultRuntimeTraceFile(language),
   });
   const snapshotDrawing = () => {
     try {

@@ -171,6 +171,7 @@
     "test:javascript-trace-compile": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile.ts",
     "test:javascript-trace-compile-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-compile-browser.ts",
     "test:javascript-ses-provider-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-ses-provider-browser.ts",
+    "test:javascript-trace-byte-budget": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-trace-byte-budget.ts",
     "test:javascript-project-stack-frames": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-project-stack-frames.ts",
     "test:javascript-project-stack-frames-browser": "pnpm exec tsx --tsconfig tsconfig.base.json tests/test-javascript-project-stack-frames-browser.ts",
     "test:runtime-chaining": "TSX_TSCONFIG_PATH=tsconfig.base.json node --import tsx --test tests/test-workspace-runtime-chaining.ts",

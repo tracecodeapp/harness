@@ -1174,8 +1174,10 @@ async function executeCase(
     lineEventCount: 0,
     traceStepCount: 0,
   });
+  // The recorder counts each event's bytes with the run id and file it is
+  // exported with (snapshotTrace below), so it needs the language's default.
   const recorder = tracing
-    ? createFastTraceRecorder?.(program.traceOptions)
+    ? createFastTraceRecorder?.({ ...program.traceOptions, language: program.language })
     : undefined;
   if (tracing && !recorder) {
     throw new Error('SES trace recorder runtime is unavailable.');
