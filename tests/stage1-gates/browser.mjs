@@ -239,7 +239,6 @@ export async function runDeferredFixture(fixture, scenario) {
   const bundle = await createAlgorithmJudgeBundle({
     ...fixture, id: `ga-${language}-${scenario.name}-deferred`, trace: true,
     comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
-    traceOptions: supportedTraceOptions(language, fixture.traceOptions),
   });
   return observeDeferred(bundle, scenario, {
     createHost: () => createBrowserJudgeHost({
