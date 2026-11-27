@@ -22,13 +22,36 @@ test('the selector scopes language inputs and ignores a regenerated lock', () =>
   assert.deepEqual(selectCells(inventory, ['packages/runtime-contracts/src/runtime-calls.ts']), all);
 });
 
+test('manifest edits select only callers of changed scripts unless a shared field changes', () => {
+  const before = {
+    devDependencies: { tsx: '1.0.0' },
+    scripts: {
+      'test:python-project-paths': 'pnpm run python-wrapper',
+      'python-wrapper': 'npm run python-leaf',
+      'python-leaf': 'node python-test.mjs',
+      'test:java-runtime': 'node java-test.mjs',
+    },
+  };
+  const after = structuredClone(before);
+  const selected = () => selectCells(inventory, ['package.json'], { before, after });
+
+  after.scripts['test:unrelated'] = 'node unrelated-test.mjs';
+  assert.deepEqual(selected(), []);
+  after.scripts['python-leaf'] += ' --strict';
+  assert.deepEqual(selected(), ['python-project-paths']);
+  after.devDependencies.tsx = '2.0.0';
+  assert.deepEqual(selected(), all);
+  assert.deepEqual(selectCells({ cells, noCell }, ['package.json'], { before, after }),
+    cells.map(({ id }) => id).sort());
+});
+
 test('claimed paths take precedence over noCell and unfamiliar files select the full inventory', () => {
   assert.deepEqual(selectCells(inventory, ['CHANGELOG.md', '.github/workflows/unclaimed.yml', '.gitignore']), []);
   assert.deepEqual(selectCells(inventory, ['.github/workflows/ci.yml', 'reports/required.json']), ['ci-workflow']);
   assert.deepEqual(selectCells(inventory, ['tests/fixtures/expectation.md']), all);
   assert.deepEqual(selectCells(inventory, ['new-directory/runner.mjs']), all);
   assert.deepEqual(selectCells({ cells, noCell }, [
-    'docs/gates.md', 'AGENTS.md', 'CONTRIBUTING.md', 'benchmarks/speed-baseline-021/run.mjs',
+    'docs/gates.md', 'AGENTS.md', 'CHANGELOG.md', 'CONTRIBUTING.md', 'benchmarks/speed-baseline-021/run.mjs',
     'reports/evidence.json', '.gitignore', '.github/workflows/unclaimed.yml', 'runtime-assets.lock.json',
   ]), []);
 });
