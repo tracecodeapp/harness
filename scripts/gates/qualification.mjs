@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } fro
 import { join, resolve } from 'node:path';
 import { sha256 } from './host-pins.mjs';
 import { git } from './inventory.mjs';
+import packedDriverPaths from './packed-driver-paths.json' with { type: 'json' };
 
 const installArgs = ['install', '--frozen-lockfile', '--prefer-offline'];
 
@@ -32,11 +33,7 @@ function runW(language, runner, gateHead, output, fixtureOnly) {
 function stageGate(gate, gateHead, output) {
   const root = join(output, 'driver');
   mkdirSync(root);
-  const support = gate === 'ga' ? ['tests/fixtures/cpp-natural-shapes.json'] : [
-    'packages/runtime-browser/src/trace-event-transport.ts',
-    'packages/runtime-contracts/src',
-  ];
-  const archive = execFileSync('git', ['archive', gateHead, 'tests/stage1-gates', ...support], {
+  const archive = execFileSync('git', ['archive', gateHead, ...packedDriverPaths[gate]], {
     maxBuffer: 16 * 1024 * 1024,
   });
   execFileSync('tar', ['-xf', '-', '-C', root], { input: archive });
