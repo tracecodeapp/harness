@@ -28,9 +28,9 @@ import {
   workerThrottle022,
 } from './phone-cgroup-022.mjs';
 
-const [mode, outArg] = process.argv.slice(2);
-assert.ok(['dryrun', 'selftest', 'hold'].includes(mode) && outArg,
-  'Usage: phone-throttle-probe-022.mjs dryrun|selftest|hold <new-out-dir>');
+const [mode, outArg, quotaArg] = process.argv.slice(2);
+assert.ok(['dryrun', 'selftest', 'hold', 'calibrate'].includes(mode) && outArg,
+  'Usage: phone-throttle-probe-022.mjs dryrun|selftest|hold <new-out-dir> | calibrate <new-out-dir> <quota-us,...>');
 const out = resolve(outArg);
 await mkdir(out);
 
@@ -151,10 +151,14 @@ const concurrentSource = (n) => `(async () => {
 
 // --- browsers: desktop (plain) and phone (capped) ---
 const desktop = await chromium.launch(launchOptions);
-const capped = await launchCapped022(chromium, { runId, workDir: out, launchOptions });
-assert.equal(capped.browser.version(), desktop.version(), 'Phone and desktop Chromium differ');
-const contexts = { desktop: await desktop.newContext(), cdp4: await desktop.newContext(),
-  phone: await capped.browser.newContext() };
+const contexts = { desktop: await desktop.newContext(), cdp4: await desktop.newContext() };
+let capped;
+async function launchPhone(quotaUs, suffix = '') {
+  capped = await launchCapped022(chromium, { runId: runId + suffix, workDir: out, launchOptions, quotaUs });
+  assert.equal(capped.browser.version(), desktop.version(), 'Phone and desktop Chromium differ');
+  contexts.phone = await capped.browser.newContext();
+}
+if (mode !== 'calibrate') await launchPhone(phoneCap022.quotaUs);
 const rateOf = { desktop: cdpRate022(1, false), cdp4: 4, phone: cdpRate022(factor, true) };
 const log = join(out, 'trials.jsonl');
 await writeFile(log, '');
@@ -265,6 +269,44 @@ if (mode === 'dryrun') {
   const probe = await trial('desktop', 'burst', burstN);
   burstN = Math.max(1, Math.round(burstN * BURST_MS / median(probe.burstMs)));
   calibration.push({ burstN, probeMedianMs: median(probe.burstMs) });
+}
+
+if (mode === 'calibrate') {
+  // The phone factor is the quota whose main-thread ratio matches CDP 4x, measured in the same block.
+  const quotas = (quotaArg ?? '').split(',').filter(Boolean).map(Number);
+  assert.ok(quotas.length > 0, 'Calibration needs at least one quota');
+  const sweep = [];
+  for (const quotaUs of quotas) {
+    await launchPhone(quotaUs, `-q${quotaUs}`);
+    const block = [];
+    for (let round = 0; round < 6; round++) {
+      const order = ['desktop', 'phone', 'cdp4'].map((_, i, all) => all[(i + round) % all.length]);
+      for (const profile of order) block.push(await trial(profile, 'A', n));
+      if (round < 3) for (const profile of order.filter((p) => p !== 'cdp4')) block.push(await trial(profile, 'B', n));
+    }
+    const at = (profile, arm) => median(block.filter((t) => t.profile === profile && t.arm === arm).map((t) => t.ms));
+    const row = { quotaUs, cpuMax: capped.receipt.cpuMax,
+      mainRatio: round3(at('phone', 'A') / at('desktop', 'A')), workerRatio: round3(at('phone', 'B') / at('desktop', 'B')),
+      cdp4MainRatio: round3(at('cdp4', 'A') / at('desktop', 'A')) };
+    row.mainVsCdp4 = round3(row.mainRatio / row.cdp4MainRatio);
+    row.removal = await capped.remove();
+    sweep.push(row);
+    console.log(JSON.stringify({ kind: 'calibration-quota', ...row, removal: row.removal.snapshotsIdentical }));
+  }
+  const browserVersion = desktop.version();
+  await desktop.close();
+  server.close();
+  const chosen = sweep.reduce((best, row) => Math.abs(row.mainVsCdp4 - 1) < Math.abs(best.mainVsCdp4 - 1) ? row : best);
+  const report = { lane: 'h022-p27f', mode, jobLogId: process.env.HEAVY_JOBLOG_ID ?? null, host: hostname(),
+    browser: browserVersion, n, calibration, sweep, chosen: chosen.quotaUs, noneAtStart,
+    noneAtEnd: assertNoLeftovers022('at end') };
+  await writeFile(join(out, 'calibration.json'), JSON.stringify(report, null, 2) + '\n');
+  const line = `P27-F calibration ${report.jobLogId}: ` + sweep.map((row) =>
+    `${row.cpuMax} main ${row.mainRatio}x / CDP-4 ${row.cdp4MainRatio}x (Worker ${row.workerRatio}x)`).join('; ') +
+    `; closest to CDP-4: ${chosen.cpuMax}`;
+  await writeFile(join(out, 'receipt.txt'), line + '\n');
+  console.log(line);
+  process.exit(0);
 }
 
 const aloneWindows = [];

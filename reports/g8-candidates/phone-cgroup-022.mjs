@@ -260,7 +260,11 @@ async function waitForScope(unit, timeoutMs = 30_000) {
 const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
 
 // Launches Chromium inside a new transient scope. `launchOptions` must be the desktop launch options.
-export async function launchCapped022(chromium, { runId, workDir, launchOptions }) {
+// `quotaUs` other than the registered value is only for the probe's calibration sweep.
+export async function launchCapped022(chromium, { runId, workDir, launchOptions, quotaUs = phoneCap022.quotaUs }) {
+  assert.ok(Number.isSafeInteger(quotaUs) && quotaUs >= 1000 && quotaUs <= phoneCap022.periodUs && quotaUs % 10 === 0,
+    'Quota must be a whole number of 10 us steps between 1 ms and the period');
+  const quotaPercent = quotaUs * 100 / phoneCap022.periodUs;
   const unit = unitName022(runId);
   const slice = phoneCap022.slice;
   const noneBefore = assertNoLeftovers022('before launch');
@@ -277,7 +281,7 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
     '#!/bin/sh',
     'exec env -u DBUS_SESSION_BUS_ADDRESS -u XDG_RUNTIME_DIR \\',
     `  systemd-run --quiet --scope --collect --slice=${slice} --unit=${shellQuote(unit)} \\`,
-    `  -p CPUQuota=${phoneCap022.cpuQuotaPercent}% -p CPUQuotaPeriodSec=${phoneCap022.periodUs / 1000}ms \\`,
+    `  -p CPUQuota=${quotaPercent}% -p CPUQuotaPeriodSec=${phoneCap022.periodUs / 1000}ms \\`,
     `  -- ${shellQuote(real)} "$@"`,
     '',
   ].join('\n'), { flag: 'wx' });
@@ -297,13 +301,13 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
     const cgroup = props.ControlGroup;
     assert.equal(cgroup, `/${slice}/${unit}`, 'Rig scope is not where the layout check expected it');
     const cpuMax = readTrim(join(cgroupRoot, cgroup, 'cpu.max'));
-    assert.equal(cpuMax, `${phoneCap022.quotaUs} ${phoneCap022.periodUs}`, 'Unexpected cpu.max');
+    assert.equal(cpuMax, `${quotaUs} ${phoneCap022.periodUs}`, 'Unexpected cpu.max');
     const atLaunch = await membership022(cgroup, chromiumDir);
     const during = snapshotPath022(slice);
     assert.deepEqual(during, before, 'A pre-existing cgroup changed when the scope was created');
     const receipt = {
-      mechanism: 'cgroup-v2 cpu.max via systemd-run --scope', workerThrottle: workerThrottle022,
-      factor: phoneCap022.factor, cpuQuotaPercent: phoneCap022.cpuQuotaPercent,
+      mechanism: 'cgroup-v2 cpu.max via systemd-run --scope', workerThrottle: `cgroup-cpu.max ${cpuMax}`,
+      factor: phoneCap022.factor, cpuQuotaPercent: quotaPercent,
       unit, slice, cgroup, cpuMax, chromium: real, wrapper, watchdogPid: guard.pid,
       noneBefore, snapshotBefore: before, membershipAtLaunch: atLaunch,
     };

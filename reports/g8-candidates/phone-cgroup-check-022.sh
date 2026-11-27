@@ -2,6 +2,8 @@
 # P27-F checks of the phone cgroup cap. Each operation is one ordinary heavy job, never a window.
 #   dryrun <new-out-dir>                    condition 4 with R4, R5 and R7: main thread, Worker,
 #                                           burst, concurrent and outside-loop ratios
+#   calibrate <new-out-dir> [<quota-us,...>]
+#                                           the main-thread ratio of each quota against CDP 4x
 #   killed <new-out-dir> [<session-022.sh> <0.21.0 tarball>]
 #                                           R6: kill -9 the launcher while a Worker spins in the
 #                                           scope; also shows that a live rig cgroup blocks a start
@@ -52,6 +54,12 @@ case "$operation" in
     [[ "$#" == 2 ]]
     mkdir "$out/tmp"
     TMPDIR="$out/tmp" SPEED_RIG_022_CGROUP_RUN="$run_id-dry" node "$probe" dryrun "$out/dryrun"
+    ;;
+  calibrate)
+    # The quota sweep behind phoneCap022.quotaUs, each quota in its own scope.
+    mkdir "$out/tmp"
+    TMPDIR="$out/tmp" SPEED_RIG_022_CGROUP_RUN="$run_id-cal" \
+      node "$probe" calibrate "$out/calibrate" "${3:-2500,2750,3000}"
     ;;
   killed)
     session_launcher="${3:-}"
