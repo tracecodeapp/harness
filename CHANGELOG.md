@@ -6,6 +6,42 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-11-27
+
+### Fixed
+
+- **JavaScript and TypeScript drawings have a byte budget.** A drawing now
+  stops recording at 32 MiB by default, counted exactly as the UTF-8 bytes of
+  each event's JSON, and at any single event over 256 KiB. Before,
+  these drawings had count limits only, and every event copies the whole call
+  stack, so a recursion missing its base case built a drawing of about 121 MB
+  in the learner's tab, and 1.94 GB under the backtracking limits.
+  - The cut keeps the prefix that fits and is a truncation, not a refusal: the
+    drawing is `truncated` with `byte-budget`, which the learner sees as
+    `trace-byte-limit`. No reason string is new.
+  - A Run's drawing stops at the cut, so a runaway recursion stops there.
+  - A direct traced execution (`executeWithTracing`, or a prepared `trace`
+    program on either the disposable-worker or the SES pool route) stops
+    recording at the cut, reports `traceTruncated: 'trace-byte-limit'`, and
+    lets the program run on to its own limits.
+  - Verdicts don't change: a Run's verdict comes from its plain run, and a
+    correct program's traced result keeps its output.
+  - A correct JavaScript or TypeScript drawing above 32 MiB is cut short.
+  - Drawings within the budget are byte-identical to 0.21.0.
+  - A direct caller's own `maxTraceBytes` still applies. The runtime profiles
+    still don't offer the control to Judge callers.
+- **C# drawings have a byte budget.** When the caller sets none, a C# drawing
+  now stops recording at 8 MiB instead of keeping every event. The runner
+  measures each event before keeping it, so the drawing is `truncated` with
+  `byte-budget` and keeps the prefix that fits. A correct C# drawing above
+  8 MiB is cut short. An unbounded C# recursion still ends in a stack overflow
+  and its drawing is refused; its bytes are bounded.
+
+### Internal
+
+- `pnpm pack` resolves workspace dev-dependency ranges before packing, so a
+  release tarball packs reproducibly.
+
 ## [0.21.0] - 2026-11-26
 
 ### Added

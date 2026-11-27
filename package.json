@@ -1,6 +1,6 @@
 {
   "name": "@tracecode/harness",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "license": "AGPL-3.0-only",
   "homepage": "https://tracecode.app",
   "repository": {
@@ -254,8 +254,8 @@
     "tsup": "^8.5.0",
     "tsx": "^4.21.0",
     "typescript": "^5.0.0",
-    "@tracecode/runtime-contracts": "workspace:^0.21.0",
-    "@tracecode/tracekernel": "workspace:^0.21.0"
+    "@tracecode/runtime-contracts": "workspace:^0.21.1",
+    "@tracecode/tracekernel": "workspace:^0.21.1"
   },
   "pnpm": {
     "overrides": {

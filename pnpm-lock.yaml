@@ -68,10 +68,10 @@ importers:
         version: 5.9.3
     devDependencies:
       '@tracecode/runtime-contracts':
-        specifier: workspace:^0.21.0
+        specifier: workspace:^0.21.1
         version: link:packages/runtime-contracts
       '@tracecode/tracekernel':
-        specifier: workspace:^0.21.0
+        specifier: workspace:^0.21.1
         version: link:packages/tracekernel
       '@types/node':
         specifier: ^20.0.0
