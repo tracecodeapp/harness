@@ -455,8 +455,16 @@ test('release tarball publish verifies the tested bytes, runs the guards, and ne
       },
     };
     const lock = JSON.stringify({ harness: { releaseId: 'fixture' } });
+    const checkoutLockPath = join(checkout, 'runtime-assets.lock.json');
     await writeFile(join(checkout, 'package.json'), JSON.stringify(manifest), 'utf8');
-    await writeFile(join(checkout, 'runtime-assets.lock.json'), lock, 'utf8');
+    await writeFile(join(checkout, 'tsconfig.base.json'), '{}\n', 'utf8');
+    await symlink(join(ROOT, 'node_modules'), join(checkout, 'node_modules'), 'junction');
+    await mkdir(join(checkout, 'scripts'));
+    await writeFile(
+      join(checkout, 'scripts', 'generate-runtime-assets-lock.mjs'),
+      `if (process.argv[2] !== '--stdout') process.exit(1);\nprocess.stdout.write(${JSON.stringify(lock)});\n`,
+      'utf8'
+    );
 
     const pack = async (name: string, tarballManifest: object, tarballLock: string) => {
       const staging = join(fixture, `${name}-staging`);
@@ -499,6 +507,15 @@ test('release tarball publish verifies the tested bytes, runs the guards, and ne
       attempt(otherLock, { dryRun: true }),
       /runtime-assets\.lock\.json differs/u
     );
+    // A stale checkout lock must fail even when the tarball has the expected lock.
+    await writeFile(checkoutLockPath, `${lock}\n`, 'utf8');
+    await assert.rejects(
+      attempt(good, { dryRun: true }),
+      /checkout's runtime-assets\.lock\.json is stale/u
+    );
+    await rm(checkoutLockPath);
+    assert.equal((await attempt(good, { dryRun: true })).published, false);
+    await writeFile(checkoutLockPath, lock, 'utf8');
     // A non-interactive publish is refused after the guards, before npm runs.
     await assert.rejects(
       attempt(good),

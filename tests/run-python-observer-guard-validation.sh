@@ -12,8 +12,8 @@
 # 1. lock: `pnpm build` regenerates runtime-assets.lock.json; the new lock may
 #    change only the Python component's python-runtime.js entry and the
 #    aggregates that sum over it. Every other component is compared byte for
-#    byte with the committed lock. The lock is copied to <out-dir> to be
-#    committed as the branch's last commit; the tests below run on that tree.
+#    byte with a lock rendered before the build. The built lock is copied to
+#    <out-dir> for evidence.
 # 2. browser-worker: pnpm test:python-browser-worker.
 # 3. installed: tests/run-python-ordinary-installed.sh (packs the built tree,
 #    serves the unpacked package to Chromium).
@@ -64,11 +64,15 @@ run_step() {
   (( status == 0 )) || failed=1
 }
 
+render_baseline_lock() {
+  node --import tsx scripts/generate-runtime-assets-lock.mjs --stdout > "$out/base-lock.json"
+}
+
 check_lock() {
-  git show HEAD:runtime-assets.lock.json > "$out/base-lock.json" || return 1
   git status --porcelain > "$out/status-after-build.txt"
-  if grep -v ' runtime-assets.lock.json$' "$out/status-after-build.txt"; then
-    echo 'The build changed files other than the lock.'
+  if [[ -s "$out/status-after-build.txt" ]]; then
+    cat "$out/status-after-build.txt"
+    echo 'The build changed the worktree.'
     return 1
   fi
   node - "$out/base-lock.json" runtime-assets.lock.json <<'EOF'
@@ -115,6 +119,7 @@ EOF
 }
 
 run_step install pnpm install --frozen-lockfile
+run_step baseline-lock render_baseline_lock
 run_step build pnpm build
 run_step lock check_lock
 run_step lock-tests pnpm test:runtime-assets-lock

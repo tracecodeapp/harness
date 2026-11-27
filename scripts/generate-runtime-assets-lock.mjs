@@ -137,15 +137,6 @@ async function readJson(pathname) {
   return JSON.parse(await readFile(pathname, 'utf8'));
 }
 
-async function readExistingLock() {
-  try {
-    return await readJson(LOCK_PATH);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return undefined;
-    throw error;
-  }
-}
-
 async function buildPackagedComponents() {
   const files = await collectFiles(join(ROOT, 'workers'), 'workers/');
   const grouped = new Map();
@@ -556,36 +547,42 @@ async function buildLock() {
   };
 }
 
-async function assertCurrent(pathname, expected, label) {
+async function assertCurrent(pathname, expected, label, { optional = false } = {}) {
   let actual;
   try {
-    actual = await readFile(pathname, 'utf8');
+    actual = await readFile(pathname);
   } catch (error) {
-    if (error?.code === 'ENOENT') actual = '';
-    else throw error;
+    if (error?.code !== 'ENOENT') throw error;
+    if (optional) return false;
   }
-  if (actual !== expected) {
+  if (!actual?.equals(Buffer.from(expected))) {
     throw new Error(
       `${label} is stale: ${portablePath(relative(ROOT, pathname))}. ` +
         'Run: pnpm generate:runtime-assets-lock'
     );
   }
+  return true;
 }
 
 async function main() {
-  const check = process.argv.slice(2).includes('--check');
-  const unknown = process.argv.slice(2).filter((argument) => argument !== '--check');
-  if (unknown.length > 0) {
-    throw new Error('Usage: node scripts/generate-runtime-assets-lock.mjs [--check]');
+  const args = process.argv.slice(2);
+  const [mode] = args;
+  if (args.length > 1 || (mode !== undefined && mode !== '--check' && mode !== '--stdout')) {
+    throw new Error('Usage: node --import tsx scripts/generate-runtime-assets-lock.mjs [--check | --stdout]');
   }
   const output = await buildLock();
-  if (check) {
-    await assertCurrent(LOCK_PATH, output.rendered, 'Runtime asset lock');
+  if (mode === '--stdout') {
+    process.stdout.write(output.rendered);
+    return;
+  }
+  if (mode === '--check') {
     await assertCurrent(PYTHON_GENERATED_PATH, output.pythonGenerated, 'Python runtime metadata');
     await assertCurrent(TRACECC_GENERATED_PATH, output.traceccGenerated, 'TraceCC runtime metadata');
     await assertCurrent(TRACEJVM_GENERATED_PATH, output.tracejvmGenerated, 'TraceJVM runtime metadata');
+    const hasLock = await assertCurrent(LOCK_PATH, output.rendered, 'Runtime asset lock', { optional: true });
+    const suffix = hasLock ? '' : ' (generated in memory; no lock file)';
     console.log(
-      `PASS: ${output.lock.harness.releaseId} locks ${output.lock.totalPackagedRuntimeBytes} packaged runtime bytes.`
+      `PASS: ${output.lock.harness.releaseId} locks ${output.lock.totalPackagedRuntimeBytes} packaged runtime bytes${suffix}.`
     );
     return;
   }

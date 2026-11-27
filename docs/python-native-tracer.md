@@ -49,7 +49,7 @@ After replacing the wheel:
 
 1. update the wheel path and SHA-256 in the native manifest;
 2. sync the language-package worker assets;
-3. regenerate `runtime-assets.lock.json`; and
+3. run `pnpm generate:runtime-assets-lock` (it rewrites the tracked `*.generated.ts` modules); and
 4. run the Python runtime, prepared-provider, browser-worker, asset-sync, and
    runtime-asset-lock gates.
 

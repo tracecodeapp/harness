@@ -9,6 +9,9 @@ obj
 reports
 tests/conformance/generated/
 
+# `pnpm build` generates the runtime asset lock, and package.json `files` ships it.
+/runtime-assets.lock.json
+
 # Canonical C# general/compiler/runner ZIPs are tracked under csharp-role-artifacts.
 # These verified trees are recreated by `pnpm materialize:csharp-role-assets`.
 /workers/vendor/csharp/

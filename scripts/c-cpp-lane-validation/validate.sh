@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # C-CPP lane: the whole remaining validation as one job on agentrunner.
 #
-#   1. regenerate both runtime asset locks (scope 1 head, then the provisional
-#      judged-output cap restacked on it) as deterministic commits;
+#   1. generate and verify both runtime asset locks (scope 1 head, then the
+#      provisional judged-output cap restacked on it);
 #   2. the C++ browser suites, with the natural-shape proof set and the A' tests,
 #      and the natural shapes on the five Judge paths (pass here, documented
 #      failure on 571139f0);
@@ -38,7 +38,7 @@ base_subject=9b30ad9bc203ad2ba2f159d96dfaef62940262c7
 base_pin=/root/ci/coord-artifacts/feat-b7-cpp-9b30ad9bc203.tgz
 base_pin_sha=562612f2b8e9240181890a0d2a3493277d725dcc9d68546fcca40e664a5300b6
 registry=/root/ci/coord-artifacts
-# Lock commits are deterministic, so the same commit can be rebuilt off the host.
+# The restacked cap commit is deterministic so it can be rebuilt off the host.
 commit_date=${C_CPP_COMMIT_DATE:-2026-11-24T13:00:00Z}
 author_name=$(git log -1 --format=%an)
 author_email=$(git log -1 --format=%ae)
@@ -66,12 +66,6 @@ step() {
 sampler=$!
 trap 'kill "$sampler" 2>/dev/null' EXIT
 
-deterministic_commit() {
-  GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" GIT_AUTHOR_DATE="$commit_date" \
-  GIT_COMMITTER_NAME="$author_name" GIT_COMMITTER_EMAIL="$author_email" GIT_COMMITTER_DATE="$commit_date" \
-    git -C "$1" commit -q -m "$2"
-}
-
 preflight() {
   set -e
   [ -z "$(git status --porcelain --untracked-files=no)" ]
@@ -88,10 +82,7 @@ lock_scope1() {
   set -e
   corepack pnpm install --frozen-lockfile --prefer-offline
   corepack pnpm generate:runtime-assets-lock
-  git add runtime-assets.lock.json
-  deterministic_commit "$root" "chore: regenerate the runtime asset lock for the C++ review fixes and A'
-
-Generated on agentrunner by scripts/c-cpp-lane-validation/validate.sh."
+  corepack pnpm test:runtime-assets-lock
   git rev-parse HEAD | tee "$out/lock-scope1.sha"
   cp runtime-assets.lock.json "$out/evidence/runtime-assets.lock.scope1.json"
   git push -q origin "HEAD:refs/heads/job-c-cpp-validate-scope1"
@@ -105,10 +96,7 @@ lock_cap() {
     git cherry-pick "${cap_commits[@]}"
   corepack pnpm install --frozen-lockfile --prefer-offline
   corepack pnpm generate:runtime-assets-lock
-  git add runtime-assets.lock.json
-  deterministic_commit "$out/cap" "chore: regenerate the runtime asset lock for the provisional judged-output cap
-
-Generated on agentrunner by scripts/c-cpp-lane-validation/validate.sh."
+  corepack pnpm test:runtime-assets-lock
   git rev-parse HEAD | tee "$out/lock-cap.sha"
   cp runtime-assets.lock.json "$out/evidence/runtime-assets.lock.cap.json"
   git push -q origin "HEAD:refs/heads/job-c-cpp-validate-cap"
@@ -197,7 +185,7 @@ step preflight preflight || { cat "$out/steps.txt"; exit 2; }
 step lock-scope1 lock_scope1 || { cat "$out/steps.txt"; exit 3; }
 step lock-cap lock_cap
 
-# Scope-1 suites at the scope-1 lock commit.
+# Scope-1 suites at the scope-1 commit.
 step rewriter tsx tests/test-cpp-rewriter.ts
 step typecheck-root corepack pnpm exec tsc -p tsconfig.root.json --noEmit
 step value-type-browser tsx tests/test-cpp-value-type-arguments-browser.ts
@@ -210,7 +198,7 @@ step cpp-prepared-lifecycle corepack pnpm run test:cpp-prepared-lifecycle
 step natural-shapes-judge env TRACECODE_NATURAL_SHAPES_REPORT="$out/evidence/natural-shapes-lane.json" \
   corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-natural-shapes-judge-browser.ts
 step natural-shapes-judge-571139f0 natural_shapes_baseline
-# The provisional cap at its own lock commit.
+# The provisional cap at its restacked commit.
 if [ -f "$out/lock-cap.sha" ]; then
   step cap-judged-output-browser bash -c "cd '$out/cap' && corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-judged-output-limit-browser.ts"
   step cap-rewriter bash -c "cd '$out/cap' && corepack pnpm exec tsx --tsconfig tsconfig.base.json tests/test-cpp-rewriter.ts"
