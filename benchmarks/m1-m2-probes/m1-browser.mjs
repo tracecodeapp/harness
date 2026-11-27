@@ -46,7 +46,8 @@ export function openM1(language) {
       }));
       for (const arm of [first, first === 'batch' ? 'singleton' : 'batch']) {
         const inputs = fixture.cases.map((entry) => structuredClone(entry.input));
-        const limits = language === 'java' ? { wallClockMs: 60_000 } : undefined;
+        const limits = language === 'java'
+          ? { wallClockMs: 60_000, ...fixture.limits } : fixture.limits;
         transport.length = 0;
         observe = traceTransport;
         const started = sample ? performance.now() : undefined;
@@ -59,9 +60,10 @@ export function openM1(language) {
             for (const input of inputs) outputs.push(await program.executeIsolated({ inputs: input, limits }));
           }
           const verdicts = makeVerdicts(outputs);
+          const elapsedMs = sample ? performance.now() - started : undefined;
           rows[arm] = {
             verdicts, passed: verdicts.length === inputs.length && verdicts.every((row) => row.passed),
-            ...(sample && { elapsedMs: performance.now() - started }),
+            ...(sample && { elapsedMs }),
           };
         } catch (error) {
           rows[arm] = { passed: false, error: error.name, message: error.message };
@@ -77,7 +79,10 @@ export function openM1(language) {
       };
     },
     async prime() {
-      return (await program.executeIsolated({ inputs: structuredClone(fixture.cases[0].input) })).kind;
+      return (await program.executeIsolated({
+        inputs: structuredClone(fixture.cases[0].input),
+        limits: fixture.limits,
+      })).kind;
     },
   };
 }

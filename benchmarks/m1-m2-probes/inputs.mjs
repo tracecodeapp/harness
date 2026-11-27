@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const appCommit = 'e4eca52506e838dacdef28078c39f012a5825cd7';
 export const catalog = '/root/ci/corpus-catalog-ff-all/problems';
@@ -93,13 +94,15 @@ export async function loadHeavyFixtures(path, expectedSha256) {
   assert.match(expectedSha256, /^[0-9a-f]{64}$/);
   const bytes = await readFile(path);
   assert.equal(sha256(bytes), expectedSha256, 'P0-C heavy fixture manifest');
-  const fixtures = JSON.parse(bytes);
+  const { heavyFixture022 } = await import(pathToFileURL(path).href);
+  const fixtures = {};
   for (const language of languages) {
-    const { code, functionName, cases } = fixtures[language];
+    const { code, functionName, cases, ...options } = await heavyFixture022(language);
     assert.equal(typeof code, 'string');
     assert.equal(typeof functionName, 'string');
     assert.equal(cases.length, 1, language);
     assert.ok(cases[0].id && cases[0].input && Object.hasOwn(cases[0], 'expected'), language);
+    fixtures[language] = { ...options, code, functionName, cases };
   }
   return fixtures;
 }

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -10,11 +10,14 @@ import {
   mutationCanary, releases, sha256, tracemallocWitness,
 } from './inputs.mjs';
 import { packedM1Probe } from './packed-probe.mjs';
+import { collectWindow, openSession, validateWindow } from './window.mjs';
 
-const [mode, output, heavyPath, heavySha256] = process.argv.slice(2);
-assert.ok(['m1-dry', 'm2-dry', 'dry'].includes(mode) && output,
-  'probe.mjs dry|m1-dry|m2-dry OUTPUT [HEAVY_FIXTURES SHA256]');
-assert.ok(process.env.HEAVY_JOBLOG_ID, 'Run this dry run through the job logger');
+const [mode, output, configPath] = process.argv.slice(2);
+assert.ok(['m1-dry', 'm2-dry', 'dry', 'prepare', 'window'].includes(mode) && output,
+  'probe.mjs dry|m1-dry|m2-dry|prepare|window OUTPUT [CONFIG_JSON]');
+if (mode !== 'window') assert.ok(process.env.HEAVY_JOBLOG_ID, 'Run through the job logger');
+const probeCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+const config = configPath ? JSON.parse(await readFile(configPath, 'utf8')) : {};
 const out = resolve(output);
 const requireRig = createRequire('/root/ci/g8-candidates.qHpuBwkE/package.json');
 const { chromium } = requireRig('playwright');
@@ -59,7 +62,7 @@ function command(cmd, args, cwd) {
 async function stage(version, languages, m1 = false) {
   const pin = releases[version];
   assert.equal(sha256(await readFile(pin.archive)), pin.sha256, version);
-  const root = join(out, 'v' + version);
+  const root = join(out, (m1 ? 'm1-v' : 'v') + version);
   const packageRoot = join(root, 'package');
   const site = join(root, 'site');
   await mkdir(site, { recursive: true });
@@ -106,10 +109,10 @@ async function stage(version, languages, m1 = false) {
     ...(m1 && { plugins: [packedM1Probe()] }),
   });
   await writeFile(join(site, 'index.html'), '<!doctype html><meta charset="utf-8">');
-  return serve(site);
+  return site;
 }
 
-async function dryM2(browser, heavy) {
+async function dryM2(browser, heavy, sites) {
   const fixtures = await loadM2Catalog();
   for (const { provenance } of fixtures) console.log(JSON.stringify(provenance));
   const jobs = [
@@ -119,19 +122,11 @@ async function dryM2(browser, heavy) {
   ];
   let complete = true;
   for (const version of ['0.17.1', '0.20.1', '0.21.0']) {
-    const { server, url } = await stage(version, 'python');
+    const { server, url } = await serve(sites[version]);
     try {
       for (const [profile, rate] of [['desktop', 1], ['phone', 4]]) {
-        const context = await browser.newContext();
+        const { context, page } = await openSession(browser, url, rate, 'm2');
         try {
-          const page = await context.newPage();
-          const cdp = await context.newCDPSession(page);
-          await cdp.send('Emulation.setCPUThrottlingRate', { rate });
-          await page.goto(url);
-          await page.evaluate(async () => {
-            const { openJudge } = await import('/entry.mjs');
-            globalThis.probeJudge = await openJudge();
-          });
           for (const { fixture, problem, id } of jobs) {
             const result = await page.evaluate((fixture) => globalThis.probeJudge.run(fixture, false), fixture);
             console.log(JSON.stringify({ version, profile, problem, id, ...result }));
@@ -148,24 +143,22 @@ async function dryM2(browser, heavy) {
   return complete;
 }
 
-async function dryM1(browser, heavy) {
-  const { server, url } = await stage('0.21.0', 'python,javascript,java,cpp,csharp', true);
-  let complete = true;
+async function dryM1(browser, heavy, site) {
+  const { server, url } = await serve(site);
+  const passed = Object.fromEntries(languages.map((language) => [language, false]));
   try {
     for (const language of languages) {
-      const context = await browser.newContext();
+      let context;
       try {
-        const page = await context.newPage();
-        await page.goto(url);
-        await page.evaluate(async (language) => {
-          const { openM1 } = await import('/entry.mjs');
-          globalThis.probeM1 = openM1(language);
-        }, language);
+        const session = await openSession(browser, url, 1, 'm1', language);
+        context = session.context;
+        const { page } = session;
         const jobs = [
           ['canary', mutationCanary(language)],
           ['binary-search', await loadBinarySearch(language, 10)],
           ...(heavy ? [['p0c-heavy', heavy[language]]] : []),
         ];
+        let allPassed = true;
         for (const [kind, fixture] of jobs) {
           try {
             const preparation = await page.evaluate((fixture) => globalThis.probeM1.prepare(fixture), fixture);
@@ -174,33 +167,67 @@ async function dryM1(browser, heavy) {
             const pair = prime === 'completed' &&
               await page.evaluate(() => globalThis.probeM1.pair('batch', false, true));
             console.log(JSON.stringify({ probe: 'm1', language, kind, preparation, prime, pair }));
-            complete &&= Boolean(pair?.pass);
+            allPassed &&= Boolean(pair?.pass);
           } catch (error) {
-            complete = false;
+            allPassed = false;
             console.log(JSON.stringify({ probe: 'm1', language, kind, error: error.name, message: error.message }));
           }
         }
+        passed[language] = allPassed;
+      } catch (error) {
+        console.log(JSON.stringify({ probe: 'm1', language, error: error.name, message: error.message }));
       } finally {
-        await context.close();
+        await context?.close();
       }
     }
   } finally {
     server.close();
   }
-  return complete;
+  return passed;
 }
 
-const heavy = heavyPath ? await loadHeavyFixtures(heavyPath, heavySha256) : undefined;
+const heavy = config.heavyPlan ? await loadHeavyFixtures(config.heavyPlan, config.heavySha256) : undefined;
+const stageMarker = join(out, 'stage.json');
+if (mode !== 'window') {
+  assert.ok((await stat(out).catch(() => null)) === null, 'Use a fresh output directory');
+  const sites = {};
+  if (mode !== 'm2-dry') sites.m1 = await stage('0.21.0', 'python,javascript,java,cpp,csharp', true);
+  if (mode !== 'm1-dry') {
+    for (const version of Object.keys(releases)) sites[version] = await stage(version, 'python');
+  }
+  await writeFile(stageMarker, JSON.stringify({ probeCommit, sites }) + '\n', { flag: 'wx' });
+}
+if (mode === 'prepare') process.exit(0);
+const { sites, probeCommit: stagedCommit } = JSON.parse(await readFile(stageMarker, 'utf8'));
+assert.equal(stagedCommit, probeCommit, 'Use assets staged by this probe commit');
+const registered = mode === 'window' ? await validateWindow(config, probeCommit) : undefined;
+if (registered) assert.ok(heavy, 'Supply the registered P0-C heavy cases');
 const browser = await chromium.launch({ channel: 'chromium', headless: true });
 let complete = true;
 try {
   console.log(JSON.stringify({
     job: process.env.HEAVY_JOBLOG_ID, browser: browser.version(), appCommit,
     tarballs: Object.fromEntries(Object.entries(releases).map(([version, { sha256 }]) => [version, sha256])),
-    heavySha256: heavy ? heavySha256 : null,
+    heavySha256: heavy ? config.heavySha256 : null,
   }));
-  if (mode !== 'm2-dry') complete = await dryM1(browser, heavy);
-  if (mode !== 'm1-dry') complete = (await dryM2(browser, heavy)) && complete;
+  if (mode === 'window') {
+    const servers = {};
+    try {
+      for (const [key, path] of Object.entries(sites)) servers[key] = await serve(path);
+      await collectWindow(browser, Object.fromEntries(Object.entries(servers).map(([key, { url }]) => [key, url])),
+        out, heavy, registered);
+    } finally {
+      for (const { server } of Object.values(servers)) server.close();
+    }
+  } else {
+    const m1 = mode === 'm2-dry' ? null : await dryM1(browser, heavy, sites.m1);
+    const m2Pass = mode === 'm1-dry' ? null : await dryM2(browser, heavy, sites);
+    await writeFile(join(out, 'dry-receipt.json'), JSON.stringify({
+      job: process.env.HEAVY_JOBLOG_ID, browser: browser.version(), probeCommit,
+      rigCommit: config.rigCommit ?? null, heavySha256: heavy ? config.heavySha256 : null, m1, m2Pass,
+    }) + '\n');
+    complete = m2Pass !== false && (!m1 || Object.values(m1).every(Boolean));
+  }
 } finally {
   await browser.close();
 }
