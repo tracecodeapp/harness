@@ -19,8 +19,9 @@ HEAVY_JOB_LANE=h022-p0c nice -n 10 ionice -c3 /root/ci/bin/heavy bash "$checkout
 
 The self-test runs each matrix group once on the published package, exercises
 the scorer CLIs with generated data, and records the six desktop calibration
-times in the job log output. It writes `selftest-pass.json` after those checks
-pass. Keep it with the job log and run it again after changing the rig commit.
+times in the job log output and `selftest-pass.json`. The receipt lists times
+outside 1–3 seconds in `calibrationOutsideBand` as warnings. Keep the receipt
+with the job log and run the self-test again after changing the rig commit.
 
 The launch cwd replay deletes only the `cd "$stage"` line immediately after
 `export SPEED_G8_RUNNER_COMMIT`. The C# and A/A replays are full reverts of

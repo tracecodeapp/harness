@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { metricEndpoints } from './aa-score-lib.mjs';
 import { historicalPackageSha256 } from './java-runner/version-preparation.mjs';
 import { phoneWarmAaPlan, phoneWarmAaRoundOrder, phoneWarmAaVersions } from './phone-warm-aa.mjs';
-import { production022, windowPlan022 } from './plan-022.mjs';
+import { heavyCases022, production022, windowPlan022 } from './plan-022.mjs';
 import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
 
 const [root, rigCommit, launcher, tarball] = process.argv.slice(2);
@@ -130,24 +130,42 @@ const failedAaReference = JSON.parse(runScorer('./score-022.mjs', [reference, pa
 assert.ok(failedAaReference.groups[0].cells.every(({ result }) => result === 'controlInvalid'));
 console.log('Seeded scorer outcomes passed: formal pass, formal fail, controlInvalid, A/A pass, A/A fail, partial, merge');
 
+const casesNearBand = { javascript: 3000, typescript: 999, java: 1000, cpp: 3069 };
+const calibration = Object.keys(heavyCases022).map((language) =>
+  ({ language, judgeMs: casesNearBand[language] ?? 2000 }));
+const calibrationFile = join(root, 'seeded-calibration.json');
+const warningReceipt = join(root, 'seeded-warning-receipt.json');
+await json(calibrationFile, calibration);
+execFileSync(process.execPath, [fileURLToPath(new URL('./selftest-receipt-022.mjs', import.meta.url)),
+  'record', warningReceipt, rigCommit, controlSha256, calibrationFile]);
+const warned = JSON.parse(await readFile(warningReceipt, 'utf8'));
+assert.equal(warned.pass, true);
+assert.deepEqual(warned.calibration, calibration);
+assert.deepEqual(warned.calibrationOutsideBand, [
+  { language: 'typescript', judgeMs: 999 },
+  { language: 'cpp', judgeMs: 3069 },
+]);
+
 if (launcher && tarball) {
   const receipt = join(root, 'seeded-selftest-receipt.json');
-  function rejectWindow(archive, message) {
+  function checkWindow(archive, message, receiptFile = receipt) {
     // A nonexistent candidate also prevents a lock request if the gate regresses.
     const result = spawnSync('bash', [launcher, 'window', join(root, 'blocked-window'), archive,
-      receipt, join(root, 'no-candidate.tgz'), 'a'.repeat(64), reference, '1'], { encoding: 'utf8' });
+      receiptFile, join(root, 'no-candidate.tgz'), 'a'.repeat(64), reference, '1'], { encoding: 'utf8' });
     if (result.error) throw result.error;
     assert.ok(result.status > 0);
     assert.match(result.stderr, message);
   }
-  rejectWindow(tarball, /ENOENT.*seeded-selftest-receipt/u);
+  checkWindow(tarball, /ENOENT.*seeded-selftest-receipt/u);
   const passReceipt = { schema: 'tracecode.speed-022.selftest.v1', pass: true,
     rigCommit, tarballSha256: controlSha256 };
   await json(receipt, { ...passReceipt, rigCommit: rigCommit.replace(/^./u, (first) => first === '0' ? '1' : '0') });
-  rejectWindow(tarball, /Self-test pass must match the rig commit/u);
+  checkWindow(tarball, /Self-test pass must match the rig commit/u);
   await json(receipt, { ...passReceipt, tarballSha256: '0'.repeat(64) });
-  rejectWindow(tarball, /Self-test pass must match the rig commit/u);
+  checkWindow(tarball, /Self-test pass must match the rig commit/u);
   await json(receipt, passReceipt);
-  rejectWindow(reference, /Published 0.21.0 tarball digest differs/u);
+  checkWindow(reference, /Published 0.21.0 tarball digest differs/u);
   console.log('Window gate rejected missing and stale receipts, and an unpinned tarball');
+  checkWindow(tarball, /sha256sum: .*no-candidate\.tgz: No such file/u, warningReceipt);
+  console.log('Window gate accepted a matching receipt with calibration warnings');
 }

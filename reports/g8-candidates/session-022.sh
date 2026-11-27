@@ -60,7 +60,7 @@ fi
 node "$stage/stage.mjs" "$production" "$production_sha" none "$out/vproduction"
 if [[ "$operation" == selftest ]]; then
   SPEED_RIG_022_OPERATION=selftest node "$stage/java-runner/run-g8.mjs" "$out" smoke desktop-a 212026 "$minutes"
-  node "$stage/selftest-receipt-022.mjs" record "$out/selftest-pass.json" "$rig_commit" "$production_sha"
+  node "$stage/selftest-receipt-022.mjs" record "$out/selftest-pass.json" "$rig_commit" "$production_sha" "$out/calibration.json"
   node "$stage/selftest-receipt-022.mjs" require "$out/selftest-pass.json" "$rig_commit" "$production_sha"
 else
   node "$stage/stage.mjs" "$candidate" "$candidate_sha" none "$out/vcandidate"

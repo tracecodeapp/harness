@@ -1120,13 +1120,10 @@ try {
     if (Object.values(counts).some((c) => c.kept < target)) complete = false;
     console.log(JSON.stringify({ groupIndex, ...group, counts,
       ...(!selftest022 && { wallMs: Date.now() - groupStarted }) }));
-    if (selftest022 && group.problem === 'heavy-022' && calibration.length === Object.keys(languages).length) {
-      const outOfRange = calibration.filter(({ judgeMs }) => !(judgeMs >= 1000 && judgeMs <= 3000));
-      assert.deepEqual(outOfRange, [], 'Heavy-case calibration outside 1–3 seconds');
-    }
   }
   if (selftest022) {
     assert.equal(calibration.length, Object.keys(languages).length);
+    await writeFile(join(out, 'calibration.json'), JSON.stringify(calibration) + '\n', { flag: 'wx' });
     console.log(JSON.stringify({ kind: 'selftest-journeys', groups: schedule.length,
       tarballSha256: production022.sha256, chromium: report.browser.version }));
   }

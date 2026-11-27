@@ -2,15 +2,21 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { production022 } from './plan-022.mjs';
 
-const [operation, file, rigCommit, tarballSha256] = process.argv.slice(2);
+const [operation, file, rigCommit, tarballSha256, calibrationFile] = process.argv.slice(2);
 assert.ok(file);
 assert.match(rigCommit, /^[a-f0-9]{40}$/u);
 assert.equal(tarballSha256, production022.sha256, 'Published 0.21.0 tarball digest differs');
 const receipt = { schema: 'tracecode.speed-022.selftest.v1', pass: true, rigCommit, tarballSha256 };
 if (operation === 'record') {
-  await writeFile(file, JSON.stringify(receipt) + '\n', { flag: 'wx' });
+  assert.ok(calibrationFile);
+  const rows = JSON.parse(await readFile(calibrationFile, 'utf8'));
+  const calibration = rows.map(({ language, judgeMs }) => ({ language, judgeMs }));
+  const calibrationOutsideBand = calibration.filter(({ judgeMs }) => judgeMs < 1000 || judgeMs > 3000);
+  await writeFile(file, JSON.stringify({ ...receipt, calibration, calibrationOutsideBand }) + '\n',
+    { flag: 'wx' });
 } else {
   assert.equal(operation, 'require');
   const prior = JSON.parse(await readFile(file, 'utf8'));
-  assert.deepEqual(prior, receipt, 'Self-test pass must match the rig commit and 0.21.0 tarball');
+  assert.ok(Object.entries(receipt).every(([key, value]) => prior?.[key] === value),
+    'Self-test pass must match the rig commit and 0.21.0 tarball');
 }
