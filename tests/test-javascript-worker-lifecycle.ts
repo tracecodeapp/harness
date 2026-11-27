@@ -76,7 +76,10 @@ class VmJavaScriptWorker {
   private readonly workerSelf: WorkerSelf;
   private readonly context: vm.Context;
 
-  constructor(readonly url: string | URL) {
+  constructor(
+    readonly url: string | URL,
+    receive?: (message: ProtocolMessage, deliver: () => void) => void,
+  ) {
     const parsedUrl = new URL(String(url), 'https://harness.test/');
     this.role = parsedUrl.searchParams.get('tracecodeRole') ?? 'legacy';
     VmJavaScriptWorker.instances.push(this);
@@ -84,12 +87,13 @@ class VmJavaScriptWorker {
     this.workerSelf = {
       location: { search: parsedUrl.search },
       postMessage: (message) => {
-        queueMicrotask(() => {
+        const deliver = () => {
           if (!this.terminated) {
             const data = VmJavaScriptWorker.cloneReplies ? structuredClone(message) : message;
             this.onmessage?.({ data } as MessageEvent<ProtocolMessage>);
           }
-        });
+        };
+        queueMicrotask(() => receive ? receive(message, deliver) : deliver());
       },
       onmessage: null,
     };
@@ -162,6 +166,173 @@ class VmJavaScriptWorker {
       )
     );
   }
+}
+
+function preparationBarrier() {
+  const held = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const posted: { type: string; functionName?: string; maxTraceBytes?: number }[] = [];
+  const coordinators: VmJavaScriptWorker[] = [];
+  let heldId: string | undefined;
+  const workerFactory = (url: string | URL) => {
+    if (new URL(String(url), 'https://harness.test').searchParams.get('tracecodeRole') !== 'coordinator') {
+      return new VmJavaScriptWorker(url);
+    }
+    const worker = new VmJavaScriptWorker(url, (message, deliver) => {
+      if (message.id !== undefined && message.id === heldId) {
+        held.resolve();
+        void resume.promise.then(deliver);
+      } else {
+        deliver();
+      }
+    });
+    coordinators.push(worker);
+    const post = worker.postMessage.bind(worker);
+    worker.postMessage = (message) => {
+      const payload = message.payload as {
+        request?: { functionName?: string };
+        functionName?: string;
+        options?: { maxTraceBytes?: number };
+      } | undefined;
+      if (message.type === 'prepare-observation' && heldId === undefined) heldId = message.id;
+      if (message.type === 'prepare-execution' || message.type === 'prepare-observation') {
+        posted.push({
+          type: message.type,
+          functionName: payload?.request?.functionName ?? payload?.functionName,
+          maxTraceBytes: payload?.options?.maxTraceBytes,
+        });
+      }
+      post(message);
+    };
+    return worker;
+  };
+  return { posted, coordinators, workerFactory, held: held.promise, resume: resume.resolve };
+}
+
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+for (const language of ['javascript', 'typescript'] as const) {
+  const descriptor = (name: string) => ({
+    functionName: name,
+    code: language === 'typescript'
+      ? `function ${name}(n: number): number { return n + 1; }`
+      : `function ${name}(n) { return n + 1; }`,
+  });
+
+  test(`${language} coordinator barrier gives ordinary preparation priority and drops a cancelled queued observer`, async () => {
+    const barrier = preparationBarrier();
+    const client = new JavaScriptWorkerClient({ workerUrl: '/worker.js', workerFactory: barrier.workerFactory });
+    try {
+      const a = { mode: 'code' as const, ...descriptor('solveA') };
+      const b = { mode: 'code' as const, ...descriptor('solveB') };
+      assert.equal((await client.prepareProgram(a, language)).kind, 'prepared');
+      const running = client.prepareObservation(a, { maxTraceBytes: 100 });
+      await barrier.held;
+      const queued = client.prepareObservation(a, { maxTraceBytes: 200 });
+      void queued.catch(() => undefined);
+      const controller = new AbortController();
+      const cancelled = client.prepareObservation(a, { maxTraceBytes: 300 }, controller.signal);
+      void cancelled.catch(() => undefined);
+      await nextTurn();
+      const ordinary = client.prepareProgram(b, language);
+      void ordinary.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ maxTraceBytes }) => maxTraceBytes), [100]);
+      controller.abort();
+      await assert.rejects(cancelled, { name: 'AbortError' });
+      barrier.resume();
+      assert.equal((await ordinary).kind, 'prepared');
+      (await running).dispose();
+      (await queued).dispose();
+      assert.deepEqual(barrier.posted.map(({ functionName, maxTraceBytes }) => maxTraceBytes ?? functionName),
+        ['solveA', 100, 'solveB', 200]);
+    } finally {
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier detaches an aborted posted observer without closing the session`, async () => {
+    const barrier = preparationBarrier();
+    const client = new JavaScriptWorkerClient({ workerUrl: '/worker.js', workerFactory: barrier.workerFactory });
+    try {
+      const call = { mode: 'code' as const, ...descriptor('solveA') };
+      assert.equal((await client.prepareProgram(call, language)).kind, 'prepared');
+      const controller = new AbortController();
+      const running = client.prepareObservation(call, { maxTraceBytes: 100 }, controller.signal);
+      void running.catch(() => undefined);
+      await barrier.held;
+      controller.abort();
+      await assert.rejects(running, { name: 'AbortError' });
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+      assert.equal(barrier.posted.length, 2, 'Abort must not send another command');
+      barrier.resume();
+      assert.equal((await client.prepareProgram({ ...call, ...descriptor('solveB') }, language)).kind, 'prepared');
+      assert.equal(barrier.coordinators.length, 1);
+    } finally {
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier refuses a held-back drawing at its preparation deadline`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const barrier = preparationBarrier();
+    const originalWorker = globalThis.Worker;
+    Object.defineProperty(globalThis, 'Worker', {
+      configurable: true, writable: true,
+      value: function (url: string | URL) { return barrier.workerFactory(url); },
+    });
+    VmJavaScriptWorker.cloneReplies = true;
+    const runtime = createBrowserRuntimeHost({
+      providerRegistry: createBrowserRuntimeProviderRegistry([
+        createJavaScriptBrowserRuntimeProvider({ algorithmExecution: 'disposable-worker' }),
+      ]),
+      providers: [language],
+      featureOverrides: {
+        worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true,
+      },
+    });
+    const host = createBrowserJudgeHostFromRuntimeHost(runtime);
+    const run = async (name: string) => {
+      const bundle = await createAlgorithmJudgeBundle({
+        id: name, language, ...descriptor(name), cases: [{ id: 'case', input: { n: 1 }, expected: 2 }],
+      });
+      const result = await host.execute({ bundle, interactive: true, drawingDelivery: 'after-verdict' });
+      assert.ok(result.executionId);
+      return result.executionId;
+    };
+    try {
+      const a = await run('solveA');
+      const b = await run('solveB');
+      const first = host.execute({ executionId: a, tracing: { caseIds: ['case'] } });
+      void first.catch(() => undefined);
+      await barrier.held;
+      t.mock.timers.tick(1);
+      const second = host.execute({ executionId: b, tracing: { caseIds: ['case'] } });
+      void second.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ functionName }) => functionName), ['solveA']);
+      t.mock.timers.tick(30_000);
+      const drawing = await second;
+      const attachment = drawing.evaluation.cases[0]?.attachment;
+      assert.equal(attachment?.status, 'refused');
+      assert.equal(attachment.reason, 'observer-timeout');
+      barrier.resume();
+      await first;
+      await nextTurn();
+      assert.deepEqual(barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ functionName }) => functionName), ['solveA']);
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+    } finally {
+      barrier.resume();
+      await host.dispose();
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: originalWorker });
+      VmJavaScriptWorker.cloneReplies = false;
+      resetVmWorkers();
+    }
+  });
 }
 
 for (const language of ['javascript', 'typescript'] as const) {

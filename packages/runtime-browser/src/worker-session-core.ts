@@ -138,6 +138,8 @@ export interface WorkerSessionSendEffectOptions {
   readonly kernelSignals?: RuntimeKernelSignalBridge;
   /** Observe the exact command id after registration and before postMessage. */
   readonly onRequestRegistered?: (commandId: string) => void;
+  /** Schedule the post and reply after preflight and worker readiness. */
+  readonly scheduleReply?: <T>(reply: Effect.Effect<T, Error>) => Effect.Effect<T, Error>;
 }
 
 export class WorkerSessionCore {
@@ -501,6 +503,7 @@ export class WorkerSessionCore {
       kernelSyscalls,
       kernelSignals,
       onRequestRegistered,
+      scheduleReply,
     } = options;
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -530,7 +533,7 @@ export class WorkerSessionCore {
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
 
-      const reply = this.postAndAwaitReply<T>(
+      const post = this.postAndAwaitReply<T>(
         session.worker,
         type,
         payload,
@@ -540,6 +543,9 @@ export class WorkerSessionCore {
         kernelSignals,
         onRequestRegistered
       );
+      const reply = scheduleReply ? scheduleReply(Effect.suspend(() =>
+        this.session === session ? post : Effect.fail(new WorkerTerminatedError())
+      )) : post;
       if (timeoutMs === null) {
         return yield* reply;
       }
