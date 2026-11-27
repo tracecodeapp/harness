@@ -133,6 +133,13 @@ const CSHARP_DEFAULT_FILE = 'solution.cs';
 const CSHARP_LEGACY_USER_FILE = 'UserCode.cs';
 const CSHARP_HOST_ARTIFACT_CACHE_MAX_ENTRIES = 24;
 const CSHARP_HOST_ARTIFACT_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+/**
+ * A drawing's byte budget when the caller sets none. The runner measures each
+ * event before keeping it and stops recording at this many bytes, and the
+ * worker re-encodes its reply against the same value. Without it the runner
+ * keeps every event (its budget 0 means unlimited).
+ */
+export const CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES = 8 * 1024 * 1024;
 
 const KERNEL_HTTP_MESSAGE_TYPES = new Set([
   'kernel-http-listen',
@@ -900,7 +907,7 @@ export class CSharpWorkerClient {
     if (prepared.mode !== 'trace') return { status: 'refused', reason: 'observer-protocol' };
     return this.runPreparedExecutionGeneration(call.signal, async () => {
       const wallClockMs = this.resolveTracingTimeoutMs(prepared.functionName, prepared.executionStyle);
-      const maxTraceBytes = call.traceOptions?.maxTraceBytes;
+      const maxTraceBytes = call.traceOptions?.maxTraceBytes ?? CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES;
       const inputBytes = prepared.preparedRunnerTier === 'algorithm-fast'
         ? encodeTraceClrWireInputs(prepared.traceClrWireContract!, call.inputs)
         : undefined;

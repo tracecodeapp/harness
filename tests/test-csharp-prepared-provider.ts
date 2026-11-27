@@ -22,6 +22,7 @@ import {
 } from '../packages/runtime-csharp/src/csharp-runtime-client';
 import { encodeTraceClrWireResult } from '../packages/runtime-csharp/src/traceclr-wire';
 import {
+  CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES,
   CSharpWorkerClient,
   type CSharpPreparedProgramArtifact,
   type CSharpWorkerPrepareResult,
@@ -1114,4 +1115,72 @@ test('C# compiler declines conditional compilation only for traced builds, befor
   assert.deepEqual(refused, ['Define', 'Elif', 'Else', 'EndIf', 'If', 'Undef']);
   assert.match(check, /descendIntoTrivia: true/);
   assert.doesNotMatch(source, /conditional compilation \(#if/, 'the learner-facing wording lives in the client, not the compiler');
+});
+
+test('a C# drawing has a finite byte budget when the caller sets none', async () => {
+  assert.ok(Number.isSafeInteger(CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES));
+  assert.ok(CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES > 0 && CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES <= 0x7fff_ffff);
+  const sent: Array<{ maxTraceBytes?: unknown }> = [];
+  const client = new CSharpWorkerClient({
+    workerUrl: '/csharp.js',
+    assetBaseUrl: '/workers/vendor/csharp-runner',
+    runtimeRole: 'runner',
+    debug: false,
+    workerFactory() {
+      const worker = {
+        onmessage: null as ((event: MessageEvent) => void) | null,
+        onerror: null,
+        postMessage(message: { id: string; protocolToken: string; type: string; payload?: any }) {
+          const observation = message.payload?.observation;
+          if (message.type === 'execute-prepared-trace') sent.push({ ...observation });
+          queueMicrotask(() => worker.onmessage?.({
+            data: {
+              ...message,
+              payload: message.type === 'execute-prepared-trace'
+                ? {
+                    observationStatus: 'truncated',
+                    reason: 'byte-budget',
+                    events: [],
+                    attemptedEvents: 1,
+                    observation: { attemptToken: observation.attemptToken },
+                  }
+                : { success: true, loadTimeMs: 0 },
+            },
+          } as MessageEvent));
+        },
+        terminate() {},
+      };
+      queueMicrotask(() => worker.onmessage?.({ data: { type: 'worker-ready' } } as MessageEvent));
+      return worker;
+    },
+  });
+  const artifact: CSharpPreparedProgramArtifact = {
+    mode: 'trace',
+    code: '',
+    functionName: 'solve',
+    executionStyle: 'solution-method',
+    compiledArtifactKey: '0'.repeat(64),
+    compiledArtifactBase64: 'TVqQAAMAAAAEAAAA',
+    compiledArtifactSha256: '0'.repeat(64),
+    preparedRunnerTier: 'compatibility',
+    preparedRunnerReason: 'test',
+  };
+  const program = { code: '', functionName: 'solve', executionStyle: 'solution-method' as const };
+  try {
+    for (const [traceOptions, expected] of [
+      [undefined, CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES],
+      [{}, CSHARP_DEFAULT_OBSERVATION_MAX_TRACE_BYTES],
+      [{ maxTraceBytes: 4096 }, 4096],
+      [{ maxTraceBytes: 0 }, 1],
+    ] as const) {
+      const drawing = await client.observePrepared(artifact, {
+        program, inputs: {}, attemptToken: `attempt-${sent.length}`,
+        ...(traceOptions ? { traceOptions } : {}),
+      });
+      assert.equal(drawing.status, 'truncated', JSON.stringify(drawing));
+      assert.equal(sent.at(-1)?.maxTraceBytes, expected, JSON.stringify(traceOptions));
+    }
+  } finally {
+    client.terminate();
+  }
 });
