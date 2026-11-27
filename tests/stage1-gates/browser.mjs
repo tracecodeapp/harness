@@ -1,7 +1,9 @@
 import { matchesWorkerReply, replyRowCount } from 'stage1-worker-evidence';
+import { observeDeferred } from 'stage1-deferred-browser';
 import {
   builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
+  createAlgorithmJudgeReceipt,
   createBrowserJudgeHost,
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
@@ -230,6 +232,26 @@ export function projectReceipt(receipt, language, selected) {
         (tracedProjections[index].rejected || tracedProjections[index].trace === trace)
       )),
   };
+}
+
+export async function runDeferredFixture(fixture, scenario) {
+  const { language } = fixture;
+  const bundle = await createAlgorithmJudgeBundle({
+    ...fixture, id: `ga-${language}-${scenario.name}-deferred`, trace: true,
+    comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
+    traceOptions: supportedTraceOptions(language, fixture.traceOptions),
+  });
+  return observeDeferred(bundle, scenario, {
+    createHost: () => createBrowserJudgeHost({
+      providers: [language], assetBaseUrl: location.origin + '/workers',
+      safeExecution: { workerLifecycle: 'warm-and-retire' },
+    }),
+    grade: (bundle, evaluation) => {
+      const { policy, verdict, passedCount, totalCount } = createAlgorithmJudgeReceipt(bundle, evaluation);
+      return { policy, verdict, passedCount, totalCount };
+    },
+    project: (receipt, caseId) => projectReceipt(receipt, language, [caseId]),
+  });
 }
 
 let appTraceCapture;

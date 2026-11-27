@@ -19,6 +19,9 @@ import { checkJudgedByteLimit, judgedByteLimitFixtures, judgedByteLimitRequest }
 import { exerciseMux, loadMux } from './mux.mjs';
 import { hasReceiptEvidence, receiptEvidenceIds } from './receipt.mjs';
 import { retainedControlTargets } from './worker-evidence.mjs';
+import { deferredScenarios } from './deferred-browser.mjs';
+import { assertDeferred } from './deferred-oracle.mjs';
+import { checkPresentation } from './receipt.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('manifest.json', import.meta.url), 'utf8'));
 const [installationArg, assetsArg, evidenceArg] = process.argv.slice(2);
@@ -66,7 +69,10 @@ try {
       sourcefile: 'stage1-browser.mjs',
     },
     outfile: bundlePath, bundle: true, platform: 'browser', format: 'esm', target: 'es2022',
-    alias: { 'stage1-worker-evidence': fileURLToPath(new URL('worker-evidence.mjs', import.meta.url)) },
+    alias: {
+      'stage1-worker-evidence': fileURLToPath(new URL('worker-evidence.mjs', import.meta.url)),
+      'stage1-deferred-browser': fileURLToPath(new URL('deferred-browser.mjs', import.meta.url)),
+    },
     external: ['/gate-routes.mjs', '/gate-app-trace-wire.mjs'],
     metafile: true,
     define: { 'process.env.NODE_ENV': '"production"' },
@@ -223,6 +229,45 @@ try {
     return registered;
   }
   const runtime = { setupMs: performance.now(), requests: 0, fixtureMs: {}, requestMs: {} };
+  const deferredFixtures = JSON.parse(readFileSync(new URL('deferred-fixtures.json', import.meta.url), 'utf8'));
+  for (const language of new Set(deferredFixtures.filter((fixture) => matches({
+    ...fixture, gate: 'G1', name: 'stdout',
+  })).map((fixture) => fixture.language))) {
+    for (const scenario of deferredScenarios(language)) {
+      const fixtureName = scenario.suffix ? 'three-rows' : scenario.cut ? scenario.name : 'stdout';
+      const fixture = deferredFixtures.find((entry) => entry.language === language && entry.name === fixtureName);
+      const page = await browser.newPage();
+      let report;
+      try {
+        await page.goto(`http://127.0.0.1:${server.address().port}/index.html`);
+        report = await page.evaluate(async ({ fixture, scenario }) => {
+          const { runDeferredFixture } = await import('/gate-browser.mjs');
+          return runDeferredFixture(fixture, scenario);
+        }, { fixture, scenario });
+      } catch (error) {
+        report = { error: { message: error.message } };
+      } finally {
+        await page.close();
+      }
+      const prefix = `G1/${language}/${scenario.name}/deferred`;
+      record('deferred.jsonl', { prefix, ...report });
+      const receipts = assertDeferred(prefix, scenario, report, (row, { presentation, workspaceDigest }) => {
+        checkPresentation(row, presentation.ordinaryProjections[0], presentation.tracedProjections[0], true, workspaceDigest);
+        if (!scenario.suffix) {
+          const expected = fixture.cases[0];
+          assert.equal(row.status, 'completed');
+          assert.equal(row.verdict.kind, expected.grade);
+          assert.deepEqual(row.value, expected.actual);
+          assert.equal(row.stdout, expected.stdout);
+        }
+      });
+      for (const item of receipts) {
+        assert(!inventory.has(item.id), `Duplicate deferred assertion ${item.id}`);
+        inventory.add(item.id);
+        recordAssertion(item);
+      }
+    }
+  }
   async function exercise(fixture, requests, options = {}) {
     const key = `${fixture.gate}/${fixture.language}/${fixture.name}`;
     const page = await browser.newPage();
