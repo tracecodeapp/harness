@@ -42,6 +42,36 @@ idempotent disposal path as `disposeExecution`, invalidates the execution ID,
 and closes its Judge scope. A later continuation receives the ordinary unknown
 or disposed execution error and may start a new interactive execution.
 
+### Verdict first, drawing after (0.22)
+
+By default the initial interactive call joins its selected drawings: it
+resolves once each one has settled. That joined mode is deprecated for
+interactive Run. With `drawingDelivery: 'after-verdict'` the initial call
+resolves as soon as the ordinary evaluation is committed. No row carries an
+`attachment` or `trace`, and `deferredDrawings` lists the selected case IDs in
+plan order (`[]` on a compile failure, which keeps no handle):
+
+```ts
+const verdict = await judgeHost.execute({
+  bundle,
+  interactive: true,
+  drawingDelivery: 'after-verdict',
+  tracing: { caseIds: [selectedCaseId] },
+});
+// Ask as soon as the verdict resolves.
+const drawing = await judgeHost.execute({
+  executionId: verdict.executionId,
+  tracing: { caseIds: verdict.deferredDrawings },
+});
+```
+
+A selected case's observer still starts when its ordinary case is admitted.
+The continuation joins that attempt, or returns its cached attachment if the
+attempt has already settled. It starts no ordinary execution. An observer
+attempt that has not settled pauses the idle lease exactly as a continuation
+does, so a slow drawing cannot expire its own execution. The lease arms once
+every attempt has settled and no continuation is waiting.
+
 `execute({ bundle })` is deliberately conservative: it prepares a clean
 artifact, records no traces, retains no session, and disposes the evaluation
 before returning. `tracing` is never inferred. `interactive: true` is never

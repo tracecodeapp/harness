@@ -85,6 +85,9 @@ test('published package has only TraceKernel and Judge code entrypoints', async 
   assert.match(judgeTypes, /disposeExecution/u);
   assert.match(judgeTypes, /interactiveExecutionIdleTimeoutMs/u);
   assert.match(judgeTypes, /DEFAULT_INTERACTIVE_EXECUTION_IDLE_TIMEOUT_MS/u);
+  assert.match(judgeTypes, /JudgeDrawingDelivery/u);
+  assert.match(judgeTypes, /drawingDelivery\?: JudgeDrawingDelivery/u);
+  assert.match(judgeTypes, /deferredDrawings\?: readonly string\[\]/u);
   assert.doesNotMatch(judgeTypes, /createBrowserRuntimeJudge/u);
   assert.doesNotMatch(judgeTypes, /createBrowserJudgeHostFromRuntimeHost/u);
 });

@@ -6,6 +6,44 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
 
 ## [Unreleased]
 
+### Added
+
+- **Verdict first, drawing after.** An interactive Run can now get its
+  verdict without waiting for the drawing. Pass `drawingDelivery:
+  'after-verdict'` with `interactive: true` to `BrowserJudgeHost.execute` or
+  `RuntimeJudge.execute`. The initial request then resolves as soon as the
+  ordinary evaluation is committed. Every row is graded as before, but no
+  row carries an `attachment` or `trace`, even if its observer has already
+  finished. The new `deferredDrawings` field lists the selected case IDs in
+  plan order. It is `[]` when nothing is selected or the compile failed, and
+  a failed compile returns no `executionId`. Each drawing then arrives through
+  the existing continuation, `execute({ executionId, tracing: { caseIds } })`.
+  The continuation joins the observer that started when the case was
+  admitted, or returns its cached attachment, and it starts no ordinary
+  execution. Observer failures still arrive as `refused` drawings and never
+  change the verdict.
+  The new types are additive: `JudgeDrawingDelivery` (`'with-verdict' |
+  'after-verdict'`), `drawingDelivery?` on both initial requests, and
+  `deferredDrawings?` on `RuntimeJudgeExecuteResult`. A request that omits
+  `drawingDelivery`, or passes `'with-verdict'`, gets the 0.21 joined response
+  unchanged. `'after-verdict'` without `interactive: true`, or any other
+  value, is a `JudgePlanError`. `evaluateAlgorithm` takes no such option.
+
+### Changed
+
+- The idle lease of a retained interactive execution
+  (`interactiveExecutionIdleTimeoutMs`) is now also paused by an observer
+  attempt that has not settled. It arms only once every attempt has settled
+  and no continuation is waiting, so a slow drawing after an
+  `'after-verdict'` verdict cannot expire its own execution.
+
+### Deprecated
+
+- Joined interactive Run: an `interactive: true` request without
+  `drawingDelivery: 'after-verdict'`. It still works in 0.22. One-shot traced
+  calls (`evaluateAlgorithm` with `trace: true`, `RuntimeJudge.evaluate` with
+  a trace binding) keep their joined response and are not deprecated.
+
 ## [0.21.0] - 2026-11-26
 
 ### Added

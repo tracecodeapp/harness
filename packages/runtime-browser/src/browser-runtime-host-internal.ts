@@ -106,6 +106,8 @@ export interface JudgeScheduleMarker {
   readonly cause?: 'backstop' | 'injected';
   /** `service-deadline`: accepted finishes the stopped batch publishes. */
   readonly accepted?: number;
+  /** `public-resolve`: the initial request or a continuation. */
+  readonly request?: 'initial' | 'continuation';
   readonly at: number;
 }
 

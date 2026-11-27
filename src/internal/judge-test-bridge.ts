@@ -7,7 +7,8 @@ import {
 
 type FaultAtPoint = {
   prepare: 'prepare';
-  observe: 'runtime' | 'deadline' | 'no-recorder';
+  /** `stall`: hold the started observer until `releaseStall` resolves. */
+  observe: 'runtime' | 'deadline' | 'no-recorder' | 'stall';
   encode: 'encode';
   /** Expire the service watchdog right after this journalled progress. */
   service: 'deadline';
@@ -57,6 +58,12 @@ export interface JudgeTestBridge {
   readonly onEvent: (event: JudgeScheduleMarker | InjectionAck | JudgedOutputPolicyMarker) => void;
   readonly faultAt?: (context: FaultContext & { readonly point: FaultPoint }) =>
     FaultAtPoint[FaultPoint] | undefined;
+  /**
+   * Releases an acknowledged `stall`: the observer continues once the promise
+   * settles. Without it, a stall holds until the attempt is stopped
+   * (disposal, a last-waiter abort or the observation deadline).
+   */
+  readonly releaseStall?: (context: FaultContext) => Promise<void>;
   /**
    * Lower the judged-output policy of one ordinary prepare. Called once per
    * code-mode prepare, in the page realm. A field is used only when it is a
@@ -111,7 +118,7 @@ export function readJudgeTestBridge(): JudgeTestBridge | undefined {
 
   const bridge: JudgeTestBridge | undefined = descriptor.value;
   if (typeof bridge?.onEvent !== 'function') return;
-  const { onEvent, faultAt, judgedOutputPolicy } = bridge;
+  const { onEvent, faultAt, releaseStall, judgedOutputPolicy } = bridge;
   return {
     onEvent(event) {
       try { onEvent(event); } catch { /* A subscriber cannot disrupt Judge. */ }
@@ -119,6 +126,16 @@ export function readJudgeTestBridge(): JudgeTestBridge | undefined {
     ...(typeof faultAt === 'function' ? {
       faultAt(context: Parameters<NonNullable<JudgeTestBridge['faultAt']>>[0]) {
         try { return faultAt(context); } catch { return undefined; }
+      },
+    } : {}),
+    ...(typeof releaseStall === 'function' ? {
+      releaseStall(context: FaultContext) {
+        // A throwing or rejecting hook releases the stall.
+        try {
+          return Promise.resolve(releaseStall(context)).then(() => undefined, () => undefined);
+        } catch {
+          return Promise.resolve();
+        }
       },
     } : {}),
     ...(typeof judgedOutputPolicy === 'function' ? {
