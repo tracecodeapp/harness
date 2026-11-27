@@ -128,7 +128,7 @@ const selftest022 = rig022 === 'selftest';
 const measured022 = rig022 === 'window';
 assert.ok(rig022 === undefined || selftest022 || measured022, 'Unknown 0.22 operation');
 if (measured022) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'Exclusive window required');
-const { heavyFixture022, production022, selftestPlan022, windowPlan022 } =
+const { heavyCases022, heavyFixture022, production022, selftestPlan022, windowPlan022 } =
   rig022 ? await import('../plan-022.mjs') : {};
 const { assertLessonPromotion022 } = selftest022 ? await import('../csharp-lesson-selftest-022.mjs') : {};
 const fixedWarmWitness = releasePythonWarm || pythonFreshAa || submitAa || phoneWarmAa;
@@ -305,6 +305,16 @@ async function loadFixtures() {
   if (rig022) {
     data['heavy-022'] = Object.fromEntries(await Promise.all(Object.keys(languages)
       .map(async (language) => [language, await heavyFixture022(language)])));
+    provenance['heavy-022'] = {
+      caseCount: 1,
+      fixture: Object.fromEntries(Object.entries(data['heavy-022']).map(([language, fixture]) => [
+        language, {
+          sourceFile: `heavy-022/${heavyCases022[language].file}`,
+          codeSha256: heavyCases022[language].sha256,
+          fixtureSha256: sha256(JSON.stringify(fixture)),
+        },
+      ])),
+    };
   }
   return { data, provenance };
 }
@@ -803,6 +813,8 @@ const report = {
   complete: false,
   ...(measured022 && {
     schema: 'tracecode.speed-022.window.v1',
+    window: '0.22',
+    cpu: undefined,
     rigCommit: runnerSourceCommit(),
     controlSha256: production022.sha256,
     candidateSha256: process.env.SPEED_RIG_022_CANDIDATE_SHA256,
@@ -1109,11 +1121,15 @@ try {
     if (Object.values(counts).some((c) => c.kept < target)) complete = false;
     console.log(JSON.stringify({ groupIndex, ...group, counts,
       ...(!selftest022 && { wallMs: Date.now() - groupStarted }) }));
+    if (selftest022 && group.problem === 'heavy-022' && calibration.length === Object.keys(languages).length) {
+      const outOfRange = calibration.filter(({ judgeMs }) => !(judgeMs >= 1000 && judgeMs <= 3000));
+      assert.deepEqual(outOfRange, [], 'Heavy-case calibration outside 1–3 seconds');
+    }
   }
   if (selftest022) {
     assert.equal(calibration.length, Object.keys(languages).length);
-    const outOfRange = calibration.filter(({ judgeMs }) => !(judgeMs >= 1000 && judgeMs <= 3000));
-    assert.deepEqual(outOfRange, [], 'Heavy-case calibration outside 1–3 seconds');
+    console.log(JSON.stringify({ kind: 'selftest-journeys', groups: schedule.length,
+      tarballSha256: production022.sha256, chromium: report.browser.version }));
   }
   report.complete = complete;
   if (!complete) process.exitCode = 1;

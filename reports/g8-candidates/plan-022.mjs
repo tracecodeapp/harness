@@ -18,22 +18,22 @@ export const heavyCases022 = Object.freeze({
     sha256: '73e223af3116dd53e558e134000073cebe4ad5779cbc04eb2854b21c777b2d1f',
   },
   python: {
-    file: 'python.py', functionName: 'count_placements', input: { size: 12 }, expected: 14200,
+    file: 'python.py', functionName: 'count_placements', input: { size: 12, edge_columns: 2 }, expected: 2612,
     // The default untraced guard cuts this deterministic search short.
-    limits: { maxLineEvents: 10_000_000, maxSingleLineHits: 2_000_000 },
-    sha256: '7c26b781808693d74bd804632dcaee4c05ed345468e8e4ef0c04020abdb8ded8',
+    limits: { maxLineEvents: 2_000_000, maxSingleLineHits: 500_000 },
+    sha256: '0a8319c442e9416d7ceaff4cad5d36a1eed13730e7f6a822b33b14cdf4e39a60',
   },
   cpp: {
-    file: 'cpp.cpp', functionName: 'checksum', input: { rounds: 400000000 }, expected: -748346367,
-    sha256: '449b40686c11aa6cdd90dd3562dd225b0dbd8211aadf538ec213c15691cb5012',
+    file: 'cpp.cpp', functionName: 'checksum', input: { rounds: 300000000 }, expected: 687201025,
+    sha256: 'e266bab481854af93276a5894c4747039433f0d4736136d8d46c8d8b4309188d',
   },
   java: {
     file: 'java.java', functionName: 'checksum', input: { rounds: 30000000 }, expected: -1664503935,
     sha256: '7a4fe5feb5f1f72a8ffe1910d25e5c84f0c27dc5b173fb14f68baae4826de2a2',
   },
   csharp: {
-    file: 'csharp.cs', functionName: 'checksum', input: { rounds: 17000000 }, expected: 463212609,
-    sha256: '59d5d49f7a64cf8021e0f3b0106612da9d859cab03c3afae9d69735e07ba77f3',
+    file: 'csharp.cs', functionName: 'checksum', input: { rounds: 13000000 }, expected: -432775359,
+    sha256: 'dce93e1c15d4c15ddb1e3779b60341a58c915e2446ce44978af5c1a890288b3c',
   },
 });
 

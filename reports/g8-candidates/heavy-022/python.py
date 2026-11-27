@@ -1,4 +1,4 @@
-def count_placements(size):
+def count_placements(size, edge_columns):
     mask = (1 << size) - 1
 
     def visit(columns, left, right):
@@ -12,13 +12,10 @@ def count_placements(size):
             total += visit(columns | bit, (left | bit) << 1, (right | bit) >> 1)
         return total
 
-    middle = size // 2
+    # Include the mirror of each of the selected edge starts.
     total = 0
-    for column in range(middle):
+    for column in range(edge_columns):
         bit = 1 << column
         total += 2 * visit(bit, bit << 1, bit >> 1)
-    if size % 2:
-        bit = 1 << middle
-        total += visit(bit, bit << 1, bit >> 1)
-    assert total == 14200
+    assert total == 2612
     return total
