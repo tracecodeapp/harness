@@ -12,7 +12,8 @@ This repo uses Git tags as release boundaries. Version notes below summarize wha
   verdict without waiting for the drawing. Pass `drawingDelivery:
   'after-verdict'` with `interactive: true` to `BrowserJudgeHost.execute` or
   `RuntimeJudge.execute`. The initial request then resolves as soon as the
-  ordinary evaluation is committed. Every row is graded as before, but no
+  ordinary evaluation is committed; it waits on no teardown, and the
+  ordinary program is released after it. Every row is graded as before, but no
   row carries an `attachment` or `trace`, even if its observer has already
   finished. The new `deferredDrawings` field lists the selected case IDs in
   plan order. It is `[]` when nothing is selected or the compile failed, and
