@@ -150,12 +150,13 @@ const concurrentSource = (n) => `(async () => {
 })()`;
 
 // --- browsers: desktop (plain) and phone (capped) ---
-const desktop = await chromium.launch(launchOptions);
-const contexts = { desktop: await desktop.newContext(), cdp4: await desktop.newContext() };
+// Hold mode starts only the capped browser, so a kill -9 leaves nothing of the probe outside the scope.
+const desktop = mode === 'hold' ? undefined : await chromium.launch(launchOptions);
+const contexts = desktop ? { desktop: await desktop.newContext(), cdp4: await desktop.newContext() } : {};
 let capped;
 async function launchPhone(quotaUs, suffix = '') {
   capped = await launchCapped022(chromium, { runId: runId + suffix, workDir: out, launchOptions, quotaUs });
-  assert.equal(capped.browser.version(), desktop.version(), 'Phone and desktop Chromium differ');
+  if (desktop) assert.equal(capped.browser.version(), desktop.version(), 'Phone and desktop Chromium differ');
   contexts.phone = await capped.browser.newContext();
 }
 if (mode !== 'calibrate') await launchPhone(phoneCap022.quotaUs);

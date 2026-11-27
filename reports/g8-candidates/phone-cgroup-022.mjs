@@ -17,12 +17,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const phoneCap022 = Object.freeze({
-  // One phone thread is modelled as a quarter of one desktop core. The CDP 4x main-thread figure
-  // (P27-C: 4.04x) is the calibration target; the dry run keeps the measured ratios with its receipt.
+  // The target is CDP 4x's main-thread slowdown (P27-C: 4.04x). A 25% quota overshoots it, because
+  // the browser's other threads also spend the budget. Calibration job
+  // 20261127T071445.816044335-3561100 measured the main thread against CDP 4x in the same job:
+  // 2500 us 4.54x / 4.16x, 2750 us 4.03x / 4.15x, 3000 us 3.56x / 4.11x. The quota is 2750 us.
   factor: 4,
-  cpuQuotaPercent: 25,
+  cpuQuotaPercent: 27.5,
   periodUs: 10_000,
-  quotaUs: 2_500,
+  quotaUs: 2_750,
   slice: 'system.slice',
   unitPrefix: 'h022-p27f-',
 });
