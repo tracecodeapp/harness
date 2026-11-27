@@ -130,8 +130,9 @@ function describeProcess(pid) {
   }
   const stat = statFields(pid);
   if (!stat) return { pid, exited: true };
-  const argv = (readProc(pid, 'cmdline') ?? Buffer.alloc(0)).toString('utf8').split('\0').filter(Boolean);
-  const type = argv.find((arg) => arg.startsWith('--type='))?.slice('--type='.length) ?? 'browser';
+  // Zygote children set their title with setproctitle, which can join argv into one string.
+  const cmdline = (readProc(pid, 'cmdline') ?? Buffer.alloc(0)).toString('utf8').replaceAll('\0', ' ');
+  const type = /(?:^|\s)--type=(\S+)/u.exec(cmdline)?.[1] ?? 'browser';
   const threads = Number(/^Threads:\s+(\d+)$/mu.exec(readProc(pid, 'status')?.toString('utf8') ?? '')?.[1] ?? 0);
   return { pid, ppid: Number(stat[1]), startTime: stat[19], exe, type, threads };
 }
@@ -168,7 +169,8 @@ function readMembership(cgroup, chromiumDir, requireRenderer) {
   const browsers = new Set(processes.map(({ browserPid }) => browserPid).filter(Boolean));
   assert.equal(browsers.size, 1, `Expected exactly one browser in ${cgroup}`);
   if (requireRenderer) {
-    assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
+    assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}: ` +
+      JSON.stringify(processes.map(({ pid, ppid, type, zombie }) => ({ pid, ppid, type, zombie }))));
   }
   // Coverage: every live descendant of the browser, anywhere on the host, is inside the scope.
   const [browserPid] = browsers;
