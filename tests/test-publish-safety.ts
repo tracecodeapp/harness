@@ -4,6 +4,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } fro
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
+import './test-pack-manifest.mjs';
 
 const ROOT = process.cwd();
 const CHECK_SCRIPT = resolve(ROOT, 'scripts/check-publish-safety.mjs');
