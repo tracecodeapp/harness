@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import { execFileSync } from 'node:child_process';
 import { access, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { resolvePackDevDependencies } from './pack-manifest.mjs';
 
 const ROOT = process.cwd();
 const SEMVER_PATTERN =
@@ -53,15 +55,6 @@ async function main() {
     throw new Error(`invalid Harness release version: ${JSON.stringify(version)}`);
   }
 
-  if (requestedVersion && rootManifest.version !== version) {
-    rootManifest.version = version;
-    await writeFile(
-      rootManifestPath,
-      `${JSON.stringify(rootManifest, null, 2)}\n`,
-      'utf8'
-    );
-  }
-
   const mismatches = [];
   let synchronized = 0;
   for (const manifestPath of await packageManifestPaths(ROOT)) {
@@ -83,11 +76,35 @@ async function main() {
     synchronized += 1;
   }
 
+  const devDependencies = rootManifest.devDependencies;
+  const resolvedDevDependencies = devDependencies && resolvePackDevDependencies(devDependencies, version);
+  const hasPackRanges = Object.values(devDependencies ?? {}).some((specifier) => specifier.startsWith('workspace:^'));
+  const packRangesChanged = hasPackRanges && (
+    JSON.stringify(devDependencies) !== JSON.stringify(resolvedDevDependencies)
+  );
+  if (check && packRangesChanged) {
+    mismatches.push('package.json: run pnpm version:sync to synchronize and order the root workspace devDependencies');
+  }
+
   if (mismatches.length > 0) {
     throw new Error(
       `workspace package versions must match @tracecode/harness ${version}:\n` +
         mismatches.map((mismatch) => `- ${mismatch}`).join('\n')
     );
+  }
+
+  if (!check && (rootManifest.version !== version || packRangesChanged)) {
+    rootManifest.version = version;
+    if (hasPackRanges) rootManifest.devDependencies = resolvedDevDependencies;
+    await writeFile(rootManifestPath, `${JSON.stringify(rootManifest, null, 2)}\n`, 'utf8');
+  }
+
+  if (!check && hasPackRanges) {
+    // Use pnpm to update the importer specifiers, also on retry after a failed sync.
+    execFileSync('pnpm', ['install', '--lockfile-only', '--prefer-offline', '--ignore-scripts', '--no-frozen-lockfile'], {
+      cwd: ROOT,
+      stdio: 'inherit',
+    });
   }
 
   console.log(

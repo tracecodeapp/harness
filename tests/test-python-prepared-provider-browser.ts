@@ -1,11 +1,11 @@
 #!/usr/bin/env npx tsx
 
-import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
 import { runCommand, waitForHttp } from './example-app-smoke';
+import { startPythonFileServer } from './helpers/python-file-server';
 
 interface BrowserResult {
   preparations: Record<string, Record<string, unknown>>;
@@ -109,20 +109,7 @@ async function main(): Promise<void> {
     'utf8'
   );
 
-  const server = spawn('python3', ['-c', [
-    'from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler',
-    'import os',
-    'class Handler(SimpleHTTPRequestHandler):',
-    '    def end_headers(self):',
-    '        self.send_header("Cross-Origin-Opener-Policy", "same-origin")',
-    '        self.send_header("Cross-Origin-Embedder-Policy", "require-corp")',
-    '        super().end_headers()',
-    `os.chdir(${JSON.stringify(tempRoot)})`,
-    `ThreadingHTTPServer(("127.0.0.1", ${port}), Handler).serve_forever()`,
-  ].join('\n')], {
-    cwd: tempRoot,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const server = startPythonFileServer(tempRoot, port);
 
   const browser = await chromium.launch({ headless: true });
   try {

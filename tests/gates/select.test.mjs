@@ -16,9 +16,9 @@ const workflow = {
 const inventory = { cells: [python, java, workflow], noCell };
 const all = ['ci-workflow', 'java-runtime', 'python-project-paths'];
 
-test('the selector scopes language inputs and ignores a regenerated lock', () => {
+test('the selector respects runtime ownership and ignores a regenerated lock', () => {
   assert.deepEqual(selectCells(inventory, ['workers/java/worker.js', 'runtime-assets.lock.json']), ['java-runtime']);
-  assert.deepEqual(selectCells(inventory, ['workers/python/worker.js']), ['python-project-paths']);
+  assert.deepEqual(selectCells(inventory, ['workers/python/worker.js']), ['java-runtime', 'python-project-paths']);
   assert.deepEqual(selectCells(inventory, ['packages/runtime-contracts/src/runtime-calls.ts']), all);
 });
 

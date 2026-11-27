@@ -48,6 +48,9 @@ test('inventory claims named command files and reports unclaimed tracked paths',
   assert(noCell.includes('CHANGELOG.md'));
   const paths = git('ls-files', '-z').split('\0').filter(Boolean);
   const aliases = JSON.parse(readFileSync('tsconfig.base.json', 'utf8')).compilerOptions.paths;
+  const allowed = JSON.parse(readFileSync(new URL('./opaque-inputs.json', import.meta.url), 'utf8'));
+  const unapproved = new Map();
+  let exampleAllowance;
   const graphs = new Map();
   const errors = [];
   const ids = new Set();
@@ -74,7 +77,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
       const drivers = new Set(head ? blobs(head).map(([path]) => path).filter((path) => driverPath(ref, path)) : []);
       const files = new Set([...paths, ...drivers]);
       const read = (path) => drivers.has(path) ? git('show', head + ':' + path) : readFileSync(path, 'utf8');
-      graphs.set(ref, { files, closure: moduleGraph({ files, read, aliases }) });
+      graphs.set(ref, { files, closure: moduleGraph({ files, read, aliases, allowances: allowed }) });
     }
     const { files, closure } = graphs.get(ref);
     const namedFiles = commandFiles([cell.setup, cell.command].filter(Boolean).join(' && '));
@@ -84,20 +87,46 @@ test('inventory claims named command files and reports unclaimed tracked paths',
       if (!matches.length) errors.push(`${cell.id} names a missing command file ${named}`);
       roots.push(...matches);
     }
-    const { parents, unresolved } = closure(roots);
+    const { parents, unresolved, opaque, interpreters } = closure(roots);
     for (const path of parents.keys()) {
       if (path !== 'package.json' && !tracksInput(cell, path)) {
         errors.push(`${cell.id} missing ${path} via ${chain(path, parents)}`);
       }
     }
     for (const failure of unresolved) errors.push(`${cell.id} cannot resolve ${failure}`);
+    for (const [key, site] of opaque) {
+      const rule = allowed[key];
+      if (!rule) {
+        if (!unapproved.has(key)) unapproved.set(key, { ...site, cells: [] });
+        unapproved.get(key).cells.push(cell.id);
+        continue;
+      }
+      if (!rule.inputs?.length) errors.push(`Opaque allowance ${key} has no covering inputs`);
+      for (const input of rule.inputs ?? []) {
+        const matches = [...files].filter((path) => matchesInput(path, input));
+        if (!matches.length || matches.some((path) => path !== 'package.json' && !tracksInput(cell, path))) {
+          errors.push(`${cell.id} uncovered opaque input ${input} at ${key}`);
+        }
+      }
+      if (site.file === 'tests/test-javascript-authority-browser.ts' &&
+        site.text.includes("'runtime-browser', 'src', 'project.ts'")) {
+        exampleAllowance = `${site.file}: ${site.text} covered by ${rule.inputs.join(', ')}`;
+      }
+    }
+    for (const [interpreter, file] of interpreters) {
+      if (!(cell.pins.interpreters ?? []).includes(interpreter)) {
+        errors.push(`${cell.id} missing interpreter ${interpreter} via ${file}`);
+      }
+    }
     for (const [, script] of cell.command.matchAll(/\bpnpm (test:[\w:-]+)/g)) coveredScripts.add(script);
     for (const alias of cell.aliases ?? []) coveredScripts.add(alias);
   }
+  for (const site of unapproved.values()) errors.push(`Unallowlisted dependency ${JSON.stringify(site)}`);
   for (const script of Object.keys(scriptsAt('')).filter((name) => name.startsWith('test:'))) {
     if (!coveredScripts.has(script)) errors.push(`No cell for ${script}`);
   }
   const missing = paths.filter((path) => path !== 'package.json' && !inventory.some((cell) => tracksInput(cell, path)));
   console.log(`Unclaimed tracked files (${missing.length}):\n${missing.join('\n')}`);
   assert.equal(errors.length, 0, [...new Set(errors)].join('\n'));
+  if (exampleAllowance) console.log(`Verified explicit allowance: ${exampleAllowance}`);
 });
