@@ -36,6 +36,20 @@ case "$operation" in
     ;;
 esac
 
+# The phone cap (P27-F): refuse to start beside any rig cgroup, and remove this run's scopes on
+# every exit. A kill -9 of the Node launcher is covered by its watchdog instead.
+cgroup_run="$(date -u +%Y%m%dt%H%M%S)-$$"
+node "$source_dir/phone-cgroup-022.mjs" assert-clean
+remove_rig_cgroups() {
+  local rc=$? suffix
+  for suffix in '' -probe -killed; do
+    node "$source_dir/phone-cgroup-022.mjs" cleanup "$cgroup_run$suffix" > /dev/null || rc=1
+  done
+  exit "$rc"
+}
+trap remove_rig_cgroups EXIT
+export SPEED_RIG_022_CGROUP_RUN="$cgroup_run"
+
 mkdir "$out"
 stage="$out/stage"
 cp -a "$source_dir" "$stage"
@@ -55,6 +69,9 @@ node --input-type=module -e 'await import("esbuild"); await import("playwright")
 if [[ "$operation" == selftest ]]; then
   node --test "$stage/score-thresholds.test.mjs"
   node "$stage/selftest-scorers-022.mjs" "$out" "$rig_commit" "$source_dir/session-022.sh" "$production"
+  # P27-C's arms A and B through the capped phone path, then a kill -9 of a launcher mid-Worker.
+  SPEED_RIG_022_CGROUP_RUN="$cgroup_run-probe" node "$stage/phone-throttle-probe-022.mjs" selftest "$out/phone-probe"
+  bash "$stage/phone-cgroup-check-022.sh" killed "$out/phone-killed" "$source_dir/session-022.sh" "$production"
 fi
 
 node "$stage/stage.mjs" "$production" "$production_sha" none "$out/vproduction"

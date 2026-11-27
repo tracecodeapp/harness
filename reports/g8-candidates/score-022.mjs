@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { metricEndpoints, stats } from './aa-score-lib.mjs';
+import { cdpOnlyWorkerThrottle, workerThrottle022 } from './phone-cgroup-022.mjs';
 import { production022, windowPlan022 } from './plan-022.mjs';
 import { fails022Threshold } from './score-thresholds.mjs';
 import { warmMetricName } from './warm-repeat-policy.mjs';
@@ -30,6 +31,11 @@ async function readSession(directory) {
     const group = schedule[row.groupIndex];
     assert.ok(groups.has(row.groupIndex) && group.versions.includes(row.version), 'Unscheduled attempt');
     assert.equal(row.kept, !Boolean(row.invalid || row.refusal || row.excluded), 'Conflicting disposition');
+    // No phone cell is scored without saying how its Workers were throttled.
+    if (group.cpu !== 1) {
+      assert.ok([workerThrottle022, cdpOnlyWorkerThrottle].includes(row.workerThrottle),
+        `Phone row in group ${row.groupIndex} has no known workerThrottle stamp`);
+    }
     groups.get(row.groupIndex).push(row);
   }
   return { metadata, groups, directory };
@@ -91,8 +97,11 @@ export async function score022(referenceFile, sessionDirectories) {
       refusal: attempts.filter(({ refusal }) => refusal).length,
       excluded: attempts.filter(({ excluded }) => excluded).length,
     };
+    const stamps = [...new Set(attempts.map(({ workerThrottle }) => workerThrottle))];
+    assert.ok(stamps.length <= 1, `Group ${index} mixes workerThrottle stamps: ${stamps.join(', ')}`);
     return {
       group, counts,
+      ...(group.cpu !== 1 && { workerThrottle: stamps[0] ?? null }),
       ...(source ? {
         source: source.directory,
         cells: metricEndpoints(group).map((endpoint) => {
@@ -104,7 +113,9 @@ export async function score022(referenceFile, sessionDirectories) {
   });
   const pass = groups.every(({ incomplete, cells }) =>
     !incomplete && cells.every(({ result }) => result === 'pass'));
-  return { pass, rigCommit, controlSha256: production022.sha256, candidateSha256, groups };
+  const workerThrottle = [...new Set(groups.filter(({ group }) => group.cpu !== 1)
+    .map((group) => group.workerThrottle).filter(Boolean))];
+  return { pass, rigCommit, controlSha256: production022.sha256, candidateSha256, workerThrottle, groups };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

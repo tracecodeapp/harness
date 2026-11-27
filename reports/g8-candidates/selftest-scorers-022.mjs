@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { metricEndpoints } from './aa-score-lib.mjs';
 import { historicalPackageSha256 } from './java-runner/version-preparation.mjs';
+import { workerThrottle022 } from './phone-cgroup-022.mjs';
 import { phoneWarmAaPlan, phoneWarmAaRoundOrder, phoneWarmAaVersions } from './phone-warm-aa.mjs';
 import { heavyCases022, production022, windowPlan022 } from './plan-022.mjs';
 import { isRepeatWarmMode, warmMetricName } from './warm-repeat-policy.mjs';
@@ -129,6 +130,18 @@ await json(reference, { controlSha256, groups: { [pass.groupIndex]: ref(pass, 50
 const failedAaReference = JSON.parse(runScorer('./score-022.mjs', [reference, passing], 1).stdout);
 assert.ok(failedAaReference.groups[0].cells.every(({ result }) => result === 'controlInvalid'));
 console.log('Seeded scorer outcomes passed: formal pass, formal fail, controlInvalid, A/A pass, A/A fail, partial, merge');
+
+const phone = windowPlan022().find(({ cpu }) => cpu !== 1);
+await json(reference, { controlSha256, groups: { [phone.groupIndex]: ref(phone, 500, 500) } });
+const stampedPhone = await session('seeded-phone-session', [phone],
+  rows(phone, 500, () => 500).map((row) => ({ ...row, workerThrottle: workerThrottle022 })));
+const phoneScore = JSON.parse(runScorer('./score-022.mjs', [reference, stampedPhone], 0).stdout);
+assert.equal(phoneScore.groups[0].workerThrottle, workerThrottle022);
+assert.deepEqual(phoneScore.workerThrottle, [workerThrottle022]);
+const unstampedPhone = await session('seeded-unstamped-phone-session', [phone], rows(phone, 500, () => 500));
+assert.match(runScorer('./score-022.mjs', [reference, unstampedPhone], 1).stderr,
+  /no known workerThrottle stamp/u);
+console.log(`Phone rows carry "workerThrottle: ${workerThrottle022}" into the score; unstamped phone rows are rejected`);
 
 const casesNearBand = { javascript: 3000, typescript: 999, java: 1000, cpp: 3069 };
 const calibration = Object.keys(heavyCases022).map((language) =>

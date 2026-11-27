@@ -90,6 +90,13 @@ import {
 import {
   shouldValidateCandidateWitness,
 } from './candidate-witness-policy.mjs';
+import {
+  cdpOnlyWorkerThrottle,
+  cdpRate022,
+  launchCapped022,
+  newRunId022,
+  workerThrottle022,
+} from '../phone-cgroup-022.mjs';
 
 const [outArg, mode, windowName, seedArg = '0212026', minuteArg = '90'] = process.argv.slice(2);
 const out = resolve(outArg);
@@ -126,6 +133,8 @@ const ordinaryPreflight = process.env.SPEED_G8_PREFLIGHT_ORDINARY === '1';
 const rig022 = process.env.SPEED_RIG_022_OPERATION;
 const selftest022 = rig022 === 'selftest';
 const measured022 = rig022 === 'window';
+// The 0.22 rig runs CPU-4 groups in a cgroup-capped Chromium; older modes keep the CDP throttle.
+const cappedPhone022 = Boolean(rig022);
 assert.ok(rig022 === undefined || selftest022 || measured022, 'Unknown 0.22 operation');
 if (measured022) assert.equal(process.env.SPEED_EXCLUSIVE_WINDOW, '1', 'Exclusive window required');
 const { heavyCases022, heavyFixture022, production022, selftestPlan022, windowPlan022 } =
@@ -430,8 +439,11 @@ async function openPage(context, version, url, group) {
   try {
     const sourceVersion = submitAa ? submitAaSourceVersion(version) : version;
     const cdp = await context.newCDPSession(page);
-    await cdp.send('Emulation.setCPUThrottlingRate', { rate: group.cpu });
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: cdpRate022(group.cpu, cappedPhone022) });
     await page.goto(url, { waitUntil: 'load' });
+    if (phoneCap && group.cpu !== 1 && !report.phoneThrottle.membershipWithPage) {
+      report.phoneThrottle.membershipWithPage = phoneCap.membership({ requireRenderer: true });
+    }
     await page.evaluate(async ({ language, stopSubmit, candidate, candidateRuntime }) => {
       const { createSession } = await import('/entry.mjs');
       window.bench = createSession(language, stopSubmit, candidate, candidateRuntime);
@@ -705,6 +717,7 @@ function addressedBySample(sample) {
 
 const prepared = {};
 let browser;
+let phoneCap;
 const fullSchedule = plan();
 const baseSchedule = groupSelector === undefined ? fullSchedule : fullSchedule.filter(group =>
   group.language === 'java' && group.state === 'switched' && group.journey === 'run');
@@ -845,9 +858,20 @@ try {
   report.browser.version = browser.version();
   if (rig022 || staged || pythonFreshAa || phoneWarmAa || submitAa) assert.match(report.browser.version, /^145\./,
     'G8 live measurement requires Chromium 145');
+  if (cappedPhone022 && schedule.some(({ cpu }) => cpu !== 1)) {
+    phoneCap = await launchCapped022(chromium, {
+      runId: process.env.SPEED_RIG_022_CGROUP_RUN ?? newRunId022(), workDir: out,
+      launchOptions: { channel: 'chromium', headless: true },
+    });
+    assert.equal(phoneCap.browser.version(), report.browser.version, 'Phone Chromium differs');
+    report.phoneThrottle = phoneCap.receipt;
+  }
   if (!selftest022) await save();
   const contexts = Object.fromEntries(await Promise.all(versions.map(async (version) =>
     [version, await browser.newContext()])));
+  const phoneContexts = phoneCap && Object.fromEntries(await Promise.all(versions.map(async (version) =>
+    [version, await phoneCap.browser.newContext()])));
+  const contextFor = (group, version) => (phoneCap && group.cpu !== 1 ? phoneContexts : contexts)[version];
   let complete = true;
   const capturedSubmitAfterRun = new Set();
   const trustedCsharpArtifactKeys = new Map();
@@ -878,7 +902,8 @@ try {
           const count = counts[version];
           if (count.kept >= target || count.invalid >= maxInvalid) continue;
           await waitForQuiet();
-          const sample = { ...group, groupIndex, version, round, position, sampleStarted: now() };
+          const sample = { ...group, groupIndex, version, round, position, sampleStarted: now(),
+            ...(group.cpu !== 1 && { workerThrottle: phoneCap ? workerThrottle022 : cdpOnlyWorkerThrottle }) };
           delete sample.versions;
           const attemptStarted = Date.now();
           let page = warmPages.get(version);
@@ -887,7 +912,7 @@ try {
             const warmPlan = warmAttemptPlan(group);
             if (warmPlan.freshPage) {
               isolatedWarm = await openIsolatedWarmAttempt(group, {
-                open: () => openPage(contexts[version], version, prepared[version].url, group),
+                open: () => openPage(contextFor(group, version), version, prepared[version].url, group),
                 warm: async (freshPage) => {
                   sample.setupWarm = await bounded(freshPage.evaluate(() => window.bench.warm()), 'Warmup');
                   if (group.language === 'csharp') {
@@ -929,7 +954,7 @@ try {
               });
               page = isolatedWarm.page;
             } else if (!page) {
-              page = await openPage(contexts[version], version, prepared[version].url, group);
+              page = await openPage(contextFor(group, version), version, prepared[version].url, group);
             }
             await page.bringToFront();
             if (!isolatedWarm && group.state === 'warm' && !warmPages.has(version)) {
@@ -1134,6 +1159,17 @@ try {
   throw error;
 } finally {
   report.end = now();
+  if (phoneCap) {
+    // Remove the scope before the metadata is saved, so the removal receipt is part of it.
+    try {
+      report.phoneThrottle.removal = await phoneCap.remove();
+    } catch (error) {
+      report.phoneThrottle.removalError = error.message;
+      console.error('Phone cgroup removal failed:', error);
+      process.exitCode = 1;
+    }
+    console.log(JSON.stringify({ kind: 'phone-throttle', ...report.phoneThrottle }));
+  }
   try {
     if (!selftest022) await save();
   } finally {
