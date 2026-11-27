@@ -5,8 +5,6 @@ import { Worker } from 'node:worker_threads';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
-import * as Cause from 'effect/Cause';
-import * as Runtime from 'effect/Runtime';
 import {
   InMemoryJudgeRuntimeControl,
   type JudgeEvaluationResult,
@@ -6147,16 +6145,22 @@ test('verdict-first 7: compile failure defers nothing and keeps no handle; after
       { bundle, interactive: false, drawingDelivery: 'after-verdict' },
       { bundle, interactive: true, drawingDelivery: 'later' },
     ] as const) {
-      // The host rejects a plan error as Effect's FiberFailure (as for any
-      // plan error since 0.21); its cause must be the JudgePlanError.
+      // The host rejects with the typed error itself, never a FiberFailure.
       await assert.rejects(f.host.execute(request as never), (error: unknown) => {
-        assert.ok(Runtime.isFiberFailure(error), JSON.stringify(request.drawingDelivery));
-        const cause = Cause.squash(error[Runtime.FiberFailureCauseId]);
-        assert.ok(cause instanceof JudgePlanError, JSON.stringify(request.drawingDelivery));
-        assert.match(cause.message, /drawingDelivery/u);
+        assert.ok(error instanceof JudgePlanError, `${JSON.stringify(request.drawingDelivery)}: ${String(error)}`);
+        assert.match(error.message, /drawingDelivery/u);
         return true;
       });
     }
+    // So does a bad continuation selection, like the disposed handle already did.
+    const { executionId } = empty;
+    for (const caseIds of [[], ['A', 'A'], ['missing']]) {
+      await assert.rejects(f.host.execute({ executionId: executionId!, tracing: { caseIds } }),
+        (error: unknown) => error instanceof JudgePlanError);
+    }
+    await f.host.disposeExecution(executionId!);
+    await assert.rejects(f.host.execute({ executionId: executionId!, tracing: { caseIds: ['A'] } }),
+      (error: unknown) => error instanceof JudgePlanError && /Unknown or disposed/u.test(error.message));
     assert.equal(f.state.prepareCalls.length, before, 'rejected before preparing');
     const plan = makePlan([{ id: 'A', input: { label: 'A' }, expected: 'A' }]);
     const direct = await withDirectJudge(f.host, traceBinding(), (judge) =>
@@ -6323,3 +6327,70 @@ test('verdict-first 13: a deferred verdict does not wait for the ordinary progra
     f.host.dispose();
   }
 });
+
+function releaseFaults(markers: ReadonlyArray<{ phase: string }>) {
+  return markers.filter(({ phase }) => phase === 'release-fault')
+    .map((marker) => (marker as { readonly operation?: string }).operation);
+}
+
+test('verdict-first 14: a release that fails after the verdict is journalled as release-fault and changes nothing else', { timeout: 5000 }, async () => {
+  const f = receiptFixture({ ordinaryDispose: () => Promise.reject(new Error('ordinary release exploded')) });
+  const failing = receiptFixture({
+    compileFailure: true,
+    leaseDispose: () => Promise.reject(new Error('observer release exploded')),
+  });
+  try {
+    const bundle = await receiptBundle();
+    const verdict = await f.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.deepEqual(verdict.deferredDrawings, ['A']);
+    assert.deepEqual(verdict.evaluation.cases.map(({ caseId, value }) => [caseId, value]), [['A', 'A'], ['B', 'B'], ['C', 'C']]);
+    await drainTurns();
+    assert.deepEqual(releaseFaults(f.markers), ['dispose interactive prepared runtime program']);
+    const at = (phase: string) => f.markers.findIndex((marker) => marker.phase === phase);
+    assert.ok(at('public-resolve') < at('release-fault'), 'journalled after the verdict');
+    const fault = f.markers[at('release-fault')] as { readonly evaluationId?: string };
+    assert.equal(fault.evaluationId, (f.markers[at('ordinary-commit')] as { readonly evaluationId?: string }).evaluationId);
+    const drawing = await f.host.execute({ executionId: verdict.executionId!, tracing: { caseIds: ['A'] } });
+    assert.equal(drawing.evaluation.cases[0]?.attachment?.status, 'drawn');
+    assert.deepEqual(ordinaryFields(drawing.evaluation.cases[0]), ordinaryFields(verdict.evaluation.cases[0]));
+
+    // The observer is prepared before the compile decision, then released after it.
+    failing.state.preparationDelayMs = 20;
+    const failed = await failing.host.execute({ bundle, ...afterVerdict, tracing: { caseIds: ['A'] } });
+    assert.equal(failed.evaluation.status, 'compile-failed');
+    assert.deepEqual(failed.deferredDrawings, []);
+    await drainTurns();
+    assert.deepEqual(releaseFaults(failing.markers), ['dispose Judge observation']);
+  } finally {
+    f.host.dispose();
+    failing.host.dispose();
+  }
+});
+
+for (const outcome of ['resolves', 'rejects'] as const) {
+  test(`verdict-first 15: disposing the host while a release is pending is safe (the release ${outcome})`, { timeout: 5000 }, async () => {
+    let settle!: () => void;
+    const pending = new Promise<void>((resolve, reject) => {
+      settle = outcome === 'resolves' ? resolve : () => reject(new Error('late release fault'));
+    });
+    const f = receiptFixture({ ordinaryDispose: () => pending });
+    try {
+      const verdict = await f.host.execute({ bundle: await receiptBundle(), ...afterVerdict, tracing: { caseIds: ['A'] } });
+      assert.ok(verdict.executionId);
+      f.host.dispose();
+      await assert.rejects(f.host.execute({ executionId: verdict.executionId, tracing: { caseIds: ['A'] } }),
+        (error: unknown) => error instanceof JudgePlanError);
+      await drainTurns();
+      assert.deepEqual(f.observerCounts(), [1, 1], 'the observer is released with the host');
+      assert.equal(f.state.disposals, 0, 'the ordinary release is still pending');
+      settle();
+      await drainTurns();
+      assert.equal(f.state.disposals, outcome === 'resolves' ? 1 : 0);
+      assert.deepEqual(releaseFaults(f.markers),
+        outcome === 'resolves' ? [] : ['dispose interactive prepared runtime program']);
+    } finally {
+      settle();
+      f.host.dispose();
+    }
+  });
+}
