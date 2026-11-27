@@ -53,3 +53,16 @@ outside the list select every cell.
 | `runtime-assets.lock.json` | The lock is derived. Its worker, engine, and C# role inputs select the affected cells. Lock checks declare the generator and workers. |
 | `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
 | `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |
+
+### Expected selections for 0.21 PRs
+
+Compare each merge commit with its first parent. Expect every cell for each
+of these historical merges.
+
+| PR | Merge | Shared input that selects every cell |
+| --- | --- | --- |
+| #110, Python project paths | `c3812a36` | `package.json` and the TraceKernel workspace language dispatch. |
+| #111, JS and TS stack frames | `895fa84f` | `package.json`. The stack-frame code itself lives in the runtime shared by JS and TS. |
+| #108, C# conditional compilation | `1798d4ab` | `package.json` and `packages/runtime-contracts/src/runtime-calls.ts`. |
+| #113, terminal output routing | `482de135` | TraceKernel's argument parsing, workspace filesystem observation, and shell output are shared. The dependency patch also changed the shared pnpm lock. |
+| #103, judged output policy | `773c8ca9` | Both `src/internal/browser-judge.ts` and `packages/runtime-contracts/src/judged-output-policy.ts`. |
