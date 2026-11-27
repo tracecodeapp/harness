@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { blobs, git, matchesInput, resolveCommit, tracksInput } from '../../scripts/gates/inventory.mjs';
+import packedDriverPaths from '../../scripts/gates/packed-driver-paths.json' with { type: 'json' };
 import { moduleGraph } from './module-graph.mjs';
 
 const manifests = new Map();
@@ -39,8 +40,26 @@ function driverPath(ref, path) {
   if (ref.endsWith('/gate-g7-ci')) {
     return /^scripts\/(?:check-untraced-host-history\.mjs|untraced-host-history\.browser\.ts|run-untraced-host-history\.sh)$/.test(path);
   }
-  return path.startsWith('tests/stage1-gates/');
+  const support = ref.endsWith('/ga-judged-byte-limit') ? packedDriverPaths.support.ga : [];
+  return matchesDriverPath([packedDriverPaths.root, ...support], path);
 }
+
+function matchesDriverPath(entries, path) {
+  return entries.some((entry) => path === entry || path.startsWith(entry + '/'));
+}
+
+test('the staged GB browser driver resolves its recorder decoders', () => {
+  const head = resolveCommit('refs/remotes/origin/test/gate-g4-g5');
+  const entries = [packedDriverPaths.root, ...packedDriverPaths.support.gb];
+  const files = new Set(blobs(head).map(([path]) => path).filter((path) => matchesDriverPath(entries, path)));
+  const read = (path) => git('show', head + ':' + path);
+  const { parents, unresolved } = moduleGraph({ files, read, aliases: {}, allowances: {} })([
+    'tests/stage1-gates/gb-browser.mjs',
+  ]);
+  assert.deepEqual([...unresolved], []);
+  assert(parents.has('packages/runtime-browser/src/trace-event-transport.ts'));
+  assert(parents.has('packages/runtime-contracts/src/trace-adapters/java.ts'));
+});
 
 test('inventory claims named command files and reports unclaimed tracked paths', () => {
   const { cells: inventory, noCell } = JSON.parse(readFileSync('scripts/gates/cells.json', 'utf8'));
@@ -77,9 +96,12 @@ test('inventory claims named command files and reports unclaimed tracked paths',
       const drivers = new Set(head ? blobs(head).map(([path]) => path).filter((path) => driverPath(ref, path)) : []);
       const files = new Set([...paths, ...drivers]);
       const read = (path) => drivers.has(path) ? git('show', head + ':' + path) : readFileSync(path, 'utf8');
-      graphs.set(ref, { files, closure: moduleGraph({ files, read, aliases, allowances: allowed }) });
+      graphs.set(ref, { files, drivers, closure: moduleGraph({ files, read, aliases, allowances: allowed }) });
     }
-    const { files, closure } = graphs.get(ref);
+    const { files, drivers, closure } = graphs.get(ref);
+    // Support archived from a gate ref is already keyed by that commit.
+    const covered = (path) => (drivers.has(path) && matchesDriverPath(packedDriverPaths.support.ga, path)) ||
+      tracksInput(cell, path);
     const namedFiles = commandFiles([cell.setup, cell.command].filter(Boolean).join(' && '));
     const roots = [];
     for (const named of new Set([...namedFiles, ...(cell.entryFiles ?? [])])) {
@@ -89,7 +111,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
     }
     const { parents, unresolved, opaque, interpreters } = closure(roots);
     for (const path of parents.keys()) {
-      if (path !== 'package.json' && !tracksInput(cell, path)) {
+      if (path !== 'package.json' && !covered(path)) {
         errors.push(`${cell.id} missing ${path} via ${chain(path, parents)}`);
       }
     }
@@ -104,7 +126,7 @@ test('inventory claims named command files and reports unclaimed tracked paths',
       if (!rule.inputs?.length) errors.push(`Opaque allowance ${key} has no covering inputs`);
       for (const input of rule.inputs ?? []) {
         const matches = [...files].filter((path) => matchesInput(path, input));
-        if (!matches.length || matches.some((path) => path !== 'package.json' && !tracksInput(cell, path))) {
+        if (!matches.length || matches.some((path) => path !== 'package.json' && !covered(path))) {
           errors.push(`${cell.id} uncovered opaque input ${input} at ${key}`);
         }
       }

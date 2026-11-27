@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, realpathSync, symlinkSync, writeFileSync } fro
 import { join, resolve } from 'node:path';
 import { sha256 } from './host-pins.mjs';
 import { git } from './inventory.mjs';
+import packedDriverPaths from './packed-driver-paths.json' with { type: 'json' };
 
 const installArgs = ['install', '--frozen-lockfile', '--prefer-offline'];
 
@@ -29,10 +30,14 @@ function runW(language, runner, gateHead, output, fixtureOnly) {
   });
 }
 
-function stageGate(gateHead, output) {
+function stageGate(gate, gateHead, output) {
   const root = join(output, 'driver');
   mkdirSync(root);
-  const archive = execFileSync('git', ['archive', gateHead, 'tests/stage1-gates'], { maxBuffer: 16 * 1024 * 1024 });
+  const archive = execFileSync('git', [
+    'archive', gateHead, packedDriverPaths.root, ...packedDriverPaths.support[gate],
+  ], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
   execFileSync('tar', ['-xf', '-', '-C', root], { input: archive });
   symlinkSync(resolve('node_modules'), join(root, 'node_modules'), 'dir');
   return root;
@@ -42,7 +47,7 @@ function runPacked(gate, language, runner, gateHead, output) {
   const { GATE_CANDIDATE_TARBALL: tarball, GATE_TARBALL_SHA256: expectedSha, GATE_REV: rev } = process.env;
   if (sha256(tarball) !== expectedSha) throw new Error('Candidate tarball changed after the lookup.');
   command('pnpm', installArgs);
-  const driver = stageGate(gateHead, output);
+  const driver = stageGate(gate, gateHead, output);
   const consumer = join(driver, 'consumer');
   const assets = join(output, 'workers');
   const receipts = join(output, 'receipts');
@@ -59,6 +64,7 @@ function runPacked(gate, language, runner, gateHead, output) {
   if (sha256(installed) !== packedSha) throw new Error('Installed /judge differs from the candidate tarball.');
   command(process.execPath, [join(consumer, 'node_modules/@tracecode/harness/dist/cli.cjs'), 'sync-assets', assets, '--inventory']);
   writeFileSync(join(receipts, 'candidate.sha'), rev + '\n');
+  writeFileSync(join(receipts, 'tarball.sha256'), expectedSha + '\n');
   writeFileSync(join(receipts, 'runner.sha'), gateHead + '\n');
   const env = {
     ...process.env,
