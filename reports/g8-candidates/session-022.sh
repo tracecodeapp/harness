@@ -59,14 +59,20 @@ fi
 
 node "$stage/stage.mjs" "$production" "$production_sha" none "$out/vproduction"
 if [[ "$operation" == selftest ]]; then
-  env SPEED_RIG_022_OPERATION=selftest +    node "$stage/java-runner/run-g8.mjs" "$out" smoke desktop-a 212026 "$minutes"
+  SPEED_RIG_022_OPERATION=selftest node "$stage/java-runner/run-g8.mjs" "$out" smoke desktop-a 212026 "$minutes"
   node "$stage/selftest-receipt-022.mjs" record "$out/selftest-pass.json" "$rig_commit" "$production_sha"
 else
   node "$stage/stage.mjs" "$candidate" "$candidate_sha" none "$out/vcandidate"
   # Verify again immediately before requesting the exclusive slots.
   node "$stage/selftest-receipt-022.mjs" require "$receipt" "$rig_commit" "$production_sha"
   status=0
-  /root/ci/bin/heavy-exclusive env SPEED_EXCLUSIVE_WINDOW=1 SPEED_RIG_022_OPERATION=window +    SPEED_RIG_022_CANDIDATE_SHA256="$candidate_sha" SPEED_RIG_022_GROUPS="${9:--}" +    node "$stage/java-runner/run-g8.mjs" "$out" run desktop-a 212026 "$minutes" || status=$?
+  window_env=(
+    SPEED_EXCLUSIVE_WINDOW=1
+    SPEED_RIG_022_OPERATION=window
+    SPEED_RIG_022_CANDIDATE_SHA256="$candidate_sha"
+    SPEED_RIG_022_GROUPS="${9:--}"
+  )
+  /root/ci/bin/heavy-exclusive env "${window_env[@]}" node "$stage/java-runner/run-g8.mjs" "$out" run desktop-a 212026 "$minutes" || status=$?
   if ((status != 0)); then exit "$status"; fi
   node "$stage/score-022.mjs" "$reference" "$out"
 fi
