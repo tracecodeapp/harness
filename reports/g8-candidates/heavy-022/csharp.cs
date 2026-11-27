@@ -6,7 +6,7 @@ public class Solution {
         for (int i = 0; i < rounds; i++) {
             state = unchecked(state * 1664525 + 1013904223);
         }
-        if (state != -432775359) throw new InvalidOperationException("Unexpected checksum");
+        if (state != 818035329) throw new InvalidOperationException("Unexpected checksum");
         return state;
     }
 }

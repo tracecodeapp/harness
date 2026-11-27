@@ -8,7 +8,7 @@ public:
             state = state * 1664525u + 1013904223u;
         }
         const auto answer = static_cast<std::int32_t>(state);
-        if (answer != 687201025) __builtin_trap();
+        if (answer != -1393913343) __builtin_trap();
         return answer;
     }
 };

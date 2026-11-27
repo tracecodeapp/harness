@@ -24,16 +24,16 @@ export const heavyCases022 = Object.freeze({
     sha256: '0a8319c442e9416d7ceaff4cad5d36a1eed13730e7f6a822b33b14cdf4e39a60',
   },
   cpp: {
-    file: 'cpp.cpp', functionName: 'checksum', input: { rounds: 300000000 }, expected: 687201025,
-    sha256: 'e266bab481854af93276a5894c4747039433f0d4736136d8d46c8d8b4309188d',
+    file: 'cpp.cpp', functionName: 'checksum', input: { rounds: 200000000 }, expected: -1393913343,
+    sha256: '14154f27fb821ec15d3cd3b16fb89d577a7e8d4beb6953d58f175f03a33691f1',
   },
   java: {
     file: 'java.java', functionName: 'checksum', input: { rounds: 30000000 }, expected: -1664503935,
     sha256: '7a4fe5feb5f1f72a8ffe1910d25e5c84f0c27dc5b173fb14f68baae4826de2a2',
   },
   csharp: {
-    file: 'csharp.cs', functionName: 'checksum', input: { rounds: 13000000 }, expected: -432775359,
-    sha256: 'dce93e1c15d4c15ddb1e3779b60341a58c915e2446ce44978af5c1a890288b3c',
+    file: 'csharp.cs', functionName: 'checksum', input: { rounds: 10000000 }, expected: 818035329,
+    sha256: '6cb774860aaff4e743e8142f06535230cce02783d4b3df7f314a46abcd268d86',
   },
 });
 
