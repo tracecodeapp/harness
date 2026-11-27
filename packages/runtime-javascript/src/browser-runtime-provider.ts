@@ -91,6 +91,7 @@ export function createJavaScriptBrowserRuntimeProvider(
         capabilities: {
           observationLease: 'separate',
           observationDeadlineMs: 20_000,
+          cancelUnusedObservationPreparation: true,
           // certifyObservation returns the trace decoded from the reply of an
           // executor worker created for this attempt and terminated after it.
           // Nothing keeps or reuses that reply.

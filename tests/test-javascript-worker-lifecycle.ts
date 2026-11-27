@@ -211,12 +211,89 @@ function preparationBarrier() {
 
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+function createBarrierJudge(language: 'javascript' | 'typescript', barrier: ReturnType<typeof preparationBarrier>) {
+  const originalWorker = globalThis.Worker;
+  Object.defineProperty(globalThis, 'Worker', {
+    configurable: true, writable: true,
+    value: function (url: string | URL) { return barrier.workerFactory(url); },
+  });
+  VmJavaScriptWorker.cloneReplies = true;
+  const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([
+      createJavaScriptBrowserRuntimeProvider({ algorithmExecution: 'disposable-worker' }),
+    ]),
+    providers: [language],
+    featureOverrides: {
+      worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true,
+    },
+  }));
+  return {
+    host,
+    async dispose() {
+      barrier.resume();
+      await host.dispose();
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: originalWorker });
+      VmJavaScriptWorker.cloneReplies = false;
+      resetVmWorkers();
+    },
+  };
+}
+
 for (const language of ['javascript', 'typescript'] as const) {
   const descriptor = (name: string) => ({
     functionName: name,
     code: language === 'typescript'
       ? `function ${name}(n: number): number { return n + 1; }`
       : `function ${name}(n) { return n + 1; }`,
+  });
+  const bundle = (name: string) => createAlgorithmJudgeBundle({
+    id: name, language, ...descriptor(name), cases: [{ id: 'case', input: { n: 1 }, expected: 2 }],
+  });
+  const run = async (host: ReturnType<typeof createBarrierJudge>['host'], name: string) => {
+    const result = await host.execute({
+      bundle: await bundle(name), interactive: true, drawingDelivery: 'after-verdict',
+    });
+    assert.ok(result.executionId);
+    return result.executionId;
+  };
+
+  test(`${language} coordinator barrier starts after TypeScript compiler preflight`, async () => {
+    const barrier = preparationBarrier();
+    const entering = Promise.withResolvers<void>();
+    const releasePreflight = Promise.withResolvers<void>();
+    let holdNext = false;
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/worker.js',
+      workerFactory: barrier.workerFactory,
+      async typescriptCompilerPreflight() {
+        if (!holdNext) return;
+        holdNext = false;
+        entering.resolve();
+        await releasePreflight.promise;
+      },
+    });
+    try {
+      const a = { mode: 'code' as const, ...descriptor('solveA') };
+      assert.equal((await client.prepareProgram(a, language)).kind, 'prepared');
+      holdNext = true;
+      const drawing = client.prepareObservation(a, undefined);
+      void drawing.catch(() => undefined);
+      await entering.promise;
+      const ordinary = client.prepareProgram({ ...a, ...descriptor('solveB') }, language);
+      void ordinary.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(barrier.posted.map(({ functionName }) => functionName), ['solveA', 'solveB']);
+      assert.equal((await ordinary).kind, 'prepared');
+      releasePreflight.resolve();
+      await barrier.held;
+      barrier.resume();
+      (await drawing).dispose();
+    } finally {
+      releasePreflight.resolve();
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
   });
 
   test(`${language} coordinator barrier gives ordinary preparation priority and drops a cancelled queued observer`, async () => {
@@ -280,33 +357,10 @@ for (const language of ['javascript', 'typescript'] as const) {
   test(`${language} coordinator barrier refuses a held-back drawing at its preparation deadline`, async (t) => {
     t.mock.timers.enable({ apis: ['setTimeout'] });
     const barrier = preparationBarrier();
-    const originalWorker = globalThis.Worker;
-    Object.defineProperty(globalThis, 'Worker', {
-      configurable: true, writable: true,
-      value: function (url: string | URL) { return barrier.workerFactory(url); },
-    });
-    VmJavaScriptWorker.cloneReplies = true;
-    const runtime = createBrowserRuntimeHost({
-      providerRegistry: createBrowserRuntimeProviderRegistry([
-        createJavaScriptBrowserRuntimeProvider({ algorithmExecution: 'disposable-worker' }),
-      ]),
-      providers: [language],
-      featureOverrides: {
-        worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true,
-      },
-    });
-    const host = createBrowserJudgeHostFromRuntimeHost(runtime);
-    const run = async (name: string) => {
-      const bundle = await createAlgorithmJudgeBundle({
-        id: name, language, ...descriptor(name), cases: [{ id: 'case', input: { n: 1 }, expected: 2 }],
-      });
-      const result = await host.execute({ bundle, interactive: true, drawingDelivery: 'after-verdict' });
-      assert.ok(result.executionId);
-      return result.executionId;
-    };
+    const { host, dispose } = createBarrierJudge(language, barrier);
     try {
-      const a = await run('solveA');
-      const b = await run('solveB');
+      const a = await run(host, 'solveA');
+      const b = await run(host, 'solveB');
       const first = host.execute({ executionId: a, tracing: { caseIds: ['case'] } });
       void first.catch(() => undefined);
       await barrier.held;
@@ -326,11 +380,46 @@ for (const language of ['javascript', 'typescript'] as const) {
       assert.deepEqual(barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ functionName }) => functionName), ['solveA']);
       assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
     } finally {
+      await dispose();
+    }
+  });
+
+  test(`${language} coordinator barrier cancels an unused preparation when its last drawing waiter aborts`, async () => {
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    const postedObservers = () => barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ functionName }) => functionName);
+    const draw = (executionId: string, signal?: AbortSignal) => host.execute({
+      executionId, tracing: { caseIds: ['case'] }, signal,
+    });
+    try {
+      const a = await run(host, 'solveA');
+      const b = await run(host, 'solveB');
+      const c = await run(host, 'solveC');
+      const abortA = new AbortController();
+      const abortB = new AbortController();
+      const drawingA = draw(a, abortA.signal);
+      void drawingA.catch(() => undefined);
+      await barrier.held;
+      const drawingB = draw(b, abortB.signal);
+      void drawingB.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(postedObservers(), ['solveA']);
+      abortB.abort();
+      abortA.abort();
+      await Promise.all([
+        assert.rejects(drawingA, { name: 'AbortError' }),
+        assert.rejects(drawingB, { name: 'AbortError' }),
+      ]);
       barrier.resume();
-      await host.dispose();
-      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: originalWorker });
-      VmJavaScriptWorker.cloneReplies = false;
-      resetVmWorkers();
+      assert.equal((await draw(c)).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.deepEqual(postedObservers(), ['solveA', 'solveC'], 'cancelled queued preparation never posts');
+      assert.equal((await draw(a)).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.equal((await draw(b)).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.deepEqual(postedObservers(), ['solveA', 'solveC', 'solveA', 'solveB'], 'retries derive fresh drawings');
+      assert.equal(barrier.coordinators.length, 1);
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+    } finally {
+      await dispose();
     }
   });
 }

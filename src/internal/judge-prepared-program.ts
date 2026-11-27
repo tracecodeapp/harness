@@ -119,6 +119,7 @@ export class JudgeObservationSchedule<Result, Expected> {
   private readonly clockStopped = new Set<string>();
   private program?: JudgeObservationProgram;
   private artifact?: Promise<ObservationPreparation>;
+  private pendingPreparation?: AbortController;
   /** Ordinary batch dispatches so far (journal generations). */
   private dispatches = 0;
   /** Accepted journal starts and finishes so far. */
@@ -358,11 +359,19 @@ export class JudgeObservationSchedule<Result, Expected> {
   private prepareObserver(): Promise<ObservationPreparation> {
     // Start ordinary preparation in the current turn before allocating the
     // derived artifact. Both variants refer to the same captured source.
+    if (this.artifact) return this.artifact;
     const program = this.program!;
-    return this.artifact ??= Promise.resolve().then(async () => {
+    const pending = this.registration.capabilities.cancelUnusedObservationPreparation
+      ? new AbortController()
+      : undefined;
+    this.pendingPreparation = pending;
+    return this.artifact = Promise.resolve().then(async () => {
       if (this.lifetime.signal.aborted) return observationRefused('observer-prepare');
       const controller = new AbortController();
-      const signal = AbortSignal.any([controller.signal, this.lifetime.signal]);
+      const signals = [controller.signal, this.lifetime.signal];
+      if (pending) signals.push(pending.signal);
+      const signal = AbortSignal.any(signals);
+      if (signal.aborted) return observationRefused('observer-prepare');
       const timer = setTimeout(
         () => controller.abort(new DOMException('Observer preparation timed out.', 'TimeoutError')),
         this.registration.capabilities.observationPrepareDeadlineMs ?? 30_000
@@ -381,7 +390,10 @@ export class JudgeObservationSchedule<Result, Expected> {
         const prepared = this.registration.prepareObservation(program, signal, this.traceOptions, waitForOrdinaryAdmission).then(async (artifact) => {
           if ('status' in artifact) return artifact;
           if (signal.aborted) await artifact.dispose();
-          else this.lease = artifact;
+          else {
+            this.lease = artifact;
+            if (this.pendingPreparation === pending) this.pendingPreparation = undefined;
+          }
           return artifact;
         });
         return await waitForSignal(prepared, signal);
@@ -391,7 +403,20 @@ export class JudgeObservationSchedule<Result, Expected> {
       } finally {
         clearTimeout(timer);
       }
+    }).finally(() => {
+      if (this.pendingPreparation === pending) this.pendingPreparation = undefined;
     });
+  }
+
+  private cancelUnusedPreparation(): void {
+    const pending = this.pendingPreparation;
+    if (!pending) return;
+    for (const attempt of this.attempts.values()) {
+      if (!attempt.settled) return;
+    }
+    this.pendingPreparation = undefined;
+    this.artifact = undefined;
+    pending.abort(judgeAbortError());
   }
 
   /** How the receipt owns this provider's replies: copied, or adopted with the full or the clone check. */
@@ -459,6 +484,7 @@ export class JudgeObservationSchedule<Result, Expected> {
           this.attempts.delete(caseId);
           this.receipt.cancelObservation(attempt.token);
           attempt.controller.abort(judgeAbortError());
+          this.cancelUnusedPreparation();
         }
       };
       const abort = () => {
