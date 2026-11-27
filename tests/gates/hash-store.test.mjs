@@ -5,7 +5,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { hashCell } from '../../scripts/gates/cell-hash.mjs';
 import { git, loadCell } from '../../scripts/gates/inventory.mjs';
-import { readPass, writeResult } from '../../scripts/gates/result-store.mjs';
+import { readCellPass, readPass, writeResult } from '../../scripts/gates/result-store.mjs';
+import { allowedEnvironment } from '../../scripts/gates/host-pins.mjs';
 
 function change(file, contents) {
   mkdirSync(dirname(file), { recursive: true });
@@ -47,6 +48,11 @@ test('hashes Git blobs, the cell, and its pins', () => {
     const own = commit('own input');
     assert.notEqual(hashCell(cell, own), base);
 
+    git('update-index', '--chmod=+x', 'workers/python/input.py');
+    git('-c', 'user.name=Gate Test', '-c', 'user.email=test@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'mode-only change');
+    assert.notEqual(hashCell(cell, git('rev-parse', 'HEAD').trim()), hashCell(cell, own));
+
     change('src/shared.ts', 'export const x = 2;\n');
     const shared = commit('shared input');
     assert.notEqual(hashCell(cell, shared), hashCell(cell, own));
@@ -80,6 +86,10 @@ test('the store serves only passes for the requested key', () => {
     const success = { ...record, status: 'pass', exitCode: 0 };
     writeResult(root, success);
     assert.deepEqual(cached(), success);
+    assert.deepEqual(readCellPass(root, { id: record.cell }, record.hash), success);
+    assert.equal(readCellPass(root, { id: record.cell }, record.hash, true), undefined);
+    writeResult(root, { ...success, cell: 'ga-python' });
+    assert.equal(readCellPass(root, { id: 'ga-python' }, record.hash), undefined);
     assert.equal(readPass(root, record.cell, 'b'.repeat(64)), undefined);
     writeResult(root, { ...record, status: 'fail', exitCode: 1, jobId: 'job-2' });
     assert.equal(cached(), undefined);
@@ -156,8 +166,17 @@ test('package scripts re-key callers and shared dependency fields re-key every c
     manifest.devDependencies.tsx = '2.0.0';
     const dependencies = keys('development dependency');
     dependencies.forEach((hash, index) => assert.notEqual(hash, setup[index]));
+
+    manifest.browser = { zlib: './shim.js' };
+    keys('browser metadata').forEach((hash, index) => assert.notEqual(hash, dependencies[index]));
   } finally {
     process.chdir(cwd);
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('only explicitly allowed host variables enter the pin environment', () => {
+  const initial = { PATH: '/bin', JAVA_HOME: '/jdk', NODE_OPTIONS: '--require bad', TRACECODE_BYPASS: '1' };
+  assert.deepEqual(allowedEnvironment(initial), { PATH: '/bin', JAVA_HOME: '/jdk' });
+  assert.notDeepEqual(allowedEnvironment(initial), allowedEnvironment({ ...initial, JAVA_HOME: '/other-jdk' }));
 });

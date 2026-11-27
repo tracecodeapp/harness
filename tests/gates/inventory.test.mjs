@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { blobs, git, matchesInput, resolveCommit, tracksInput } from '../../scripts/gates/inventory.mjs';
+import { moduleGraph } from './module-graph.mjs';
 
 const manifests = new Map();
 function scriptsAt(dir) {
@@ -28,18 +29,17 @@ function commandFiles(command, dir = '', seen = new Set()) {
   return files;
 }
 
-function runtimeImports(entry, source, files, language) {
-  const specifiers = /\b(?:from\s+|import\s*(?:\(\s*)?|require\s*\(\s*)['"]([^'"]+)['"]/g;
-  return [...source.matchAll(specifiers)].flatMap(([, specifier]) => {
-    const base = specifier.startsWith('.') ? posix.join(posix.dirname(entry), specifier) :
-      specifier.replace(/^@tracecode\/runtime-/, 'packages/runtime-');
-    const owner = /^(?:packages\/runtime-|workers\/)(python|javascript|typescript|csharp|java|cpp)(?:-native)?(?:\/|$)/.exec(base)?.[1];
-    if (!owner || owner === language || language === 'shared') return [];
-    const candidates = [base, ...['.ts', '.tsx', '.mts', '.js', '.mjs', '.cjs', '.json'].map((ext) => base + ext),
-      ...['index.ts', 'index.js', 'index.mjs', 'package.json'].map((file) => posix.join(base, file))];
-    const matches = candidates.filter((path) => files.has(path));
-    return matches.length ? matches : [base];
-  });
+function chain(file, parents) {
+  const paths = [];
+  for (let path = file; path !== null; path = parents.get(path)) paths.unshift(path);
+  return paths.join(' -> ');
+}
+
+function driverPath(ref, path) {
+  if (ref.endsWith('/gate-g7-ci')) {
+    return /^scripts\/(?:check-untraced-host-history\.mjs|untraced-host-history\.browser\.ts|run-untraced-host-history\.sh)$/.test(path);
+  }
+  return path.startsWith('tests/stage1-gates/');
 }
 
 test('inventory claims named command files and reports unclaimed tracked paths', () => {
@@ -47,8 +47,8 @@ test('inventory claims named command files and reports unclaimed tracked paths',
   assert(noCell.includes('runtime-assets.lock.json'));
   assert(noCell.includes('CHANGELOG.md'));
   const paths = git('ls-files', '-z').split('\0').filter(Boolean);
-  const branches = new Map();
-  const imports = new Map();
+  const aliases = JSON.parse(readFileSync('tsconfig.base.json', 'utf8')).compilerOptions.paths;
+  const graphs = new Map();
   const errors = [];
   const ids = new Set();
   const coveredScripts = new Set();
@@ -68,31 +68,29 @@ test('inventory claims named command files and reports unclaimed tracked paths',
       `${cell.id} must use the root manifest projection`);
     for (const pin of cell.pins.files) assert(paths.some((path) =>
       matchesInput(path, pin) && tracksInput(cell, path)), `${cell.id} has no input for pin ${pin}`);
-    const ref = cell.pins.gateRef;
-    if (ref && !branches.has(ref)) {
-      const head = resolveCommit(ref);
-      branches.set(ref, { head, paths: new Set(blobs(head).map(([path]) => path)) });
+    const ref = cell.pins.gateRef ?? '';
+    if (!graphs.has(ref)) {
+      const head = ref && resolveCommit(ref);
+      const drivers = new Set(head ? blobs(head).map(([path]) => path).filter((path) => driverPath(ref, path)) : []);
+      const files = new Set([...paths, ...drivers]);
+      const read = (path) => drivers.has(path) ? git('show', head + ':' + path) : readFileSync(path, 'utf8');
+      graphs.set(ref, { files, closure: moduleGraph({ files, read, aliases }) });
     }
-    const branch = branches.get(ref);
-    const files = new Set([...paths, ...(branch?.paths ?? [])]);
+    const { files, closure } = graphs.get(ref);
     const namedFiles = commandFiles([cell.setup, cell.command].filter(Boolean).join(' && '));
+    const roots = [];
     for (const named of new Set([...namedFiles, ...(cell.entryFiles ?? [])])) {
       const matches = files.has(named) ? [named] : [...files].filter((path) => matchesInput(path, named));
       if (!matches.length) errors.push(`${cell.id} names a missing command file ${named}`);
-      for (const path of matches) {
-        if (!tracksInput(cell, path)) errors.push(`${cell.id} does not claim ${path}`);
-        if (!/\.[cm]?[jt]sx?$/.test(path) || cell.language === 'shared') continue;
-        const source = branch?.paths.has(path) && !path.startsWith('scripts/gates/') ? branch.head : '';
-        const key = JSON.stringify([source, path, cell.language]);
-        if (!imports.has(key)) {
-          const body = source ? git('show', source + ':' + path) : readFileSync(path, 'utf8');
-          imports.set(key, runtimeImports(path, body, files, cell.language));
-        }
-        for (const imported of imports.get(key)) {
-          if (!tracksInput(cell, imported)) errors.push(`${cell.id}: ${path} imports unclaimed ${imported}`);
-        }
+      roots.push(...matches);
+    }
+    const { parents, unresolved } = closure(roots);
+    for (const path of parents.keys()) {
+      if (path !== 'package.json' && !tracksInput(cell, path)) {
+        errors.push(`${cell.id} missing ${path} via ${chain(path, parents)}`);
       }
     }
+    for (const failure of unresolved) errors.push(`${cell.id} cannot resolve ${failure}`);
     for (const [, script] of cell.command.matchAll(/\bpnpm (test:[\w:-]+)/g)) coveredScripts.add(script);
     for (const alias of cell.aliases ?? []) coveredScripts.add(alias);
   }

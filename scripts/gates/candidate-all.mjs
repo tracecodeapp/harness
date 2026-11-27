@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { git, loadInventory, resolveCommit } from './inventory.mjs';
+import { allowedEnvironment } from './host-pins.mjs';
 
 const hosts = ['agentrunner', 'ci', 'laptop-unit'];
 const ciBeforeBuild = [
@@ -66,7 +67,7 @@ function main() {
       const gateCommit = cell.pins.gateRef ? resolveCommit(cell.pins.gateRef) : '';
       const command = [cell.setup, cell.command].filter(Boolean).join(' && ');
       code = run('bash', ['-e', '-o', 'pipefail', '-c', command], {
-        ...process.env, GATE_OUTPUT: cellOutput, GATE_BRANCH_HEAD: gateCommit, GATE_REV: rev,
+        ...allowedEnvironment(), CI: '1', GATE_OUTPUT: cellOutput, GATE_BRANCH_HEAD: gateCommit, GATE_REV: rev,
       });
     }
     results.push({ cell: cell.id, exitCode: code });

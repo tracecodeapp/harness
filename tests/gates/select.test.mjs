@@ -97,3 +97,33 @@ test('candidate-all invokes each local cell once and reports failed cells', () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('the selector reads both compared inventories instead of checkout HEAD', () => {
+  const root = mkdtempSync(join(tmpdir(), 'gate-select-revs-'));
+  const selector = resolve('scripts/gates/select.mjs');
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' });
+  try {
+    mkdirSync(join(root, 'scripts/gates'), { recursive: true });
+    function commit(cells, oldValue, newValue) {
+      writeFileSync(join(root, 'scripts/gates/cells.json'), JSON.stringify({
+        cells, noCell: ['scripts/gates/cells.json'],
+      }));
+      writeFileSync(join(root, 'old.mjs'), oldValue);
+      writeFileSync(join(root, 'new.mjs'), newValue);
+      git('add', '.');
+      git('-c', 'user.name=Gate Test', '-c', 'user.email=test@example.invalid',
+        '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'snapshot');
+      return git('rev-parse', 'HEAD').trim();
+    }
+    git('init', '--quiet');
+    const base = commit([{ id: 'base-cell', inputs: ['old.mjs'] }], 'old', 'old');
+    const head = commit([{ id: 'head-cell', inputs: ['new.mjs'] }], 'new', 'new');
+    commit([{ id: 'checkout-cell', inputs: ['old.mjs', 'new.mjs'] }], 'other', 'other');
+    const output = execFileSync(process.execPath, [selector, '--base', base, '--head', head], {
+      cwd: root, encoding: 'utf8',
+    });
+    assert.deepEqual(output.trim().split('\n'), ['base-cell', 'head-cell']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

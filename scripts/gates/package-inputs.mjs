@@ -1,10 +1,5 @@
 import { git } from './inventory.mjs';
 
-const sharedFields = [
-  'dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies',
-  'pnpm', 'packageManager', 'engines', 'exports', 'files', 'main', 'types', 'type', 'version',
-];
-
 export function packageAt(commit) {
   if (!git('ls-tree', '--full-tree', commit, '--', 'package.json')) return null;
   return JSON.parse(git('show', commit + ':package.json'));
@@ -23,7 +18,7 @@ function rootScriptCalls(command) {
 
 export function packageInputs(cell, manifest) {
   if (manifest === null) return null;
-  const scripts = manifest.scripts ?? {};
+  const { scripts = {}, ...metadata } = manifest;
   const used = new Map();
   const pending = [cell.setup, cell.command].filter(Boolean).flatMap(rootScriptCalls);
   for (let index = 0; index < pending.length; index++) {
@@ -33,11 +28,7 @@ export function packageInputs(cell, manifest) {
     used.set(name, command);
     pending.push(...rootScriptCalls(command));
   }
-  return {
-    ...Object.fromEntries(sharedFields.filter((field) => Object.hasOwn(manifest, field))
-      .map((field) => [field, manifest[field]])),
-    scripts: Object.fromEntries(used),
-  };
+  return { ...metadata, scripts: Object.fromEntries(used) };
 }
 
 export function canonical(value) {
