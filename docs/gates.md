@@ -28,8 +28,9 @@ shared input globs, the root package fields the cell uses, the sorted-key cell
 definition and pins, and the gate branch head for GA, GB, and W. The runner supplies `--host-pins` for the actual
 lookup. Those pins include Node, pnpm, installed Playwright revisions, and
 the digests of any external inputs the cell uses, including a candidate tarball.
-Applicable cells also pin `javac -version`, `java -version`, and
-`dotnet --version`. The runner forwards an allowlist of host environment
+Applicable cells also pin `javac -version`, `java -version`,
+`dotnet --version`, and the host interpreters used by their entry files,
+including `python3 --version`. The runner forwards an allowlist of host environment
 variables and includes their values in the key. GA records results for
 diagnosis and always executes against its pinned candidate tarball.
 
@@ -39,7 +40,9 @@ including nested `pnpm`, `pnpm run`, and `npm run` calls.
 
 Declare the full module closure of each command and entry file, including
 literal dynamic imports and cross-language dependencies. Workspace imports
-resolve to repository source. Run `node --test tests/gates/*.test.mjs` after
+resolve to repository source. Include each file's nearest tracked package
+manifest. The audit requires an explicit input allowance for dependency
+expressions it cannot follow. Run `node --test tests/gates/*.test.mjs` after
 installing the locked dependencies to check the closure and list unclaimed
 tracked files.
 
@@ -55,6 +58,6 @@ outside the list select every cell.
 | `reports/**` | Reports record evidence after a run unless a cell declares one as an input. |
 | `.gitignore` | Ignore rules govern untracked files, while the gate key uses Git blobs. |
 | `.github/workflows/**` | A workflow affects selection only when a cell declares it. |
-| `runtime-assets.lock.json` | The lock is derived. Worker, engine, and C# role inputs select the affected cells, and `test:runtime-assets-lock` checks lock consistency. |
+| `runtime-assets.lock.json` | Untracked since PR #119. `pnpm build` generates it and CI's `test:runtime-assets-lock` checks it. Worker, engine, and C# role inputs select the affected cells. |
 | `CHANGELOG.md` | Release notes describe changes for readers. The tested inputs determine which cells run. |
 | `!**/fixtures/**` | Fixture paths remain eligible for selection, including unclaimed Markdown read by a test. |

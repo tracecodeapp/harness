@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 export const sharedGlobs = [
   'src/**', 'packages/tracekernel/**', 'packages/runtime-contracts/**',
   'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig*', 'tsup*',
-  '.nvmrc', '.npmrc',
+  '.nvmrc', '.npmrc', '.gitattributes',
 ];
 
 export function git(...args) {

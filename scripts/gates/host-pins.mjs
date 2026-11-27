@@ -31,7 +31,16 @@ function toolchainPins(cell, env) {
     tracksInput(cell, 'packages/runtime-java/src/index.ts');
   const dotnet = cell.language === 'csharp' || /\b(?:dotnet|restore-csharp-toolchain)\b/.test(commands) ||
     tracksInput(cell, 'toolchains/csharp/manifest.json');
+  const interpreters = Object.fromEntries([...new Set(['bash', ...(cell.pins.interpreters ?? [])])].sort().map((name) => {
+    if (name === 'sh') {
+      // POSIX sh does not standardize a version flag.
+      const path = execFileSync('bash', ['-c', 'command -v sh'], { encoding: 'utf8', env }).trim();
+      return [name, { sha256: sha256(realpathSync(path)) }];
+    }
+    return [name, toolVersion(name, '--version', env)];
+  }));
   return {
+    ...interpreters,
     ...(java ? { javac: toolVersion('javac', '-version', env), java: toolVersion('java', '-version', env) } : {}),
     ...(dotnet ? { dotnet: toolVersion('dotnet', '--version', env) } : {}),
   };
