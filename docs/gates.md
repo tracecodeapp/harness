@@ -74,13 +74,17 @@ outside the list select every cell.
 
 ### Expected selections for 0.21 PRs
 
-Compare each merge commit with its first parent. Expect every cell for each
-of these historical merges.
+Compare each merge commit with its first parent. Language groups use the
+inventory's `language` field. The broad-input groups below use the listed
+patterns as literal inventory entries.
 
-| PR | Merge | Shared input that selects every cell |
+| PR | Merge | Expected selection |
 | --- | --- | --- |
-| #110, Python project paths | `c3812a36` | `package.json` and the TraceKernel workspace language dispatch. |
-| #111, JS and TS stack frames | `895fa84f` | `package.json`. The stack-frame code itself lives in the runtime shared by JS and TS. |
-| #108, C# conditional compilation | `1798d4ab` | `package.json` and `packages/runtime-contracts/src/runtime-calls.ts`. |
-| #113, terminal output routing | `482de135` | TraceKernel's argument parsing, workspace filesystem observation, and shell output are shared. The dependency patch also changed the shared pnpm lock. |
-| #103, judged output policy | `773c8ca9` | Both `src/internal/browser-judge.ts` and `packages/runtime-contracts/src/judged-output-policy.ts`. |
+| #110, Python project paths | `c3812a36` | All cells due to TraceKernel's workspace language dispatch. |
+| #111, JS and TS stack frames | `895fa84f` | JS and TS cells, their joint checks `js-runtime` and the four `javascript-project-stack-frames*` and `javascript-trace-compile*` cells, plus `project-browser` because its script changed. |
+| #108, C# conditional compilation | `1798d4ab` | All cells due to `packages/runtime-contracts/src/runtime-calls.ts`. |
+| #113, terminal output routing | `482de135` | All cells due to TraceKernel's shared shell and workspace changes and the shared pnpm lock. |
+| #103, judged output policy | `773c8ca9` | All cells due to shared changes in `src/**` and `packages/runtime-contracts/**`. |
+| #109, Java judged output | `7816c6a7` | Java cells plus cells with `packages/**`, `workers/**`, or `tests/**` inputs, since this change updates Java source, workers, and fixtures. |
+| #102, C++ compiler order | `a21de2bc` | C++ cells plus cells with `packages/**` or `tests/**` inputs, since this change updates a compiler service and its test. The script edit belongs to `cpp-prepared-lifecycle`. |
+| #97, C# observer prestart | `348bb196` | C# cells plus cells with `packages/**` or `tests/**` inputs, since this change updates the C# provider and its tests. The script edit belongs to `csharp-runtime`. |
