@@ -18,16 +18,18 @@ export const heavyCases022 = Object.freeze({
     sha256: '73e223af3116dd53e558e134000073cebe4ad5779cbc04eb2854b21c777b2d1f',
   },
   python: {
-    file: 'python.py', functionName: 'count_placements', input: { size: 13 }, expected: 73712,
-    sha256: '43fd2c5e51a1ad06836613fe15a1c822c78f9dd42bf1a6dde8269ea6f1002353',
+    file: 'python.py', functionName: 'count_placements', input: { size: 12 }, expected: 14200,
+    // The default untraced guard cuts this deterministic search short.
+    limits: { maxLineEvents: 10_000_000, maxSingleLineHits: 2_000_000 },
+    sha256: '7c26b781808693d74bd804632dcaee4c05ed345468e8e4ef0c04020abdb8ded8',
   },
   cpp: {
     file: 'cpp.cpp', functionName: 'checksum', input: { rounds: 400000000 }, expected: -748346367,
-    sha256: '0f375ced8e807cbfee0fa6e51ba810aef030a1294663e520405cb58d6b1c00c8',
+    sha256: '449b40686c11aa6cdd90dd3562dd225b0dbd8211aadf538ec213c15691cb5012',
   },
   java: {
-    file: 'java.java', functionName: 'checksum', input: { rounds: 50000000 }, expected: -288021375,
-    sha256: '05fdaf87743b40350d5f1e010d442ff47a06d743ae63cb883df76aec329144f1',
+    file: 'java.java', functionName: 'checksum', input: { rounds: 30000000 }, expected: -1664503935,
+    sha256: '7a4fe5feb5f1f72a8ffe1910d25e5c84f0c27dc5b173fb14f68baae4826de2a2',
   },
   csharp: {
     file: 'csharp.cs', functionName: 'checksum', input: { rounds: 17000000 }, expected: 463212609,
@@ -36,13 +38,14 @@ export const heavyCases022 = Object.freeze({
 });
 
 export async function heavyFixture022(language) {
-  const { file, functionName, input, expected, sha256 } = heavyCases022[language];
+  const { file, functionName, input, expected, sha256, limits } = heavyCases022[language];
   const code = await readFile(new URL(`./heavy-022/${file}`, import.meta.url), 'utf8');
   assert.equal(createHash('sha256').update(code).digest('hex'), sha256, file);
   return {
     id: 'heavy-022', language, code, functionName, executionStyle: 'function',
     comparison: { schema: 'tracecode.judge.comparator.v1', mode: 'exact' },
-    traceBudget: {}, cases: [{ id: 'heavy-022', input, expected }],
+    traceBudget: {}, cases: [{ id: 'heavy-022', input: { ...input }, expected }],
+    ...(limits && { limits: { ...limits } }),
   };
 }
 

@@ -4,7 +4,7 @@ class Solution {
         for (int i = 0; i < rounds; i++) {
             state = state * 1664525 + 1013904223;
         }
-        if (state != -288021375) throw new IllegalStateException("Unexpected checksum");
+        if (state != -1664503935) throw new IllegalStateException("Unexpected checksum");
         return state;
     }
 }

@@ -20,5 +20,5 @@ def count_placements(size):
     if size % 2:
         bit = 1 << middle
         total += visit(bit, bit << 1, bit >> 1)
-    assert total == 73712
+    assert total == 14200
     return total

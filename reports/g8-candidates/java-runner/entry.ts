@@ -28,6 +28,7 @@ export type Fixture = {
   executionStyle: string;
   comparison: unknown;
   traceBudget: Record<string, number>;
+  limits?: { wallClockMs?: number; maxLineEvents?: number; maxSingleLineHits?: number };
   cases: Case[];
 };
 
@@ -287,6 +288,7 @@ export function createSession(language: string, stopSubmit: boolean, candidate =
       trace,
       ...(trace && { traceOptions }),
       ...(language === 'java' && { limits: { wallClockMs: 60_000 } }),
+      ...(fixture.limits && { limits: fixture.limits }),
       cases: fixture.cases,
       ...(trace ? { policy: allCasesPassPolicy() } : submitPolicy(fixture, stopSubmit)),
       comparison: fixture.comparison,

@@ -3,7 +3,9 @@
 The 0.22 production control is the published Harness 0.21.0 archive. The plan
 pins its SHA-256, the browser journey matrix, and the six heavy fixtures.
 The Python fixture is available to the M2 probe through
-`heavyFixture022('python')` in `plan-022.mjs`.
+`heavyFixture022('python')` in `plan-022.mjs`. Pass its `limits` to the
+Judge bundle along with its code and case. The limits keep the untraced
+line guard active and give this known search enough room to finish.
 
 ## Ordinary self-test
 
