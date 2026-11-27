@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
@@ -177,9 +178,17 @@ function requireAssetPath(paths: Set<string>, pattern: RegExp, label: string): s
 }
 
 async function buildOpenSourceInfo(): Promise<Record<string, { language: string; components: Component[] }>> {
+  const lock = await readJson<RuntimeAssetLock>('runtime-assets.lock.json').catch((error) => {
+    if (error?.code !== 'ENOENT') throw error;
+    const rendered = execFileSync(
+      process.execPath,
+      ['--import', 'tsx', 'scripts/generate-runtime-assets-lock.mjs', '--stdout'],
+      { cwd: ROOT, encoding: 'utf8' }
+    );
+    return JSON.parse(rendered) as RuntimeAssetLock;
+  });
   const [
     rootPackage,
-    lock,
     engines,
     pyodidePackage,
     pyodideLock,
@@ -189,7 +198,6 @@ async function buildOpenSourceInfo(): Promise<Record<string, { language: string;
   ] =
     await Promise.all([
       readJson<PackageJson>('package.json'),
-      readJson<RuntimeAssetLock>('runtime-assets.lock.json'),
       loadEngineRuntimePackages(ROOT),
       readJson<PackageJson>('node_modules', 'pyodide', 'package.json'),
       readJson<{ info?: { python?: string } }>('node_modules', 'pyodide', 'pyodide-lock.json'),

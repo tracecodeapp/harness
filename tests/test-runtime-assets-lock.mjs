@@ -1,12 +1,34 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 const root = process.cwd();
 const packageManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
-const lock = JSON.parse(readFileSync(resolve(root, 'runtime-assets.lock.json'), 'utf8'));
+const gitCheckout = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], {
+  cwd: root,
+  encoding: 'utf8',
+});
+if (gitCheckout.status === 0 && gitCheckout.stdout.trim() === 'true') {
+  assert.equal(
+    execFileSync('git', ['ls-files', '--', 'runtime-assets.lock.json'], { cwd: root, encoding: 'utf8' }),
+    '',
+    'runtime-assets.lock.json must be untracked'
+  );
+}
+let renderedLock;
+try {
+  renderedLock = readFileSync(resolve(root, 'runtime-assets.lock.json'), 'utf8');
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error;
+  renderedLock = execFileSync(
+    process.execPath,
+    ['--import', 'tsx', 'scripts/generate-runtime-assets-lock.mjs', '--stdout'],
+    { cwd: root, encoding: 'utf8' }
+  );
+}
+const lock = JSON.parse(renderedLock);
 const pythonSnapshotProvenance = JSON.parse(
   readFileSync(
     resolve(

@@ -13,6 +13,7 @@ if [[ ! -e "$artifact" ]]; then
   git diff --exit-code HEAD
   corepack pnpm build >b4-build.log 2>&1 || { tail -60 b4-build.log; exit 1; }
   git diff --exit-code HEAD
+  corepack pnpm test:runtime-assets-lock
   corepack pnpm pack --pack-destination "$build_output" >b4-pack.log 2>&1
   git diff --exit-code HEAD
   shopt -s nullglob
@@ -23,7 +24,7 @@ if [[ ! -e "$artifact" ]]; then
   printf '%s  %s\n' "$digest" "$artifact" >"$artifact.sha256"
   chmod 0444 "$artifact.sha256"
 fi
-git diff --exit-code "$candidate" -- packages src workers runtime-assets.lock.json
+git diff --exit-code "$candidate" -- packages src workers
 sha256sum --check "$artifact.sha256"
 read -r digest _ <"$artifact.sha256"
 printf 'candidate=%s\nartifact=%s\nsha256=%s\n' "$candidate" "$artifact" "$digest"
