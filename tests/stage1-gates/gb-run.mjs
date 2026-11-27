@@ -9,7 +9,9 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
-import { ledgerFor, ordinaryProjection, seedReplayedAStart } from './gb-oracle.mjs';
+import { checkDeferredDrawing, ledgerFor, ordinaryProjection, seedReplayedAStart } from './gb-oracle.mjs';
+import { deferredScenarios } from './deferred-browser.mjs';
+import { assertDeferred, deferredChecks } from './deferred-oracle.mjs';
 import { schedulerInjection } from './gb-probe.mjs';
 import { loadMux, runMux } from './gb-mux.mjs';
 import { summarize } from './checks.mjs';
@@ -212,6 +214,15 @@ async function main() {
   assert(requested.length, 'Selection matches no cases');
   await mkdir(output, { recursive: true });
   const planned = requested.flatMap(({ fixture, route }) => ledgerFor(fixture, route).expected);
+  const deferred = !routeFilter && !names ? [...new Set(requested.map(({ fixture }) => fixture.language))]
+    .flatMap((language) => deferredScenarios(language).map((scenario) => {
+      const name = scenario.suffix ? 'three-rows' : scenario.cut ? scenario.name : 'stdout';
+      const fixture = fixtures.fixtures.find((entry) => entry.language === language && entry.name === name);
+      const prefix = `G5/${language}/${scenario.name}/deferred`;
+      planned.push(...Object.keys(deferredChecks(scenario, {})).map((key) => `${prefix}/${key}`));
+      return { fixture, scenario, prefix };
+    })) : [];
+  const deferredPhases = [];
   assert.equal(new Set(planned).size, planned.length, 'Duplicate planned assertion ID');
   await writeFile(join(output, 'planned.json'), JSON.stringify({ runId, candidate, planned }, null, 2));
   const meta = await prepareSite();
@@ -228,6 +239,28 @@ async function main() {
     if (mux) meta.muxPin = mux.muxPin;
     browser = await chromium.launch({ channel: 'chromium', headless: true });
     meta.browser = browser.version();
+    for (const { fixture, scenario, prefix } of deferred) {
+      const page = await browser.newPage();
+      let sample;
+      try {
+        await page.goto(origin);
+        sample = await page.evaluate(async ({ fixture, scenario }) => {
+          const { runDeferredFixture } = await import('/gate.mjs');
+          return runDeferredFixture(fixture, scenario);
+        }, { fixture, scenario });
+      } catch (error) {
+        sample = { error: { message: error.message } };
+      } finally {
+        await page.close();
+      }
+      await new Promise((done, reject) => {
+        log.write(JSON.stringify({ runId, id: prefix, sample }) + '\n', (error) => error ? reject(error) : done());
+      });
+      const assertions = assertDeferred(prefix, scenario, sample, (row, report) => checkDeferredDrawing(fixture, scenario, row, report));
+      deferredPhases.push({ id: prefix, step8Owned: [], receipts: assertions.map((item) => ({
+        ...item, status: item.status === 'pass' ? 'passed' : 'failed',
+      })) });
+    }
     for (const fixture of new Set(requested.map((item) => item.fixture))) {
       const page = await browser.newPage();
       const routes = requested.filter((item) => item.fixture === fixture).map((item) => item.route);
@@ -289,6 +322,7 @@ async function main() {
       ...ledger,
     };
   });
+  phases.push(...deferredPhases);
   const count = (status) => phases.flatMap((phase) => phase.receipts).filter((receipt) => receipt.status === status).length;
   const step8Owned = new Set(phases.flatMap((phase) => phase.step8Owned));
   const inventoryReceipt = summarize(planned.filter((id) => !step8Owned.has(id)), phases.flatMap((phase) => phase.receipts.map((receipt) => ({

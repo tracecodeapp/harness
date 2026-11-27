@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { isDeepStrictEqual } from 'node:util';
 import { schedulerInjection, serviceDeadlineRoute } from './gb-probe.mjs';
 import { pythonClockRoute } from './gb-python-clock.mjs';
@@ -182,6 +183,20 @@ function checkRecorder(fixture, attachment, witness) {
     Number.isSafeInteger(evidence.attemptedEvents) && evidence.attemptedEvents >= attachment.events.length &&
     evidence.attemptedEvents === attachment.attemptedEventCount &&
     (sourceEvent || (attachment.cause === 'byte-budget' && attachment.events.length === 0 && evidence.attemptedEvents > 0));
+}
+
+export function checkDeferredDrawing(fixture, scenario, row, report) {
+  const attachment = rawAttachment(row);
+  assert(validBinding(attachment, row, { retainedWorkspaceDigest: report.workspaceDigest }));
+  const expected = fixture.cases.find(({ id }) => id === row.caseId);
+  checkRow(fixture, expected, row, scenario.suffix ? 'not-run' : 'completed',
+    report.verdict.evaluation.cases, report.presentation[0],
+    (id, pass) => assert(pass, id), {});
+  if (scenario.fault || scenario.suffix) return;
+  const replies = report.wire.filter(({ kind, request, caseId }) => kind === 'observer-reply' &&
+    request === 'draw-first-deferred' && caseId === row.caseId);
+  assert.equal(replies.length, 1, 'Expected one authenticated recorder reply');
+  assert(checkRecorder(fixture, attachment, replies[0]), 'Drawing differs from recorder reply');
 }
 
 function completeOrdinaryStarts(events) {

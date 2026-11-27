@@ -1,11 +1,13 @@
 import {
   builtInProjectEvaluators,
   createAlgorithmJudgeBundle,
+  createAlgorithmJudgeReceipt,
   createBrowserJudgeHost,
   judgeCaseExecutionOutcome,
   judgeCompileExecutionOutcome,
 } from '@tracecode/harness/judge';
 import { installJournal } from './gb-transport.mjs';
+import { observeDeferred } from './deferred-browser.mjs';
 import { installJudgeBridge, schedulerInjection, serviceDeadlineRoute } from './gb-probe.mjs';
 import { restoreTransferredTraceEvents } from '../../packages/runtime-browser/src/trace-event-transport.ts';
 import { javaTraceHooksEventsToRuntimeTrace } from '../../packages/runtime-contracts/src/trace-adapters/java.ts';
@@ -83,6 +85,31 @@ function decodeJavaObservation(payload, maxPathDepth) {
     };
   } catch {
     return { drawing: null };
+  }
+}
+
+export async function runDeferredFixture(fixture, scenario) {
+  const journal = installJournal(fixture, { decodeJavaObservation });
+  const createHost = () => createBrowserJudgeHost({
+    assetBaseUrl: '/workers', providers: [fixture.language],
+    ...(fixture.language === 'cpp' ? { cpp: { executionTimeoutMs: 20000, tracingTimeoutMs: 20000 } } : {}),
+  });
+  try {
+    const bundle = await fixtureBundle(fixture, `deferred-${scenario.name}`, fixture.cases, true);
+    const report = await observeDeferred(bundle, scenario, {
+      createHost,
+      track: (route) => journal.track(route),
+      grade: (bundle, evaluation) => {
+        const { policy, verdict, passedCount, totalCount } = createAlgorithmJudgeReceipt(bundle, evaluation);
+        return { policy, verdict, passedCount, totalCount };
+      },
+      project: (receipt) => receipt.evaluation.cases.map((row) => convert(judgeCaseExecutionOutcome, row, {
+        language: fixture.language,
+      })),
+    });
+    return { ...report, wire: journal.since(0) };
+  } finally {
+    journal.restore();
   }
 }
 
