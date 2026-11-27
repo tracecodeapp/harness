@@ -30,7 +30,22 @@ assert_empty_listing() {
 
 node "$cap" layout | tee "$out/layout.json"
 node "$cap" assert-clean
+node "$cap" snapshot > "$out/snapshot-before.json"
 assert_empty_listing "$out/listing-before.txt"
+# R2 on every exit, including failure: the pre-existing cgroups on the path must be unchanged.
+compare_snapshots() {
+  local rc=$?
+  node "$cap" snapshot > "$out/snapshot-after.json" || rc=1
+  if cmp -s "$out/snapshot-before.json" "$out/snapshot-after.json"; then
+    echo "$(stamp) path snapshots identical: $(cat "$out/snapshot-after.json")"
+  else
+    echo "Path snapshots differ: $out/snapshot-before.json $out/snapshot-after.json" >&2
+    rc=1
+  fi
+  listing > "$out/listing-exit.txt" || rc=1
+  exit "$rc"
+}
+trap compare_snapshots EXIT
 
 case "$operation" in
   dryrun)
@@ -79,14 +94,15 @@ case "$operation" in
     for _ in $(seq 1 300); do
       if [[ "$(systemctl show -p LoadState --value "$unit")" == not-found &&
             ! -e "/sys/fs/cgroup/system.slice/$unit" ]] &&
-         ! grep -lsqz "^H022_P27F_RUN=$unit\$" /proc/[0-9]*/environ; then
+         node "$cap" survivors "$out/hold/ready.json" > "$out/survivors.json"; then
         gone=1; break
       fi
       sleep 0.1
     done
     [[ -n "$gone" ]] || { echo "$unit not removed 30 s after kill -9" >&2; listing >&2; exit 1; }
     echo "$(stamp) removed $(( ($(date +%s%N) - killed_at) / 1000000 )) ms after kill -9:" \
-      "unit not-found, no cgroup directory, no process with H022_P27F_RUN=$unit"
+      "unit not-found, no cgroup directory, none of the scope's Chromium processes alive" \
+      "$(cat "$out/survivors.json")"
     # The watchdog exits after the unit has been absent for 3 s.
     sleep 4
     cat "$out/hold/$unit-watchdog.log"

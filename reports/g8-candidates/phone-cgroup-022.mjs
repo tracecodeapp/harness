@@ -25,7 +25,6 @@ export const phoneCap022 = Object.freeze({
   quotaUs: 2_500,
   slice: 'system.slice',
   unitPrefix: 'h022-p27f-',
-  envMarker: 'H022_P27F_RUN',
 });
 export const workerThrottle022 = `cgroup-cpu.max ${phoneCap022.quotaUs} ${phoneCap022.periodUs}`;
 // Stamp for CPU-4 cells measured with the CDP throttle alone, which does not reach Workers.
@@ -114,31 +113,46 @@ function readProc(pid, file) {
   }
 }
 
-function describeProcess(pid, unit) {
+// Fields after "pid (comm) ": [0] is the state, [1] the parent PID, [19] the start time.
+function statFields(pid) {
+  const stat = readProc(pid, 'stat')?.toString('utf8');
+  return stat && stat.slice(stat.lastIndexOf(') ') + 2).split(' ');
+}
+
+function describeProcess(pid) {
   let exe;
   try {
     exe = readlinkSync(`/proc/${pid}/exe`);
   } catch {
     return { pid, exited: true };
   }
+  const stat = statFields(pid);
+  if (!stat) return { pid, exited: true };
   const argv = (readProc(pid, 'cmdline') ?? Buffer.alloc(0)).toString('utf8').split('\0').filter(Boolean);
-  const env = (readProc(pid, 'environ') ?? Buffer.alloc(0)).toString('utf8').split('\0');
   const type = argv.find((arg) => arg.startsWith('--type='))?.slice('--type='.length) ?? 'browser';
   const threads = Number(/^Threads:\s+(\d+)$/mu.exec(readProc(pid, 'status')?.toString('utf8') ?? '')?.[1] ?? 0);
-  return { pid, exe, type, threads, marker: env.includes(`${phoneCap022.envMarker}=${unit}`) };
+  return { pid, ppid: Number(stat[1]), startTime: stat[19], exe, type, threads };
 }
 
-// R3: every PID in the scope is the rig's Chromium (and never the Node driver).
-export function membership022(cgroup, unit, chromiumDir, { requireRenderer = false } = {}) {
+// R3: every PID in the scope is the rig's Chromium and never the Node driver. Each one has a
+// Chromium executable and descends, through other members, from the browser this driver spawned.
+// (Chromium rewrites its environ block for the process title, so an environment marker can't be read.)
+export function membership022(cgroup, chromiumDir, { requireRenderer = false } = {}) {
   const dir = join(cgroupRoot, cgroup);
   const pids = readTrim(join(dir, 'cgroup.procs')).split('\n').filter(Boolean).map(Number);
-  const processes = pids.map((pid) => describeProcess(pid, unit)).filter(({ exited }) => !exited);
+  const processes = pids.map(describeProcess).filter(({ exited }) => !exited);
   assert.ok(processes.length > 0, `No live process in ${cgroup}`);
+  const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
   for (const entry of processes) {
     assert.notEqual(entry.pid, process.pid, 'The Node driver is inside the rig cgroup');
     assert.ok(entry.exe.startsWith(chromiumDir + '/'), `Non-Chromium process in ${cgroup}: ${JSON.stringify(entry)}`);
-    assert.ok(entry.marker, `Process without the rig marker in ${cgroup}: ${JSON.stringify(entry)}`);
+    let root = entry;
+    for (let hops = 0; byPid.has(root.ppid) && hops < 64; hops++) root = byPid.get(root.ppid);
+    assert.equal(root.ppid, process.pid,
+      `Process in ${cgroup} does not descend from this driver's Chromium: ${JSON.stringify(entry)}`);
+    entry.browserPid = root.pid;
   }
+  assert.equal(new Set(processes.map(({ browserPid }) => browserPid)).size, 1, 'More than one browser in the scope');
   if (requireRenderer) {
     assert.ok(processes.some(({ type }) => type === 'renderer'), `No renderer in ${cgroup}`);
   }
@@ -146,13 +160,9 @@ export function membership022(cgroup, unit, chromiumDir, { requireRenderer = fal
   return { cgroup, at: new Date().toISOString(), processes, threads };
 }
 
-// Processes anywhere on the host that carry this run's marker.
-export function markedProcesses022(unit) {
-  const ls = spawnSync('ls', ['/proc'], { encoding: 'utf8' });
-  return ls.stdout.split('\n').filter((name) => /^\d+$/u.test(name)).map(Number)
-    .filter((pid) => pid !== process.pid)
-    .filter((pid) => (readProc(pid, 'environ') ?? Buffer.alloc(0)).toString('utf8').split('\0')
-      .includes(`${phoneCap022.envMarker}=${unit}`));
+// Processes from a membership listing that are still alive (same PID and start time).
+export function survivors022(processes) {
+  return processes.filter(({ pid, startTime }) => statFields(pid)?.[19] === startTime);
 }
 
 // Kill and wait for one rig unit to disappear. Only ever called with this run's own unit name.
@@ -163,7 +173,8 @@ export async function removeUnit022(unit, { timeoutMs = 20_000 } = {}) {
   while (Date.now() - started < timeoutMs) {
     const state = loadState(unit);
     const cgroupDir = join(cgroupRoot, phoneCap022.slice, unit);
-    if (state === 'not-found' && !existsSync(cgroupDir) && !markedProcesses022(unit).length) {
+    // A scope's cgroup is removed only once it is empty, so its absence means no member is alive.
+    if (state === 'not-found' && !existsSync(cgroupDir)) {
       return { unit, killed, removedAfterMs: Date.now() - started };
     }
     if (state === 'loaded') {
@@ -207,7 +218,6 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
   // Playwright pipe, arguments and environment pass through unchanged.
   writeFileSync(wrapper, [
     '#!/bin/sh',
-    `export ${phoneCap022.envMarker}=${shellQuote(unit)}`,
     `exec systemd-run --quiet --scope --collect --slice=${slice} --unit=${shellQuote(unit)} \\`,
     `  -p CPUQuota=${phoneCap022.cpuQuotaPercent}% -p CPUQuotaPeriodSec=${phoneCap022.periodUs / 1000}ms \\`,
     `  -- ${shellQuote(real)} "$@"`,
@@ -230,7 +240,7 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
     assert.equal(cgroup, `/${slice}/${unit}`, 'Rig scope is not where the layout check expected it');
     const cpuMax = readTrim(join(cgroupRoot, cgroup, 'cpu.max'));
     assert.equal(cpuMax, `${phoneCap022.quotaUs} ${phoneCap022.periodUs}`, 'Unexpected cpu.max');
-    const atLaunch = membership022(cgroup, unit, chromiumDir);
+    const atLaunch = membership022(cgroup, chromiumDir);
     const during = snapshotPath022(slice);
     assert.deepEqual(during, before, 'A pre-existing cgroup changed when the scope was created');
     const receipt = {
@@ -242,7 +252,7 @@ export async function launchCapped022(chromium, { runId, workDir, launchOptions 
     let removed;
     return {
       browser, unit, cgroup, receipt,
-      membership: (options) => membership022(cgroup, unit, chromiumDir, options),
+      membership: (options) => membership022(cgroup, chromiumDir, options),
       async remove() {
         if (removed) return removed;
         await browser.close().catch(() => {});
@@ -273,11 +283,20 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const own = readTrim('/proc/self/cgroup');
     console.log(JSON.stringify({ kind: 'rig-cgroup-layout', driverCgroup: own, path,
       systemd: execFileSync('systemctl', ['--version'], { encoding: 'utf8' }).split('\n')[0] }));
+  } else if (operation === 'snapshot') {
+    console.log(JSON.stringify(snapshotPath022()));
   } else if (operation === 'cleanup') {
     const unit = unitName022(runId);
     console.log(JSON.stringify({ kind: 'rig-cgroup-cleanup', ...await removeUnit022(unit) }));
+  } else if (operation === 'survivors') {
+    // runId is a ready.json from the probe's hold mode here.
+    const { membership } = JSON.parse(readFileSync(runId, 'utf8'));
+    const alive = survivors022(membership.processes);
+    console.log(JSON.stringify({ kind: 'rig-chromium-survivors', listed: membership.processes.length,
+      alive: alive.map(({ pid, type }) => ({ pid, type })) }));
+    process.exitCode = alive.length ? 1 : 0;
   } else {
-    console.error('Usage: phone-cgroup-022.mjs assert-clean | layout | cleanup <run-id>');
+    console.error('Usage: phone-cgroup-022.mjs assert-clean | layout | snapshot | cleanup <run-id> | survivors <ready.json>');
     process.exitCode = 2;
   }
 }
