@@ -76,7 +76,10 @@ class VmJavaScriptWorker {
   private readonly workerSelf: WorkerSelf;
   private readonly context: vm.Context;
 
-  constructor(readonly url: string | URL) {
+  constructor(
+    readonly url: string | URL,
+    receive?: (message: ProtocolMessage, deliver: () => void) => void,
+  ) {
     const parsedUrl = new URL(String(url), 'https://harness.test/');
     this.role = parsedUrl.searchParams.get('tracecodeRole') ?? 'legacy';
     VmJavaScriptWorker.instances.push(this);
@@ -84,12 +87,13 @@ class VmJavaScriptWorker {
     this.workerSelf = {
       location: { search: parsedUrl.search },
       postMessage: (message) => {
-        queueMicrotask(() => {
+        const deliver = () => {
           if (!this.terminated) {
             const data = VmJavaScriptWorker.cloneReplies ? structuredClone(message) : message;
             this.onmessage?.({ data } as MessageEvent<ProtocolMessage>);
           }
-        });
+        };
+        queueMicrotask(() => receive ? receive(message, deliver) : deliver());
       },
       onmessage: null,
     };
@@ -162,6 +166,372 @@ class VmJavaScriptWorker {
       )
     );
   }
+}
+
+function preparationBarrier(holdType: 'prepare-observation' | 'prepare-execution' = 'prepare-observation') {
+  const held = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const posted: { type: string; functionName?: string; maxTraceBytes?: number }[] = [];
+  const coordinators: VmJavaScriptWorker[] = [];
+  let heldId: string | undefined;
+  const workerFactory = (url: string | URL) => {
+    if (new URL(String(url), 'https://harness.test').searchParams.get('tracecodeRole') !== 'coordinator') {
+      return new VmJavaScriptWorker(url);
+    }
+    const worker = new VmJavaScriptWorker(url, (message, deliver) => {
+      if (message.id !== undefined && message.id === heldId) {
+        held.resolve();
+        void resume.promise.then(deliver);
+      } else {
+        deliver();
+      }
+    });
+    coordinators.push(worker);
+    const post = worker.postMessage.bind(worker);
+    worker.postMessage = (message) => {
+      const payload = message.payload as {
+        request?: { functionName?: string };
+        functionName?: string;
+        options?: { maxTraceBytes?: number };
+      } | undefined;
+      if (message.type === holdType && heldId === undefined) heldId = message.id;
+      if (message.type === 'prepare-execution' || message.type === 'prepare-observation') {
+        posted.push({
+          type: message.type,
+          functionName: payload?.request?.functionName ?? payload?.functionName,
+          maxTraceBytes: payload?.options?.maxTraceBytes,
+        });
+      }
+      post(message);
+    };
+    return worker;
+  };
+  return { posted, coordinators, workerFactory, held: held.promise, resume: resume.resolve };
+}
+
+const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+function createBarrierJudge(language: 'javascript' | 'typescript', barrier: ReturnType<typeof preparationBarrier>) {
+  const originalWorker = globalThis.Worker;
+  Object.defineProperty(globalThis, 'Worker', {
+    configurable: true, writable: true,
+    value: function (url: string | URL) { return barrier.workerFactory(url); },
+  });
+  VmJavaScriptWorker.cloneReplies = true;
+  const host = createBrowserJudgeHostFromRuntimeHost(createBrowserRuntimeHost({
+    providerRegistry: createBrowserRuntimeProviderRegistry([
+      createJavaScriptBrowserRuntimeProvider({ algorithmExecution: 'disposable-worker' }),
+    ]),
+    providers: [language],
+    featureOverrides: {
+      worker: true, webAssembly: true, webCrypto: true, sharedArrayBuffer: true, crossOriginIsolated: true,
+    },
+  }));
+  return {
+    host,
+    async dispose() {
+      barrier.resume();
+      await host.dispose();
+      Object.defineProperty(globalThis, 'Worker', { configurable: true, writable: true, value: originalWorker });
+      VmJavaScriptWorker.cloneReplies = false;
+      resetVmWorkers();
+    },
+  };
+}
+
+for (const language of ['javascript', 'typescript'] as const) {
+  const descriptor = (name: string) => ({
+    functionName: name,
+    code: language === 'typescript'
+      ? `function ${name}(n: number): number { return n + 1; }`
+      : `function ${name}(n) { return n + 1; }`,
+  });
+  const bundle = (name: string) => createAlgorithmJudgeBundle({
+    id: name, language, ...descriptor(name), cases: [{ id: 'case', input: { n: 1 }, expected: 2 }],
+  });
+  const run = async (host: ReturnType<typeof createBarrierJudge>['host'], name: string) => {
+    const result = await host.execute({
+      bundle: await bundle(name), interactive: true, drawingDelivery: 'after-verdict',
+    });
+    assert.ok(result.executionId);
+    return result.executionId;
+  };
+  const draw = (host: ReturnType<typeof createBarrierJudge>['host'], executionId: string, caseId: string, signal?: AbortSignal) => host.execute({
+    executionId, tracing: { caseIds: [caseId] }, signal,
+  });
+  const postedObservers = (barrier: ReturnType<typeof preparationBarrier>) => barrier.posted
+    .filter(({ type }) => type === 'prepare-observation').map(({ functionName }) => functionName);
+
+  test(`${language} coordinator barrier starts after TypeScript compiler preflight`, async () => {
+    const barrier = preparationBarrier();
+    const entering = Promise.withResolvers<void>();
+    const releasePreflight = Promise.withResolvers<void>();
+    let holdNext = false;
+    const client = new JavaScriptWorkerClient({
+      workerUrl: '/worker.js',
+      workerFactory: barrier.workerFactory,
+      async typescriptCompilerPreflight() {
+        if (!holdNext) return;
+        holdNext = false;
+        entering.resolve();
+        await releasePreflight.promise;
+      },
+    });
+    try {
+      const a = { mode: 'code' as const, ...descriptor('solveA') };
+      assert.equal((await client.prepareProgram(a, language)).kind, 'prepared');
+      holdNext = true;
+      const drawing = client.prepareObservation(a, undefined);
+      void drawing.catch(() => undefined);
+      await entering.promise;
+      const ordinary = client.prepareProgram({ ...a, ...descriptor('solveB') }, language);
+      void ordinary.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(barrier.posted.map(({ functionName }) => functionName), ['solveA', 'solveB']);
+      assert.equal((await ordinary).kind, 'prepared');
+      releasePreflight.resolve();
+      await barrier.held;
+      barrier.resume();
+      (await drawing).dispose();
+    } finally {
+      releasePreflight.resolve();
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier gives ordinary preparation priority and drops a cancelled queued observer`, async () => {
+    const barrier = preparationBarrier();
+    const client = new JavaScriptWorkerClient({ workerUrl: '/worker.js', workerFactory: barrier.workerFactory });
+    try {
+      const a = { mode: 'code' as const, ...descriptor('solveA') };
+      const b = { mode: 'code' as const, ...descriptor('solveB') };
+      assert.equal((await client.prepareProgram(a, language)).kind, 'prepared');
+      const running = client.prepareObservation(a, { maxTraceBytes: 100 });
+      await barrier.held;
+      const queued = client.prepareObservation(a, { maxTraceBytes: 200 });
+      void queued.catch(() => undefined);
+      const controller = new AbortController();
+      const cancelled = client.prepareObservation(a, { maxTraceBytes: 300 }, controller.signal);
+      void cancelled.catch(() => undefined);
+      await nextTurn();
+      const ordinary = client.prepareProgram(b, language);
+      void ordinary.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(barrier.posted.filter(({ type }) => type === 'prepare-observation').map(({ maxTraceBytes }) => maxTraceBytes), [100]);
+      controller.abort();
+      await assert.rejects(cancelled, { name: 'AbortError' });
+      barrier.resume();
+      assert.equal((await ordinary).kind, 'prepared');
+      (await running).dispose();
+      (await queued).dispose();
+      assert.deepEqual(barrier.posted.map(({ functionName, maxTraceBytes }) => maxTraceBytes ?? functionName),
+        ['solveA', 100, 'solveB', 200]);
+    } finally {
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier detaches an aborted posted observer without closing the session`, async () => {
+    const barrier = preparationBarrier();
+    const client = new JavaScriptWorkerClient({ workerUrl: '/worker.js', workerFactory: barrier.workerFactory });
+    try {
+      const call = { mode: 'code' as const, ...descriptor('solveA') };
+      assert.equal((await client.prepareProgram(call, language)).kind, 'prepared');
+      const controller = new AbortController();
+      const running = client.prepareObservation(call, { maxTraceBytes: 100 }, controller.signal);
+      void running.catch(() => undefined);
+      await barrier.held;
+      controller.abort();
+      await assert.rejects(running, { name: 'AbortError' });
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+      assert.equal(barrier.posted.length, 2, 'Abort must not send another command');
+      barrier.resume();
+      assert.equal((await client.prepareProgram({ ...call, ...descriptor('solveB') }, language)).kind, 'prepared');
+      assert.equal(barrier.coordinators.length, 1);
+    } finally {
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier drops a cancelled ordinary preparation before posting without closing the session`, async () => {
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    try {
+      const a = await run(host, 'solveA');
+      const drawing = draw(host, a, 'case');
+      void drawing.catch(() => undefined);
+      await barrier.held;
+      const controller = new AbortController();
+      const ordinary = host.execute({
+        bundle: await bundle('solveB'), interactive: true, drawingDelivery: 'after-verdict', signal: controller.signal,
+      });
+      void ordinary.catch(() => undefined);
+      await nextTurn();
+      assert.equal(barrier.posted.some(({ functionName }) => functionName === 'solveB'), false);
+
+      controller.abort();
+      await assert.rejects(ordinary, { name: 'AbortError' });
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+      barrier.resume();
+      assert.equal((await drawing).evaluation.cases[0]?.attachment?.status, 'drawn');
+      await run(host, 'solveC');
+      assert.equal(barrier.posted.some(({ functionName }) => functionName === 'solveB'), false);
+      assert.equal(barrier.coordinators.length, 1);
+    } finally {
+      await dispose();
+    }
+  });
+
+  test(`${language} coordinator barrier closes the session when a posted ordinary preparation is cancelled`, async () => {
+    const barrier = preparationBarrier('prepare-execution');
+    const client = new JavaScriptWorkerClient({ workerUrl: '/worker.js', workerFactory: barrier.workerFactory });
+    try {
+      const controller = new AbortController();
+      const ordinary = client.prepareProgram({ mode: 'code', ...descriptor('solveA'), signal: controller.signal }, language);
+      void ordinary.catch(() => undefined);
+      await barrier.held;
+      controller.abort();
+      await assert.rejects(ordinary, { name: 'AbortError' });
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 1);
+    } finally {
+      barrier.resume();
+      client.terminate();
+      resetVmWorkers();
+    }
+  });
+
+  test(`${language} coordinator barrier keeps the coordinator when its pending execution is disposed`, async () => {
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    try {
+      const a = await run(host, 'solveA');
+      const drawing = draw(host, a, 'case');
+      void drawing.catch(() => undefined);
+      await barrier.held;
+      await host.disposeExecution(a);
+      await assert.rejects(drawing, { name: 'JudgePlanError' });
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+      assert.equal(barrier.coordinators.length, 1);
+      barrier.resume();
+      await run(host, 'solveB');
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+      assert.equal(barrier.coordinators.length, 1);
+    } finally {
+      await dispose();
+    }
+  });
+
+  test(`${language} coordinator barrier refuses a held-back drawing at its preparation deadline`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    try {
+      const a = await run(host, 'solveA');
+      const b = await run(host, 'solveB');
+      const first = draw(host, a, 'case');
+      void first.catch(() => undefined);
+      await barrier.held;
+      t.mock.timers.tick(1);
+      const second = draw(host, b, 'case');
+      void second.catch(() => undefined);
+      let secondSettled = false;
+      void second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
+      await nextTurn();
+      assert.deepEqual(postedObservers(barrier), ['solveA']);
+      t.mock.timers.tick(29_999);
+      await nextTurn();
+      assert.equal(secondSettled, false);
+      const firstAttachment = (await first).evaluation.cases[0]?.attachment;
+      assert.equal(firstAttachment?.status, 'refused');
+      assert.equal(firstAttachment.reason, 'observer-timeout');
+
+      t.mock.timers.tick(1);
+      const drawing = await second;
+      const attachment = drawing.evaluation.cases[0]?.attachment;
+      assert.equal(attachment?.status, 'refused');
+      assert.equal(attachment.reason, 'observer-timeout');
+      barrier.resume();
+      await first;
+      await nextTurn();
+      assert.deepEqual(postedObservers(barrier), ['solveA']);
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+    } finally {
+      await dispose();
+    }
+  });
+
+  test(`${language} coordinator barrier keeps shared preparation when another drawing still needs it`, async () => {
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    try {
+      const a = await host.execute({
+        bundle: await createAlgorithmJudgeBundle({
+          id: 'shared-observation', language, ...descriptor('solve'), cases: [
+            { id: 'X', input: { n: 1 }, expected: 2 },
+            { id: 'Y', input: { n: 2 }, expected: 3 },
+          ],
+        }),
+        interactive: true, drawingDelivery: 'after-verdict',
+      });
+      assert.ok(a.executionId);
+      const controller = new AbortController();
+      const drawingX = draw(host, a.executionId, 'X', controller.signal);
+      void drawingX.catch(() => undefined);
+      await barrier.held;
+      const drawingY = draw(host, a.executionId, 'Y');
+      void drawingY.catch(() => undefined);
+      await nextTurn();
+      controller.abort();
+      await assert.rejects(drawingX, { name: 'AbortError' });
+      barrier.resume();
+      const caseY = (await drawingY).evaluation.cases.find(({ caseId }) => caseId === 'Y');
+      assert.equal(caseY?.attachment?.status, 'drawn');
+      assert.deepEqual(postedObservers(barrier), ['solve']);
+    } finally {
+      await dispose();
+    }
+  });
+
+  test(`${language} coordinator barrier cancels an unused preparation when its last drawing waiter aborts`, async () => {
+    const barrier = preparationBarrier();
+    const { host, dispose } = createBarrierJudge(language, barrier);
+    try {
+      const a = await run(host, 'solveA');
+      const b = await run(host, 'solveB');
+      const c = await run(host, 'solveC');
+      const abortA = new AbortController();
+      const abortB = new AbortController();
+      const drawingA = draw(host, a, 'case', abortA.signal);
+      void drawingA.catch(() => undefined);
+      await barrier.held;
+      const drawingB = draw(host, b, 'case', abortB.signal);
+      void drawingB.catch(() => undefined);
+      await nextTurn();
+      assert.deepEqual(postedObservers(barrier), ['solveA']);
+      abortB.abort();
+      abortA.abort();
+      await Promise.all([
+        assert.rejects(drawingA, { name: 'AbortError' }),
+        assert.rejects(drawingB, { name: 'AbortError' }),
+      ]);
+      barrier.resume();
+      assert.equal((await draw(host, c, 'case')).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.deepEqual(postedObservers(barrier), ['solveA', 'solveC'], 'cancelled queued preparation never posts');
+      assert.equal((await draw(host, a, 'case')).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.equal((await draw(host, b, 'case')).evaluation.cases[0]?.attachment?.status, 'drawn');
+      assert.deepEqual(postedObservers(barrier), ['solveA', 'solveC', 'solveA', 'solveB'], 'retries derive fresh drawings');
+      assert.equal(barrier.coordinators.length, 1);
+      assert.equal(barrier.coordinators[0]?.terminateCalls, 0);
+    } finally {
+      await dispose();
+    }
+  });
 }
 
 for (const language of ['javascript', 'typescript'] as const) {

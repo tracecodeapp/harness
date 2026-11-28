@@ -138,6 +138,8 @@ export interface WorkerSessionSendEffectOptions {
   readonly kernelSignals?: RuntimeKernelSignalBridge;
   /** Observe the exact command id after registration and before postMessage. */
   readonly onRequestRegistered?: (commandId: string) => void;
+  /** Schedule the post and reply after preflight and worker readiness. */
+  readonly scheduleReply?: <T>(reply: Effect.Effect<T, Error>) => Effect.Effect<T, Error>;
 }
 
 export class WorkerSessionCore {
@@ -501,6 +503,7 @@ export class WorkerSessionCore {
       kernelSyscalls,
       kernelSignals,
       onRequestRegistered,
+      scheduleReply,
     } = options;
     return Effect.gen(this, function* () {
       yield* Effect.try({
@@ -530,7 +533,7 @@ export class WorkerSessionCore {
         catch: (error) => (error instanceof Error ? error : new Error(String(error))),
       });
 
-      const reply = this.postAndAwaitReply<T>(
+      const post = this.postAndAwaitReply<T>(
         session.worker,
         type,
         payload,
@@ -540,6 +543,9 @@ export class WorkerSessionCore {
         kernelSignals,
         onRequestRegistered
       );
+      const reply = scheduleReply ? scheduleReply(Effect.suspend(() =>
+        this.session === session ? post : Effect.fail(new WorkerTerminatedError())
+      )) : post;
       if (timeoutMs === null) {
         return yield* reply;
       }
@@ -711,17 +717,24 @@ export class WorkerSessionCore {
   /**
    * The single boundary between the Effect core and the Promise-facing API.
    *
-   * - The caller's AbortSignal becomes fiber interruption; interruption keeps
-   *   the legacy contract (worker torn down, callers see an AbortError).
+   * - The caller's AbortSignal becomes fiber interruption and an AbortError.
+   *   Interruption tears down the worker unless the request can be dropped
+   *   before it reaches the worker.
    * - Typed failures are rethrown as-is so `instanceof` classification keeps
    *   working across the boundary; defects surface unwrapped.
    */
-  runClientEffect<A>(effect: Effect.Effect<A, Error>, signal?: AbortSignal): Promise<A> {
+  runClientEffect<A>(
+    effect: Effect.Effect<A, Error>,
+    signal?: AbortSignal,
+    shouldCloseSessionOnInterrupt?: () => boolean,
+  ): Promise<A> {
     const interruptionError = (): Error => signal?.aborted
       ? new ExecutionAbortedError()
       : new WorkerTerminatedError('Worker execution was interrupted internally');
     const program = effect.pipe(
-      Effect.onInterrupt(() => Effect.sync(() => this.closeSession(interruptionError())))
+      Effect.onInterrupt(() => Effect.sync(() => {
+        if (shouldCloseSessionOnInterrupt?.() ?? true) this.closeSession(interruptionError());
+      }))
     );
     return Effect.runPromiseExit(program, signal ? { signal } : undefined).then((exit) => {
       if (Exit.isSuccess(exit)) return exit.value;

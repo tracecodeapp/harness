@@ -1,6 +1,6 @@
 interface ConcurrencyWaiter {
   readonly signal?: AbortSignal;
-  readonly resolve: (release: () => void) => void;
+  readonly start: () => Promise<void>;
   readonly reject: (error: Error) => void;
   readonly onAbort?: () => void;
 }
@@ -50,36 +50,29 @@ export class RuntimeProgramConcurrencyGate {
     }
   }
 
-  async run<Result>(
+  run<Result>(
     signal: AbortSignal | undefined,
     use: () => Promise<Result>,
     priority: ProgramPriority = 'foreground'
   ): Promise<Result> {
-    const release = await this.acquire(signal, priority);
-    try {
-      return await use();
-    } finally {
-      release();
-    }
-  }
-
-  private acquire(
-    signal: AbortSignal | undefined,
-    priority: ProgramPriority
-  ): Promise<() => void> {
     if (signal?.aborted) {
       return Promise.reject(preparedRuntimeAbortError(signal));
     }
-    if (this.active < this.maximum) {
-      this.active += 1;
-      return Promise.resolve(this.releasePermit());
-    }
     const waiting = priority === 'foreground' ? this.waiting
       : priority === 'foreground-cleanup' ? this.cleanup : this.background;
-    return new Promise<() => void>((resolve, reject) => {
+    return new Promise<Result>((resolve, reject) => {
       const waiter: ConcurrencyWaiter = {
         signal,
-        resolve,
+        start: async () => {
+          try {
+            resolve(await use());
+          } catch (error) {
+            reject(error);
+          } finally {
+            this.active -= 1;
+            this.resumeNext();
+          }
+        },
         reject,
         ...(signal
           ? {
@@ -95,17 +88,8 @@ export class RuntimeProgramConcurrencyGate {
         signal.addEventListener('abort', waiter.onAbort, { once: true });
       }
       waiting.push(waiter);
-    });
-  }
-
-  private releasePermit(): () => void {
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      this.active -= 1;
       this.resumeNext();
-    };
+    });
   }
 
   private resumeNext(): void {
@@ -120,7 +104,9 @@ export class RuntimeProgramConcurrencyGate {
         waiter.signal.removeEventListener('abort', waiter.onAbort);
       }
       this.active += 1;
-      waiter.resolve(this.releasePermit());
+      // Start in the same turn as selection so a newly ready foreground
+      // request cannot arrive between selecting background work and posting it.
+      void waiter.start();
     }
   }
 }

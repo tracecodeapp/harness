@@ -130,6 +130,8 @@ export interface JudgeReceiptProvider {
     readonly observationPrepareDeadlineMs?: number;
     /** The shared compiler must wait for the evaluation's first ordinary case admission. */
     readonly observationCompileOrder?: 'after-ordinary-compile';
+    /** Drop pending preparation when the last active drawing attempt is evicted. */
+    readonly cancelUnusedObservationPreparation?: true;
     /** Observation can initialize concurrently with ordinary provider readiness. */
     readonly overlapObservationWithInitialization?: true;
     /** Native stopping batches can acknowledge admission before delivering rows. */
